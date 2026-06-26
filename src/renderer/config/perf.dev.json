@@ -1,0 +1,16 @@
+{
+  "edgeRenderMode": "svg",
+  "prefetchScreenFactor": 2.0,
+  "fpsP1Threshold": 59,
+  "velocityEmitIntervalMs": 80,
+  "edgeCanvasSwitchEdgeCount": 150,
+  "edgeCanvasSwitchNodeCount": 100,
+  "guillotineMinNodeCount": 25,
+  "guillotinePaddingScreenFactor": 2.0,
+  "guillotinePaddingPanFactor": 2.5,
+  "crossFadeMs": 150,
+  "interactionUnlockDelayMs": 100,
+  "lowResOpacity": 0.6,
+  "lodHysteresis": 0.03,
+  "farPlaceholderHysteresis": 0.01
+}

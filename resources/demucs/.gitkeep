@@ -1,0 +1,3 @@
+# 此目录用于存放 demucs_cli.exe
+# 运行 python scripts/build-demucs-cli/build_demucs.py 构建后，demucs_cli.exe 将生成于此
+# 构建安装包时（npm run electron:build）会自动打包

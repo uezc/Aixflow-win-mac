@@ -1,0 +1,39 @@
+{
+  "yuanbao_per_cny": 10,
+  "packages": [
+    {
+      "id": "starter",
+      "label": "入门包",
+      "price_cny": 50,
+      "base_yuanbao": 500,
+      "ui_order": 1
+    },
+    {
+      "id": "popular",
+      "label": "标准包",
+      "price_cny": 100,
+      "base_yuanbao": 1000,
+      "bonus_yuanbao": 50,
+      "tag": "most_popular",
+      "ui_order": 2
+    },
+    {
+      "id": "value",
+      "label": "进阶包",
+      "price_cny": 300,
+      "base_yuanbao": 3000,
+      "bonus_yuanbao": 300,
+      "tag": "best_value",
+      "ui_order": 3
+    },
+    {
+      "id": "premium",
+      "label": "尊享包",
+      "price_cny": 1000,
+      "base_yuanbao": 10000,
+      "bonus_yuanbao": 1500,
+      "tag": "max_discount",
+      "ui_order": 4
+    }
+  ]
+}

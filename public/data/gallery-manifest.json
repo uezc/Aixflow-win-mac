@@ -1,0 +1,140 @@
+{
+  "generatedAt": "2026-04-14T07:16:18.242Z",
+  "schemaVersion": 2,
+  "images": [
+    "夜游鹰.jpg",
+    "夜魔.jpg",
+    "大巫师.png",
+    "废都.jpg",
+    "废都2.jpg",
+    "晚春.jpg",
+    "梦晴.jpg",
+    "武士.png",
+    "白鬼.jpg",
+    "绅士.jpg",
+    "绿之魂.jpg",
+    "美杜莎.jpg",
+    "迟暮.jpg",
+    "遗孀.jpg",
+    "非良人.jpg",
+    "龙骑兵.jpg"
+  ],
+  "videos": [
+    "御风者.mov",
+    "极光之眼.mp4",
+    "深海女神.mov",
+    "粉影噬魂.mp4",
+    "索玛的世界.mp4",
+    "蓝鳞妖后.mp4",
+    "量子图腾.mp4",
+    "阿拉丁.mp4"
+  ],
+  "music": [
+    {
+      "file": "俺是个大信球.mp3",
+      "title": "俺是个大信球.mp3",
+      "cover": ""
+    },
+    {
+      "file": "尘衣不染.mp3",
+      "title": "尘衣不染.mp3",
+      "cover": ""
+    },
+    {
+      "file": "打拳击.mp3",
+      "title": "打拳击.mp3",
+      "cover": ""
+    },
+    {
+      "file": "倒刺.mp3",
+      "title": "倒刺.mp3",
+      "cover": ""
+    },
+    {
+      "file": "地球往事.mp3",
+      "title": "地球往事.mp3",
+      "cover": ""
+    },
+    {
+      "file": "电音.mp3",
+      "title": "电音.mp3",
+      "cover": ""
+    },
+    {
+      "file": "读心.mp3",
+      "title": "读心.mp3",
+      "cover": ""
+    },
+    {
+      "file": "风中尘影.mp3",
+      "title": "风中尘影.mp3",
+      "cover": ""
+    },
+    {
+      "file": "恍然三十.mp3",
+      "title": "恍然三十.mp3",
+      "cover": ""
+    },
+    {
+      "file": "落花无言.mp3",
+      "title": "落花无言.mp3",
+      "cover": ""
+    },
+    {
+      "file": "夜奔帖.mp3",
+      "title": "夜奔帖.mp3",
+      "cover": ""
+    },
+    {
+      "file": "ちきゅうおうじ.mp3",
+      "title": "ちきゅうおうじ.mp3",
+      "cover": ""
+    }
+  ],
+  "workflow": [
+    {
+      "file": "辅助画板.aixflow",
+      "title": "辅助画板.aixflow",
+      "cover": "辅助画板.png"
+    },
+    {
+      "file": "歌曲创作.aixflow",
+      "title": "歌曲创作.aixflow",
+      "cover": "歌曲创作.png"
+    },
+    {
+      "file": "节目配音.aixflow",
+      "title": "节目配音.aixflow",
+      "cover": "节目配音.png"
+    },
+    {
+      "file": "漫剧工作流.aixflow",
+      "title": "漫剧工作流.aixflow",
+      "cover": "漫剧工作流.png"
+    },
+    {
+      "file": "模特换装.aixflow",
+      "title": "模特换装.aixflow",
+      "cover": "模特换装.png"
+    },
+    {
+      "file": "网页设计.aixflow",
+      "title": "网页设计.aixflow",
+      "cover": "网页设计.png"
+    },
+    {
+      "file": "游戏素材.aixflow",
+      "title": "游戏素材.aixflow",
+      "cover": "游戏素材.png"
+    },
+    {
+      "file": "CG动画.aixflow",
+      "title": "CG动画.aixflow",
+      "cover": "CG动画.png"
+    }
+  ],
+  "hints": {
+    "title": "音乐、工作流的 title 为对应音频/工作流文件名（含扩展名）；cover 为同目录同主文件名图片，脚本已自动配对。",
+    "pairing": "例如 web/music/a.mp3 与 web/music/a.jpg；web/workflow/foo.json 与 web/workflow/foo.png"
+  }
+}

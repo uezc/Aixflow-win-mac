@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>AIXflow · 内容发布</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              void: '#05070a',
+              neon: { cyan: '#06b6d4', violet: '#8b5cf6' },
+            },
+            boxShadow: {
+              card: '0 0 0 1px rgba(139,92,246,0.25), 0 24px 48px rgba(0,0,0,0.55)',
+            },
+          },
+        },
+      };
+    </script>
+  </head>
+  <body class="min-h-screen bg-[#05070a] text-zinc-100 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/website/admin-main.tsx"></script>
+  </body>
+</html>

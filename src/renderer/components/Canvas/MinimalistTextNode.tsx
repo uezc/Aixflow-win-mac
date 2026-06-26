@@ -1,0 +1,1562 @@
+// @ts-nocheck
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Handle, Position, NodeProps, useReactFlow, useStore, useUpdateNodeInternals, useStoreApi } from 'reactflow';
+import {
+  Copy,
+  Check,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Bold,
+  Italic,
+  ZoomIn,
+  ZoomOut,
+  Mic2,
+  Mic,
+  Loader2,
+  Globe,
+  ChevronDown,
+} from 'lucide-react';
+import { ModuleProgressBar } from './ModuleProgressBar';
+import { useAI } from '../../hooks/useAI';
+import { useGlobalInteractionSelector } from '../../utils/globalInteractionStore';
+import { useAppLocale } from '../../contexts/AppLocaleContext';
+import { useDarkAlert } from '../../contexts/DarkAlertContext';
+import { workspaceChromeT } from '../../i18n/workspaceI18n';
+import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
+import {
+  useReferenceMicRecording,
+} from '../../hooks/useReferenceMicRecording';
+import { nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
+import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
+
+/** 10 个常用字体选项 */
+const TEXT_FONT_OPTIONS: { value: string; label: string }[] = [
+  { value: 'Microsoft YaHei', label: '微软雅黑' },
+  { value: 'PingFang SC', label: '苹方' },
+  { value: 'Noto Sans SC', label: '思源黑体' },
+  { value: 'SimSun', label: '宋体' },
+  { value: 'SimHei', label: '黑体' },
+  { value: 'KaiTi', label: '楷体' },
+  { value: 'Arial', label: 'Arial' },
+  { value: 'Helvetica', label: 'Helvetica' },
+  { value: 'Georgia', label: 'Georgia' },
+  { value: 'Times New Roman', label: 'Times New Roman' },
+];
+
+interface MinimalistTextNodeData {
+  text?: string;
+  width?: number;
+  height?: number;
+  title?: string;
+  isUserResized?: boolean;
+  progress?: number;
+  progressMessage?: string;
+  errorMessage?: string;
+  /** 文本对齐 */
+  textAlign?: 'left' | 'center' | 'right';
+  /** 加粗 */
+  fontWeight?: 'normal' | 'bold';
+  /** 斜体 */
+  fontStyle?: 'normal' | 'italic';
+  /** 字体 */
+  fontFamily?: string;
+  /** 正文字体大小（px），约 10–28 */
+  fontSizePx?: number;
+  /** 左侧接入声音/视频时，用于 whisper 本地转写的音源 URL */
+  transcribeAudioUrl?: string;
+  transcribeLanguage?: string;
+  transcribeStatus?: 'idle' | 'START' | 'PROCESSING' | 'SUCCESS' | 'ERROR';
+  transcribeErrorMessage?: string;
+}
+
+
+interface MinimalistTextNodeProps extends NodeProps<MinimalistTextNodeData> {
+  isDarkMode?: boolean;
+  performanceMode?: boolean;
+  projectId?: string;
+  /** 经 Workspace setNodes 落盘（受控画布）；勿仅用 useReactFlow().setNodes */
+  onDataChange?: (updates: Partial<MinimalistTextNodeData>) => void;
+}
+
+function pickTwAudioUrl(srcData: Record<string, unknown> | undefined): string {
+  if (!srcData) return '';
+  const raw = (srcData.outputAudio ?? srcData.originalAudioUrl ?? srcData.referenceAudioUrl) as string | undefined;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+function pickTwVideoUrl(srcData: Record<string, unknown> | undefined): string {
+  if (!srcData) return '';
+  const raw = (srcData.outputVideo ?? srcData.originalVideoUrl) as string | undefined;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
+export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => {
+  // 解构出 React Flow 专有属性，避免透传给 DOM
+  const {
+    id,
+    data,
+    selected,
+    isDarkMode = true,
+    performanceMode = false,
+    projectId,
+    onDataChange,
+    // React Flow 专有属性，不应传递给 DOM（显式解构以过滤）
+    xPos = 0,
+    yPos = 0,
+    dragging,
+    zIndex: _zIndex,
+    width: _width,
+    height: _height,
+    type: _type,
+    targetPosition: _targetPosition,
+    sourcePosition: _sourcePosition,
+    position: _position,
+    // 确保不会透传任何其他 React Flow 内部属性
+  } = props as any;
+  const { setNodes, getViewport } = useReactFlow();
+  const updateNodeInternals = useUpdateNodeInternals();
+  const store = useStoreApi();
+  const edges = useStore((s) => s.edges) ?? [];
+  const nodes = useStore((s) => s.nodes) ?? [];
+  const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
+  const { locale } = useAppLocale();
+  const wc = workspaceChromeT(locale);
+  const { showAlert } = useDarkAlert();
+  const refMicAt = audioInputPanelT(locale);
+  // 订阅画布 transform，用于超远节点冻结判定
+  const transform = useStore((state) => state.transform);
+  // 直接从 store 订阅选中状态，确保选中变化时立即重渲染（不依赖父级 memo 传递，解决缩放后才显示控件的问题）
+  const selectedFromStore = useStore((state) => state.nodeInternals.get(id)?.selected ?? false);
+  const isSelected = selectedFromStore || selected;
+  const [isHovered, setIsHovered] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [text, setText] = useState(data?.text || '');
+  const [title, setTitle] = useState(data?.title || 'text');
+  const [progress, setProgress] = useState(data?.progress || 0);
+  const [progressMessage, setProgressMessage] = useState(data?.progressMessage || '');
+  const [errorMessage, setErrorMessage] = useState(data?.errorMessage || '');
+  const [transcribeLang, setTranscribeLang] = useState(data?.transcribeLanguage || 'zh');
+  const [linkingTw, setLinkingTw] = useState(false);
+  const [transcribeBusy, setTranscribeBusy] = useState(false);
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+  const [micVoiceBusy, setMicVoiceBusy] = useState(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>(data?.textAlign || 'center');
+  const [fontWeight, setFontWeight] = useState<'normal' | 'bold'>(data?.fontWeight || 'normal');
+  const [fontStyle, setFontStyle] = useState<'normal' | 'italic'>(data?.fontStyle || 'normal');
+  const [fontFamily, setFontFamily] = useState(data?.fontFamily || TEXT_FONT_OPTIONS[0].value);
+  const clampTextFontPx = (n: unknown): number => {
+    const x = typeof n === 'number' ? n : typeof n === 'string' ? parseFloat(n) : NaN;
+    if (!Number.isFinite(x)) return 28;
+    return Math.min(28, Math.max(10, Math.round(x)));
+  };
+  const [fontSizePx, setFontSizePx] = useState(() => clampTextFontPx(data?.fontSizePx ?? 28));
+  // 最小尺寸约束（与 TextNode 相同）
+  const MIN_WIDTH = 280;
+  const MIN_HEIGHT = 160;
+  
+  // 初始化尺寸：用户改过后以 data 为准，避免 props.style 滞后（主题切换/重挂载时回弹）
+  const getInitialSize = () => {
+    const nodeStyle = (props as any).style;
+    let width = data?.width;
+    let height = data?.height;
+
+    if (!data?.isUserResized) {
+      if (nodeStyle?.width) {
+        const styleWidth = parseFloat(String(nodeStyle.width).replace('px', ''));
+        if (!isNaN(styleWidth) && styleWidth > 0) {
+          width = styleWidth;
+        }
+      }
+      if (nodeStyle?.height) {
+        const styleHeight = parseFloat(String(nodeStyle.height).replace('px', ''));
+        if (!isNaN(styleHeight) && styleHeight > 0) {
+          height = styleHeight;
+        }
+      }
+    }
+
+    return {
+      w: Math.max(MIN_WIDTH, width || MIN_WIDTH),
+      h: Math.max(MIN_HEIGHT, height || MIN_HEIGHT),
+    };
+  };
+  
+  const [size, setSize] = useState(getInitialSize);
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  /** 用户缩放已提交、等待 store 落盘；此期间禁止用滞后的 data/style 把尺寸打回旧值 */
+  const userSizeCommitRef = useRef<{ w: number; h: number } | null>(null);
+  const [showCopySuccess, setShowCopySuccess] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const resizeHandleRef = useRef<HTMLDivElement>(null);
+  const textSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (textSaveTimeoutRef.current) clearTimeout(textSaveTimeoutRef.current);
+    };
+  }, []);
+
+  // 更新节点数据（须在 useAI / 同步 effect 之前定义）
+  const updateNodeData = useCallback((updates: Partial<MinimalistTextNodeData>) => {
+    if (onDataChange) {
+      onDataChange(updates);
+      return;
+    }
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id === id) {
+          const updatedNode = {
+            ...node,
+            data: {
+              ...node.data,
+              ...updates,
+            },
+          };
+
+          if (updates.width !== undefined || updates.height !== undefined) {
+            const w = updates.width !== undefined ? updates.width : sizeRef.current.w;
+            const h = updates.height !== undefined ? updates.height : sizeRef.current.h;
+            updatedNode.style = {
+              ...(node.style || {}),
+              width: `${w}px`,
+              height: `${h}px`,
+              minWidth: '280px',
+              minHeight: '160px',
+            };
+          }
+
+          return updatedNode;
+        }
+        return node;
+      })
+    );
+  }, [id, onDataChange, setNodes]);
+
+  // AI Hook（用于接收状态更新，支持进度条和内容回传）
+  const { status: aiStatus } = useAI({
+    nodeId: id,
+    modelId: 'chat', // text 节点也使用 chat 模型
+    onStatusUpdate: (packet) => {
+      // START 状态：初始化进度条
+      if (packet.status === 'START') {
+        setErrorMessage('');
+        const initialProgress = Math.max(1, packet.payload?.progress || 1);
+        const initialMessage = packet.payload?.text || '正在初始化模型...';
+        setProgress(initialProgress);
+        setProgressMessage(initialMessage);
+        updateNodeData({ 
+          errorMessage: undefined,
+          progress: initialProgress,
+          progressMessage: initialMessage,
+        });
+        return;
+      }
+      
+      // PROCESSING 状态：更新进度和消息
+      if (packet.status === 'PROCESSING') {
+        if (packet.payload?.progress !== undefined) {
+          const newProgress = Math.max(1, packet.payload.progress);
+          setProgress(newProgress);
+          updateNodeData({ progress: newProgress });
+        } else {
+          if (progress === 0) {
+            setProgress(1);
+            updateNodeData({ progress: 1 });
+          }
+        }
+        
+        if (packet.payload?.text) {
+          setProgressMessage(packet.payload.text);
+          updateNodeData({ progressMessage: packet.payload.text });
+        }
+        return;
+      }
+      
+      // SUCCESS 状态：更新文本内容，清除进度条
+      // 双重保障：优先使用 text，而不是等待 localPath 读取
+      if (packet.status === 'SUCCESS') {
+        try {
+          // 优先使用 text 字段（后端已经发送了 text）
+          const resultText = packet.payload?.text;
+          if (resultText) {
+            setText(resultText);
+            setProgress(0);
+            setProgressMessage('');
+            setErrorMessage('');
+            updateNodeData({ 
+              text: resultText,
+              progress: 0,
+              progressMessage: undefined,
+              errorMessage: undefined,
+            });
+            console.log(`[MinimalistTextNode] SUCCESS 状态：使用 text 字段，长度: ${resultText.length}`);
+            return;
+          }
+          
+          // 如果没有 text，尝试从 localPath 读取（备用方案）
+          // 注意：这可能会因为乱码路径而失败，所以用 try-catch 包裹
+          const localPath = packet.payload?.localPath;
+          if (localPath) {
+            console.log(`[MinimalistTextNode] 尝试从 localPath 读取: ${localPath}`);
+            // 这里可以添加文件读取逻辑，但优先使用 text 更可靠
+            // 暂时跳过，因为后端已经发送了 text
+          }
+        } catch (error) {
+          // 解决乱码中断：即使处理失败，也不阻塞界面
+          console.warn('[MinimalistTextNode] 处理 SUCCESS 状态时出错（可能是乱码路径导致）:', error);
+          // 如果出错，至少清除进度条
+          setProgress(0);
+          setProgressMessage('');
+          updateNodeData({ 
+            progress: 0,
+            progressMessage: undefined,
+          });
+        }
+        return;
+      }
+      
+      // ERROR 状态：显示错误信息，清除进度条
+      if (packet.status === 'ERROR') {
+        const errorMsg = packet.payload?.error || '未知错误';
+        setErrorMessage(errorMsg);
+        setProgress(0);
+        setProgressMessage('');
+        updateNodeData({ 
+          errorMessage: errorMsg,
+          progress: 0,
+          progressMessage: undefined,
+        });
+        return;
+      }
+    },
+    onComplete: (result) => {
+      // 完成回调：确保结果正确显示
+      // 双重保障：优先使用 text，而不是等待 localPath 读取
+      try {
+        if (result?.text) {
+          setText(result.text);
+          setProgress(0);
+          setProgressMessage('');
+          setErrorMessage('');
+          updateNodeData({
+            text: result.text,
+            progress: 0,
+            progressMessage: undefined,
+            errorMessage: undefined,
+          });
+          console.log(`[MinimalistTextNode] onComplete：使用 text 字段，长度: ${result.text.length}`);
+        } else if (result?.localPath) {
+          // 如果没有 text，尝试从 localPath 读取（备用方案）
+          // 注意：这可能会因为乱码路径而失败，所以用 try-catch 包裹
+          console.warn('[MinimalistTextNode] onComplete：没有 text 字段，尝试从 localPath 读取（可能失败）:', result.localPath);
+          // 暂时跳过，因为后端应该已经发送了 text
+        }
+      } catch (error) {
+        // 解决乱码中断：即使处理失败，也不阻塞界面
+        console.warn('[MinimalistTextNode] onComplete 处理时出错（可能是乱码路径导致）:', error);
+        // 如果出错，至少清除进度条
+        setProgress(0);
+        setProgressMessage('');
+        updateNodeData({
+          progress: 0,
+          progressMessage: undefined,
+        });
+      }
+    },
+  });
+
+  // 同步外部数据变化（编辑中不同步；避免 store 未落盘时用空 data.text 覆盖刚输入的内容）
+  useEffect(() => {
+    if (!isEditing && data?.text !== undefined) {
+      const external = data.text;
+      const local = textRef.current;
+      if (external === local) {
+        if (text !== external) setText(external);
+      } else if (!external && local.trim()) {
+        if (text !== local) setText(local);
+        updateNodeData({ text: local });
+      } else if (external !== text) {
+        setText(external);
+        textRef.current = external;
+      }
+    }
+    if (!isEditingTitle && data?.title !== undefined) {
+      setTitle(data.title);
+    }
+
+    if (data?.progress !== undefined) {
+      setProgress(data.progress);
+    }
+    if (data?.progressMessage !== undefined) {
+      setProgressMessage(data.progressMessage);
+    }
+    if (data?.errorMessage !== undefined) {
+      setErrorMessage(data.errorMessage);
+    }
+    if (data?.textAlign !== undefined) setTextAlign(data.textAlign);
+    if (data?.fontWeight !== undefined) setFontWeight(data.fontWeight);
+    if (data?.fontStyle !== undefined) setFontStyle(data.fontStyle);
+    if (data?.fontFamily !== undefined) setFontFamily(data.fontFamily);
+    if (data?.fontSizePx !== undefined) setFontSizePx(clampTextFontPx(data.fontSizePx));
+    if (data?.transcribeLanguage !== undefined) setTranscribeLang(data.transcribeLanguage || 'zh');
+  }, [
+    isEditing,
+    isEditingTitle,
+    data?.text,
+    data?.title,
+    data?.progress,
+    data?.progressMessage,
+    data?.errorMessage,
+    data?.textAlign,
+    data?.fontWeight,
+    data?.fontStyle,
+    data?.fontFamily,
+    data?.fontSizePx,
+    data?.transcribeLanguage,
+    text,
+    updateNodeData,
+  ]);
+
+  useEffect(() => {
+    if (!langMenuOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      const el = langMenuRef.current;
+      if (el && !el.contains(e.target as Node)) setLangMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [langMenuOpen]);
+
+  // 双击文本区域进入编辑模式（文本内容）
+  const handleTextDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (isVisualInteractionLocked) return;
+    e.stopPropagation();
+    setIsEditing(true);
+    setTimeout(() => {
+      textareaRef.current?.focus();
+      if (textareaRef.current) {
+        textareaRef.current.setSelectionRange(
+          textareaRef.current.value.length,
+          textareaRef.current.value.length
+        );
+      }
+    }, 0);
+  }, [isVisualInteractionLocked]);
+
+  // 双击标题进入编辑模式
+  const handleTitleDoubleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditingTitle(true);
+    setTimeout(() => {
+      titleInputRef.current?.focus();
+      if (titleInputRef.current) {
+        titleInputRef.current.select();
+      }
+    }, 0);
+  }, []);
+
+  /** 退出编辑时立即落盘，避免防抖未触发或被外部 data 同步覆盖 */
+  const commitTextEdit = useCallback(
+    (value?: string) => {
+      const next = (value ?? textareaRef.current?.value ?? text).replace(/\r\n/g, '\n');
+      if (textSaveTimeoutRef.current) {
+        clearTimeout(textSaveTimeoutRef.current);
+        textSaveTimeoutRef.current = null;
+      }
+      textRef.current = next;
+      setText(next);
+      updateNodeData({ text: next });
+    },
+    [text, updateNodeData],
+  );
+
+  const commitTitleEdit = useCallback(
+    (value?: string) => {
+      const next = value ?? titleInputRef.current?.value ?? title;
+      setTitle(next);
+      if (data?.title !== next) {
+        updateNodeData({ title: next });
+      }
+    },
+    [title, data?.title, updateNodeData],
+  );
+
+  const transcribeUpstreamKey = useMemo(() => {
+    return edges
+      .filter((e) => e.target === id)
+      .map((e) => {
+        const s = nodes.find((n) => n.id === e.source);
+        if (!s) return `${e.source}:unknown`;
+        if (s.type === 'audio') return `${e.source}:audio:${pickTwAudioUrl(s.data as Record<string, unknown>)}`;
+        if (s.type === 'video') return `${e.source}:video:${pickTwVideoUrl(s.data as Record<string, unknown>)}`;
+        return `${e.source}:${s.type}`;
+      })
+      .sort()
+      .join('|');
+  }, [edges, nodes, id]);
+
+  /** 新建出边时立即落盘文本，确保下游 LLM 等能读到 data.text（避免 300ms 防抖未写入） */
+  const outgoingTargetsKey = useMemo(
+    () =>
+      edges
+        .filter((e) => e.source === id)
+        .map((e) => `${e.target}:${e.targetHandle ?? ''}`)
+        .sort()
+        .join('|'),
+    [edges, id],
+  );
+
+  useEffect(() => {
+    if (!outgoingTargetsKey) return;
+    const next = textRef.current.replace(/\r\n/g, '\n');
+    const stored = data?.text ?? '';
+    if (next === stored) return;
+    if (textSaveTimeoutRef.current) {
+      clearTimeout(textSaveTimeoutRef.current);
+      textSaveTimeoutRef.current = null;
+    }
+    updateNodeData({ text: next });
+  }, [outgoingTargetsKey, updateNodeData]);
+
+  const hasTranscribeMediaSource = useMemo(() => {
+    return edges.some((e) => {
+      if (e.target !== id) return false;
+      const src = nodes.find((n) => n.id === e.source);
+      return src?.type === 'audio' || src?.type === 'video';
+    });
+  }, [edges, nodes, id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let clearDebounce: ReturnType<typeof setTimeout> | null = null;
+
+    const hasMediaEdgeIn = (edgeList: typeof edges, nodeList: typeof nodes) =>
+      edgeList.some((e) => {
+        if (e.target !== id) return false;
+        const src = nodeList.find((n) => n.id === e.source);
+        return src?.type === 'audio' || src?.type === 'video';
+      });
+
+    const incoming = edges.filter((e) => e.target === id);
+    const self = nodes.find((n) => n.id === id);
+    const curUrl = String(self?.data?.transcribeAudioUrl || '').trim();
+
+    const mediaEdges = incoming.filter((e) => {
+      const src = nodes.find((n) => n.id === e.source);
+      return src?.type === 'audio' || src?.type === 'video';
+    });
+
+    if (mediaEdges.length === 0) {
+      setLinkingTw(false);
+      // 连线刚建立时，edges/nodes 可能短暂不同步，立即清空会导致转写条「一闪而过」；延迟后从 store 再读一遍再决定是否清空
+      if (curUrl) {
+        clearDebounce = setTimeout(() => {
+          if (cancelled) return;
+          const st = store.getState();
+          const eList = st.edges ?? [];
+          const nList = st.nodes ?? [];
+          if (hasMediaEdgeIn(eList, nList)) return;
+          updateNodeData({
+            transcribeAudioUrl: '',
+            transcribeErrorMessage: undefined,
+            transcribeStatus: 'idle',
+          });
+        }, 400);
+      }
+      return () => {
+        cancelled = true;
+        if (clearDebounce) clearTimeout(clearDebounce);
+        setLinkingTw(false);
+      };
+    }
+
+    const audioUrls: string[] = [];
+    let videoUrl = '';
+    for (const e of mediaEdges) {
+      const src = nodes.find((n) => n.id === e.source);
+      if (!src) continue;
+      if (src.type === 'audio') {
+        const u = pickTwAudioUrl(src.data as Record<string, unknown>);
+        if (u) audioUrls.push(u);
+      } else if (src.type === 'video') {
+        const v = pickTwVideoUrl(src.data as Record<string, unknown>);
+        if (v) videoUrl = v;
+      }
+    }
+
+    const nextAudio = audioUrls[0] || '';
+    if (nextAudio) {
+      setLinkingTw(false);
+      if (nextAudio !== curUrl) {
+        updateNodeData({
+          transcribeAudioUrl: nextAudio,
+          transcribeErrorMessage: undefined,
+          transcribeStatus: 'idle',
+        });
+      }
+      updateNodeInternals(id);
+      return () => {
+        cancelled = true;
+        setLinkingTw(false);
+      };
+    }
+
+    if (!videoUrl || !window.electronAPI?.extractAudioFromVideo) {
+      setLinkingTw(false);
+      return () => {
+        cancelled = true;
+        setLinkingTw(false);
+      };
+    }
+
+    setLinkingTw(true);
+    void window.electronAPI
+      .extractAudioFromVideo(projectId || undefined, videoUrl)
+      .then((res) => {
+        if (cancelled) return;
+        setLinkingTw(false);
+        if (!res?.audioUrl) return;
+        if (res.audioUrl !== curUrl) {
+          updateNodeData({
+            transcribeAudioUrl: res.audioUrl,
+            transcribeErrorMessage: undefined,
+            transcribeStatus: 'idle',
+          });
+        }
+        updateNodeInternals(id);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setLinkingTw(false);
+        updateNodeData({
+          transcribeErrorMessage: err?.message || String(err) || '从视频提取音频失败',
+          transcribeStatus: 'ERROR',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+      setLinkingTw(false);
+    };
+  }, [transcribeUpstreamKey, id, projectId, updateNodeData, updateNodeInternals]);
+
+  const runLocalTranscribe = useCallback(async () => {
+    let url = String(data?.transcribeAudioUrl || '').trim();
+    if (!url) {
+      const incoming = edges.filter((e) => e.target === id);
+      for (const e of incoming) {
+        const src = nodes.find((n) => n.id === e.source);
+        if (!src) continue;
+        if (src.type === 'audio') {
+          const picked = pickTwAudioUrl(src.data as Record<string, unknown>);
+          if (picked) {
+            url = picked;
+            break;
+          }
+        }
+      }
+      if (!url && window.electronAPI?.extractAudioFromVideo) {
+        for (const e of incoming) {
+          const src = nodes.find((n) => n.id === e.source);
+          if (!src || src.type !== 'video') continue;
+          const v = pickTwVideoUrl(src.data as Record<string, unknown>);
+          if (!v) continue;
+          try {
+            const res = await window.electronAPI.extractAudioFromVideo(projectId || undefined, v);
+            if (res?.audioUrl) {
+              url = String(res.audioUrl).trim();
+              updateNodeData({ transcribeAudioUrl: url, transcribeStatus: 'idle', transcribeErrorMessage: undefined });
+              break;
+            }
+          } catch {
+            // ignore: keep falling back to unified error below
+          }
+        }
+      }
+    }
+    if (!url) {
+      updateNodeData({
+        transcribeErrorMessage: '暂无可用音频：请从左侧连接「声音」或「视频」模块',
+        transcribeStatus: 'ERROR',
+      });
+      return;
+    }
+    if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
+      updateNodeData({
+        transcribeErrorMessage: '当前环境不支持语音转写',
+        transcribeStatus: 'ERROR',
+      });
+      return;
+    }
+    setTranscribeBusy(true);
+    updateNodeData({ transcribeStatus: 'PROCESSING', transcribeErrorMessage: undefined });
+    try {
+      const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
+        projectId || undefined,
+        url,
+        transcribeLang === 'auto' ? undefined : transcribeLang
+      );
+      const t = (out || '').trim();
+      setText(t);
+      updateNodeData({
+        text: t,
+        transcribeStatus: 'SUCCESS',
+        transcribeErrorMessage: undefined,
+      });
+    } catch (e: any) {
+      updateNodeData({
+        transcribeStatus: 'ERROR',
+        transcribeErrorMessage: e?.message || String(e),
+      });
+    } finally {
+      setTranscribeBusy(false);
+      updateNodeInternals(id);
+    }
+  }, [data?.transcribeAudioUrl, transcribeLang, projectId, updateNodeData, updateNodeInternals, id, edges, nodes]);
+
+  const runMicTranscribeOnUrl = useCallback(
+    async (localResourceUrl: string) => {
+      if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
+        showAlert(
+          locale === 'en' ? 'Transcription is not available in this build.' : '当前环境不支持语音转写',
+        );
+        return;
+      }
+      setMicVoiceBusy(true);
+      try {
+        const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
+          projectId || undefined,
+          localResourceUrl,
+          transcribeLang === 'auto' ? undefined : transcribeLang,
+        );
+        const t = (out || '').trim();
+        if (!t) {
+          showAlert(locale === 'en' ? 'No speech recognized.' : '未识别到文字，请重试。');
+          return;
+        }
+        const prev = String(textRef.current || '').trim();
+        const merged = prev ? `${prev}\n${t}` : t;
+        textRef.current = merged;
+        setText(merged);
+        updateNodeData({ text: merged });
+      } catch (e: any) {
+        showAlert(
+          e?.message ||
+            String(e) ||
+            (locale === 'en' ? 'Transcription failed.' : '语音识别失败'),
+        );
+      } finally {
+        setMicVoiceBusy(false);
+        updateNodeInternals(id);
+      }
+    },
+    [projectId, transcribeLang, locale, showAlert, updateNodeData, updateNodeInternals, id],
+  );
+
+  const {
+    isRecording: isMicVoiceRecording,
+    startReferenceRecording: startMicVoiceRecording,
+    stopReferenceRecording: stopMicVoiceRecording,
+  } = useReferenceMicRecording({
+    projectId,
+    onSaved: (url) => {
+      void runMicTranscribeOnUrl(url);
+    },
+    onRecordingFailed: () => {
+      setMicVoiceBusy(false);
+    },
+    showAlert,
+    strings: {
+      micPermissionDenied: refMicAt.micPermissionDenied,
+      micSaveFailed: refMicAt.micSaveFailed,
+      recordTooShort: refMicAt.recordTooShort,
+      recordModalTitle: wc.textVoiceModalTitle,
+      recordModalSubtitle: wc.textVoiceModalSubtitle,
+      recordModalStop: refMicAt.recordModalStop,
+    },
+    isDarkMode,
+  });
+
+  const handleStopMicVoiceRecording = useCallback(() => {
+    setMicVoiceBusy(true);
+    stopMicVoiceRecording();
+  }, [stopMicVoiceRecording]);
+
+  const handleMicVoiceInput = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (micVoiceBusy || transcribeBusy) return;
+      if (isMicVoiceRecording) {
+        handleStopMicVoiceRecording();
+        return;
+      }
+      void startMicVoiceRecording();
+    },
+    [isMicVoiceRecording, micVoiceBusy, transcribeBusy, startMicVoiceRecording, handleStopMicVoiceRecording],
+  );
+
+  useEffect(() => {
+    const open = isMicVoiceRecording || micVoiceBusy;
+    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
+    return () => {
+      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
+    };
+  }, [isMicVoiceRecording, micVoiceBusy]);
+
+  // 处理尺寸变化（用户手动调整）
+  const handleSizeChange = useCallback((newSize: { w: number; h: number }) => {
+    userSizeCommitRef.current = newSize;
+    sizeRef.current = newSize;
+    setSize(newSize);
+    updateNodeData({
+      width: newSize.w,
+      height: newSize.h,
+      isUserResized: true,
+      _isResizing: false,
+    } as Partial<MinimalistTextNodeData>);
+  }, [updateNodeData]);
+
+  // 从 store 同步尺寸（加载/外部更新）；用户缩放落盘前不回退
+  useEffect(() => {
+    if (isResizing) return;
+
+    const pending = userSizeCommitRef.current;
+    if (pending) {
+      const dw = typeof data?.width === 'number' ? data.width : null;
+      const dh = typeof data?.height === 'number' ? data.height : null;
+      if (
+        data?.isUserResized &&
+        dw != null &&
+        dh != null &&
+        Math.abs(dw - pending.w) < 0.5 &&
+        Math.abs(dh - pending.h) < 0.5
+      ) {
+        userSizeCommitRef.current = null;
+      }
+      return;
+    }
+
+    const dw = typeof data?.width === 'number' && data.width > 0 ? data.width : null;
+    const dh = typeof data?.height === 'number' && data.height > 0 ? data.height : null;
+    if (dw == null || dh == null) return;
+
+    const local = sizeRef.current;
+    if (Math.abs(local.w - dw) < 0.1 && Math.abs(local.h - dh) < 0.1) return;
+
+    if (
+      data?.isUserResized ||
+      local.w > dw + 0.5 ||
+      local.h > dh + 0.5
+    ) {
+      updateNodeData({
+        width: local.w,
+        height: local.h,
+        isUserResized: true,
+        _isResizing: false,
+      } as Partial<MinimalistTextNodeData>);
+      return;
+    }
+
+    const next = { w: dw, h: dh };
+    sizeRef.current = next;
+    setSize(next);
+  }, [isResizing, data?.width, data?.height, data?.isUserResized, updateNodeData]);
+
+  useEffect(() => {
+    userSizeCommitRef.current = null;
+  }, [id]);
+
+  // 点击非编辑区域退出编辑模式
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (isEditing && nodeRef.current && !nodeRef.current.contains(e.target as HTMLElement)) {
+        commitTextEdit();
+        setIsEditing(false);
+      }
+      if (isEditingTitle && nodeRef.current && !nodeRef.current.contains(e.target as HTMLElement)) {
+        commitTitleEdit();
+        setIsEditingTitle(false);
+      }
+    };
+
+    if (isEditing || isEditingTitle) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [isEditing, isEditingTitle, commitTextEdit, commitTitleEdit]);
+
+  const updateNodeDataRef = useRef(updateNodeData);
+  updateNodeDataRef.current = updateNodeData;
+
+  useEffect(() => {
+    return () => {
+      if (textSaveTimeoutRef.current) {
+        clearTimeout(textSaveTimeoutRef.current);
+        textSaveTimeoutRef.current = null;
+      }
+      const next = textRef.current.replace(/\r\n/g, '\n');
+      updateNodeDataRef.current({ text: next });
+    };
+  }, []);
+
+  // 复制到剪贴板
+  const handleCopy = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setShowCopySuccess(true);
+      setTimeout(() => {
+        setShowCopySuccess(false);
+      }, 2000);
+    } catch (err) {
+      console.error('复制失败:', err);
+    }
+  }, [text]);
+
+
+  // 处理文本变化：实时写入节点数据并触发保存（300ms 防抖）
+  const handleTextChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const newText = e.target.value;
+    textRef.current = newText;
+    setText(newText);
+    if (textSaveTimeoutRef.current) clearTimeout(textSaveTimeoutRef.current);
+    textSaveTimeoutRef.current = setTimeout(() => {
+      updateNodeData({ text: newText });
+      textSaveTimeoutRef.current = null;
+    }, 300);
+  }, [updateNodeData]);
+
+  // 文本样式（对齐、加粗、斜体、字体）
+  const textContentStyle = useMemo((): React.CSSProperties => ({
+    textAlign,
+    fontWeight,
+    fontStyle,
+    fontFamily: fontFamily || TEXT_FONT_OPTIONS[0].value,
+    fontSize: fontSizePx,
+    lineHeight: 1.55,
+  }), [textAlign, fontWeight, fontStyle, fontFamily, fontSizePx]);
+
+  const applyFormat = useCallback((key: 'textAlign' | 'fontWeight' | 'fontStyle' | 'fontFamily', value: string) => {
+    if (key === 'textAlign') {
+      setTextAlign(value as 'left' | 'center' | 'right');
+      updateNodeData({ textAlign: value as 'left' | 'center' | 'right' });
+    } else if (key === 'fontWeight') {
+      const v = value as 'normal' | 'bold';
+      setFontWeight(v);
+      updateNodeData({ fontWeight: v });
+    } else if (key === 'fontStyle') {
+      const v = value as 'normal' | 'italic';
+      setFontStyle(v);
+      updateNodeData({ fontStyle: v });
+    } else if (key === 'fontFamily') {
+      setFontFamily(value);
+      updateNodeData({ fontFamily: value });
+    }
+  }, [updateNodeData]);
+
+  const adjustTextFontSize = useCallback(
+    (delta: number) => {
+      setFontSizePx((prev) => {
+        const next = clampTextFontPx(prev + delta);
+        if (next !== prev) updateNodeData({ fontSizePx: next });
+        return next;
+      });
+    },
+    [updateNodeData],
+  );
+
+  // 合并所有样式到一个对象中
+  const nodeStyle = useMemo(() => {
+    const baseStyle: React.CSSProperties = {
+      width: size.w,
+      height: size.h,
+      minWidth: '280px',
+      minHeight: '160px',
+      userSelect: isResizing ? 'none' : 'auto',
+      willChange: isResizing ? 'transform, width, height' : dragging ? 'transform' : 'auto',
+      backfaceVisibility: isResizing ? 'hidden' : 'visible',
+      transition: isResizing ? 'none' : 'background-color 0.2s, border-color 0.2s',
+    };
+
+    return baseStyle;
+  }, [size.w, size.h, isResizing]);
+
+  const zoom = transform?.[2] ?? 1;
+  const vx = transform?.[0] ?? 0;
+  const vy = transform?.[1] ?? 0;
+  const isHardFrozen = useMemo(() => {
+    if (!performanceMode || isSelected || dragging || isResizing) return false;
+    const viewportLeft = -vx / zoom;
+    const viewportTop = -vy / zoom;
+    const viewportWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) / zoom;
+    const viewportHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) / zoom;
+    const viewportRight = viewportLeft + viewportWidth;
+    const viewportBottom = viewportTop + viewportHeight;
+    const nodeRight = xPos + size.w;
+    const nodeBottom = yPos + size.h;
+    const intersects = !(nodeRight < viewportLeft || xPos > viewportRight || nodeBottom < viewportTop || yPos > viewportBottom);
+    if (intersects) return false;
+    const distX = nodeRight < viewportLeft ? (viewportLeft - nodeRight) : (xPos > viewportRight ? xPos - viewportRight : 0);
+    const distY = nodeBottom < viewportTop ? (viewportTop - nodeBottom) : (yPos > viewportBottom ? yPos - viewportBottom : 0);
+    return distX > viewportWidth * 2 || distY > viewportHeight * 2;
+  }, [performanceMode, isSelected, dragging, isResizing, vx, vy, zoom, xPos, yPos, size.w, size.h]);
+  // 选中时始终显示完整内容与控件，避免框选/创建后控件不显示（isHardFrozen 等可能误判）
+  const showPlaceholder = (isResizing || isHardFrozen) && !isSelected;
+  const showTranscribeBar =
+    hasTranscribeMediaSource || linkingTw || !!(data?.transcribeAudioUrl || '').trim();
+  const showFloatingToolbar = (isSelected || isHovered) && !errorMessage;
+  const floatToolBtn = (scratch: ScratchColorId, active: boolean, extra = '') =>
+    nodeFloatToolBtn(isDarkMode, active, extra, scratch);
+  return (
+    <div
+      ref={nodeRef}
+      data-id={id}
+      style={nodeStyle}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+        className={`custom-node-container group relative rounded-2xl p-4 overflow-visible flex flex-col ${
+        isDarkMode 
+          ? 'nexflow-glass-panel'
+          : 'apple-panel-light'
+        } ${
+        isSelected && !isResizing
+          ? isDarkMode
+            ? 'ring-2 ring-green-400/80'
+            : 'ring-2 ring-green-500'
+          : ''
+      } ${isResizing ? '!shadow-none !ring-0' : ''}`}
+    >
+      {/* 音/视频接入时：与 Image 节点「抠图/去水印」同款小按钮，贴主卡片上方 */}
+      {showTranscribeBar && (
+        <div className="nodrag absolute left-0 right-0 z-30 flex flex-col gap-1 pointer-events-auto overflow-visible" style={{ top: '-3.75rem' }}>
+          <div className="flex flex-wrap justify-center items-center gap-x-2 gap-y-1">
+            <button
+              type="button"
+              disabled={transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                void runLocalTranscribe();
+              }}
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())
+                  ? 'bg-emerald-500/70 cursor-not-allowed opacity-80'
+                  : 'bg-emerald-500 hover:bg-emerald-600'
+              }`}
+              title="本地 Whisper 转写为简体中文并填入正文（语言选「简体中文」时）"
+            >
+              {transcribeBusy ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Mic2 className="w-3.5 h-3.5" />
+              )}
+              转文字
+            </button>
+            <div ref={langMenuRef} className="relative inline-flex flex-col items-center">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setLangMenuOpen((o) => !o);
+                }}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all nodrag ${
+                  isDarkMode
+                    ? 'border border-white/15 bg-black/30 text-white/90 hover:bg-white/10'
+                    : 'border border-gray-200 bg-gray-50 text-gray-800 hover:bg-gray-100'
+                }`}
+                title="转写语言（中文为简体中文输出）"
+                aria-expanded={langMenuOpen}
+                aria-haspopup="menu"
+              >
+                <Globe className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  {transcribeLang === 'en'
+                    ? 'English'
+                    : transcribeLang === 'auto'
+                      ? locale === 'en'
+                        ? 'Auto'
+                        : '自动'
+                      : locale === 'en'
+                        ? 'Simplified Chinese'
+                        : '简体中文'}
+                </span>
+                <ChevronDown className={`w-3 h-3 shrink-0 opacity-70 transition-transform ${langMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {langMenuOpen && (
+                <div
+                  role="menu"
+                  className={`absolute left-1/2 top-full z-40 mt-1 min-w-[96px] -translate-x-1/2 rounded-lg border py-1 shadow-lg ${
+                    isDarkMode ? 'bg-[#2a2d33] border-white/12' : 'bg-white border-gray-200'
+                  }`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {(
+                    [
+                      { v: 'zh', label: locale === 'en' ? 'Simplified Chinese' : '简体中文' },
+                      { v: 'en', label: 'English' },
+                      { v: 'auto', label: locale === 'en' ? 'Auto' : '自动' },
+                    ] as const
+                  ).map(({ v, label }) => (
+                    <button
+                      key={v}
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTranscribeLang(v);
+                        updateNodeData({ transcribeLanguage: v });
+                        setLangMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-1.5 text-xs nodrag ${
+                        transcribeLang === v
+                          ? isDarkMode
+                            ? 'bg-emerald-600/35 text-emerald-100'
+                            : 'bg-emerald-50 text-emerald-800'
+                          : isDarkMode
+                            ? 'text-white/85 hover:bg-white/10'
+                            : 'text-gray-800 hover:bg-gray-50'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      <Handle type="target" position={Position.Left} id="input" className="nexflow-plus-handle nexflow-plus-handle-left" />
+      <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
+      {/* 与 Image 等模块一致：进度条覆盖主卡片区域，不浮在模块外 */}
+      {(linkingTw || data?.transcribeStatus === 'PROCESSING' || micVoiceBusy) && (
+        <ModuleProgressBar
+          visible
+          progress={linkingTw ? 0 : micVoiceBusy ? 50 : 45}
+          solidBackground={isDarkMode ? '#1C1C1E' : '#f5f5f5'}
+          progressMessage={
+            linkingTw ? '正在从视频提取音轨…' : micVoiceBusy ? wc.textVoiceTranscribing : '正在转写'
+          }
+          borderRadius={16}
+        />
+      )}
+      {data?.transcribeErrorMessage &&
+        !(linkingTw || data?.transcribeStatus === 'PROCESSING' || micVoiceBusy) && (
+        <p className="pointer-events-none absolute top-2 left-2 right-12 z-20 text-[10px] text-red-400 break-words leading-snug">
+          {data.transcribeErrorMessage}
+        </p>
+      )}
+      {showPlaceholder ? (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <span className={`text-xs font-medium ${isDarkMode ? 'text-white/60' : 'text-gray-500'}`}>
+            {isHardFrozen ? `${title || 'text'}（冻结）` : (title || 'text')}
+          </span>
+        </div>
+      ) : (
+      <>
+      {/* 左上角标题区域（在文本框外部，节点边框外） */}
+      {(showFloatingToolbar || isSelected) && (
+      <div className="title-area absolute -top-7 left-0 z-10">
+        {isEditingTitle ? (
+          <input
+            ref={titleInputRef}
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => {
+              setIsEditingTitle(false);
+              commitTitleEdit();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                setIsEditingTitle(false);
+                commitTitleEdit();
+              }
+              if (e.key === 'Escape') {
+                setIsEditingTitle(false);
+                setTitle(data?.title || 'text');
+              }
+            }}
+            className={`bg-transparent outline-none font-bold text-xs ${
+              isDarkMode ? 'text-white/80' : 'text-gray-900'
+            }`}
+            style={{ 
+              caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
+              minWidth: '40px',
+              maxWidth: '120px',
+            }}
+            autoFocus
+          />
+        ) : (
+          <span
+            onClick={handleTitleDoubleClick}
+            className={`font-bold text-xs cursor-pointer select-none ${
+              isDarkMode ? 'text-white/80' : 'text-gray-900'
+            } hover:opacity-70 transition-opacity`}
+          >
+            {title || 'text'}
+          </span>
+        )}
+      </div>
+      )}
+
+      {/* 左上角语音输入（与音频面板同款小按钮） */}
+      {(isSelected || isHovered) && !showPlaceholder && !errorMessage && (
+        <button
+          type="button"
+          onClick={handleMicVoiceInput}
+          disabled={micVoiceBusy || transcribeBusy}
+          className={`nodrag absolute top-2 left-2 z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded transition-colors ${
+            micVoiceBusy || transcribeBusy
+              ? isDarkMode
+                ? 'cursor-wait border border-violet-400/50 bg-violet-500/20 text-violet-200'
+                : `rounded flex h-7 w-7 items-center justify-center scratch-float-btn ${scratchTintClass('looks')} cursor-wait opacity-80`
+              : isMicVoiceRecording
+                ? isDarkMode
+                  ? 'border border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
+                  : `rounded flex h-7 w-7 items-center justify-center scratch-float-btn ${scratchTintClass('control')} ring-2 ring-offset-1 ring-gray-900/20`
+                : isDarkMode
+                  ? 'border border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+                  : `rounded flex h-7 w-7 items-center justify-center scratch-float-btn ${scratchTintClass('sound')}`
+          }`}
+          title={
+            micVoiceBusy
+              ? wc.textVoiceTranscribing
+              : isMicVoiceRecording
+                ? wc.textVoiceInputStopButton
+                : wc.textVoiceInputTitle
+          }
+          aria-label={
+            micVoiceBusy
+              ? wc.textVoiceTranscribing
+              : isMicVoiceRecording
+                ? wc.textVoiceInputStopButton
+                : wc.textVoiceInputTitle
+          }
+        >
+          {micVoiceBusy || isMicVoiceRecording ? (
+            <Loader2
+              className={`relative h-3.5 w-3.5 animate-spin ${isMicVoiceRecording && !micVoiceBusy ? 'text-orange-200' : ''}`}
+              strokeWidth={2.25}
+            />
+          ) : (
+            <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
+          )}
+        </button>
+      )}
+
+      {/* 模块内右上角复制按钮 */}
+      {/* 复制成功后显示勾标记，否则显示复制按钮 */}
+      {isSelected && !isEditing && (
+        <button
+          onClick={handleCopy}
+          className={`absolute top-2 right-2 p-1.5 rounded-lg transition-all z-10 ${
+            isDarkMode
+              ? 'apple-panel hover:bg-white/20'
+              : `scratch-float-btn ${scratchTintClass('operators')}`
+          }`}
+          title={showCopySuccess ? "已复制" : "复制"}
+        >
+          {showCopySuccess ? (
+            <Check className={`w-3.5 h-3.5 ${isDarkMode ? 'text-green-400' : ''}`} />
+          ) : (
+            <Copy className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : ''}`} />
+          )}
+        </button>
+      )}
+
+      {/* 右下角框外圆弧角缩放手柄 */}
+      <div
+        ref={resizeHandleRef}
+        className="nodrag absolute -bottom-2 -right-2 w-6 h-6 cursor-nwse-resize flex items-center justify-center opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity z-[9999]"
+        style={{ pointerEvents: 'all' }}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          e.nativeEvent.stopImmediatePropagation();
+          
+          setIsResizing(true);
+          
+          // 标记节点正在调整大小，阻止拖动
+          updateNodeData({ _isResizing: true } as any);
+          
+          // 在 body 上设置 cursor 样式（使用 !important 防止鼠标移动过快时样式闪烁）
+          const originalCursor = document.body.style.cursor;
+          document.body.style.setProperty('cursor', 'nwse-resize', 'important');
+          
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const startW = size.w;
+          const startH = size.h;
+          
+          // 使用 requestAnimationFrame 优化 updateNodeInternals 调用
+          let rafId: number | null = null;
+          const scheduleUpdate = () => {
+            if (rafId === null) {
+              rafId = requestAnimationFrame(() => {
+                // Tapnow 秘密：在修改 DOM 后立即执行更新，确保连线实时同步
+                updateNodeInternals(id);
+                rafId = null;
+              });
+            }
+          };
+
+          const onMouseMove = (moveEvent: MouseEvent) => {
+            moveEvent.preventDefault();
+            moveEvent.stopPropagation();
+            
+            // 获取当前缩放比例（可能在缩放过程中变化）
+            // 使用 useStoreApi().getState().transform[2] 获取精确的 zoom 值
+            const currentZoom = store.getState().transform[2] || 1;
+            
+            // 将鼠标移动距离除以缩放比例，转换为画布坐标
+            // 确保鼠标指针永远死死地扣住节点边缘
+            const deltaX = (moveEvent.clientX - startX) / currentZoom;
+            const deltaY = (moveEvent.clientY - startY) / currentZoom;
+            
+            // 计算新尺寸（最小尺寸约束：280px * 160px）
+            const newW = Math.max(280, startW + deltaX);
+            const newH = Math.max(160, startH + deltaY);
+            sizeRef.current = { w: newW, h: newH };
+
+            // 直接操作 DOM，不触发 React 状态更新（非受控样式操作）
+            // 禁用 transition 确保零延迟响应
+            if (nodeRef.current) {
+              nodeRef.current.style.transition = 'none';
+              nodeRef.current.style.width = `${newW}px`;
+              nodeRef.current.style.height = `${newH}px`;
+            }
+            
+            // Tapnow 秘密：在修改 DOM 后立即调度 updateNodeInternals，确保连线实时同步
+            scheduleUpdate();
+          };
+          
+          const onMouseUp = (upEvent: MouseEvent) => {
+            // 获取最终尺寸（从 DOM 读取）
+            const finalSize = {
+              w: nodeRef.current ? parseFloat(nodeRef.current.style.width) || sizeRef.current.w : sizeRef.current.w,
+              h: nodeRef.current ? parseFloat(nodeRef.current.style.height) || sizeRef.current.h : sizeRef.current.h,
+            };
+
+            handleSizeChange(finalSize);
+            setIsResizing(false);
+
+            // 恢复 body cursor
+            document.body.style.cursor = originalCursor;
+
+            // 恢复 transition（仅在非缩放时生效）
+            if (nodeRef.current) {
+              nodeRef.current.style.transition = '';
+            }
+
+            // 取消待处理的 requestAnimationFrame
+            if (rafId !== null) {
+              cancelAnimationFrame(rafId);
+              rafId = null;
+            }
+
+            // 强制刷新节点连接线位置（最终更新）
+            updateNodeInternals(id);
+            
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            upEvent.preventDefault();
+            upEvent.stopPropagation();
+          };
+          
+          document.addEventListener('mousemove', onMouseMove, { passive: false });
+          document.addEventListener('mouseup', onMouseUp, { passive: false });
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.nativeEvent.stopImmediatePropagation();
+        }}
+        onDragStart={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+      >
+        <div className={`w-4 h-4 rounded-br-2xl border-r-2 border-b-2 ${
+          isDarkMode ? 'border-white/40' : 'border-gray-400/60'
+        }`} />
+      </div>
+
+      {/* 复制成功提示 */}
+      {showCopySuccess && (
+        <div className="absolute top-12 right-2 apple-panel px-2 py-1 rounded text-xs text-white/80 z-20 animate-fade-in">
+          已复制
+        </div>
+      )}
+
+      {/* 文本内容 */}
+      <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+        {errorMessage ? (
+          // 显示错误信息
+          <div className="flex flex-col items-center justify-center gap-3 p-4">
+            <div className={`text-2xl ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+              ⚠️
+            </div>
+            <p className={`text-sm font-semibold text-center ${isDarkMode ? 'text-red-300' : 'text-red-700'}`}>
+              生成失败
+            </p>
+            <p className={`text-xs text-center line-clamp-3 ${isDarkMode ? 'text-white/60' : 'text-gray-600'}`}>
+              {errorMessage}
+            </p>
+          </div>
+        ) : isEditing ? (
+          // 编辑模式：显示 textarea
+          <textarea
+            ref={textareaRef}
+            value={text}
+            readOnly={micVoiceBusy}
+            disabled={micVoiceBusy}
+            onChange={(e) => {
+              if (micVoiceBusy) return;
+              handleTextChange(e);
+            }}
+            className={`nodrag drag-handle-area w-full h-full bg-transparent resize-none outline-none flex-1 overflow-auto ${
+              isDarkMode ? 'custom-scrollbar-dark' : 'custom-scrollbar'
+            } ${
+              isDarkMode 
+                ? 'text-white placeholder:text-white/40' 
+                : 'text-gray-900 placeholder:text-gray-400'
+            } ${micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''}`}
+            placeholder="输入文本..."
+            style={{ 
+              caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
+              ...textContentStyle,
+            }}
+            onBlur={() => {
+              commitTextEdit();
+              setIsEditing(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setIsEditing(false);
+                setText(data?.text || '');
+              }
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            autoFocus
+          />
+        ) : (
+          <div 
+            className={`drag-handle-area w-full h-full flex items-start overflow-auto p-2 relative flex-1 cursor-text ${
+              isDarkMode ? 'custom-scrollbar-dark' : 'custom-scrollbar'
+            } ${
+              textAlign === 'left' ? 'justify-start' : textAlign === 'right' ? 'justify-end' : 'justify-center'
+            }`}
+            onDoubleClick={handleTextDoubleClick}
+          >
+            {text ? (
+              <p className={`break-words whitespace-pre-wrap ${
+                isDarkMode ? 'text-white/80' : 'text-gray-900'
+              }`} style={{ 
+                maxWidth: '100%',
+                wordBreak: 'break-word',
+                overflowWrap: 'break-word',
+                ...textContentStyle,
+              }}>
+                {text}
+              </p>
+            ) : (
+              <p className={`${isDarkMode ? 'text-white/40' : 'text-gray-500'}`} style={{ fontSize: fontSizePx, lineHeight: 1.55 }}>
+                {wc.doubleClickEditText}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      </>
+      )}
+
+      {/* 模块外下方：对齐、字号等悬浮工具栏（拼图节点同款，缩放时选中节点仍可见） */}
+      {showFloatingToolbar && (
+        <div
+          className="node-floating-toolbar nodrag nopan absolute top-full left-1/2 z-20 mt-1.5 flex w-max max-w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 flex-col items-center gap-1.5 overflow-visible"
+          style={{ pointerEvents: 'all' }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => applyFormat('textAlign', 'left')}
+              className={floatToolBtn('motion', textAlign === 'left')}
+              title="左对齐"
+            >
+              <AlignLeft className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('textAlign', 'center')}
+              className={floatToolBtn('looks', textAlign === 'center')}
+              title="居中"
+            >
+              <AlignCenter className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('textAlign', 'right')}
+              className={floatToolBtn('sensing', textAlign === 'right')}
+              title="右对齐"
+            >
+              <AlignRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('fontWeight', fontWeight === 'bold' ? 'normal' : 'bold')}
+              className={floatToolBtn('events', fontWeight === 'bold')}
+              title="加粗"
+            >
+              <Bold className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyFormat('fontStyle', fontStyle === 'italic' ? 'normal' : 'italic')}
+              className={floatToolBtn('variables', fontStyle === 'italic')}
+              title="斜体"
+            >
+              <Italic className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => adjustTextFontSize(-2)}
+              disabled={fontSizePx <= 10}
+              className={floatToolBtn('control', false, fontSizePx <= 10 ? '!opacity-40' : '')}
+              title={wc.fontZoomOutTitle}
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => adjustTextFontSize(2)}
+              disabled={fontSizePx >= 28}
+              className={floatToolBtn('operators', false, fontSizePx >= 28 ? '!opacity-40' : '')}
+              title={wc.fontZoomInTitle}
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

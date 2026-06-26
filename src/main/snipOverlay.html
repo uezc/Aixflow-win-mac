@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline';" />
+  <title>截图</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      cursor: crosshair;
+      user-select: none;
+      background: transparent !important;
+    }
+    #layer {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: transparent;
+      pointer-events: auto;
+      touch-action: none;
+      z-index: 1;
+    }
+    /* 极轻提示，避免像「盖了一层图」 */
+    #hint {
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font: 12px/1.4 system-ui, sans-serif;
+      color: rgba(255,255,255,0.85);
+      background: rgba(0,0,0,0.35);
+      pointer-events: none;
+      z-index: 2;
+      backdrop-filter: blur(4px);
+    }
+    /* 紧贴选区下缘（或上缘），由脚本写入 top/left */
+    #toolbarHost {
+      position: fixed;
+      z-index: 30;
+      display: none;
+      pointer-events: none;
+      left: 0;
+      top: 0;
+    }
+    #toolbarHost.show {
+      display: block;
+    }
+    #toolbar {
+      display: flex;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 10px;
+      background: rgba(24, 24, 28, 0.82);
+      border: 1px solid rgba(255,255,255,0.1);
+      box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+      pointer-events: auto;
+      cursor: default;
+    }
+    #toolbar button {
+      font: 13px/1.4 system-ui, sans-serif;
+      padding: 7px 18px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      min-width: 80px;
+    }
+    #btnConfirm {
+      background: #22c55e;
+      color: #052e16;
+      font-weight: 600;
+    }
+    #btnConfirm:hover { filter: brightness(1.08); }
+    #btnToolbarCancel {
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+    }
+    #btnToolbarCancel:hover { background: rgba(255,255,255,0.2); }
+  </style>
+</head>
+<body>
+  <div id="hint">左键框选，松开后点确认或双击选区；右键或 Esc 取消</div>
+  <canvas id="layer"></canvas>
+  <div id="toolbarHost">
+    <div id="toolbar">
+      <button type="button" id="btnConfirm">确认</button>
+      <button type="button" id="btnToolbarCancel">取消</button>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var canvas = document.getElementById('layer');
+      var ctx = canvas.getContext('2d', { alpha: true });
+      var imgW = 0;
+      var imgH = 0;
+      var down = false;
+      var sx = 0, sy = 0, cx = 0, cy = 0;
+      var api = null;
+      var phase = 'idle';
+      var pendingClient = null;
+
+      var toolbarHost = document.getElementById('toolbarHost');
+      var btnConfirm = document.getElementById('btnConfirm');
+      var btnToolbarCancel = document.getElementById('btnToolbarCancel');
+
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+
+      /** 清空后铺极淡底色：Windows 分层透明窗对 alpha=0 的像素不派发鼠标事件，仅顶部提示条附近可拖；整屏需非零 alpha */
+      function clearCanvas() {
+        resizeCanvas();
+        var w = canvas.width;
+        var h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.035)';
+        ctx.fillRect(0, 0, w, h);
+      }
+
+      function drawSelectionRect(x, y, w, h) {
+        clearCanvas();
+        if (w < 1 || h < 1) return;
+        ctx.strokeStyle = 'rgba(34, 197, 94, 0.95)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.06)';
+        ctx.fillRect(x, y, w, h);
+      }
+
+      function redrawDragging() {
+        if (!down) {
+          clearCanvas();
+          return;
+        }
+        var x = Math.min(sx, cx);
+        var y = Math.min(sy, cy);
+        var w = Math.abs(cx - sx);
+        var h = Math.abs(cy - sy);
+        drawSelectionRect(x, y, w, h);
+      }
+
+      function redrawPending() {
+        clearCanvas();
+        if (!pendingClient) return;
+        var p = pendingClient;
+        drawSelectionRect(p.x, p.y, p.w, p.h);
+      }
+
+      function hideToolbar() {
+        toolbarHost.classList.remove('show');
+        toolbarHost.style.left = '';
+        toolbarHost.style.top = '';
+        pendingClient = null;
+        phase = 'idle';
+        clearCanvas();
+      }
+
+      function positionToolbar() {
+        if (!pendingClient) return;
+        var p = pendingClient;
+        var tw = toolbar.offsetWidth || 200;
+        var th = toolbar.offsetHeight || 48;
+        var gap = 6;
+        var margin = 8;
+        var left = Math.round(p.x + (p.w - tw) / 2);
+        left = Math.max(margin, Math.min(left, window.innerWidth - tw - margin));
+        var topBelow = Math.round(p.y + p.h + gap);
+        var topAbove = Math.round(p.y - th - gap);
+        var useTop = topBelow + th <= window.innerHeight - margin ? topBelow : topAbove;
+        if (useTop < margin) useTop = margin;
+        if (useTop + th > window.innerHeight - margin) {
+          useTop = Math.max(margin, window.innerHeight - th - margin);
+        }
+        toolbarHost.style.left = left + 'px';
+        toolbarHost.style.top = useTop + 'px';
+      }
+
+      function showToolbar() {
+        toolbarHost.classList.add('show');
+        requestAnimationFrame(function () {
+          positionToolbar();
+          requestAnimationFrame(positionToolbar);
+        });
+      }
+
+      function toImageRect(x0, y0, w0, h0) {
+        var cw = canvas.width;
+        var ch = canvas.height;
+        if (cw < 1 || ch < 1 || !imgW || !imgH) return null;
+        var ix = Math.round((x0 / cw) * imgW);
+        var iy = Math.round((y0 / ch) * imgH);
+        var iw = Math.round((w0 / cw) * imgW);
+        var ih = Math.round((h0 / ch) * imgH);
+        ix = Math.max(0, Math.min(imgW - 1, ix));
+        iy = Math.max(0, Math.min(imgH - 1, iy));
+        iw = Math.max(1, Math.min(imgW - ix, iw));
+        ih = Math.max(1, Math.min(imgH - iy, ih));
+        return { x: ix, y: iy, width: iw, height: ih };
+      }
+
+      function doCancel() {
+        if (api) api.cancel();
+      }
+
+      document.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+      });
+
+      window.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && api) {
+          doCancel();
+        }
+        if (e.key === 'Enter' && phase === 'confirm' && pendingClient && api) {
+          var p = pendingClient;
+          var rect = toImageRect(p.x, p.y, p.w, p.h);
+          if (rect) api.submitCrop(rect);
+        }
+      });
+
+      window.addEventListener('resize', function () {
+        if (phase === 'confirm' && pendingClient) {
+          redrawPending();
+          positionToolbar();
+        } else {
+          redrawDragging();
+        }
+      });
+
+      function pointInPendingRect(px, py) {
+        if (!pendingClient) return false;
+        var p = pendingClient;
+        return px >= p.x && px <= p.x + p.w && py >= p.y && py <= p.y + p.h;
+      }
+
+      function submitPendingCrop() {
+        if (!api || !pendingClient || phase !== 'confirm') return;
+        var p = pendingClient;
+        var rect = toImageRect(p.x, p.y, p.w, p.h);
+        if (rect) api.submitCrop(rect);
+      }
+
+      canvas.addEventListener('mousedown', function (e) {
+        if (e.button === 2) {
+          e.preventDefault();
+          doCancel();
+          return;
+        }
+        if (e.button !== 0) return;
+        if (phase === 'confirm' && pendingClient) {
+          if (pointInPendingRect(e.clientX, e.clientY)) {
+            return;
+          }
+          toolbarHost.classList.remove('show');
+          toolbarHost.style.left = '';
+          toolbarHost.style.top = '';
+          pendingClient = null;
+        }
+        phase = 'drag';
+        down = true;
+        sx = e.clientX;
+        sy = e.clientY;
+        cx = sx;
+        cy = sy;
+        redrawDragging();
+      });
+
+      canvas.addEventListener('dblclick', function (e) {
+        if (e.button !== 0) return;
+        if (phase !== 'confirm' || !pendingClient || !api) return;
+        if (!pointInPendingRect(e.clientX, e.clientY)) return;
+        e.preventDefault();
+        submitPendingCrop();
+      });
+
+      canvas.addEventListener('mousemove', function (e) {
+        if (!down || phase !== 'drag') return;
+        cx = e.clientX;
+        cy = e.clientY;
+        redrawDragging();
+      });
+
+      canvas.addEventListener('mouseup', function (e) {
+        if (e.button !== 0) return;
+        if (!down || phase !== 'drag') return;
+        down = false;
+        cx = e.clientX;
+        cy = e.clientY;
+        var x = Math.min(sx, cx);
+        var y = Math.min(sy, cy);
+        var w = Math.abs(cx - sx);
+        var h = Math.abs(cy - sy);
+        if (w < 4 || h < 4) {
+          phase = 'idle';
+          clearCanvas();
+          return;
+        }
+        pendingClient = { x: x, y: y, w: w, h: h };
+        phase = 'confirm';
+        redrawPending();
+        showToolbar();
+      });
+
+      btnConfirm.addEventListener('click', function (e) {
+        e.stopPropagation();
+        submitPendingCrop();
+      });
+
+      btnToolbarCancel.addEventListener('click', function (e) {
+        e.stopPropagation();
+        doCancel();
+      });
+
+      toolbarHost.addEventListener('mousedown', function (e) {
+        e.stopPropagation();
+      });
+
+      var bootTries = 0;
+      function boot() {
+        api = window.snipOverlay;
+        if (!api) {
+          if (++bootTries > 300) {
+            try { window.close(); } catch (err) {}
+            return;
+          }
+          requestAnimationFrame(boot);
+          return;
+        }
+        api.getFrame().then(function (frame) {
+          if (!frame || !frame.imgW || !frame.imgH) {
+            api.cancel();
+            return;
+          }
+          imgW = frame.imgW;
+          imgH = frame.imgH;
+          clearCanvas();
+        }).catch(function () {
+          api.cancel();
+        });
+      }
+      boot();
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist_fc/
+dist_final/
+aixflow-final.zip
+dist-electron/
+release/
+build/icon-512.png
+
+# Whisper：模型与预编译 CLI 体积/版权按需本机放置（勿提交）
+resources/whisper/*.bin
+resources/whisper/*.exe
+resources/whisper/*.dll
+
+# Demucs 构建产物（体积大，按需本地构建）
+resources/demucs/demucs_cli.exe
+scripts/build-demucs-cli/demucs/
+
+# ffmpeg 构建时从 node_modules 复制，不纳入仓库
+resources/ffmpeg/
+
+# yt-dlp 构建时从 GitHub 下载，不纳入仓库（保留目录见 resources/yt-dlp/.gitkeep）
+resources/yt-dlp/*
+!resources/yt-dlp/.gitkeep
+
+# VC++ 运行库（构建时自动下载，约 25MB）
+build/vc_redist.x64.exe
+
+# 激活码生成器（不纳入仓库）
+activation-generator/
+
+# 文档中的安装包
+docs/*.exe
+docs/*.dmg
+
+# 环境变量与密钥（切勿提交真实私钥）
+.env
+.env.*
+!.env.example
+!.env.*.example
+resources/.env
+# 仅打包机构建机：复制进安装包的 FC 等配置（勿提交真实密钥）
+resources/packaging.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Streamlit 本地密钥（含阿里云 AK，切勿提交）
+tools/aixflow_model_admin/.streamlit/secrets.toml
+tools/aixflow_model_admin/.build_portable_cache/
+tools/aixflow_model_admin/dist_portable/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 本地临时 / 导出 / 缓存（勿提交）
+.build-temp/
+.tmp/
+.tmp-sentinel/
+.electron-builder-cache/
+real_content*.txt
+chat_history*.txt
+*_RESCUE.txt
+repair_state.vscdb
+website-deploy/
+website-deploy.zip
+dist-hongkong-fc/
+dist-hongkong-fc.zip
+aixflow-alipay-backend.zip
+*副本*.env
+
+# 大体积 splash 视频（GitHub 单文件上限 100MB；构建时用 scripts/sync-splash-videos-to-resources.mjs）
+resources/splash-videos/*.mp4
+resources/splash-videos/*.mov
+splash-videos/*.mp4
+splash-videos/*.mov
+
+# Python 虚拟环境
+backend/.venv/
+__pycache__/
+*.pyc

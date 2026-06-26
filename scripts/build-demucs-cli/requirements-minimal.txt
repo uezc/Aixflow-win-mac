@@ -1,0 +1,15 @@
+# Minimal deps for demucs_cli.exe: diffq-fixed (has Windows wheels), no flake8/mypy/museval/submitit
+dora-search>=0.1.12
+diffq-fixed>=0.2.1
+einops
+hydra-colorlog>=1.1
+hydra-core>=1.1
+julius>=0.2.3
+lameenc>=1.2
+openunmix
+pyyaml
+torch>=1.8.1
+torchaudio>=0.8,<2.1
+tqdm
+treetable
+soundfile>=0.10.3;sys_platform=="win32"

@@ -1,0 +1,1864 @@
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 防止白屏：在 JS 未执行或加载失败时也有深色背景 */
+html,
+body,
+#root {
+  height: 100%;
+  min-height: 100vh;
+  background-color: #000;
+  color: #fff;
+}
+body {
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.nexflow-hero-login,
+.nexflow-toonhub-hero {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* 登录页左侧主标题：单行、禁止拖选（避免鼠标拖动出现蓝/黑选区） */
+.nexflow-login-hero-column,
+.nexflow-login-hero-title,
+.nexflow-login-hero-title * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none;
+}
+
+.nexflow-login-hero-title::selection {
+  background: transparent;
+  color: inherit;
+}
+
+/* 登录背景视频：居中裁切，窗口比例变化时减少跳动 */
+.nexflow-login-silk-video {
+  top: 50%;
+  left: 50%;
+  min-width: 100%;
+  min-height: 100%;
+  width: auto;
+  height: auto;
+  transform: translate(-50%, -50%);
+  object-fit: cover;
+  object-position: center;
+}
+
+/* 账户/登录页：隐藏视口右侧滚动条（仍可滚动或触控滑动） */
+html.nexflow-settings-page,
+body.nexflow-settings-page {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html.nexflow-settings-page::-webkit-scrollbar,
+body.nexflow-settings-page::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 复制粘贴节点动画 */
+@keyframes fadeInZoom {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.react-flow__node.pasted-node {
+  animation: fadeInZoom 0.3s ease-out;
+}
+
+/* GPU 合成层优化 + 性能隔离：contain 限制重绘范围，will-change 提升合成层 */
+.react-flow__node {
+  contain: layout;
+  will-change: transform;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+}
+.react-flow__node > div {
+  contain: layout;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+/* 强制 GPU 纹理化：缩放时主线程零 Paint，全部走合成器 */
+.react-flow__viewport {
+  will-change: transform;
+}
+
+/* 强制“物理级”背景穿透：从节点到 Canvas 之间每一层都必须透明，!important 强制执行 */
+.react-flow,
+.react-flow__container,
+.react-flow__renderer,
+.react-flow__viewport,
+.react-flow__pane,
+.react-flow__background,
+.react-flow__pane > div[class*="background"],
+.react-flow__pane > svg {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+.react-flow__pane,
+.react-flow__background,
+.react-flow__pane > div[class*="background"] {
+  z-index: -2 !important;
+}
+
+.react-flow__nodes {
+  will-change: transform;
+  z-index: 100 !important;
+  position: relative; /* 建立堆叠上下文，确保节点始终在连接线上方 */
+}
+
+/* 强制分层渲染 (Z-Axis Isolation)：连接线始终在节点下方 */
+.react-flow__edges,
+.react-flow__edgelist {
+  z-index: 0 !important;
+  pointer-events: none; /* 防止连线干扰节点 hover 特权 */
+}
+.react-flow__edge {
+  pointer-events: stroke; /* 连线本身仍可点击选中 */
+}
+
+/* 连接线 SVG 路径：geometricPrecision 优先曲线平滑，圆角端帽减少锯齿，线宽固定 4px */
+.react-flow__edge path {
+  shape-rendering: geometricPrecision;
+  vector-effect: non-scaling-stroke;
+  stroke-width: 4px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+
+/* 快速选框：仅细边框，无背景遮罩，避免拖黑选中的感觉 */
+.react-flow__nodesselection-rect,
+.react-flow__selection {
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: rgba(0, 89, 220, 0.6) !important;
+  background: transparent !important;
+}
+
+/* 强制逃逸按钮：物理层级最高，确保可点击 */
+.nexflow-emergency-exit-btn {
+  pointer-events: auto !important;
+}
+
+/* VideoNode 独立合成层，防止缩放位移 */
+.nexflow-video-node {
+  isolation: isolate;
+  will-change: transform;
+}
+
+/* EdgeCanvasLayer：强制平滑插值，will-change 启用 GPU 加速与硬件抗锯齿 */
+.nexflow-edge-canvas {
+  image-rendering: auto !important;
+  will-change: transform;
+  z-index: -1;
+}
+
+/* React Flow 边样式：非选中时半透明（画布越小越透明），选中时绿色实线 */
+.react-flow__edge:not(.manual-edge-selected) {
+  opacity: var(--nexflow-edge-zoom-opacity, 0.45);
+}
+.react-flow__edge.manual-edge-selected {
+  opacity: 1;
+}
+/* 正在执行任务的连接线（流光动画）：始终不透明，确保流光效果可见 */
+.react-flow__edge.rf-edge-gradient {
+  opacity: 1 !important;
+}
+.react-flow__edge:not(.rf-edge-gradient) {
+  stroke-dasharray: none !important; /* 默认实线，覆盖库默认或动画产生的虚线 */
+  transition: stroke-width 0.2s ease, stroke 0.2s ease, filter 0.2s ease;
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+}
+.react-flow__edge:not(.rf-edge-gradient) path {
+  stroke-dasharray: none !important;
+}
+/* 排除“正在拖拽连接”的临时边，其余所有边强制实线（含 interactive、animated 等） */
+.react-flow__edge:not(.react-flow__edge-connecting) {
+  stroke-dasharray: none !important;
+}
+.react-flow__edge:not(.react-flow__edge-connecting) path {
+  stroke-dasharray: none !important;
+}
+
+/* 明亮模式下连接线 */
+.light-mode .react-flow__edge:not(.rf-edge-gradient),
+.light-mode .react-flow__edge:not(.rf-edge-gradient) path {
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+}
+
+/* 暗黑模式下连接线 */
+.dark-mode .react-flow__edge:not(.rf-edge-gradient),
+.dark-mode .react-flow__edge:not(.rf-edge-gradient) path {
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+}
+
+/* 正在拖动的连接线（临时边）使用虚线 */
+.react-flow__edge.interactive.react-flow__edge-connecting,
+.react-flow__edge.interactive.react-flow__edge-connecting path {
+  stroke-dasharray: 5 5 !important;
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+}
+
+/* 明亮模式下正在拖动的连接线 */
+.light-mode .react-flow__edge.interactive.react-flow__edge-connecting:not(.rf-edge-gradient),
+.light-mode .react-flow__edge.interactive.react-flow__edge-connecting:not(.rf-edge-gradient) path {
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+}
+
+/* 已连接的边使用实线 */
+.react-flow__edge.manual-edge-selected:not(.rf-edge-gradient),
+.react-flow__edge:not(.react-flow__edge-connecting):not(.rf-edge-gradient),
+.react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) path,
+.react-flow__edge:not(.react-flow__edge-connecting):not(.rf-edge-gradient) path {
+  stroke-dasharray: none !important;
+}
+
+/* 手动选中的边高亮显示：绿色（仅单点某根连线时），线宽固定 4px */
+.react-flow__edge.manual-edge-selected:not(.rf-edge-gradient),
+.react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) path {
+  stroke-width: 4px;
+  stroke: #22c55e !important;
+}
+
+/* 暗黑模式下手动选中的边不显示光晕效果 */
+.dark-mode .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) {
+  filter: none;
+}
+
+/* 光明模式下手动选中的边显示光晕效果 */
+.light-mode .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) {
+  filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.6)) drop-shadow(0 0 12px rgba(34, 197, 94, 0.4));
+}
+
+/* 连接线透明命中区：不可见但可点击，扩大 4px 线的可点范围 */
+.nexflow-edge-hitarea {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 20px;
+  pointer-events: stroke;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 向上滑出动画 */
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+/* 任务卡长按激活：晃动一下 */
+@keyframes task-card-shake {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-4px); }
+  30% { transform: translateX(4px); }
+  45% { transform: translateX(-3px); }
+  60% { transform: translateX(3px); }
+  75% { transform: translateX(-1px); }
+}
+.animate-task-card-shake {
+  animation: task-card-shake 0.4s ease-out;
+}
+
+/* 旋转加载动画 */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #000000;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  background-color: #000000;
+}
+
+/* 登录框 / 画布模块通用毛玻璃 */
+:root {
+  --nexflow-glass-bg: rgba(10, 10, 14, 0.58);
+  --nexflow-glass-border: rgba(255, 255, 255, 0.12);
+  --nexflow-glass-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.nexflow-glass-panel {
+  background: var(--nexflow-glass-bg) !important;
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border: none;
+  box-shadow: var(--nexflow-glass-shadow);
+}
+
+@supports not (backdrop-filter: blur(24px)) {
+  .nexflow-glass-panel {
+    background: rgba(10, 10, 14, 0.92) !important;
+  }
+}
+
+/* Apple Dark Mode 面板样式 — 与登录框同系毛玻璃（轻量，无大阴影） */
+.apple-panel {
+  background: var(--nexflow-glass-bg);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border: none;
+}
+
+@supports not (backdrop-filter: blur(24px)) {
+  .apple-panel {
+    background: rgba(10, 10, 14, 0.92);
+  }
+}
+
+/* Apple Light Mode 面板样式 - 白灰色模块与侧面框 */
+.apple-panel-light {
+  background: rgba(245, 245, 245, 0.95); /* 白灰色 #f5f5f5 */
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border: none;
+}
+
+@supports not (backdrop-filter: blur(12px)) {
+  .apple-panel-light {
+    background: rgba(245, 245, 245, 0.98);
+  }
+}
+
+/* 模块组件颜色设定：当设置了 --nexflow-module-bg 时，所有模块使用该颜色 */
+/* nexflow-theme-fixed：小地图、缩放条、归位按钮等画布控件保持暗黑/光明系，不受模块颜色控制 */
+/* dark-mode 下不应用模块颜色，分隔符等模块保持暗黑系与其他模块统一 */
+.nexflow-module-custom-color:not(.dark-mode) .apple-panel-light:not(.nexflow-theme-fixed),
+.nexflow-module-custom-color:not(.dark-mode) .apple-panel:not(.nexflow-theme-fixed) {
+  background: var(--nexflow-module-bg) !important;
+}
+
+/* 侧边栏颜色设定：当设置了 --nexflow-sidebar-bg 时，角色列表、任务列表使用该颜色 */
+.nexflow-sidebar-custom-bg .apple-panel,
+.nexflow-sidebar-custom-bg .apple-panel-light {
+  background: var(--nexflow-sidebar-bg) !important;
+}
+
+/* 主按钮：蓝紫渐变胶囊（与账户页「进入」一致） */
+.nexflow-btn-primary,
+.apple-button-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: none;
+  border-radius: 9999px;
+  background: linear-gradient(to right, #0284c7, #2563eb);
+  padding: 0.75rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  color: #ffffff;
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
+  transition: opacity 0.15s ease, filter 0.15s ease;
+  outline: none;
+  cursor: pointer;
+}
+
+.nexflow-btn-primary:hover:not(:disabled),
+.apple-button-primary:hover:not(:disabled) {
+  opacity: 0.95;
+  filter: brightness(1.04);
+}
+
+.nexflow-btn-primary:disabled,
+.apple-button-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.nexflow-btn-primary-sm {
+  padding: 0.5rem 1rem;
+  font-size: 0.8125rem;
+}
+
+/* 次要胶囊按钮：同形状描边 */
+.nexflow-btn-secondary,
+.apple-button-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.625rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.25rem;
+  color: rgba(255, 255, 255, 0.92);
+  transition: background 0.15s ease, color 0.15s ease;
+  outline: none;
+  cursor: pointer;
+}
+
+.nexflow-btn-secondary:hover:not(:disabled),
+.apple-button-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+.nexflow-btn-secondary:disabled,
+.apple-button-secondary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.nexflow-btn-secondary-sm {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.75rem;
+}
+
+/* Apple Dark Mode 按钮样式 — 见 .nexflow-btn-* 定义 */
+
+/* 呼吸灯动画 */
+@keyframes breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(10, 132, 255, 0);
+  }
+}
+
+.animate-pulse {
+  animation: breathe 2s ease-in-out infinite;
+}
+
+/* 超级连线按钮呼吸灯：翠绿色光晕脉动 */
+@keyframes super-connect-breathe {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(16, 185, 129, 0.9);
+  }
+}
+
+.animate-super-connect-breathe {
+  animation: super-connect-breathe 2s ease-in-out infinite;
+}
+
+/* 媒体播放中：彩虹光晕呼吸灯（Audio / Video / 剪辑节点） */
+@keyframes nexflow-rainbow-glow-breathe {
+  0%,
+  100% {
+    box-shadow:
+      0 0 18px 4px rgba(255, 45, 120, 0.55),
+      0 0 40px 10px rgba(255, 160, 30, 0.4),
+      0 0 64px 16px rgba(40, 200, 255, 0.32),
+      0 0 96px 24px rgba(120, 90, 255, 0.18);
+  }
+  33% {
+    box-shadow:
+      0 0 22px 5px rgba(255, 200, 40, 0.58),
+      0 0 48px 12px rgba(20, 220, 140, 0.44),
+      0 0 76px 18px rgba(120, 100, 255, 0.36),
+      0 0 112px 28px rgba(255, 90, 160, 0.2);
+  }
+  66% {
+    box-shadow:
+      0 0 22px 5px rgba(50, 180, 255, 0.58),
+      0 0 48px 12px rgba(190, 70, 255, 0.44),
+      0 0 76px 18px rgba(255, 90, 120, 0.36),
+      0 0 112px 28px rgba(0, 220, 180, 0.2);
+  }
+}
+
+.nexflow-media-playing-glow {
+  position: relative;
+  isolation: isolate;
+}
+
+/* 光晕画在 ::after 上，避免画布平移时 .is-dragging { box-shadow: none } 清掉播放指示 */
+.nexflow-media-playing-glow::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  animation: nexflow-rainbow-glow-breathe 2.5s ease-in-out infinite;
+}
+
+/* 淡入动画 */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+/* 自定义滚动条样式 - 灰色椭圆形较窄 */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.5);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.7);
+}
+
+/* Firefox 滚动条 */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.5) transparent;
+}
+
+/* 暗黑模式滚动条：深色轨道与滑块 */
+.custom-scrollbar-dark::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 10px;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.5);
+  border-radius: 10px;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+.custom-scrollbar-dark {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.5) rgba(30, 41, 59, 0.6);
+}
+
+/* 视频剪辑时间轴：常驻粗圆角滚动条（禁用 overlay 悬停变细，默认即 hover 粗细） */
+.splice-timeline-scrollbar-dark,
+.splice-timeline-scrollbar-light {
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar,
+.splice-timeline-scrollbar-light::-webkit-scrollbar {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 36px;
+  height: 36px;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-track,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-track {
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 9999px;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-track {
+  background: rgba(55, 65, 81, 0.55);
+}
+
+.splice-timeline-scrollbar-light::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  border-radius: 9999px;
+  background-clip: border-box;
+  transition: none !important;
+  box-shadow: none;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb {
+  background-color: rgba(107, 114, 128, 0.88);
+}
+
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb {
+  background-color: rgba(249, 115, 22, 0.92);
+}
+
+/* 横向：满高胶囊滑块（圆角由 border-radius 保证，不用透明 border 缩长度） */
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:horizontal,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:horizontal {
+  min-height: 36px;
+  min-width: 180px;
+  border-radius: 9999px;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:vertical,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:vertical {
+  min-width: 36px;
+  border-left: 0 solid transparent;
+  border-right: 0 solid transparent;
+  border-top: 40% solid transparent;
+  border-bottom: 40% solid transparent;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:hover,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:active,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:window-inactive,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:hover,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:active,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:window-inactive {
+  border: none;
+  box-shadow: none;
+  transition: none !important;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:hover,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:active,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:window-inactive {
+  background-color: rgba(156, 163, 175, 0.92);
+}
+
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:hover,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:active,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:window-inactive {
+  background-color: rgba(249, 115, 22, 0.92);
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:horizontal:hover,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:horizontal:active,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:horizontal:window-inactive,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:horizontal:hover,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:horizontal:active,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:horizontal:window-inactive {
+  min-height: 36px;
+  min-width: 180px;
+  border-radius: 9999px;
+  border: none;
+}
+
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:vertical:hover,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:vertical:active,
+.splice-timeline-scrollbar-dark::-webkit-scrollbar-thumb:vertical:window-inactive,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:vertical:hover,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:vertical:active,
+.splice-timeline-scrollbar-light::-webkit-scrollbar-thumb:vertical:window-inactive {
+  min-width: 36px;
+  border-left: 0 solid transparent;
+  border-right: 0 solid transparent;
+  border-top: 40% solid transparent;
+  border-bottom: 40% solid transparent;
+}
+
+.splice-timeline-scrollbar-dark {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(107, 114, 128, 0.88) rgba(55, 65, 81, 0.55);
+}
+
+.splice-timeline-scrollbar-light {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(249, 115, 22, 0.92) rgba(255, 255, 255, 0.18);
+}
+
+/* 时间轴轨道区：隐藏原生滚动条，由底部独立滚动条承担 */
+.splice-timeline-content-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.splice-timeline-content-scroll::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* 视频剪辑：平移/快速拖动时保留控件与底部滚动条完整显示 */
+.react-flow__node-videoSplice .custom-node-container {
+  contain: none !important;
+}
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container button:not(.nexflow-plus-handle),
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container input,
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container .splice-timeline-content-scroll,
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-dark,
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-light,
+.is-dragging .react-flow__node-videoSplice .custom-node-container button:not(.nexflow-plus-handle),
+.is-dragging .react-flow__node-videoSplice .custom-node-container input,
+.is-dragging .react-flow__node-videoSplice .custom-node-container .splice-timeline-content-scroll,
+.is-dragging .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-dark,
+.is-dragging .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-light,
+.react-flow-wrapper--fast-drag .react-flow__node-videoSplice .custom-node-container button:not(.nexflow-plus-handle),
+.react-flow-wrapper--fast-drag .react-flow__node-videoSplice .custom-node-container input,
+.react-flow-wrapper--fast-drag .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-dark,
+.react-flow-wrapper--fast-drag .react-flow__node-videoSplice .custom-node-container .splice-timeline-scrollbar-light {
+  visibility: visible !important;
+}
+
+/* 视频剪辑时间轴：允许拖选刻度/轨名等文本（覆盖 react-flow__node 全局禁选） */
+.react-flow__node-videoSplice .nexflow-splice-selectable,
+.react-flow__node-videoSplice .nexflow-splice-selectable * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+}
+.react-flow__node-videoSplice .nexflow-splice-selectable::selection {
+  background: rgba(15, 23, 42, 0.85);
+  color: #fff;
+}
+.light-mode .react-flow__node-videoSplice .nexflow-splice-selectable::selection {
+  background: rgba(15, 23, 42, 0.75);
+  color: #fff;
+}
+
+/* 我的项目页：与黑底一致的滚动条（覆盖 custom-scrollbar-dark 轨道/滑块） */
+.projects-page-scrollbar::-webkit-scrollbar-track {
+  background: rgba(10, 10, 12, 0.92);
+  border-radius: 10px;
+}
+
+.projects-page-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(82, 82, 91, 0.55);
+  border-radius: 10px;
+}
+
+.projects-page-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.65);
+}
+
+.projects-page-scrollbar {
+  scrollbar-color: rgba(82, 82, 91, 0.55) rgba(10, 10, 12, 0.92);
+}
+
+.light-mode.projects-page-scrollbar::-webkit-scrollbar-track {
+  background: rgba(229, 231, 235, 0.95);
+  border-radius: 10px;
+}
+
+.light-mode.projects-page-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.65);
+  border-radius: 10px;
+}
+
+.light-mode.projects-page-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 114, 128, 0.75);
+}
+
+.light-mode.projects-page-scrollbar {
+  scrollbar-color: rgba(156, 163, 175, 0.65) rgba(229, 231, 235, 0.95);
+}
+
+/* 多图「展开全部」弹层：暗黑细滚动条，仅内容溢出时出现（配合 overflow-y-auto） */
+.nexflow-output-images-modal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(113, 113, 122, 0.55) rgba(24, 24, 27, 0.98);
+}
+
+.nexflow-output-images-modal-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.nexflow-output-images-modal-scroll::-webkit-scrollbar-track {
+  background: rgba(24, 24, 27, 0.98);
+  border-radius: 8px;
+}
+
+.nexflow-output-images-modal-scroll::-webkit-scrollbar-thumb {
+  background: rgba(82, 82, 91, 0.55);
+  border-radius: 8px;
+}
+
+.nexflow-output-images-modal-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(113, 113, 122, 0.7);
+}
+
+.nexflow-output-images-modal-scroll::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.panel-option-dropdown-menu {
+  background: rgba(24, 24, 27, 0.6);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.55) rgba(15, 23, 42, 0.45);
+}
+
+.panel-option-dropdown-menu--light {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.panel-option-dropdown-menu::-webkit-scrollbar {
+  width: 6px;
+}
+
+.panel-option-dropdown-menu::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.45);
+  border-radius: 10px;
+}
+
+.panel-option-dropdown-menu::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.55);
+  border-radius: 10px;
+}
+
+.panel-option-dropdown-menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.65);
+}
+
+.panel-option-dropdown-menu::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/** 3D 场景预览侧栏：暗黑滚动条（隐藏系统白底箭头） */
+.pano-placement-panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.55) rgba(10, 10, 14, 0.88);
+}
+
+.pano-placement-panel-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pano-placement-panel-scroll::-webkit-scrollbar-track {
+  background: rgba(10, 10, 14, 0.88);
+  border-radius: 10px;
+}
+
+.pano-placement-panel-scroll::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.55);
+  border-radius: 10px;
+}
+
+.pano-placement-panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.65);
+}
+
+.pano-placement-panel-scroll::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/** 3D 场景预览 / 拼图工作室同系背景 */
+.pano-collage-studio-bg {
+  background: linear-gradient(165deg, #0c0a12 0%, #12101c 40%, #0f0d16 100%);
+  box-shadow: inset 0 0 120px rgba(124, 58, 237, 0.06);
+}
+
+/* 菜单展开动画 */
+@keyframes menu-expand {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-menu-expand {
+  animation: menu-expand 0.2s ease-out;
+}
+
+/* 进度条循环动画：绿色块从左滑到右后重置 */
+@keyframes progress-bar-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.progress-bar-indeterminate {
+  animation: progress-bar-slide 1.8s ease-in-out infinite;
+}
+
+/* 全模块进度条：永动机式循环动画（0% → 100% 匀速，瞬间重置） */
+@keyframes loopProgress {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+.module-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #22c55e 0%, #22c55e 60%, rgba(34, 197, 94, 0.35) 100%);
+  animation: loopProgress 3s linear infinite;
+  will-change: width;
+  border-radius: 4px;
+}
+
+/* 全模块等高进度条：覆盖整个模块，从左向右填充动画，纯色无圆角 */
+.module-progress-fill-full {
+  width: 0;
+  height: 100%;
+  background: #22c55e;
+  animation: loopProgress 2.5s linear infinite;
+  will-change: width;
+  border-radius: 0;
+}
+
+/* 全模块进度条：流动光效（从左向右） */
+@keyframes module-progress-shine {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 24px 0;
+  }
+}
+
+/* 禁止画布区域的文本和图片被浏览器默认选中 */
+.react-flow__pane,
+.react-flow__node,
+.react-flow__edge {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.react-flow__node img {
+  user-drag: none;
+  -webkit-user-drag: none;
+}
+
+/* 不兼容模块：红框画在节点内容层上，尺寸与圆角与模块一致；选中且不兼容时优先显示红框 */
+.react-flow__node.connection-invalid-target > div {
+  box-shadow: 0 0 0 2px #ef4444 !important;
+  border-radius: 12px;
+}
+.react-flow__node.selected.connection-invalid-target > div {
+  box-shadow: 0 0 0 2px #ef4444 !important;
+  border-color: transparent;
+  outline: none;
+  --tw-ring-shadow: none;
+}
+.react-flow-wrapper--interacting .react-flow__node.connection-invalid-target > div {
+  box-shadow: 0 0 0 2px #ef4444 !important;
+}
+/* 智能性能模式下不兼容目标仍显示红框 */
+.pf-performance-mode .react-flow__node.connection-invalid-target > div {
+  box-shadow: 0 0 0 2px #ef4444 !important;
+}
+
+/* 画布点选模式：可点选 / 悬停 / 不可点选模块 */
+.react-flow__node.canvas-pick-target > div {
+  transition:
+    box-shadow 0.15s ease,
+    filter 0.15s ease,
+    transform 0.15s ease;
+  box-shadow:
+    0 0 0 2px rgba(167, 139, 250, 0.72),
+    0 0 18px rgba(139, 92, 246, 0.28) !important;
+  cursor: pointer;
+}
+.react-flow__node.canvas-pick-target--hover {
+  z-index: 1000 !important;
+}
+.react-flow__node.canvas-pick-target--hover > div {
+  box-shadow:
+    0 0 0 3px rgba(196, 181, 253, 0.98),
+    0 0 32px rgba(139, 92, 246, 0.58),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14) !important;
+  filter: brightness(1.07);
+  transform: scale(1.014);
+}
+.react-flow__node.canvas-pick-muted,
+.react-flow__node.canvas-pick-muted > div {
+  pointer-events: none !important;
+}
+.react-flow__node.canvas-pick-muted > div {
+  opacity: 0.34 !important;
+  filter: saturate(0.45) brightness(0.82) !important;
+}
+
+/* 画布底部 InputPanel：明亮模式淡蓝毛玻璃 */
+.nexflow-bottom-input-panel-light {
+  background: rgba(186, 230, 253, 0.88);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+
+@supports not (backdrop-filter: blur(12px)) {
+  .nexflow-bottom-input-panel-light {
+    background: rgba(186, 230, 253, 0.96);
+  }
+}
+
+/* @deprecated 使用 nexflow-bottom-input-panel-light */
+.llm-panel-glass {
+  background: rgba(186, 230, 253, 0.88);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+
+/* 光标颜色（必须通过内联样式设置，这里仅作为备用） */
+.caret-color-dark {
+  caret-color: #0A84FF;
+}
+
+.caret-color-light {
+  caret-color: #22c55e;
+}
+
+/* 确保 React Flow viewport 的 transform-origin 由 React Flow 动态控制 */
+.react-flow__viewport {
+  /* 不手动设置 transform-origin，让 React Flow 自动处理 */
+  /* transform-origin 应该由 React Flow 根据鼠标位置动态计算 */
+}
+
+/* 选中节点：无光晕，仅绿框（与 3D 视角控制器一致） */
+
+/* 拖拽/缩放画布时暂时去掉阴影与发光，减轻重绘 */
+/* [禁止呼吸] 交互期间禁用节点 pointer-events，避免 hover 检测浪费 CPU */
+.react-flow-wrapper--interacting .react-flow__node,
+.is-dragging .react-flow__node {
+  filter: none !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+}
+/* 平移期间关闭毛玻璃，减轻 GPU 合成（保留节点内图像/视频层） */
+.react-flow-wrapper--interacting .custom-node-container:not(.custom-node-container--bare) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* Handle 例外：交互期间仍可创建连线，子元素 pointer-events: auto 可覆盖父级 none */
+.react-flow-wrapper--interacting .react-flow__node .nexflow-plus-handle,
+.is-dragging .react-flow__node .nexflow-plus-handle {
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}
+.react-flow-wrapper--interacting .react-flow__node.selected {
+  filter: none !important;
+  box-shadow: none !important;
+}
+
+/* 节点拖拽时：布局隔离；will-change 仅交给 viewport，避免 50+ 节点各自占合成层 */
+.custom-node-container {
+  contain: layout;
+  border: none !important;
+}
+.react-flow-wrapper--interacting .react-flow__viewport,
+.is-dragging .react-flow__viewport {
+  will-change: transform;
+}
+/* 暗色画布：模块默认登录框同款毛玻璃（透明/占位色块除外） */
+.dark-mode .custom-node-container:not(.custom-node-container--bare):not(.custom-node-container--transparent) {
+  background: var(--nexflow-glass-bg);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  border: none;
+  box-shadow: var(--nexflow-glass-shadow);
+}
+@supports not (backdrop-filter: blur(24px)) {
+  .dark-mode .custom-node-container:not(.custom-node-container--bare):not(.custom-node-container--transparent) {
+    background: rgba(10, 10, 14, 0.92);
+  }
+}
+/* 多图合并预览为单纹理，避免平移时 contain+多图层合成导致整块消失 */
+.custom-node-container--multi-merged,
+.react-flow__node:has(.custom-node-container--multi-merged) {
+  contain: none !important;
+}
+.nexflow-plus-handle {
+  /* 真实锚点尽量小，避免 React Flow 测量中心点偏进节点内部产生“连线间隙” */
+  width: 2px !important;
+  height: 2px !important;
+  border: none !important;
+  background: transparent !important;
+  --plus-visual-x: 0px;
+  --plus-scale: 1;
+  --magnet-x: 0px;
+  --magnet-y: 0px;
+  --plus-p: 0;
+  --plus-shadow-x: 0px;
+  --plus-shadow-y: 0px;
+  opacity: 1;
+  pointer-events: auto;
+  transition: transform 0.16s cubic-bezier(0.22, 0.8, 0.32, 1), opacity 0.12s ease-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%) scale(var(--plus-scale)) !important;
+  z-index: 30;
+}
+.nexflow-plus-handle-left {
+  left: 0 !important;
+  right: auto !important;
+  --plus-visual-x: -22px;
+}
+.nexflow-plus-handle-right {
+  left: 100% !important;
+  right: auto !important;
+  --plus-visual-x: 22px;
+}
+/* 同侧双输出（如角色卡）：缩小外圈视觉与 --plus-visual-x，减轻两个把手「圈」重叠感 */
+.nexflow-plus-handle-right.nexflow-plus-handle-magnet-compact {
+  --plus-visual-x: 18px;
+}
+.nexflow-plus-handle-right.nexflow-plus-handle-magnet-compact::before {
+  width: 20px;
+  height: 20px;
+}
+.react-flow__node:hover .nexflow-plus-handle-right.nexflow-plus-handle-magnet-compact,
+.custom-node-container:hover .nexflow-plus-handle-right.nexflow-plus-handle-magnet-compact {
+  --plus-visual-x: 18px;
+}
+.custom-node-container:hover .nexflow-plus-handle-left {
+  opacity: 1;
+  pointer-events: auto;
+  --plus-visual-x: -22px;
+  --plus-scale: 1;
+}
+.custom-node-container:hover .nexflow-plus-handle-right {
+  opacity: 1;
+  pointer-events: auto;
+  --plus-visual-x: 22px;
+  --plus-scale: 1;
+}
+/* 全局兜底：鼠标悬停节点时，左右“+”都可见（覆盖占位态的 opacity-0/pointer-events-none） */
+.react-flow__node:hover .nexflow-plus-handle-left,
+.react-flow__node:hover .nexflow-plus-handle-right {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.react-flow__node:hover .nexflow-plus-handle-left {
+  --plus-visual-x: -22px;
+  --plus-scale: 1;
+}
+.react-flow__node:hover .nexflow-plus-handle-right {
+  --plus-visual-x: 22px;
+  --plus-scale: 1;
+}
+.nexflow-plus-handle.plus-near {
+  opacity: 1;
+  pointer-events: auto;
+  --plus-scale: 1;
+}
+.nexflow-plus-handle-left.plus-near {
+  --plus-visual-x: -22px;
+}
+.nexflow-plus-handle-right.plus-near {
+  --plus-visual-x: 22px;
+}
+.nexflow-plus-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: calc(1.5px + 0.5px * var(--plus-p)) solid rgba(255, 255, 255, 0.6);
+  background: transparent;
+  transform: translate(
+    calc(-50% + var(--plus-visual-x) + var(--magnet-x)),
+    calc(-50% + var(--magnet-y))
+  );
+  transition:
+    transform 0.16s cubic-bezier(0.2, 0.85, 0.28, 1),
+    opacity 0.12s ease-out,
+    border-width 0.12s ease,
+    border-color 0.12s ease,
+    background 0.12s ease;
+  will-change: transform, opacity;
+}
+.nexflow-plus-handle::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  transform: translate(
+    calc(-50% + var(--plus-visual-x) + var(--magnet-x)),
+    calc(-50% + var(--magnet-y))
+  );
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.65)) center / 2px 13px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.65)) center / 13px 2px no-repeat;
+  opacity: 0.65;
+  filter: drop-shadow(var(--plus-shadow-x) var(--plus-shadow-y) 1.5px rgba(255, 255, 255, 0.45));
+  transition:
+    transform 0.16s cubic-bezier(0.2, 0.85, 0.28, 1),
+    opacity 0.12s ease-out,
+    filter 0.12s ease;
+  will-change: transform, opacity;
+}
+
+/* Image 模块：默认灰色，触碰到 + 时高亮 */
+.nexflow-plus-handle::before {
+  border-color: rgba(166, 166, 166, calc(0.28 + 0.66 * var(--plus-p)));
+  opacity: calc(0.2 + 0.8 * var(--plus-p));
+}
+.nexflow-plus-handle-left::after {
+  background:
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) right center / 24px 2.2px no-repeat,
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 2.2px 15px no-repeat,
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 15px 2.2px no-repeat;
+  opacity: calc(0.2 + 0.8 * var(--plus-p));
+  filter: brightness(calc(0.78 + 0.35 * var(--plus-p)));
+}
+.nexflow-plus-handle-right::after {
+  background:
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) left center / 24px 2.2px no-repeat,
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 2.2px 15px no-repeat,
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 15px 2.2px no-repeat;
+  opacity: calc(0.2 + 0.8 * var(--plus-p));
+  filter: brightness(calc(0.78 + 0.35 * var(--plus-p)));
+}
+.nexflow-plus-handle.plus-hot::before {
+  border-color: rgba(255, 255, 255, 0.98);
+  background: transparent;
+}
+.nexflow-plus-handle-left.plus-hot::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) right center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 17px 4.2px no-repeat;
+  opacity: 1;
+}
+.nexflow-plus-handle-right.plus-hot::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) left center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 17px 4.2px no-repeat;
+  opacity: 1;
+}
+
+/* 鼠标触碰到 +（hover）即亮白，无需点击 */
+.nexflow-plus-handle:hover::before {
+  border-color: rgba(255, 255, 255, 0.98);
+  background: transparent;
+}
+.nexflow-plus-handle-left:hover::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) right center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 17px 4.2px no-repeat;
+  opacity: 1;
+}
+.nexflow-plus-handle-right:hover::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) left center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 17px 4.2px no-repeat;
+  opacity: 1;
+}
+
+.nexflow-plus-handle-left:hover {
+  --plus-scale: 1.2;
+}
+.nexflow-plus-handle-right:hover {
+  --plus-scale: 1.2;
+}
+
+/* 明亮模式：+ 统一灰色（含 hover/hot/connecting） */
+.light-mode .nexflow-plus-handle.plus-hot::before,
+.light-mode .nexflow-plus-handle:hover::before,
+.light-mode .nexflow-plus-handle.connecting::before,
+.light-mode .nexflow-plus-handle.valid::before {
+  border-color: rgba(128, 128, 128, 0.95);
+  background: transparent;
+}
+.light-mode .nexflow-plus-handle-left.plus-hot::after,
+.light-mode .nexflow-plus-handle-right.plus-hot::after,
+.light-mode .nexflow-plus-handle-left:hover::after,
+.light-mode .nexflow-plus-handle-right:hover::after,
+.light-mode .nexflow-plus-handle.connecting::after,
+.light-mode .nexflow-plus-handle.valid::after {
+  background:
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 17px 4.2px no-repeat !important;
+  opacity: 1;
+}
+.light-mode .nexflow-plus-handle-left.plus-hot::after,
+.light-mode .nexflow-plus-handle-left:hover::after {
+  background:
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) right center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 17px 4.2px no-repeat !important;
+}
+.light-mode .nexflow-plus-handle-right.plus-hot::after,
+.light-mode .nexflow-plus-handle-right:hover::after {
+  background:
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) left center / 26px 3.4px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 4.2px 17px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 17px 4.2px no-repeat !important;
+}
+
+.nexflow-plus-handle.connecting::before,
+.nexflow-plus-handle.valid::before {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: rgba(255, 255, 255, 0.95);
+}
+.nexflow-plus-handle.connecting::after,
+.nexflow-plus-handle.valid::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 2.4px 13px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 13px 2.4px no-repeat;
+}
+.nexflow-plus-handle.connecting,
+.nexflow-plus-handle.valid {
+  opacity: 1;
+  pointer-events: auto;
+}
+.nexflow-plus-handle.plus-snapping {
+  --plus-p: 1;
+}
+
+/* 分隔符模块（TextSplit）输出点：采用 "+" 节点设计，与常规 handle 一致；尺寸缩小，吸附范围 10 */
+.nexflow-split-handle-outside.nexflow-plus-handle-right {
+  --plus-visual-x: 10px;
+}
+.nexflow-split-handle.nexflow-plus-handle::before {
+  width: 18px !important;
+  height: 18px !important;
+  transform: translate(
+    calc(-50% + var(--plus-visual-x) + var(--magnet-x)),
+    calc(-50% + var(--magnet-y))
+  ) !important;
+}
+.nexflow-split-handle.nexflow-plus-handle::after {
+  width: 9px !important;
+  height: 9px !important;
+  transform: translate(
+    calc(-50% + var(--plus-visual-x) + var(--magnet-x)),
+    calc(-50% + var(--magnet-y))
+  ) !important;
+  background:
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 1.2px 9px no-repeat,
+    linear-gradient(rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p))), rgba(178, 178, 178, calc(0.25 + 0.75 * var(--plus-p)))) center / 9px 1.2px no-repeat !important;
+}
+.nexflow-split-handle.nexflow-plus-handle.plus-hot::after,
+.nexflow-split-handle.nexflow-plus-handle.connecting::after,
+.nexflow-split-handle.nexflow-plus-handle.valid::after,
+.nexflow-split-handle.nexflow-plus-handle:hover::after {
+  background:
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 1.5px 9px no-repeat,
+    linear-gradient(rgba(255, 255, 255, 1), rgba(255, 255, 255, 1)) center / 9px 1.5px no-repeat !important;
+}
+/* 分割模块 "+" 连接后仍保持可见，便于继续拖出多条连线 */
+.light-mode .nexflow-split-handle.nexflow-plus-handle.plus-hot::after,
+.light-mode .nexflow-split-handle.nexflow-plus-handle.connecting::after,
+.light-mode .nexflow-split-handle.nexflow-plus-handle.valid::after,
+.light-mode .nexflow-split-handle.nexflow-plus-handle:hover::after {
+  background:
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 1.5px 9px no-repeat,
+    linear-gradient(rgba(128, 128, 128, 1), rgba(128, 128, 128, 1)) center / 9px 1.5px no-repeat !important;
+}
+
+.react-flow__node.dragging .custom-node-container:not(.nexflow-media-playing-glow),
+.react-flow__node.react-flow__node-dragging .custom-node-container:not(.nexflow-media-playing-glow) {
+  transition: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 第二阶段：全局交互态极限降级，节点容器统一 is-dragging */
+.custom-node-container.is-dragging:not(.nexflow-media-playing-glow),
+.is-dragging .custom-node-container:not(.nexflow-media-playing-glow) {
+  transition: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-radius: 6px !important;
+}
+
+/* 播放中：画布平移/缩放/拖拽时保留彩虹光晕动画 */
+.react-flow-wrapper--interacting .custom-node-container.nexflow-media-playing-glow::after,
+.is-dragging .custom-node-container.nexflow-media-playing-glow::after,
+.react-flow-wrapper--fast-drag .custom-node-container.nexflow-media-playing-glow::after,
+.pf-performance-mode .custom-node-container.nexflow-media-playing-glow::after {
+  animation: nexflow-rainbow-glow-breathe 2.5s ease-in-out infinite !important;
+}
+
+/* [极简模式] 交互期间隐藏进度条、按钮、标题等，仅保留视频/图片纹理层 */
+/* 例外：被拖动的节点本身保持完整显示（如声音模块拖动时保持播放器样式） */
+.react-flow__node.dragging .custom-node-container .nexflow-module-progress-bar,
+.react-flow__node.dragging .custom-node-container .title-area,
+.react-flow__node.dragging .custom-node-container button:not(.nexflow-plus-handle),
+.react-flow__node.react-flow__node-dragging .custom-node-container .nexflow-module-progress-bar,
+.react-flow__node.react-flow__node-dragging .custom-node-container .title-area,
+.react-flow__node.react-flow__node-dragging .custom-node-container button:not(.nexflow-plus-handle) {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+.custom-node-container.is-dragging .title-area,
+.custom-node-container.is-dragging button:not(.nexflow-plus-handle),
+.is-dragging .custom-node-container .title-area,
+.is-dragging .custom-node-container button:not(.nexflow-plus-handle) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+/* 画布缩放/平移时保持进度条动画可见 */
+.react-flow-wrapper--interacting .custom-node-container .title-area,
+.react-flow-wrapper--interacting .custom-node-container button:not(.nexflow-plus-handle) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+/* 选中节点：缩放/平移时仍显示悬浮工具栏与标题 */
+.react-flow-wrapper--interacting .react-flow__node.selected .custom-node-container .node-floating-toolbar,
+.react-flow-wrapper--interacting .react-flow__node.selected .custom-node-container .node-floating-toolbar *,
+.react-flow-wrapper--interacting .react-flow__node.selected .custom-node-container .title-area {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+/* 角色卡四视图勾选：画布缩放/平移时仍保持可点 */
+.react-flow-wrapper--interacting .custom-node-container .character-transmit-slot-btn {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+/* 缩放/平移交互期间：连线降级到 1px 且关闭过渡，减少路径重绘成本 */
+.react-flow-wrapper--interacting .react-flow__edge:not(.rf-edge-gradient),
+.react-flow-wrapper--interacting .react-flow__edge:not(.rf-edge-gradient) path {
+  transition: none !important;
+  filter: none !important;
+}
+
+/* 拖拽模块时禁止任何连线高亮：即使 edge 带 selected 也回退为基础色。 */
+.dark-mode .react-flow-wrapper--interacting .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient),
+.dark-mode .react-flow-wrapper--interacting .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) path {
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+  filter: none !important;
+}
+.light-mode .react-flow-wrapper--interacting .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient),
+.light-mode .react-flow-wrapper--interacting .react-flow__edge.manual-edge-selected:not(.rf-edge-gradient) path {
+  stroke: var(--nexflow-edge-color, #9CA3AF) !important;
+  filter: none !important;
+}
+
+/* 极速平移/缩放时：关闭过渡与滤镜（合成层由 viewport 承担） */
+.react-flow-wrapper--fast-drag .react-flow__node:not(.selected),
+.react-flow-wrapper--fast-drag .react-flow__node:not(.selected) > div {
+  transition: none !important;
+  filter: none !important;
+}
+
+/* 智能性能模式：全局降级阴影/滤镜与过渡，减少重绘 */
+.pf-performance-mode .react-flow__node,
+.pf-performance-mode .react-flow__node.selected {
+  box-shadow: none !important;
+  filter: none !important;
+  transition: none !important;
+}
+.pf-performance-mode .react-flow__edge:not(.rf-edge-gradient),
+.pf-performance-mode .react-flow__edge:not(.rf-edge-gradient) path {
+  transition: none !important;
+  filter: none !important;
+}
+
+/* 空白画布入场：水波纹动感（一次性） */
+@keyframes dot-water-ripple {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.16);
+  }
+  18% {
+    opacity: 0.42;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.95);
+  }
+}
+
+@keyframes dot-water-core {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.55);
+  }
+  22% {
+    opacity: 0.34;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.35);
+  }
+}
+
+/* 云端元宝余额 ≤10：醒目提示（轻微闪烁，避免过度动画） */
+@keyframes nx-laf-balance-blink {
+  0%,
+  100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.82;
+    filter: brightness(1.12);
+  }
+}
+
+.nx-laf-balance-low {
+  animation: nx-laf-balance-blink 1.6s ease-in-out infinite;
+}
+
+.react-flow__background-wave-intro {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  will-change: opacity;
+}
+
+.react-flow__background-wave-intro::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 380px;
+  height: 380px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  animation: dot-water-core 1200ms cubic-bezier(0.18, 0.7, 0.2, 1) 1 both;
+  filter: blur(0.6px);
+}
+
+.react-flow__background-wave-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 210px;
+  height: 210px;
+  border-radius: 999px;
+  border: 1.5px solid transparent;
+  transform: translate(-50%, -50%) scale(0.2);
+  animation: dot-water-ripple 1300ms cubic-bezier(0.2, 0.7, 0.2, 1) 1 both;
+  will-change: transform, opacity;
+}
+
+.react-flow__background-wave-ring.wave-ring-2 {
+  animation-delay: 140ms;
+}
+
+.react-flow__background-wave-ring.wave-ring-3 {
+  animation-delay: 280ms;
+}
+
+.react-flow__background-wave-intro.dark {
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 35%, transparent 70%);
+}
+
+.react-flow__background-wave-intro.dark::before {
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.08) 42%, transparent 72%);
+}
+
+.react-flow__background-wave-intro.dark .react-flow__background-wave-ring {
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.08);
+}
+
+.react-flow__background-wave-intro.light {
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0.06) 0%, rgba(0, 0, 0, 0.025) 34%, transparent 70%);
+}
+
+.react-flow__background-wave-intro.light::before {
+  background: radial-gradient(circle at center, rgba(0, 0, 0, 0.14) 0%, rgba(0, 0, 0, 0.05) 46%, transparent 72%);
+}
+
+.react-flow__background-wave-intro.light .react-flow__background-wave-ring {
+  border-color: rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.06);
+}
+
+/* 深色音频播放器样式 */
+/* 暗黑模式音频播放器样式 */
+audio.audio-dark {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+audio.audio-dark::-webkit-media-controls-panel {
+  background-color: #1C1C1E !important;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+/* 确保音频播放器背景与模块颜色一致 */
+audio.audio-dark::-webkit-media-controls-enclosure {
+  background-color: #1C1C1E !important;
+  border-radius: 8px;
+}
+
+audio.audio-dark::-webkit-media-controls-play-button,
+audio.audio-dark::-webkit-media-controls-pause-button {
+  filter: invert(1) hue-rotate(180deg);
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+audio.audio-dark::-webkit-media-controls-mute-button {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+audio.audio-dark::-webkit-media-controls-volume-slider {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+audio.audio-dark::-webkit-media-controls-timeline {
+  filter: invert(1) hue-rotate(180deg);
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+
+audio.audio-dark::-webkit-media-controls-current-time-display,
+audio.audio-dark::-webkit-media-controls-time-remaining-display {
+  filter: invert(1) hue-rotate(180deg);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* 明亮模式音频播放器样式 */
+audio:not(.audio-dark)::-webkit-media-controls-panel {
+  background-color: #f3f4f6;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+audio:not(.audio-dark)::-webkit-media-controls-timeline {
+  background-color: rgba(0, 0, 0, 0.1);
+  border-radius: 2px;
+}
+
+/* 剪辑节点内 video：画布 ReactFlow 带 transform 时需独立合成层，否则窗口模式有声无画 */
+.nexflow-splice-video-preview video {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 明亮模式：Scratch 分类色（运动/外观/声音/事件/控制/侦测/运算/变量） */
+.light-mode .react-flow__node-minimalistText .custom-node-container.apple-panel-light,
+.light-mode .react-flow__node-textNode .custom-node-container.apple-panel-light,
+.light-mode .react-flow__node-text .custom-node-container.apple-panel-light {
+  /* 运算 Operators */
+  background: #59c059 !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-llm .custom-node-container.apple-panel-light {
+  /* 控制 Control */
+  background: #ffab19 !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-textSplit .custom-node-container {
+  /* 运动 Motion */
+  background: #4c97ff !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-image .custom-node-container.apple-panel-light {
+  /* 事件 Events */
+  background: #ffbf00 !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-photoCollage .custom-node-container {
+  /* 拼图：外框透明，仅内部画板显示底色（无 Scratch 分类色边框） */
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.light-mode .react-flow__node-video .custom-node-container.apple-panel-light,
+.light-mode .react-flow__node-wanAnimate .custom-node-container.apple-panel-light {
+  /* 外观 Looks */
+  background: #9966ff !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-audio .custom-node-container.apple-panel-light,
+.light-mode .react-flow__node-audioTranscribe .custom-node-container.apple-panel-light {
+  /* 声音 Sound */
+  background: #cf63cf !important;
+  border: none !important;
+}
+
+.light-mode .react-flow__node-videoSplice .custom-node-container .node-body {
+  /* 侦测 Sensing */
+  background: #5cb1d6 !important;
+  border: none !important;
+}
+
+/* ── Scratch 分类色：顶栏 / 侧栏按钮（明亮模式） ── */
+:root {
+  --scratch-motion: #4c97ff;
+  --scratch-looks: #9966ff;
+  --scratch-sound: #cf63cf;
+  --scratch-events: #ffbf00;
+  --scratch-control: #ffab19;
+  --scratch-sensing: #5cb1d6;
+  --scratch-operators: #59c059;
+  --scratch-variables: #ff8c1a;
+  --scratch-myblocks: #ff6680;
+}
+
+.light-mode .scratch-tint,
+.light-mode .scratch-chrome-btn {
+  transition: filter 0.15s ease;
+}
+
+.light-mode .scratch-tint:hover:not(:disabled),
+.light-mode .scratch-chrome-btn:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+/* 明亮模式：主/次胶囊按钮仅换色，保留 nexflow 圆角胶囊外形 */
+.light-mode .nexflow-btn-primary.scratch-tint,
+.light-mode .nexflow-btn-primary.scratch-chrome-btn {
+  background-image: none !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  border: none !important;
+}
+
+.light-mode .nexflow-btn-secondary.scratch-tint,
+.light-mode .nexflow-btn-secondary.scratch-chrome-btn {
+  border-color: rgba(15, 23, 42, 0.1) !important;
+}
+
+/* 画布 / 顶栏等圆角方块按钮：仅换色 */
+.light-mode .scratch-float-btn.scratch-tint,
+.light-mode .scratch-float-btn.scratch-chrome-btn {
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.light-mode .scratch-tint--events,
+.light-mode .scratch-tint--control,
+.light-mode .scratch-tint--variables,
+.light-mode .scratch-chrome-btn--events,
+.light-mode .scratch-chrome-btn--control,
+.light-mode .scratch-chrome-btn--variables {
+  color: #1f2937 !important;
+}
+
+.light-mode .scratch-chrome-icon-btn {
+  transition: filter 0.15s ease;
+}
+
+.light-mode .scratch-chrome-icon-btn:hover:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.light-mode .scratch-tint--motion,
+.light-mode .scratch-chrome-btn--motion { background: var(--scratch-motion) !important; }
+.light-mode .scratch-tint--looks,
+.light-mode .scratch-chrome-btn--looks { background: var(--scratch-looks) !important; }
+.light-mode .scratch-tint--sound,
+.light-mode .scratch-chrome-btn--sound { background: var(--scratch-sound) !important; }
+.light-mode .scratch-tint--events,
+.light-mode .scratch-chrome-btn--events { background: var(--scratch-events) !important; }
+.light-mode .scratch-tint--control,
+.light-mode .scratch-chrome-btn--control { background: var(--scratch-control) !important; }
+.light-mode .scratch-tint--sensing,
+.light-mode .scratch-chrome-btn--sensing { background: var(--scratch-sensing) !important; }
+.light-mode .scratch-tint--operators,
+.light-mode .scratch-chrome-btn--operators { background: var(--scratch-operators) !important; }
+.light-mode .scratch-tint--variables,
+.light-mode .scratch-chrome-btn--variables { background: var(--scratch-variables) !important; }
+.light-mode .scratch-tint--myBlocks,
+.light-mode .scratch-chrome-btn--myBlocks { background: var(--scratch-myblocks) !important; }
+
+.light-mode .scratch-tab-active--role {
+  background: var(--scratch-looks) !important;
+  border-color: rgba(102, 51, 204, 0.45) !important;
+  color: #ffffff !important;
+}
+
+.light-mode .scratch-tab-active--scene {
+  background: var(--scratch-events) !important;
+  border-color: rgba(204, 153, 0, 0.55) !important;
+  color: #1f2937 !important;
+}
+
+.light-mode .scratch-tab-active--model3d {
+  background: var(--scratch-sensing) !important;
+  border-color: rgba(46, 130, 163, 0.55) !important;
+  color: #ffffff !important;
+}
+
+.light-mode [data-nexflow-workspace-header] .apple-panel {
+  background: #eef2f7 !important;
+  border-color: rgba(148, 163, 184, 0.35) !important;
+}
+
+.light-mode [data-nexflow-workspace-header] input[type='range'] {
+  accent-color: var(--scratch-control);
+}
+
+/* 明亮 / 深色模式：角色列表选中卡深灰底 */
+.light-mode .asset-lib-card-selected,
+.dark-mode .asset-lib-card-selected {
+  background: #52525b !important;
+  border-color: #3f3f46 !important;
+  color: #f4f4f5;
+}

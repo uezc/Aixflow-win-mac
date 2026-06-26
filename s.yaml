@@ -1,0 +1,22 @@
+# NEXFLOW 阿里云函数计算（run-task / JWT / Tablestore）
+#
+# 打包（确保 zip 内含 index.mjs、lib/、pricing/*.mjs、node_modules）：
+#   npm run deploy
+#   或：node demo/aliyun-fc-init-user/scripts/deploy-fc.js
+#
+# 部署（需已安装 Serverless Devs CLI，并配置 access）：
+#   s deploy
+#
+# 请按控制台实际资源修改 region、functionName；codeUri 为相对于本文件的路径。
+edition: 1.0.0
+name: nexflow-fc
+access: default
+
+services:
+  nexflow-run-task:
+    component: fc3
+    props:
+      region: cn-beijing
+      functionName: nexflow-api
+      description: NEXFLOW SaaS run-task
+      codeUri: demo/aliyun-fc-init-user/nexflow-fc.zip

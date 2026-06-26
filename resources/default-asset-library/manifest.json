@@ -1,0 +1,551 @@
+{
+  "version": 2,
+  "syncedAt": "2026-06-25T11:42:02.628Z",
+  "sourceUserData": "C:\\Users\\Administrator\\AppData\\Roaming\\NEXFLOW",
+  "characters": [
+    {
+      "id": "character-1778723228476-skhdr0w8w",
+      "nickname": "Brynn 布林",
+      "name": "Brynn 布林",
+      "avatar": "bundled-imports/816b47768b284496c19c.jpg",
+      "createdAt": 1778723228476,
+      "viewImages": [
+        "bundled-imports/816b47768b284496c19c.jpg",
+        "bundled-imports/69691d4bd97d137113c0.jpg",
+        "bundled-imports/a2a52264ee5241a538ec.jpg",
+        "bundled-imports/5e22fff63dad110a3967.jpg"
+      ],
+      "voiceClip": "bundled-imports/47f71bd05c910d2974c1.mp3"
+    },
+    {
+      "id": "character-1779089892735-8d40yrxdm",
+      "nickname": "Rhea 瑞亚",
+      "name": "Rhea 瑞亚",
+      "avatar": "bundled-imports/d1baae1b10e126a6c3cf.jpg",
+      "voiceClip": "bundled-imports/6069b543b2f5c91f61da.mp3",
+      "createdAt": 1779089892735,
+      "viewImages": [
+        "bundled-imports/d1baae1b10e126a6c3cf.jpg",
+        "bundled-imports/797493ba372af24d8285.jpg",
+        "bundled-imports/4d8ed217ab3ffb4e5e09.jpg",
+        "bundled-imports/3159eb5b7f25fa000cdd.jpg"
+      ]
+    },
+    {
+      "id": "character-1779362213352-0w0hjq1ov",
+      "nickname": "Elara 埃拉拉",
+      "name": "Elara 埃拉拉",
+      "avatar": "bundled-imports/95fc50d5156d2feb65b0.jpg",
+      "voiceClip": "bundled-imports/821dc853c0dacf1dc275.mp3",
+      "createdAt": 1779362213352,
+      "viewImages": [
+        "bundled-imports/95fc50d5156d2feb65b0.jpg",
+        "bundled-imports/59ff18eacb0737fc151e.jpg",
+        "bundled-imports/3f0a2c501ecea323660a.jpg",
+        "bundled-imports/3034ad7ed6856b9af897.jpg"
+      ]
+    },
+    {
+      "id": "character-1780149128144-uc96bo4z4",
+      "nickname": "May 梅",
+      "name": "May 梅",
+      "avatar": "bundled-imports/198b63f15e08430f1dc4.jpg",
+      "createdAt": 1780149128144,
+      "viewImages": [
+        "bundled-imports/198b63f15e08430f1dc4.jpg",
+        "bundled-imports/bb12dbb21c09db74e748.jpg",
+        "bundled-imports/6514d46f7a94ae60d899.jpg",
+        "bundled-imports/6a5693c288545f4534af.jpg"
+      ],
+      "voiceClip": ""
+    },
+    {
+      "id": "character-1780149537017-k291p8lqc",
+      "nickname": "Eve 伊芙",
+      "name": "Eve 伊芙",
+      "avatar": "bundled-imports/45ef02b243baef512f32.jpg",
+      "createdAt": 1780149537017,
+      "viewImages": [
+        "bundled-imports/45ef02b243baef512f32.jpg",
+        "bundled-imports/8a7cc1aa1b1ffb723cae.jpg",
+        "bundled-imports/e7f2a00ba8506fb4e9c5.jpg",
+        "bundled-imports/e3a72217429704610696.jpg"
+      ]
+    },
+    {
+      "id": "character-1780151045726-9j58kbxrk",
+      "nickname": "Noir 诺瓦",
+      "name": "Noir 诺瓦",
+      "avatar": "bundled-imports/184304dff1db89b8ed2d.jpg",
+      "createdAt": 1780151045726,
+      "viewImages": [
+        "bundled-imports/184304dff1db89b8ed2d.jpg",
+        "bundled-imports/430b3f58ec5ee6b94c83.jpg",
+        "bundled-imports/a439f71bba201e219b84.jpg",
+        "bundled-imports/680237bb770eeff65a46.jpg"
+      ]
+    },
+    {
+      "id": "character-1780151139106-efxzo3597",
+      "nickname": "Vivi 薇薇",
+      "name": "Vivi 薇薇",
+      "avatar": "bundled-imports/862cf9e4e32997f33936.jpg",
+      "createdAt": 1780151139106,
+      "viewImages": [
+        "bundled-imports/862cf9e4e32997f33936.jpg",
+        "bundled-imports/7af686ab99a94f3558ae.jpg",
+        "bundled-imports/dbf23cd060b14aa08d13.jpg",
+        "bundled-imports/f46c2969c0be44f3c0c9.jpg"
+      ]
+    },
+    {
+      "id": "character-1780151478248-hto6jz1b3",
+      "nickname": "Vera 薇拉",
+      "name": "Vera 薇拉",
+      "avatar": "bundled-imports/8178a39634072f4debfe.jpg",
+      "createdAt": 1780151478248,
+      "viewImages": [
+        "bundled-imports/8178a39634072f4debfe.jpg",
+        "bundled-imports/1449b6d9ae8b085ea701.jpg",
+        "bundled-imports/00deb1fbbcb9d9a8ae32.jpg",
+        "bundled-imports/297bffdaf0d41f487e4f.jpg"
+      ]
+    },
+    {
+      "id": "character-1780191137815-v6f309h7w",
+      "nickname": "Leo 利奥",
+      "name": "Leo 利奥",
+      "avatar": "bundled-imports/351238bd9b561eb8401a.jpg",
+      "createdAt": 1780191137815,
+      "viewImages": [
+        "bundled-imports/351238bd9b561eb8401a.jpg",
+        "bundled-imports/ad1769563f8ca0324e15.jpg",
+        "bundled-imports/7d32d5cac2da124bbbae.jpg",
+        "bundled-imports/a434210c078b9f671453.jpg"
+      ]
+    },
+    {
+      "id": "character-1780191340088-1uzuby2mt",
+      "nickname": "Ben 本",
+      "name": "Ben 本",
+      "avatar": "bundled-imports/ccb888ce2d8a7cae2f01.jpg",
+      "createdAt": 1780191340088,
+      "viewImages": [
+        "bundled-imports/ccb888ce2d8a7cae2f01.jpg",
+        "bundled-imports/ead44236b482da135cfa.jpg",
+        "bundled-imports/f3959574559d42b9c701.jpg",
+        "bundled-imports/dece1e4b8f7f0dce9c53.jpg"
+      ]
+    },
+    {
+      "id": "character-1780191725952-ngtmlhdh7",
+      "nickname": "Luke 卢克",
+      "name": "Luke 卢克",
+      "avatar": "bundled-imports/cd81fc2b6b7f76254187.jpg",
+      "createdAt": 1780191725952,
+      "viewImages": [
+        "bundled-imports/cd81fc2b6b7f76254187.jpg",
+        "bundled-imports/b3e9447274f40538dadf.jpg",
+        "bundled-imports/da34a2979ae56e8771ca.jpg",
+        "bundled-imports/8827c770007ab0398408.jpg"
+      ]
+    },
+    {
+      "id": "character-1780191765892-gxfo1ew7y",
+      "nickname": "Clara 克拉拉",
+      "name": "Clara 克拉拉",
+      "avatar": "bundled-imports/77c1470029d5cb672dc8.jpg",
+      "createdAt": 1780191765892,
+      "viewImages": [
+        "bundled-imports/77c1470029d5cb672dc8.jpg",
+        "bundled-imports/5ce1300ac152340fb1f3.jpg",
+        "bundled-imports/bdc4f96e1a64d8cf964d.jpg",
+        "bundled-imports/0ca1bb22665aeb7c956a.jpg"
+      ]
+    },
+    {
+      "id": "character-1780191966225-ncecuppc7",
+      "nickname": "Drew 德鲁",
+      "name": "Drew 德鲁",
+      "avatar": "bundled-imports/1906fd36bdde632c3c86.jpg",
+      "createdAt": 1780191966225,
+      "viewImages": [
+        "bundled-imports/1906fd36bdde632c3c86.jpg",
+        "bundled-imports/a9eec24d9db2b35bb906.jpg",
+        "bundled-imports/3bae3813e43da366b067.jpg",
+        "bundled-imports/91e042bd42209ae59c14.jpg"
+      ]
+    },
+    {
+      "id": "character-1780192181800-25rgibcka",
+      "nickname": "Zara 扎拉",
+      "name": "Zara 扎拉",
+      "avatar": "bundled-imports/fa1084a889f596fa0e69.jpg",
+      "createdAt": 1780192181800,
+      "viewImages": [
+        "bundled-imports/fa1084a889f596fa0e69.jpg",
+        "bundled-imports/317858d1333a85433495.jpg",
+        "bundled-imports/a5aac3f7d3f4ba6d58c3.jpg",
+        "bundled-imports/1bf77734a5af131e655b.jpg"
+      ]
+    },
+    {
+      "id": "character-1780192340347-1gfw99wd2",
+      "nickname": "Ray 雷",
+      "name": "Ray 雷",
+      "avatar": "bundled-imports/98bd2d201a77b052f090.jpg",
+      "createdAt": 1780192340347,
+      "viewImages": [
+        "bundled-imports/98bd2d201a77b052f090.jpg",
+        "bundled-imports/978512eef2fde40f432e.jpg",
+        "bundled-imports/bb8138dbe0e3f6fbe92d.jpg",
+        "bundled-imports/2c3265ece4e4b51d1beb.jpg"
+      ]
+    },
+    {
+      "id": "image3d-1780207579383-0l2oaentu",
+      "assetKind": "imageTo3d",
+      "nickname": "Tank 坦克",
+      "name": "3D 5/31 14:06",
+      "avatar": "bundled-imports/ddc10be5878f3b061633.png",
+      "inputImageUrl": "bundled-imports/ddc10be5878f3b061633.png",
+      "localGlbPath": "character-3d/image3d-1780207579383-0l2oaentu.glb",
+      "localGlbUrl": "character-3d/image3d-1780207579383-0l2oaentu.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00001_gvevz_1780207534.glb",
+      "resultTextureUrl": "character-3d/image3d-1780207579383-0l2oaentu-tex.png",
+      "localTexturePath": "character-3d/image3d-1780207579383-0l2oaentu-tex.png",
+      "createdAt": 1780207579390
+    },
+    {
+      "id": "image3d-1780208079688-ykj3j7xwn",
+      "assetKind": "imageTo3d",
+      "nickname": "Robot 机器人",
+      "name": "3D 5/31 14:14",
+      "avatar": "bundled-imports/c100820736b98b8d2e79.png",
+      "inputImageUrl": "bundled-imports/c100820736b98b8d2e79.png",
+      "localGlbPath": "character-3d/image3d-1780208079688-ykj3j7xwn.glb",
+      "localGlbUrl": "character-3d/image3d-1780208079688-ykj3j7xwn.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00002_ctiqi_1780207940.glb",
+      "resultTextureUrl": "character-3d/image3d-1780208079688-ykj3j7xwn-tex.png",
+      "localTexturePath": "character-3d/image3d-1780208079688-ykj3j7xwn-tex.png",
+      "createdAt": 1780208079695
+    },
+    {
+      "id": "image3d-1780208554985-1pyqwcrhi",
+      "assetKind": "imageTo3d",
+      "nickname": "Robot 机器人",
+      "name": "3D 5/31 14:22",
+      "avatar": "bundled-imports/04fc2c95f5affc914a65.png",
+      "inputImageUrl": "bundled-imports/04fc2c95f5affc914a65.png",
+      "localGlbPath": "character-3d/image3d-1780208554985-1pyqwcrhi.glb",
+      "localGlbUrl": "character-3d/image3d-1780208554985-1pyqwcrhi.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00003_espyz_1780208491.glb",
+      "resultTextureUrl": "character-3d/image3d-1780208554985-1pyqwcrhi-tex.png",
+      "localTexturePath": "character-3d/image3d-1780208554985-1pyqwcrhi-tex.png",
+      "createdAt": 1780208554991
+    },
+    {
+      "id": "image3d-1780209322319-jun4z31so",
+      "assetKind": "imageTo3d",
+      "nickname": "SpongeBob 海绵宝宝",
+      "name": "3D 5/31 14:35",
+      "avatar": "avatars/0eb474f2c35fd2771ea1904623f85430.png",
+      "localAvatarPath": "avatars/0eb474f2c35fd2771ea1904623f85430.png",
+      "inputImageUrl": "avatars/0eb474f2c35fd2771ea1904623f85430.png",
+      "localGlbPath": "character-3d/image3d-1780209322319-jun4z31so.glb",
+      "localGlbUrl": "character-3d/image3d-1780209322319-jun4z31so.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00006_lnbzq_1780209261.glb",
+      "resultTextureUrl": "character-3d/image3d-1780209322319-jun4z31so-tex.png",
+      "localTexturePath": "character-3d/image3d-1780209322319-jun4z31so-tex.png",
+      "createdAt": 1780209322679
+    },
+    {
+      "id": "image3d-1780209346313-or53ek3qk",
+      "assetKind": "imageTo3d",
+      "nickname": "Mr. Krabs 蟹老板",
+      "name": "3D 5/31 14:35",
+      "avatar": "bundled-imports/95c5e26e109ab5b590fb.png",
+      "inputImageUrl": "bundled-imports/95c5e26e109ab5b590fb.png",
+      "localGlbPath": "character-3d/image3d-1780209346313-or53ek3qk.glb",
+      "localGlbUrl": "character-3d/image3d-1780209346313-or53ek3qk.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00001_flyri_1780209275.glb",
+      "resultTextureUrl": "character-3d/image3d-1780209346313-or53ek3qk-tex.png",
+      "localTexturePath": "character-3d/image3d-1780209346313-or53ek3qk-tex.png",
+      "createdAt": 1780209346319
+    },
+    {
+      "id": "image3d-1780209361025-ie9ibtgzq",
+      "assetKind": "imageTo3d",
+      "nickname": "Squidward 章鱼哥",
+      "name": "3D 5/31 14:36",
+      "avatar": "bundled-imports/6671dccba5a6df6c32ed.png",
+      "inputImageUrl": "bundled-imports/6671dccba5a6df6c32ed.png",
+      "localGlbPath": "character-3d/image3d-1780209361025-ie9ibtgzq.glb",
+      "localGlbUrl": "character-3d/image3d-1780209361025-ie9ibtgzq.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00001_noqkr_1780209289.glb",
+      "resultTextureUrl": "character-3d/image3d-1780209361025-ie9ibtgzq-tex.png",
+      "localTexturePath": "character-3d/image3d-1780209361025-ie9ibtgzq-tex.png",
+      "createdAt": 1780209361031
+    },
+    {
+      "id": "image3d-1780209397775-zh85irmxm",
+      "assetKind": "imageTo3d",
+      "nickname": "Patrick 派大星",
+      "name": "3D 5/31 14:36",
+      "avatar": "bundled-imports/87af9f1e9f794b50f5b5.png",
+      "inputImageUrl": "bundled-imports/87af9f1e9f794b50f5b5.png",
+      "localGlbPath": "character-3d/image3d-1780209397775-zh85irmxm.glb",
+      "localGlbUrl": "character-3d/image3d-1780209397775-zh85irmxm.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00001_lkrdx_1780209313.glb",
+      "resultTextureUrl": "character-3d/image3d-1780209397775-zh85irmxm-tex.png",
+      "localTexturePath": "character-3d/image3d-1780209397775-zh85irmxm-tex.png",
+      "createdAt": 1780209397781
+    },
+    {
+      "id": "image3d-1780209875744-hbyalnq97",
+      "assetKind": "imageTo3d",
+      "nickname": "Crayfish 小龙虾",
+      "name": "3D 5/31 14:44",
+      "avatar": "avatars/86d42dea7df027c265d00f42b9c07c5b.png",
+      "localAvatarPath": "avatars/86d42dea7df027c265d00f42b9c07c5b.png",
+      "inputImageUrl": "avatars/86d42dea7df027c265d00f42b9c07c5b.png",
+      "localGlbPath": "character-3d/image3d-1780209875744-hbyalnq97.glb",
+      "localGlbUrl": "character-3d/image3d-1780209875744-hbyalnq97.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00002_eqctt_1780209835.glb",
+      "resultTextureUrl": "character-3d/image3d-1780209875744-hbyalnq97-tex.png",
+      "localTexturePath": "character-3d/image3d-1780209875744-hbyalnq97-tex.png",
+      "createdAt": 1780209876111
+    },
+    {
+      "id": "image3d-1780210072536-kggt5qebb",
+      "assetKind": "imageTo3d",
+      "nickname": "Tank 坦克",
+      "name": "3D 5/31 14:47",
+      "avatar": "bundled-imports/57dff62037e718a16a26.png",
+      "inputImageUrl": "bundled-imports/57dff62037e718a16a26.png",
+      "localGlbPath": "character-3d/image3d-1780210072536-kggt5qebb.glb",
+      "localGlbUrl": "character-3d/image3d-1780210072536-kggt5qebb.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Hy3D_textured_00001_pyfoy_1780210052.glb",
+      "resultTextureUrl": "character-3d/image3d-1780210072536-kggt5qebb-tex.png",
+      "localTexturePath": "character-3d/image3d-1780210072536-kggt5qebb-tex.png",
+      "createdAt": 1780210072542
+    },
+    {
+      "id": "character-1781519647142-4973mv7ir",
+      "nickname": "新娘",
+      "name": "新娘",
+      "avatar": "bundled-imports/8b38dde179b4a5bd477f.jpg",
+      "createdAt": 1781519647142,
+      "viewImages": [
+        "bundled-imports/8b38dde179b4a5bd477f.jpg",
+        "bundled-imports/4b7eb69d9547cfd4f0e5.jpg",
+        "bundled-imports/a4a275e0166bcdfcc741.jpg",
+        "bundled-imports/b7c6c5359b2fd5160016.jpg"
+      ]
+    }
+  ],
+  "sceneLibrary": [
+    {
+      "id": "scene-1779950616963-ir934e93j",
+      "nickname": "Second bedroom 次卧",
+      "name": "Second bedroom 次卧",
+      "avatar": "scene-library/scene-1779950616963-ir934e93j-normal.jpg",
+      "localAvatarPath": "scene-library/scene-1779950616963-ir934e93j-normal.jpg",
+      "panoramaUrl": "bundled-imports/18bac66dd6d46100d129.png",
+      "createdAt": 1779950616968,
+      "normalImageUrl": "scene-library/scene-1779950616963-ir934e93j-normal.jpg",
+      "localNormalImagePath": "scene-library/scene-1779950616963-ir934e93j-normal.jpg",
+      "display3dImageUrl": "bundled-imports/18bac66dd6d46100d129.png"
+    },
+    {
+      "id": "scene-1780195118392-t3ixx6ulc",
+      "nickname": "Living room 客厅",
+      "name": "Living room 客厅",
+      "avatar": "bundled-imports/eef37fe1b29d8b9e173b.jpg",
+      "normalImageUrl": "bundled-imports/eef37fe1b29d8b9e173b.jpg",
+      "display3dImageUrl": "bundled-imports/e975046ad08ac1b217b5.jpg",
+      "panoramaUrl": "bundled-imports/e975046ad08ac1b217b5.jpg",
+      "createdAt": 1780195118393
+    },
+    {
+      "id": "scene-1780195136471-dn4yoy17s",
+      "nickname": "Bedroom 卧室",
+      "name": "Bedroom 卧室",
+      "avatar": "bundled-imports/61cf517346f79769ea7e.png",
+      "normalImageUrl": "bundled-imports/61cf517346f79769ea7e.png",
+      "display3dImageUrl": "bundled-imports/1992666ea9b211404fe4.jpg",
+      "panoramaUrl": "bundled-imports/1992666ea9b211404fe4.jpg",
+      "createdAt": 1780195136471
+    },
+    {
+      "id": "scene-1780195212235-3xll8wvhb",
+      "nickname": "Living room 客厅",
+      "name": "Living room 客厅",
+      "avatar": "bundled-imports/8d43c6e2138713d0c0f8.jpg",
+      "normalImageUrl": "bundled-imports/8d43c6e2138713d0c0f8.jpg",
+      "display3dImageUrl": "bundled-imports/f8c1af11385afa55f9de.jpg",
+      "panoramaUrl": "bundled-imports/f8c1af11385afa55f9de.jpg",
+      "createdAt": 1780195212235
+    },
+    {
+      "id": "scene-1780195256546-v6bin8pzf",
+      "nickname": "Bathroom 卫生间",
+      "name": "Bathroom 卫生间",
+      "avatar": "bundled-imports/2e50f1cd0bd91a390c06.png",
+      "normalImageUrl": "bundled-imports/2e50f1cd0bd91a390c06.png",
+      "display3dImageUrl": "bundled-imports/13d799b8f348130a5a4e.png",
+      "panoramaUrl": "bundled-imports/13d799b8f348130a5a4e.png",
+      "createdAt": 1780195256546
+    },
+    {
+      "id": "scene-1780195291502-vizsoi5ku",
+      "nickname": "Study 书房",
+      "name": "Study 书房",
+      "avatar": "bundled-imports/701a00bca4fc347efb60.png",
+      "normalImageUrl": "bundled-imports/701a00bca4fc347efb60.png",
+      "display3dImageUrl": "bundled-imports/fcf1d7df8adb60c948f0.jpg",
+      "panoramaUrl": "bundled-imports/fcf1d7df8adb60c948f0.jpg",
+      "createdAt": 1780195291502
+    },
+    {
+      "id": "scene-1780195347718-qbxgrhgzh",
+      "nickname": "Laundry room 洗衣房",
+      "name": "Laundry room 洗衣房",
+      "avatar": "bundled-imports/222bb1b072afff98d7f6.jpg",
+      "normalImageUrl": "bundled-imports/222bb1b072afff98d7f6.jpg",
+      "display3dImageUrl": "bundled-imports/c455bcd0df569c536900.jpg",
+      "panoramaUrl": "bundled-imports/c455bcd0df569c536900.jpg",
+      "createdAt": 1780195347718
+    },
+    {
+      "id": "scene-1780202933692-vmetmeora",
+      "nickname": "场景 5/31 12:48",
+      "name": "场景 5/31 12:48",
+      "avatar": "bundled-imports/fa76fdce6785f3453ccb.jpg",
+      "normalImageUrl": "bundled-imports/fa76fdce6785f3453ccb.jpg",
+      "display3dImageUrl": "bundled-imports/e70c12a8241101ab13bf.jpg",
+      "panoramaUrl": "bundled-imports/e70c12a8241101ab13bf.jpg",
+      "createdAt": 1780202933692
+    },
+    {
+      "id": "scene-1780202960933-9qkb3ssgq",
+      "nickname": "Beach 沙滩",
+      "name": "Beach 沙滩",
+      "avatar": "bundled-imports/cc9ffca4ea133fd5dd02.jpg",
+      "normalImageUrl": "bundled-imports/cc9ffca4ea133fd5dd02.jpg",
+      "display3dImageUrl": "bundled-imports/d6ebc960608ebba241fa.jpg",
+      "panoramaUrl": "bundled-imports/d6ebc960608ebba241fa.jpg",
+      "createdAt": 1780202960933
+    },
+    {
+      "id": "scene-1780203577626-y4iqwvy7p",
+      "nickname": "Garden 花园",
+      "name": "Garden 花园",
+      "avatar": "bundled-imports/1de285383691e5ee3950.jpg",
+      "normalImageUrl": "bundled-imports/1de285383691e5ee3950.jpg",
+      "display3dImageUrl": "bundled-imports/a973d8dc17f08d2e5942.jpg",
+      "panoramaUrl": "bundled-imports/a973d8dc17f08d2e5942.jpg",
+      "createdAt": 1780203577626
+    },
+    {
+      "id": "scene-1780204539413-m906sn50u",
+      "nickname": "Kitchen 厨房",
+      "name": "Kitchen 厨房",
+      "avatar": "bundled-imports/044f1576e8b87ab29f97.jpg",
+      "normalImageUrl": "bundled-imports/044f1576e8b87ab29f97.jpg",
+      "display3dImageUrl": "bundled-imports/91b7ccedc6c8c0801b17.jpg",
+      "panoramaUrl": "bundled-imports/91b7ccedc6c8c0801b17.jpg",
+      "createdAt": 1780204539413
+    },
+    {
+      "id": "scene-1780204883057-c2i9eqt7d",
+      "nickname": "Kids' room 儿童房",
+      "name": "Kids' room 儿童房",
+      "avatar": "bundled-imports/0367f585a88b8b3d7585.jpg",
+      "normalImageUrl": "bundled-imports/0367f585a88b8b3d7585.jpg",
+      "display3dImageUrl": "bundled-imports/c7872be35fd193acbd1b.jpg",
+      "panoramaUrl": "bundled-imports/c7872be35fd193acbd1b.jpg",
+      "createdAt": 1780204883057
+    },
+    {
+      "id": "scene-1780204902028-4ohrm58zm",
+      "nickname": "Kids' room 儿童房",
+      "name": "Kids' room 儿童房",
+      "avatar": "bundled-imports/61ad8715a6b9d24d73b0.jpg",
+      "normalImageUrl": "bundled-imports/61ad8715a6b9d24d73b0.jpg",
+      "display3dImageUrl": "bundled-imports/63d88c0209af7826c707.jpg",
+      "panoramaUrl": "bundled-imports/63d88c0209af7826c707.jpg",
+      "createdAt": 1780204902028
+    },
+    {
+      "id": "scene-1780204912645-m5o0uu8px",
+      "nickname": "Kids' room 儿童房",
+      "name": "Kids' room 儿童房",
+      "avatar": "bundled-imports/1e6a2ed916ce50ec1674.jpg",
+      "normalImageUrl": "bundled-imports/1e6a2ed916ce50ec1674.jpg",
+      "display3dImageUrl": "bundled-imports/035d161d34eed4647369.jpg",
+      "panoramaUrl": "bundled-imports/035d161d34eed4647369.jpg",
+      "createdAt": 1780204912645
+    },
+    {
+      "id": "scene-1780205429739-klnzpbva0",
+      "nickname": "Workshop 修理房",
+      "name": "Workshop 修理房",
+      "avatar": "bundled-imports/0a73b57379b1d92a78d3.jpg",
+      "normalImageUrl": "bundled-imports/0a73b57379b1d92a78d3.jpg",
+      "display3dImageUrl": "bundled-imports/8080e431b970a5f45753.jpg",
+      "panoramaUrl": "bundled-imports/8080e431b970a5f45753.jpg",
+      "createdAt": 1780205429739
+    },
+    {
+      "id": "scene-1780205457257-9z5gv27ef",
+      "nickname": "Workshop 修理房",
+      "name": "Workshop 修理房",
+      "avatar": "bundled-imports/97bf4b79ddcc99303d9a.jpg",
+      "normalImageUrl": "bundled-imports/97bf4b79ddcc99303d9a.jpg",
+      "display3dImageUrl": "bundled-imports/80d9603ea0c26ae13c31.jpg",
+      "panoramaUrl": "bundled-imports/80d9603ea0c26ae13c31.jpg",
+      "createdAt": 1780205457257
+    },
+    {
+      "id": "scene-1780206218133-yekfkm0o9",
+      "nickname": "Yard 院子",
+      "name": "Yard 院子",
+      "avatar": "bundled-imports/60f9fd909b33e96de56c.png",
+      "normalImageUrl": "bundled-imports/60f9fd909b33e96de56c.png",
+      "display3dImageUrl": "bundled-imports/2ca5e36f0a9222dcec28.jpg",
+      "panoramaUrl": "bundled-imports/2ca5e36f0a9222dcec28.jpg",
+      "createdAt": 1780206218133
+    },
+    {
+      "id": "scene-1780206737067-6qw2cuma4",
+      "nickname": "Highway 公路",
+      "name": "Highway 公路",
+      "avatar": "bundled-imports/d977d69e59a1cb4839e7.png",
+      "normalImageUrl": "bundled-imports/d977d69e59a1cb4839e7.png",
+      "display3dImageUrl": "bundled-imports/374cbd336abb346432e5.png",
+      "panoramaUrl": "bundled-imports/374cbd336abb346432e5.png",
+      "createdAt": 1780206737068
+    },
+    {
+      "id": "scene-1780206974967-dlrlcjvgu",
+      "nickname": "Crossroads 十字路口",
+      "name": "Crossroads 十字路口",
+      "avatar": "bundled-imports/cfe018e4a8a00ca348aa.png",
+      "normalImageUrl": "bundled-imports/cfe018e4a8a00ca348aa.png",
+      "display3dImageUrl": "bundled-imports/2b1cca1682f2e3166320.png",
+      "panoramaUrl": "bundled-imports/2b1cca1682f2e3166320.png",
+      "createdAt": 1780206974967
+    },
+    {
+      "id": "scene-1780207769204-77772mbwl",
+      "nickname": "Coffee shop 咖啡店",
+      "name": "Coffee shop 咖啡店",
+      "avatar": "bundled-imports/15e64d83a5b82ad7dad4.jpg",
+      "normalImageUrl": "bundled-imports/15e64d83a5b82ad7dad4.jpg",
+      "display3dImageUrl": "bundled-imports/03b158efa8292b6a95e7.jpg",
+      "panoramaUrl": "bundled-imports/03b158efa8292b6a95e7.jpg",
+      "createdAt": 1780207769204
+    }
+  ]
+}

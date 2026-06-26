@@ -1,0 +1,2631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="docTitle">AIXflow — AI Creation Operating System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg: #05070A;
+            --purple: #8B5CF6;
+            --cyan: #06B6D4;
+        }
+
+        html { scroll-behavior: smooth; }
+
+        body {
+            margin: 0;
+            color: #fff;
+            font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg);
+            overflow-x: hidden;
+        }
+
+        /* 画布波点背景 */
+        .canvas-dots-bg {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            pointer-events: none;
+            background-color: var(--bg);
+            background-image: radial-gradient(rgba(255, 255, 255, 0.14) 1.25px, transparent 1.25px);
+            background-size: 32px 32px;
+            background-attachment: fixed;
+        }
+
+        #particleCanvas {
+            position: fixed;
+            inset: 0;
+            z-index: 1;
+            pointer-events: none;
+            opacity: 0.55;
+        }
+
+        .page-wrap {
+            position: relative;
+            z-index: 2;
+        }
+
+        /* Hero 赛博核心：呼吸光晕 */
+        .hero-stage:hover .hero-breathe {
+            animation-duration: 2.6s;
+        }
+
+        .hero-breathe {
+            position: absolute;
+            inset: -12%;
+            z-index: 1;
+            border-radius: 50%;
+            pointer-events: none;
+            background:
+                radial-gradient(ellipse 75% 80% at 28% 92%, rgba(67, 56, 202, 0.5), transparent 55%),
+                radial-gradient(ellipse 65% 70% at 88% 88%, rgba(6, 182, 212, 0.35), transparent 52%);
+            filter: blur(34px);
+            opacity: 0.4;
+            animation: breathe 5.5s ease-in-out infinite;
+        }
+
+        @keyframes breathe {
+            0%, 100% { opacity: 0.28; filter: blur(26px) saturate(1); }
+            50% { opacity: 0.78; filter: blur(44px) saturate(1.15); }
+        }
+
+        /* 放射 / 同心网格场 */
+        .hero-radial-field {
+            position: absolute;
+            inset: -6%;
+            z-index: 2;
+            width: 112%;
+            height: 112%;
+            left: -6%;
+            top: -6%;
+            pointer-events: none;
+            opacity: 0.35;
+            animation: field-drift 90s linear infinite;
+        }
+
+        @keyframes field-drift {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .hero-stage:hover .hero-radial-field {
+            animation-duration: 48s;
+        }
+
+        .cyber-orbit {
+            position: absolute;
+            inset: 0;
+            z-index: 3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            transform-origin: 50% 50%;
+        }
+
+        .cyber-orbit svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .cyber-spin-cw {
+            animation: cyber-cw 52s linear infinite;
+        }
+
+        .cyber-spin-ccw {
+            animation: cyber-ccw 40s linear infinite;
+        }
+
+        @keyframes cyber-cw {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes cyber-ccw {
+            to { transform: rotate(-360deg); }
+        }
+
+        .hero-core-wrap {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            max-width: min(100%, 360px);
+            max-height: min(100%, 360px);
+            margin: 0 auto;
+            aspect-ratio: 1;
+        }
+
+        .hero-logo-stack {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+
+        .hero-logo-disc {
+            position: relative;
+            width: 72%;
+            aspect-ratio: 1;
+            border-radius: 50%;
+        }
+
+        .hero-inner-ring-svg {
+            position: absolute;
+            inset: -3px;
+            width: calc(100% + 6px);
+            height: calc(100% + 6px);
+            pointer-events: none;
+            z-index: 2;
+        }
+
+        .hero-logo-img-wrap {
+            position: absolute;
+            inset: 6px;
+            border-radius: 50%;
+            overflow: hidden;
+            background: #070a10;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1;
+        }
+
+        .hero-logo-img-wrap img {
+            width: 100%;
+            height: 100%;
+            -o-object-fit: cover;
+               object-fit: cover;
+            transform: scale(1.02);
+        }
+
+        .text-gradient {
+            background: linear-gradient(105deg, #E9D5FF 0%, #A78BFA 35%, #22D3EE 90%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* 下载按钮：Win / Mac 同款紫→蓝渐变胶囊（pill）；解析前为 pending（淡化同款形） */
+        .mac-dl-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+        .mac-dl-btn--inline {
+            flex-direction: row;
+            gap: 0.55rem;
+        }
+        .mac-dl-btn--pending {
+            padding: 0.8rem 1.65rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            color: rgba(255, 255, 255, 0.55);
+            background: linear-gradient(
+                90deg,
+                rgba(139, 92, 246, 0.28) 0%,
+                rgba(99, 102, 241, 0.22) 50%,
+                rgba(59, 130, 246, 0.28) 100%
+            );
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            cursor: not-allowed;
+            -moz-user-select: none;
+                 user-select: none;
+            -webkit-user-select: none;
+            pointer-events: none;
+            opacity: 0.88;
+        }
+        .mac-dl-btn--pending i {
+            color: rgba(255, 255, 255, 0.65);
+        }
+        .mac-dl-btn--ready {
+            padding: 0.8rem 1.65rem;
+            border-radius: 9999px;
+            font-size: 0.875rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            color: #fff;
+            background: linear-gradient(90deg, #8b5cf6 0%, #6366f1 48%, #3b82f6 100%);
+            border: none;
+            box-shadow:
+                0 4px 28px -6px rgba(59, 130, 246, 0.55),
+                0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+            cursor: pointer;
+            pointer-events: auto;
+            opacity: 1;
+            transition: filter 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .mac-dl-btn--ready i {
+            color: #fff;
+            opacity: 1;
+        }
+        .mac-dl-btn--ready:hover {
+            filter: brightness(1.07);
+            transform: translateY(-1px);
+            box-shadow:
+                0 8px 36px -8px rgba(99, 102, 241, 0.55),
+                0 0 0 1px rgba(255, 255, 255, 0.15) inset;
+        }
+        #ctaMacHint {
+            font-size: 10px;
+            font-weight: 600;
+            color: rgba(100, 116, 139, 0.95);
+            letter-spacing: 0.05em;
+            line-height: 1.35;
+            min-height: 1.15em;
+        }
+        #ctaMacHint:empty {
+            display: none;
+        }
+
+        /* 玻璃卡片 + 渐变描边 */
+        .glass-edge {
+            border-radius: 1.25rem;
+            padding: 1px;
+            background: linear-gradient(135deg, rgba(167, 139, 250, 0.45), rgba(6, 182, 212, 0.15), rgba(99, 102, 241, 0.35));
+            box-shadow: 0 24px 60px -28px rgba(0, 0, 0, 0.85);
+        }
+        .glass-inner {
+            border-radius: calc(1.25rem - 1px);
+            background: rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .icon-glow-violet {
+            color: #C4B5FD;
+            filter: drop-shadow(0 0 14px rgba(139, 92, 246, 0.75));
+        }
+        .icon-glow-cyan {
+            color: #67E8F9;
+            filter: drop-shadow(0 0 14px rgba(6, 182, 212, 0.65));
+        }
+        .icon-glow-fuchsia {
+            color: #F0ABFC;
+            filter: drop-shadow(0 0 14px rgba(217, 70, 239, 0.55));
+        }
+        .icon-glow-sky {
+            color: #7DD3FC;
+            filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.55));
+        }
+
+        .nav-logo {
+            width: 2.25rem;
+            height: 2.25rem;
+            border-radius: 9999px;
+            -o-object-fit: cover;
+               object-fit: cover;
+            box-shadow: 0 0 28px rgba(139, 92, 246, 0.4);
+        }
+
+        .model-pill {
+            padding: 0.45rem 0.9rem;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 0.7rem;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            color: rgba(255, 255, 255, 0.88);
+            white-space: nowrap;
+        }
+
+        .showcase-viewport {
+            width: 100%;
+            overflow: hidden;
+            position: relative;
+            border-radius: 1.5rem;
+            padding: 1.25rem;
+        }
+        .showcase-masonry {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1rem;
+        }
+        @media (max-width: 1200px) {
+            .showcase-masonry { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 520px) {
+            .showcase-masonry { grid-template-columns: 1fr; }
+        }
+        .showcase-card {
+            margin-bottom: 0;
+            border-radius: 0.75rem;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            background: #0a0a0c;
+            position: relative;
+            transition: border-color 0.3s, box-shadow 0.3s, transform 0.35s ease;
+        }
+        .showcase-card:hover {
+            border-color: rgba(255, 255, 255, 0.14);
+            box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.85);
+            transform: translateY(-2px);
+        }
+        .showcase-card-inner {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+        .showcase-card-poster {
+            position: relative;
+            aspect-ratio: 16 / 9;
+            overflow: hidden;
+            border-radius: 0.75rem;
+            background: #141418;
+        }
+        .showcase-card-inner--music .showcase-card-poster {
+            border-radius: 0.75rem 0.75rem 0 0;
+        }
+        .showcase-card-fill {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            -o-object-fit: cover;
+               object-fit: cover;
+            display: block;
+            transition: transform 0.55s ease;
+        }
+        .showcase-card:hover .showcase-card-fill { transform: scale(1.04); }
+        .showcase-card-scrim {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            background: linear-gradient(
+                to top,
+                rgba(0, 0, 0, 0.88) 0%,
+                rgba(0, 0, 0, 0.35) 42%,
+                transparent 68%
+            );
+        }
+        .showcase-card-duration {
+            position: absolute;
+            top: 0.5rem;
+            left: 0.5rem;
+            z-index: 2;
+            padding: 0.2rem 0.45rem;
+            border-radius: 0.35rem;
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.55);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            pointer-events: none;
+        }
+        .showcase-card-corner-tr {
+            position: absolute;
+            top: 0.45rem;
+            right: 0.45rem;
+            z-index: 3;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.35rem;
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-6px);
+            transition:
+                opacity 0.28s ease,
+                transform 0.28s ease;
+        }
+        @media (hover: hover) {
+            .showcase-card:hover .showcase-card-corner-tr,
+            .showcase-card:focus-within .showcase-card-corner-tr {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @media (hover: none) {
+            .showcase-card-corner-tr {
+                opacity: 1;
+                transform: none;
+            }
+        }
+        .showcase-card-corner-tr > a,
+        .showcase-card-corner-tr > button {
+            pointer-events: auto;
+        }
+        .showcase-zoom-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2rem;
+            height: 2rem;
+            padding: 0;
+            border-radius: 0.45rem;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(0, 0, 0, 0.55);
+            color: #fff;
+            cursor: pointer;
+            transition:
+                background 0.2s,
+                border-color 0.2s,
+                transform 0.12s ease;
+        }
+        .showcase-zoom-btn:hover {
+            background: rgba(139, 92, 246, 0.55);
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+        .showcase-zoom-btn:active {
+            transform: scale(0.94);
+        }
+        .showcase-zoom-btn i {
+            font-size: 0.78rem;
+        }
+        .showcase-card-corner-tr-text {
+            font-size: 0.6rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.72);
+            text-shadow: 0 1px 8px rgba(0, 0, 0, 0.8);
+            white-space: nowrap;
+        }
+        .showcase-card-overlay-bottom {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 2;
+            padding: 0.55rem 0.65rem 0.65rem;
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 0.65rem;
+            pointer-events: none;
+        }
+        .showcase-card-overlay-bottom a {
+            pointer-events: auto;
+        }
+        .showcase-card-overlay-text {
+            min-width: 0;
+            flex: 1;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            justify-content: flex-end;
+        }
+        .showcase-card-titleline {
+            display: block;
+            font-size: 0.95rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+            color: #fff;
+            line-height: 1.25;
+            text-shadow: 0 1px 12px rgba(0, 0, 0, 0.65);
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        @media (hover: hover) {
+            .showcase-card-titleline {
+                transform: translateY(calc(100% + 0.65rem));
+                opacity: 0;
+                transition:
+                    transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                    opacity 0.32s ease;
+            }
+            .showcase-card:hover .showcase-card-titleline,
+            .showcase-card:focus-within .showcase-card-titleline {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        @media (hover: none) {
+            .showcase-card-titleline {
+                transform: none;
+                opacity: 1;
+            }
+        }
+        .showcase-like-btn {
+            pointer-events: auto;
+            flex-shrink: 0;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            font: inherit;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.9);
+            text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 0.45rem;
+            padding: 0.28rem 0.5rem;
+            cursor: pointer;
+            transition:
+                background 0.2s,
+                transform 0.12s ease,
+                border-color 0.2s;
+        }
+        .showcase-like-btn:hover {
+            background: rgba(139, 92, 246, 0.42);
+            border-color: rgba(255, 255, 255, 0.22);
+        }
+        .showcase-like-btn:active {
+            transform: scale(0.96);
+        }
+        .showcase-like-btn .fa-star {
+            font-size: 0.62rem;
+            opacity: 0.88;
+        }
+        .showcase-card-music-fallback {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(160deg, rgba(88, 28, 135, 0.35) 0%, rgba(15, 10, 25, 0.98) 55%);
+        }
+        .showcase-card-music-fallback .showcase-audio-wave {
+            padding: 0.25rem 0 0.35rem;
+        }
+        .showcase-card-media {
+            width: 100%;
+            display: block;
+            vertical-align: middle;
+            -o-object-fit: cover;
+               object-fit: cover;
+            max-height: 70vh;
+            transition: transform 0.55s ease;
+        }
+        .showcase-card:hover .showcase-card-media { transform: scale(1.02); }
+        .showcase-card-audio-cover {
+            max-height: 40vh;
+        }
+        .showcase-audio {
+            width: 100%;
+            padding: 0.45rem 0.65rem 0.55rem;
+            background: rgba(0, 0, 0, 0.72);
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .showcase-card-inner--music {
+            background: #0a0a0c;
+            border: none;
+            min-height: 0;
+        }
+        .showcase-card-inner--music .showcase-audio {
+            border-radius: 0 0 0.75rem 0.75rem;
+            background: rgba(0, 0, 0, 0.55);
+            border: none;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .showcase-audio-wave {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 3px;
+            height: 4.5rem;
+            padding: 0.35rem 0 0.5rem;
+            flex-shrink: 0;
+        }
+        .showcase-audio-wave span {
+            width: 4px;
+            min-height: 6px;
+            border-radius: 2px;
+            background: linear-gradient(180deg, #e9d5ff 0%, #7c3aed 55%, #5b21b6 100%);
+            box-shadow: 0 0 10px rgba(167, 139, 250, 0.45);
+            align-self: flex-end;
+            flex: 0 0 auto;
+            animation: none;
+            height: 35%;
+            opacity: 0.75;
+        }
+        .showcase-audio-wave span:nth-child(5n + 1) { height: 42%; }
+        .showcase-audio-wave span:nth-child(5n + 2) { height: 68%; }
+        .showcase-audio-wave span:nth-child(5n + 3) { height: 52%; }
+        .showcase-audio-wave span:nth-child(5n + 4) { height: 78%; }
+        .showcase-audio-wave span:nth-child(5n) { height: 58%; }
+        .showcase-audio-wave--playing span {
+            animation: showcase-wave 1.05s ease-in-out infinite;
+        }
+        .showcase-audio-wave--playing span:nth-child(3n) { animation-duration: 0.88s; }
+        .showcase-audio-wave--playing span:nth-child(3n + 1) { animation-duration: 1.18s; }
+        @keyframes showcase-wave {
+            0%, 100% { height: 18%; opacity: 0.65; }
+            50% { height: 100%; opacity: 1; }
+        }
+        .showcase-card-inner--workflow {
+            overflow: hidden;
+            border-radius: 0.75rem;
+        }
+        .showcase-dl {
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 0.5rem 0.75rem;
+            border-radius: 0.45rem;
+            background: rgba(139, 92, 246, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: #fff;
+            white-space: nowrap;
+            text-decoration: none;
+            text-align: center;
+        }
+        .showcase-dl:hover { background: rgba(139, 92, 246, 0.78); }
+        .showcase-dl--below {
+            position: relative;
+            top: auto;
+            right: auto;
+            display: block;
+            margin: 0 0.65rem 0.65rem;
+            width: auto;
+            box-sizing: border-box;
+        }
+        .showcase-dl--chip {
+            display: inline-block;
+            margin: 0;
+            padding: 0.28rem 0.55rem;
+            font-size: 0.58rem;
+            border-radius: 0.35rem;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            color: rgba(255, 255, 255, 0.95);
+        }
+        .showcase-dl--chip:hover {
+            background: rgba(139, 92, 246, 0.55);
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+
+        .showcase-category-block {
+            margin-bottom: 2.25rem;
+        }
+        .showcase-category-block:last-child {
+            margin-bottom: 0;
+        }
+        .showcase-category-head {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            padding-left: 0.25rem;
+            scroll-margin-top: 5rem;
+            flex-wrap: wrap;
+        }
+        .showcase-category-head-main {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            min-width: 0;
+            flex: 1;
+        }
+        .showcase-cat-viewall {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: rgba(255, 255, 255, 0.45);
+            text-decoration: none;
+            white-space: nowrap;
+            transition: color 0.2s;
+            padding-right: 0.15rem;
+        }
+        .showcase-cat-viewall:hover {
+            color: rgba(196, 181, 253, 0.95);
+        }
+        .showcase-category-head i {
+            font-size: 1.1rem;
+            width: 2.25rem;
+            height: 2.25rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.65rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .showcase-category-head h3 {
+            margin: 0;
+            font-size: 0.875rem;
+            font-weight: 900;
+            letter-spacing: 0.02em;
+            color: #fff;
+        }
+        .showcase-category-head .showcase-cat-line {
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(to right, rgba(139, 92, 246, 0.35), transparent);
+        }
+        .showcase-category-head.cat-image .showcase-cat-line {
+            background: linear-gradient(to right, rgba(167, 139, 250, 0.45), transparent);
+        }
+        .showcase-category-head.cat-video .showcase-cat-line {
+            background: linear-gradient(to right, rgba(6, 182, 212, 0.4), transparent);
+        }
+        .showcase-category-head.cat-music .showcase-cat-line {
+            background: linear-gradient(to right, rgba(217, 70, 239, 0.35), transparent);
+        }
+        .showcase-category-head.cat-workflow .showcase-cat-line {
+            background: linear-gradient(to right, rgba(56, 189, 248, 0.35), transparent);
+        }
+
+        .social-link {
+            color: rgba(156, 163, 175, 0.9);
+            transition: color 0.2s, transform 0.2s, filter 0.2s;
+        }
+        .social-link:hover {
+            color: #fff;
+            transform: translateY(-2px);
+            filter: drop-shadow(0 0 10px rgba(139, 92, 246, 0.7));
+        }
+
+        .lang-toggle {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            min-height: 2.25rem;
+            padding: 0.35rem 0.55rem 0.35rem 0.45rem;
+            border-radius: 9999px;
+            border: 1px solid rgba(167, 139, 250, 0.35);
+            background: rgba(139, 92, 246, 0.12);
+            color: #e9d5ff;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: color 0.2s, border-color 0.2s, background 0.2s, box-shadow 0.2s, transform 0.2s;
+        }
+        .lang-toggle i {
+            font-size: 1rem;
+            line-height: 1;
+        }
+        .lang-toggle .lang-badge {
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            line-height: 1;
+            color: rgba(255, 255, 255, 0.92);
+        }
+        .lang-toggle:hover {
+            color: #fff;
+            border-color: rgba(196, 181, 253, 0.65);
+            background: rgba(139, 92, 246, 0.22);
+            box-shadow: 0 0 22px rgba(139, 92, 246, 0.35);
+            transform: translateY(-1px);
+        }
+
+        body.showcase-zoom-open {
+            overflow: hidden;
+        }
+        .showcase-zoom-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right))
+                max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+            box-sizing: border-box;
+        }
+        .showcase-zoom-backdrop.showcase-zoom-backdrop--open {
+            display: flex;
+        }
+        .showcase-zoom-dim {
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.88);
+            z-index: 0;
+            cursor: zoom-out;
+        }
+        .showcase-zoom-close {
+            position: absolute;
+            top: max(0.75rem, env(safe-area-inset-top));
+            right: max(0.75rem, env(safe-area-inset-right));
+            z-index: 2;
+            width: 2.5rem;
+            height: 2.5rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 0.5rem;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            cursor: pointer;
+            transition:
+                background 0.2s,
+                border-color 0.2s;
+        }
+        .showcase-zoom-close:hover {
+            background: rgba(139, 92, 246, 0.45);
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+        .showcase-zoom-frame {
+            position: relative;
+            z-index: 1;
+            max-width: min(96vw, 1280px);
+            max-height: min(88vh, 900px);
+            width: auto;
+            height: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+        }
+        .showcase-zoom-frame .showcase-zoom-media {
+            max-width: min(96vw, 1280px);
+            max-height: min(88vh, 900px);
+            width: auto;
+            height: auto;
+            -o-object-fit: contain;
+               object-fit: contain;
+            border-radius: 0.5rem;
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+        }
+        .showcase-zoom-frame video.showcase-zoom-media {
+            width: min(96vw, 1280px);
+            max-height: min(88vh, 900px);
+            background: #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="canvas-dots-bg" aria-hidden="true"></div>
+    <canvas id="particleCanvas" aria-hidden="true"></canvas>
+
+    <div class="page-wrap">
+        <header class="fixed top-0 left-0 right-0 z-[100] border-b border-white/[0.06] bg-[#05070A]/35 backdrop-blur-xl">
+            <nav class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+                <a href="#" class="flex items-center gap-2.5 min-w-0 shrink-0">
+                    <img src="../aixflow-logo.png" alt="AIXflow" class="nav-logo" width="36" height="36" decoding="async">
+                    <span class="text-sm sm:text-base font-black tracking-tight text-white">AIXflow</span>
+                </a>
+
+                <a id="navShowcase" href="#showcase" class="hidden sm:inline text-xs font-bold uppercase tracking-widest text-zinc-400 hover:text-violet-300 transition-colors shrink-0">
+                    Showcase
+                </a>
+
+                <div class="relative z-[110] flex items-center gap-2 sm:gap-3 shrink-0 text-base sm:text-lg ml-auto">
+                    <button type="button" id="langToggle" class="lang-toggle" aria-label="Switch language" title="中文">
+                        <i class="fa-solid fa-globe" aria-hidden="true"></i>
+                        <span id="langBadge" class="lang-badge">EN</span>
+                    </button>
+                    <a href="https://www.youtube.com/@%E4%B8%80%E5%B7%9D-o7v8g" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="YouTube" title="YouTube"><i class="fa-brands fa-youtube"></i></a>
+                    <a href="https://space.bilibili.com/85935882?spm_id_from=333.337.0.0" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="哔哩哔哩" title="哔哩哔哩"><i class="fa-brands fa-bilibili"></i></a>
+                    <a href="https://v.douyin.com/pVzE6J1peaA/" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="抖音" title="抖音"><i class="fa-brands fa-tiktok"></i></a>
+                    <a href="https://discord.gg/TJN5RxQ3" target="_blank" rel="noopener noreferrer" class="social-link" aria-label="Discord" title="Discord"><i class="fa-brands fa-discord"></i></a>
+                </div>
+            </nav>
+        </header>
+
+        <section class="hero-stage pt-28 sm:pt-32 pb-20 px-6 sm:px-8 max-w-6xl mx-auto flex flex-col lg:flex-row items-center gap-14 lg:gap-16">
+            <div class="hero-copy flex-1 text-center lg:text-left">
+                <p id="heroEyebrow" class="text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.35em] text-violet-300/90 mb-4">The AI Creation Operating System</p>
+                <h1 id="heroTitle" class="text-4xl sm:text-5xl lg:text-[3.35rem] font-black leading-[1.08] tracking-tight mb-6">
+                    <span class="text-white">The Future of</span><br>
+                    <span class="text-gradient">AI Creation</span>
+                    <span class="text-white"> · Operating System</span>
+                </h1>
+                <p id="heroSubtitle" class="text-gray-400 text-sm sm:text-base max-w-lg leading-relaxed mb-8 mx-auto lg:mx-0">
+                    Unify open-source and closed-source models with creative tools on one canvas—freely build your AI creation workflow.
+                </p>
+                <div class="flex flex-col gap-2 items-center lg:items-start w-full max-w-lg mx-auto lg:mx-0">
+                    <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 justify-center lg:justify-start w-full sm:w-auto">
+                        <a
+                            class="mac-dl-btn mac-dl-btn--inline mac-dl-btn--pending"
+                            data-win-installer
+                            href="#"
+                            role="button"
+                            aria-disabled="true"
+                        >
+                            <i class="fa-solid fa-wand-magic-sparkles text-sm" aria-hidden="true"></i>
+                            <span id="ctaDownloadText">Download for Windows</span>
+                        </a>
+                        <a
+                            class="mac-dl-btn mac-dl-btn--inline mac-dl-btn--pending"
+                            id="ctaMacBtn"
+                            data-mac-installer
+                            href="#"
+                            role="button"
+                            aria-disabled="true"
+                            title=""
+                            aria-label="Download for Mac"
+                        >
+                            <i class="fa-brands fa-apple text-sm" aria-hidden="true"></i>
+                            <span id="ctaMacText">Download for Mac</span>
+                        </a>
+                    </div>
+                    <p id="ctaMacHint" class="w-full text-center lg:text-left px-0.5"></p>
+                    <p class="text-[11px] text-gray-500 font-medium text-center lg:text-left">
+                        <span class="text-gray-400">Windows</span>
+                        <span class="mx-1.5 text-white/25">·</span>
+                        <span class="text-gray-400">macOS</span>
+                        <span class="mx-2 text-violet-400/80">Beta</span>
+                    </p>
+                </div>
+            </div>
+
+            <div class="relative w-[min(100%,320px)] sm:w-80 lg:w-[400px] aspect-square shrink-0 flex items-center justify-center p-2">
+                <div class="hero-core-wrap">
+                    <div class="hero-breathe"></div>
+
+                    <svg class="hero-radial-field" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                        <g stroke="rgba(139, 92, 246, 0.14)" stroke-width="0.45">
+                            <line x1="100" y1="100" x2="100" y2="8" />
+                            <line x1="100" y1="100" x2="192" y2="100" />
+                            <line x1="100" y1="100" x2="100" y2="192" />
+                            <line x1="100" y1="100" x2="8" y2="100" />
+                            <line x1="100" y1="100" x2="165" y2="35" />
+                            <line x1="100" y1="100" x2="165" y2="165" />
+                            <line x1="100" y1="100" x2="35" y2="165" />
+                            <line x1="100" y1="100" x2="35" y2="35" />
+                            <line x1="100" y1="100" x2="148" y2="22" />
+                            <line x1="100" y1="100" x2="178" y2="62" />
+                            <line x1="100" y1="100" x2="178" y2="138" />
+                            <line x1="100" y1="100" x2="148" y2="178" />
+                            <line x1="100" y1="100" x2="52" y2="178" />
+                            <line x1="100" y1="100" x2="22" y2="138" />
+                            <line x1="100" y1="100" x2="22" y2="62" />
+                            <line x1="100" y1="100" x2="52" y2="22" />
+                        </g>
+                        <g stroke="rgba(6, 182, 212, 0.08)" stroke-width="0.4">
+                            <circle cx="100" cy="100" r="34" />
+                            <circle cx="100" cy="100" r="52" />
+                            <circle cx="100" cy="100" r="70" />
+                            <circle cx="100" cy="100" r="88" />
+                        </g>
+                    </svg>
+
+                    <div class="cyber-orbit cyber-spin-cw">
+                        <svg viewBox="0 0 200 200" aria-hidden="true">
+                            <circle cx="100" cy="100" r="93" fill="none" stroke="rgba(196, 181, 253, 0.5)" stroke-width="1.15" stroke-dasharray="20 46" stroke-linecap="round" />
+                            <circle cx="100" cy="100" r="93" fill="none" stroke="rgba(99, 102, 241, 0.25)" stroke-width="0.6" stroke-dasharray="8 58" stroke-dashoffset="28" stroke-linecap="round" />
+                        </svg>
+                    </div>
+                    <div class="cyber-orbit cyber-spin-ccw">
+                        <svg viewBox="0 0 200 200" aria-hidden="true">
+                            <circle cx="100" cy="100" r="84" fill="none" stroke="rgba(34, 211, 238, 0.42)" stroke-width="1" stroke-dasharray="16 38" stroke-dashoffset="12" stroke-linecap="round" />
+                            <circle cx="100" cy="100" r="84" fill="none" stroke="rgba(167, 139, 250, 0.2)" stroke-width="0.55" stroke-dasharray="6 48" stroke-dashoffset="40" stroke-linecap="round" />
+                        </svg>
+                    </div>
+
+                    <div class="hero-logo-stack">
+                        <div class="hero-logo-disc">
+                            <svg class="hero-inner-ring-svg" viewBox="0 0 100 100" aria-hidden="true">
+                                <defs>
+                                    <linearGradient id="innerRingGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+                                        <stop offset="0%" stop-color="#4f46e5" />
+                                        <stop offset="55%" stop-color="#8b5cf6" />
+                                        <stop offset="100%" stop-color="#22d3ee" />
+                                    </linearGradient>
+                                </defs>
+                                <circle cx="50" cy="50" r="48.8" fill="none" stroke="url(#innerRingGrad)" stroke-width="0.85" opacity="0.95" style="filter: drop-shadow(0 0 3px rgba(167,139,250,0.9)) drop-shadow(0 0 8px rgba(6,182,212,0.35));" />
+                            </svg>
+                            <div class="hero-logo-img-wrap">
+                                <img src="../aixflow-logo.png" alt="AIXflow" width="400" height="400" loading="eager" decoding="async">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="showcase" class="py-6 px-6 sm:px-8 max-w-6xl mx-auto">
+            <div class="glass-edge">
+                <div class="glass-inner showcase-viewport relative">
+                    <div class="flex items-center gap-3 mb-5 px-1">
+                        <h2 id="showcaseSectionTitle" class="text-lg font-black text-white tracking-tight">Showcase</h2>
+                        <div class="flex-1 h-px bg-gradient-to-r from-violet-500/40 to-transparent"></div>
+                        <span id="showcaseLayoutHint" class="text-[9px] font-mono text-gray-600 uppercase tracking-widest">By category</span>
+                    </div>
+                    <p id="showcaseLoading" class="text-center text-xs text-zinc-500 py-10">…</p>
+                    <p id="showcaseEmpty" class="hidden text-center text-xs text-zinc-500 py-10"></p>
+                    <div id="showcaseByCategory" aria-live="polite"></div>
+                </div>
+            </div>
+        </section>
+
+        <div
+            id="showcaseZoomBackdrop"
+            class="showcase-zoom-backdrop"
+            aria-hidden="true"
+            role="dialog"
+            aria-modal="true"
+            aria-label=""
+        >
+            <div class="showcase-zoom-dim" data-zoom-dismiss="1" aria-hidden="true"></div>
+            <button type="button" id="showcaseZoomClose" class="showcase-zoom-close" aria-label="Close">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+            <div class="showcase-zoom-frame">
+                <img
+                    id="showcaseZoomImg"
+                    class="showcase-zoom-media"
+                    alt=""
+                    decoding="async"
+                    hidden
+                />
+                <video
+                    id="showcaseZoomVideo"
+                    class="showcase-zoom-media"
+                    controls
+                    playsinline
+                    hidden
+                ></video>
+            </div>
+        </div>
+
+        <section id="features" class="px-6 sm:px-8 max-w-6xl mx-auto pb-16">
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-5">
+                <div class="glass-edge">
+                    <a href="#showcase-cat-video" class="block glass-inner p-6 h-full flex flex-col items-center text-center transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 rounded-[calc(1.25rem-1px)]">
+                        <div class="w-12 h-12 mb-4 flex items-center justify-center text-2xl icon-glow-cyan" aria-hidden="true">
+                            <i class="fa-solid fa-film"></i>
+                        </div>
+                        <h3 class="text-sm font-black tracking-wide text-white mb-2">AI Video</h3>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">镜头、节奏与成片流程节点化编排。</p>
+                    </a>
+                </div>
+                <div class="glass-edge">
+                    <a href="#showcase-cat-image" class="block glass-inner p-6 h-full flex flex-col items-center text-center transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-violet-500/40 rounded-[calc(1.25rem-1px)]">
+                        <div class="w-12 h-12 mb-4 flex items-center justify-center text-2xl icon-glow-violet" aria-hidden="true">
+                            <i class="fa-solid fa-image"></i>
+                        </div>
+                        <h3 class="text-sm font-black tracking-wide text-white mb-2">AI Image</h3>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">文生图、参考图与风格控制，一次接入多模型。</p>
+                    </a>
+                </div>
+                <div class="glass-edge">
+                    <a href="#showcase-cat-music" class="block glass-inner p-6 h-full flex flex-col items-center text-center transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-fuchsia-500/40 rounded-[calc(1.25rem-1px)]">
+                        <div class="w-12 h-12 mb-4 flex items-center justify-center text-2xl icon-glow-fuchsia" aria-hidden="true">
+                            <i class="fa-solid fa-music"></i>
+                        </div>
+                        <h3 class="text-sm font-black tracking-wide text-white mb-2">AI Music</h3>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">人声、配乐与音效链路可在画布中串联。</p>
+                    </a>
+                </div>
+                <div class="glass-edge">
+                    <a href="#showcase-cat-workflow" class="block glass-inner p-6 h-full flex flex-col items-center text-center transition hover:brightness-110 focus:outline-none focus:ring-2 focus:ring-sky-500/40 rounded-[calc(1.25rem-1px)]">
+                        <div class="w-12 h-12 mb-4 flex items-center justify-center text-2xl icon-glow-sky" aria-hidden="true">
+                            <i class="fa-solid fa-diagram-project"></i>
+                        </div>
+                        <h3 class="text-sm font-black tracking-wide text-white mb-2">AI Workflow</h3>
+                        <p class="text-[11px] text-gray-500 leading-relaxed">节点 + 连线，把复杂生产变成可复用模板。</p>
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <section id="models" class="py-16 px-6 sm:px-8 max-w-6xl mx-auto">
+            <div class="flex flex-col items-center gap-6">
+                <div class="w-full max-w-2xl h-px bg-gradient-to-r from-transparent via-white/15 to-transparent"></div>
+                <p class="text-[10px] font-bold uppercase tracking-[0.35em] text-gray-500 text-center">Powered by Leading AI Models</p>
+                <div class="flex flex-wrap justify-center gap-2 sm:gap-3">
+                    <span class="model-pill">Flux</span>
+                    <span class="model-pill">Sora</span>
+                    <span class="model-pill">Suno</span>
+                    <span class="model-pill">GPT-4</span>
+                    <span class="model-pill">Claude</span>
+                </div>
+            </div>
+        </section>
+
+        <section id="get-started" class="py-16 px-6 sm:px-8 max-w-6xl mx-auto text-center">
+            <h2 id="getStartedTitle" class="text-2xl sm:text-3xl font-black text-white mb-3 tracking-tight">Get Started</h2>
+            <p id="getStartedSubtitle" class="text-sm text-gray-500 max-w-md mx-auto mb-8"></p>
+            <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 w-full max-w-xl mx-auto">
+                <a
+                    class="mac-dl-btn mac-dl-btn--inline mac-dl-btn--pending justify-center w-full sm:w-auto"
+                    data-win-installer
+                    href="#"
+                    role="button"
+                    aria-disabled="true"
+                >
+                    <i class="fa-solid fa-wand-magic-sparkles text-sm" aria-hidden="true"></i>
+                    <span id="ctaFooterDownloadText">Get Started</span>
+                </a>
+                <a
+                    class="mac-dl-btn mac-dl-btn--inline mac-dl-btn--pending justify-center w-full sm:w-auto"
+                    data-mac-installer
+                    href="#"
+                    role="button"
+                    aria-disabled="true"
+                    title=""
+                    aria-label="Download for Mac"
+                >
+                    <i class="fa-brands fa-apple text-sm" aria-hidden="true"></i>
+                    <span id="ctaFooterMacText">Download for Mac</span>
+                </a>
+            </div>
+        </section>
+
+        <footer class="border-t border-white/[0.06] py-10 px-6 sm:px-8 max-w-6xl mx-auto">
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-4 text-[10px] text-gray-600">
+                <p class="uppercase tracking-widest">© 2026 AIXflow</p>
+                <div class="flex flex-wrap items-center justify-center gap-3 sm:gap-0 sm:divide-x sm:divide-white/10">
+                    <a href="#" class="sm:px-4 hover:text-gray-400 transition-colors">Privacy</a>
+                    <a href="#" class="sm:px-4 hover:text-gray-400 transition-colors">Terms</a>
+                    <a href="#" class="sm:px-4 hover:text-gray-400 transition-colors">Contact</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        (function initFlowParticles() {
+            const canvas = document.getElementById('particleCanvas');
+            if (!canvas || !canvas.getContext) return;
+            const ctx = canvas.getContext('2d');
+            let w = 0;
+            let h = 0;
+            let particles = [];
+            const linkDist = () => (w < 640 ? 88 : 118);
+            const speed = () => (w < 640 ? 0.11 : 0.14);
+            const count = () => (w < 640 ? 24 : 46);
+
+            function spawn() {
+                const n = count();
+                particles = [];
+                for (let i = 0; i < n; i++) {
+                    particles.push({
+                        x: Math.random() * w,
+                        y: Math.random() * h,
+                        vx: (Math.random() - 0.5) * speed() * 2,
+                        vy: (Math.random() - 0.5) * speed() * 2,
+                    });
+                }
+            }
+
+            function resize() {
+                const dpr = Math.min(window.devicePixelRatio || 1, 2);
+                const rw = window.innerWidth;
+                const rh = window.innerHeight;
+                canvas.width = Math.floor(rw * dpr);
+                canvas.height = Math.floor(rh * dpr);
+                canvas.style.width = rw + 'px';
+                canvas.style.height = rh + 'px';
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                w = rw;
+                h = rh;
+                spawn();
+            }
+
+            window.addEventListener('resize', resize);
+            resize();
+
+            function wrap(v, max) {
+                if (v < 0) return v + max;
+                if (v >= max) return v - max;
+                return v;
+            }
+
+            function distWrap(ax, ay, bx, by) {
+                let dx = ax - bx;
+                let dy = ay - by;
+                if (dx > w * 0.5) dx -= w;
+                else if (dx < -w * 0.5) dx += w;
+                if (dy > h * 0.5) dy -= h;
+                else if (dy < -h * 0.5) dy += h;
+                return Math.hypot(dx, dy);
+            }
+
+            function step() {
+                ctx.clearRect(0, 0, w, h);
+                const ld = linkDist();
+                const sp = speed();
+
+                for (const p of particles) {
+                    p.x = wrap(p.x + p.vx, w);
+                    p.y = wrap(p.y + p.vy, h);
+                    p.vx += (Math.random() - 0.5) * 0.012;
+                    p.vy += (Math.random() - 0.5) * 0.012;
+                    const m = sp * 1.8;
+                    p.vx = Math.max(-m, Math.min(m, p.vx));
+                    p.vy = Math.max(-m, Math.min(m, p.vy));
+                }
+
+                for (let i = 0; i < particles.length; i++) {
+                    for (let j = i + 1; j < particles.length; j++) {
+                        const a = particles[i];
+                        const b = particles[j];
+                        const d = distWrap(a.x, a.y, b.x, b.y);
+                        if (d < ld && d > 1) {
+                            const t = 1 - d / ld;
+                            ctx.strokeStyle = 'rgba(167, 180, 198, ' + (t * 0.1).toFixed(3) + ')';
+                            ctx.lineWidth = 0.55;
+                            ctx.beginPath();
+                            ctx.moveTo(a.x, a.y);
+                            ctx.lineTo(b.x, b.y);
+                            ctx.stroke();
+                        }
+                    }
+                }
+
+                for (const p of particles) {
+                    ctx.fillStyle = 'rgba(226, 232, 240, 0.22)';
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 0.85, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                requestAnimationFrame(step);
+            }
+
+            requestAnimationFrame(step);
+        })();
+
+        /**
+         * Windows 下载逻辑（与 electron-updater / latest.yml / nsis-web 一致）：
+         * 1) fetch latest.yml（cache: 'no-store'）；
+         * 2) 优先使用 OSS 上的 Aixflow-Windows-Offline-{version}.zip（离线傻瓜包，解压后 exe+7z 同目录）；
+         * 3) 若无离线 zip，则使用 yml 的 path: stub exe（在线安装，安装过程从 OSS 拉 .nsis.7z）。
+         * OSS 须配置 CORS（GET/HEAD），否则 fetch 会被浏览器拦截。
+         */
+        const LATEST_YML_URL =
+            'https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/aixflow%20uploads/latest.yml';
+        const WIN_INSTALLER_BASE =
+            'https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/aixflow%20uploads/';
+        const WIN_INSTALLER_URL = '';
+
+        /**
+         * Mac：与 OSS 目录「Aixflow uploads Mac/」、electron-updater setFeedURL 一致。
+         * 读取 latest-mac.yml，多架构 zip/dmg 时按 CPU 自动选包。可选 MAC_INSTALLER_URL 覆盖。
+         */
+        const LATEST_MAC_YML_URL =
+            'https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/Aixflow%20uploads%20Mac/latest-mac.yml';
+        const MAC_INSTALLER_BASE =
+            'https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/Aixflow%20uploads%20Mac/';
+        const MAC_INSTALLER_URL = '';
+
+        /**
+         * 与 src/hooks/useOSSConfig.ts 约定一致：Bucket nexflow-temp-images，静态站在 /web 下。
+         * 优先拉取 web/data/showcase.json；若无则 config.json；另可并行拉取 gallery-manifest.json 覆盖图/音/视频/工作流列表（见 generate-oss-gallery-manifest.mjs）。
+         */
+        const OSS_BUCKET_ROOT = 'https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com';
+        const OSS_WEB_BASE = OSS_BUCKET_ROOT + '/web';
+        const OSS_WEB_DATA_SHOWCASE = OSS_WEB_BASE + '/data/showcase.json';
+        const OSS_WEB_DATA_CONFIG = OSS_WEB_BASE + '/data/config.json';
+        const OSS_WEB_DATA_GALLERY_MANIFEST = OSS_WEB_BASE + '/data/gallery-manifest.json';
+        /** 设为 false 可仅用下方相对路径本地调试（需同目录有 data/showcase.json） */
+        const USE_OSS_WEB_DATA = true;
+        const SHOWCASE_JSON_RELATIVE = 'data/showcase.json';
+
+        function withCacheBust(u) {
+            return u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+        }
+
+        function typeToWebFolder(type) {
+            const t = String(type || '').toLowerCase();
+            if (t === 'video') return 'video';
+            if (t === 'manga' || t === 'image' || t === 'picture' || t === 'img') return 'image';
+            if (t === 'music' || t === 'audio') return 'music';
+            if (t === 'workflow') return 'workflow';
+            return 'image';
+        }
+
+        function resolveWebMediaUrl(mediaUrl, type) {
+            var raw = String(mediaUrl || '').trim();
+            if (!raw) return '';
+            if (/^https?:\/\//i.test(raw)) return raw;
+            var root = OSS_BUCKET_ROOT.replace(/\/$/, '');
+            var webBase = OSS_WEB_BASE.replace(/\/$/, '');
+            if (raw.indexOf('/web/') === 0 || raw.indexOf('web/') === 0) {
+                var p = raw.indexOf('/web/') === 0 ? raw : '/' + raw;
+                return root + p;
+            }
+            var folder = typeToWebFolder(type);
+            return webBase + '/' + folder + '/' + raw.replace(/^\/+/, '');
+        }
+
+        async function fetchShowcasePayload() {
+            if (!USE_OSS_WEB_DATA) {
+                var rel = withCacheBust(SHOWCASE_JSON_RELATIVE);
+                var res = await fetch(rel, { cache: 'no-store', mode: 'cors' });
+                if (!res.ok) {
+                    if (res.status === 404) return {};
+                    throw new Error('HTTP ' + res.status);
+                }
+                return res.json();
+            }
+            var r1 = await fetch(withCacheBust(OSS_WEB_DATA_SHOWCASE), {
+                cache: 'no-store',
+                mode: 'cors',
+            });
+            if (r1.ok) return r1.json();
+            if (r1.status === 404) {
+                var r2 = await fetch(withCacheBust(OSS_WEB_DATA_CONFIG), {
+                    cache: 'no-store',
+                    mode: 'cors',
+                });
+                if (r2.ok) return r2.json();
+                if (r2.status === 404) return {};
+                throw new Error('showcase.json / config.json 均不可用 (HTTP ' + r2.status + ')');
+            }
+            throw new Error('showcase.json HTTP ' + r1.status);
+        }
+
+        async function fetchGalleryManifestSafe() {
+            try {
+                if (!USE_OSS_WEB_DATA) {
+                    var lr = await fetch(withCacheBust('data/gallery-manifest.json'), {
+                        cache: 'no-store',
+                        mode: 'cors',
+                    });
+                    if (lr.ok) return lr.json();
+                    return null;
+                }
+                var r = await fetch(withCacheBust(OSS_WEB_DATA_GALLERY_MANIFEST), {
+                    cache: 'no-store',
+                    mode: 'cors',
+                });
+                if (r.ok) return r.json();
+            } catch (_) {}
+            return null;
+        }
+
+        function buildGalleryRelUrl(folder, relPath) {
+            var webBase = OSS_WEB_BASE.replace(/\/$/, '');
+            var n = String(relPath || '')
+                .trim()
+                .replace(/^\/+/, '');
+            if (!n) return '';
+            return (
+                webBase +
+                '/' +
+                folder +
+                '/' +
+                n
+                    .split('/')
+                    .filter(Boolean)
+                    .map(encodeURIComponent)
+                    .join('/')
+            );
+        }
+
+        function galleryManifestToMusicItems(manifest) {
+            var rawList = manifest.music || manifest.musics || manifest.audio || [];
+            if (!Array.isArray(rawList)) return [];
+            return rawList
+                .map(function (entry, idx) {
+                    if (entry && typeof entry === 'object') {
+                        var u = String(entry.url || '').trim();
+                        if (u) {
+                            var c = String(entry.cover || '').trim();
+                            return {
+                                category: 'music',
+                                title: String(entry.title || '').trim(),
+                                url: u,
+                                cover: c || u,
+                                download: String(entry.download || u).trim() || u,
+                                slotIndex: idx,
+                            };
+                        }
+                        var file = String(entry.file || entry.name || entry.key || '').trim();
+                        if (!file) return null;
+                        var audioUrl = buildGalleryRelUrl('music', file);
+                        if (!audioUrl) return null;
+                        var coverRel = String(entry.cover || '').trim();
+                        var coverUrl = coverRel ? buildGalleryRelUrl('music', coverRel) : '';
+                        return {
+                            category: 'music',
+                            title: String(entry.title || '').trim(),
+                            url: audioUrl,
+                            cover: coverUrl || audioUrl,
+                            download: audioUrl,
+                            slotIndex: idx,
+                        };
+                    }
+                    var n = String(entry || '').trim().replace(/^\/+/, '');
+                    if (!n) return null;
+                    var url = buildGalleryRelUrl('music', n);
+                    if (!url) return null;
+                    return {
+                        category: 'music',
+                        title: '',
+                        url: url,
+                        cover: url,
+                        download: url,
+                        slotIndex: idx,
+                    };
+                })
+                .filter(Boolean);
+        }
+
+        function galleryManifestToWorkflowItems(manifest) {
+            var rawList = manifest.workflow || manifest.workflows || [];
+            if (!Array.isArray(rawList)) return [];
+            return rawList
+                .map(function (entry, idx) {
+                    if (entry && typeof entry === 'object') {
+                        var u = String(entry.url || '').trim();
+                        if (u) {
+                            var cov = String(entry.cover || '').trim();
+                            return {
+                                category: 'workflow',
+                                title: String(entry.title || '').trim(),
+                                url: u,
+                                cover: cov,
+                                download: String(entry.download || u).trim() || u,
+                                slotIndex: idx,
+                            };
+                        }
+                        var file = String(entry.file || entry.name || entry.key || '').trim();
+                        if (!file) return null;
+                        var wfUrl = buildGalleryRelUrl('workflow', file);
+                        if (!wfUrl) return null;
+                        var coverRel = String(entry.cover || '').trim();
+                        var coverUrl = coverRel ? buildGalleryRelUrl('workflow', coverRel) : '';
+                        return {
+                            category: 'workflow',
+                            title: String(entry.title || '').trim(),
+                            url: wfUrl,
+                            cover: coverUrl,
+                            download: wfUrl,
+                            slotIndex: idx,
+                        };
+                    }
+                    var n = String(entry || '').trim().replace(/^\/+/, '');
+                    if (!n) return null;
+                    var url = buildGalleryRelUrl('workflow', n);
+                    if (!url) return null;
+                    return {
+                        category: 'workflow',
+                        title: '',
+                        url: url,
+                        cover: '',
+                        download: url,
+                        slotIndex: idx,
+                    };
+                })
+                .filter(Boolean);
+        }
+
+        function galleryManifestToItems(manifest, kind) {
+            var folder = kind === 'video' ? 'video' : 'image';
+            var rawList =
+                kind === 'video'
+                    ? manifest.videos || manifest.video || []
+                    : manifest.images || manifest.image || [];
+            if (!Array.isArray(rawList)) return [];
+            var webBase = OSS_WEB_BASE.replace(/\/$/, '');
+            return rawList
+                .map(function (entry, idx) {
+                    if (entry && typeof entry === 'object') {
+                        var u = String(entry.url || '').trim();
+                        if (u) {
+                            return {
+                                category: kind,
+                                title: String(entry.title || '').trim(),
+                                url: u,
+                                cover: String(entry.cover || u).trim() || u,
+                                download: String(entry.download || u).trim() || u,
+                                slotIndex: idx,
+                            };
+                        }
+                        var name = String(entry.name || entry.file || entry.key || '').trim();
+                        if (!name) return null;
+                        var urlObj =
+                            webBase +
+                            '/' +
+                            folder +
+                            '/' +
+                            name
+                                .split('/')
+                                .filter(Boolean)
+                                .map(encodeURIComponent)
+                                .join('/');
+                        return {
+                            category: kind,
+                            title: String(entry.title || '').trim(),
+                            url: urlObj,
+                            cover: urlObj,
+                            download: urlObj,
+                            slotIndex: idx,
+                        };
+                    }
+                    var n = String(entry || '').trim().replace(/^\/+/, '');
+                    if (!n) return null;
+                    var url =
+                        webBase +
+                        '/' +
+                        folder +
+                        '/' +
+                        n.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+                    return {
+                        category: kind,
+                        title: '',
+                        url: url,
+                        cover: url,
+                        download: url,
+                        slotIndex: idx,
+                    };
+                })
+                .filter(Boolean);
+        }
+
+        function applyGalleryManifestToCategories(categories, manifest) {
+            if (!manifest || typeof manifest !== 'object' || !categories) return categories;
+            var imgs = galleryManifestToItems(manifest, 'image');
+            var vids = galleryManifestToItems(manifest, 'video');
+            var mus = galleryManifestToMusicItems(manifest);
+            var wfs = galleryManifestToWorkflowItems(manifest);
+            if (imgs.length > 0) categories.image = imgs;
+            if (vids.length > 0) categories.video = vids;
+            if (mus.length > 0) categories.music = mus;
+            if (wfs.length > 0) categories.workflow = wfs;
+            return categories;
+        }
+
+        function scenesConfigToFlat(data) {
+            if (!data || !Array.isArray(data.scenes)) return [];
+            var out = [];
+            for (var i = 0; i < data.scenes.length; i++) {
+                var s = data.scenes[i];
+                if (!s || typeof s !== 'object') continue;
+                var type = String(s.type || 'image');
+                var st = String(s.status || '').toLowerCase();
+                if ((st === 'processing' || st === 'pending') && !String(s.mediaUrl || '').trim()) continue;
+                var cat =
+                    type === 'video'
+                        ? 'video'
+                        : type === 'music' || type === 'audio'
+                          ? 'music'
+                          : type === 'workflow'
+                            ? 'workflow'
+                            : 'image';
+                var url = resolveWebMediaUrl(s.mediaUrl, type);
+                if (!url && cat !== 'workflow') continue;
+                var cover = url;
+                if (cat === 'workflow' && url && /\.json($|\?)/i.test(url)) cover = '';
+                out.push({
+                    category: cat,
+                    title: s.title || 'Untitled',
+                    url: url || '',
+                    cover: cover,
+                    download: url || '',
+                    slotIndex: i,
+                });
+            }
+            return out;
+        }
+
+        function mergeShowcaseItems(data) {
+            var legacy = flattenShowcase(data);
+            if (legacy.length > 0) return legacy;
+            return scenesConfigToFlat(data);
+        }
+
+        var SHOWCASE_CAT_ORDER = ['video', 'image', 'music', 'workflow'];
+
+        function legacyShowcaseToCategories(data) {
+            var result = { image: [], video: [], music: [], workflow: [] };
+            for (var i = 0; i < SHOWCASE_CAT_ORDER.length; i++) {
+                var c = SHOWCASE_CAT_ORDER[i];
+                var arr = data && Array.isArray(data[c]) ? data[c] : [];
+                for (var j = 0; j < arr.length; j++) {
+                    var e = arr[j];
+                    if (e && typeof e === 'object') result[c].push({ ...e, category: c, slotIndex: j });
+                }
+            }
+            return result;
+        }
+
+        function groupFlatByCategory(flat) {
+            var result = { image: [], video: [], music: [], workflow: [] };
+            for (var i = 0; i < flat.length; i++) {
+                var it = flat[i];
+                var c = it.category;
+                if (result[c]) result[c].push(it);
+            }
+            return result;
+        }
+
+        function hasLegacyShowcaseShape(data) {
+            return (
+                data &&
+                typeof data === 'object' &&
+                !Array.isArray(data.scenes) &&
+                (Array.isArray(data.image) ||
+                    Array.isArray(data.video) ||
+                    Array.isArray(data.music) ||
+                    Array.isArray(data.workflow))
+            );
+        }
+
+        function getShowcaseCategories(data, galleryManifest) {
+            var categories;
+            if (!data || typeof data !== 'object') {
+                categories = { image: [], video: [], music: [], workflow: [] };
+            } else if (Array.isArray(data.scenes)) {
+                categories = groupFlatByCategory(scenesConfigToFlat(data));
+            } else if (hasLegacyShowcaseShape(data)) {
+                categories = legacyShowcaseToCategories(data);
+            } else {
+                categories = groupFlatByCategory(mergeShowcaseItems(data));
+            }
+            if (galleryManifest) {
+                applyGalleryManifestToCategories(categories, galleryManifest);
+            }
+            return categories;
+        }
+
+        function totalCategoryCount(categories) {
+            var n = 0;
+            for (var i = 0; i < SHOWCASE_CAT_ORDER.length; i++) {
+                n += (categories[SHOWCASE_CAT_ORDER[i]] || []).length;
+            }
+            return n;
+        }
+
+        var CAT_SHOW_META = {
+            image: { icon: 'fa-image', glow: 'icon-glow-violet' },
+            video: { icon: 'fa-film', glow: 'icon-glow-cyan' },
+            music: { icon: 'fa-music', glow: 'icon-glow-fuchsia' },
+            workflow: { icon: 'fa-diagram-project', glow: 'icon-glow-sky' },
+        };
+
+        const LANG_KEY = 'aixflow-landing-lang';
+
+        let showcaseBootSeq = 0;
+
+        /** 'loading' | 'ready' | 'fail' — Mac 下载按钮文案与样式 */
+        let macDownloadState = 'loading';
+
+        function parseInstallerFileNameFromLatestYml(text) {
+            const m = text.match(/^path:\s*(.+)$/m);
+            let name = (m && m[1] ? m[1].trim() : '') || '';
+            if (
+                (name.startsWith('"') && name.endsWith('"')) ||
+                (name.startsWith("'") && name.endsWith("'"))
+            ) {
+                name = name.slice(1, -1).trim();
+            }
+            if (name && /\.exe$/i.test(name)) return name;
+            return '';
+        }
+
+        function parseVersionFromLatestYml(text) {
+            const m = text.match(/^version:\s*(.+)$/m);
+            if (!m || !m[1]) return '';
+            let v = m[1].trim();
+            if (
+                (v.startsWith('"') && v.endsWith('"')) ||
+                (v.startsWith("'") && v.endsWith("'"))
+            ) {
+                v = v.slice(1, -1).trim();
+            }
+            return v;
+        }
+
+        function buildWinInstallerObjectUrl(fileName) {
+            const base = String(WIN_INSTALLER_BASE || '').replace(/\/+$/, '') + '/';
+            return base + encodeURIComponent(fileName);
+        }
+
+        async function ossObjectExists(url) {
+            try {
+                const res = await fetch(url, { method: 'HEAD', cache: 'no-store', mode: 'cors' });
+                return res.ok;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function parseMacArtifactNamesFromLatestMacYml(text) {
+            const names = [];
+            for (const line of text.split('\n')) {
+                const m = line.match(/^\s*url:\s*(.+)\s*$/);
+                if (!m) continue;
+                let name = m[1].trim();
+                if (
+                    (name.startsWith('"') && name.endsWith('"')) ||
+                    (name.startsWith("'") && name.endsWith("'"))
+                ) {
+                    name = name.slice(1, -1).trim();
+                }
+                if (/\.(zip|dmg)$/i.test(name)) names.push(name);
+            }
+            if (names.length === 0) {
+                const pm = text.match(/^path:\s*(.+)$/m);
+                if (pm) {
+                    let name = pm[1].trim();
+                    if (
+                        (name.startsWith('"') && name.endsWith('"')) ||
+                        (name.startsWith("'") && name.endsWith("'"))
+                    ) {
+                        name = name.slice(1, -1).trim();
+                    }
+                    if (/\.(zip|dmg)$/i.test(name)) names.push(name);
+                }
+            }
+            return names;
+        }
+
+        async function guessAppleSilicon() {
+            try {
+                const uad = navigator.userAgentData;
+                if (uad && typeof uad.getHighEntropyValues === 'function') {
+                    const v = await uad.getHighEntropyValues(['architecture']);
+                    if (v && v.architecture === 'arm') return true;
+                    if (v && v.architecture === 'x86') return false;
+                }
+            } catch (_) {}
+            if (/arm64|aarch64/i.test(navigator.userAgent)) return true;
+            return false;
+        }
+
+        async function pickMacArtifactName(names) {
+            if (!names || names.length === 0) return '';
+            if (names.length === 1) return names[0];
+            const arm = names.find((n) => /arm64|aarch64/i.test(n));
+            const intel = names.find(
+                (n) => /(^|[^a-z0-9])x64([^a-z0-9]|$)/i.test(n) && !/arm64/i.test(n)
+            );
+            const silicon = await guessAppleSilicon();
+            if (silicon && arm) return arm;
+            if (!silicon && intel) return intel;
+            return arm || intel || names[0];
+        }
+
+        async function resolveMacInstallerUrl() {
+            const manual = typeof MAC_INSTALLER_URL === 'string' ? MAC_INSTALLER_URL.trim() : '';
+            if (/^https?:\/\//i.test(manual)) return manual;
+
+            try {
+                const res = await fetch(LATEST_MAC_YML_URL, {
+                    cache: 'no-store',
+                    method: 'GET',
+                    mode: 'cors',
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+                const names = parseMacArtifactNamesFromLatestMacYml(text);
+                const fileName = await pickMacArtifactName(names);
+                if (!fileName) throw new Error('latest-mac.yml 中无有效 zip/dmg');
+                return MAC_INSTALLER_BASE + encodeURIComponent(fileName);
+            } catch (e) {
+                console.warn('[Aixflow] 无法获取 Mac 安装包链接:', e);
+                return '';
+            }
+        }
+
+        async function resolveWindowsInstallerUrl() {
+            const manual = typeof WIN_INSTALLER_URL === 'string' ? WIN_INSTALLER_URL.trim() : '';
+            if (/^https?:\/\//i.test(manual)) return manual;
+
+            try {
+                const res = await fetch(LATEST_YML_URL, {
+                    cache: 'no-store',
+                    method: 'GET',
+                    mode: 'cors',
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const text = await res.text();
+                const version = parseVersionFromLatestYml(text);
+                if (version) {
+                    const offlineZip = 'Aixflow-Windows-Offline-' + version + '.zip';
+                    const offlineUrl = buildWinInstallerObjectUrl(offlineZip);
+                    if (await ossObjectExists(offlineUrl)) {
+                        console.info('[Aixflow] Windows 下载：离线包', offlineZip);
+                        return offlineUrl;
+                    }
+                }
+                const fileName = parseInstallerFileNameFromLatestYml(text);
+                if (!fileName) throw new Error('latest.yml 中无有效 path（.exe）');
+                console.info('[Aixflow] Windows 下载：在线 stub', fileName);
+                return buildWinInstallerObjectUrl(fileName);
+            } catch (e) {
+                console.warn('[Aixflow] 无法获取最新安装包链接:', e);
+                return '';
+            }
+        }
+
+        const i18n = {
+            en: {
+                docTitle: 'AIXflow — AI Creation Operating System',
+                htmlLang: 'en',
+                heroEyebrow: 'The AI Creation Operating System',
+                heroTitleHtml:
+                    '<span class="text-white">The Future of</span><br>' +
+                    '<span class="text-gradient">AI Creation</span>' +
+                    '<span class="text-white"> · Operating System</span>',
+                heroSubtitle:
+                    'Unify open-source and closed-source models with creative tools on one canvas—freely build your AI creation workflow.',
+                ctaDownload: 'Download for Windows',
+                ctaMac: 'Download for Mac',
+                ctaMacHintLoading: 'Checking download…',
+                ctaMacHintOffline: 'Not available yet',
+                ctaMacTitleLoading: 'Preparing download…',
+                ctaMacTitleReady: 'Download the macOS app',
+                ctaMacTitleOffline: 'macOS build not available',
+                ctaFooter: 'Get Started',
+                getStartedTitle: 'Get Started',
+                getStartedSubtitle:
+                    'Install the desktop client and connect models and tools on one canvas.',
+                langToggleTitle: '中文',
+                langToggleAria: 'Switch to Chinese',
+                showcaseTitle: 'Showcase',
+                navShowcase: 'Showcase',
+                showcaseLayoutHint: 'By category',
+                catImage: 'AI Image',
+                catVideo: 'AI Video',
+                catMusic: 'AI Music',
+                catWorkflow: 'AI Workflow',
+                showcaseEmpty: 'No showcase items yet.',
+                showcaseLoading: 'Loading showcase…',
+                showcaseFetchError: 'Failed to load showcase data.',
+                workflowDownload: 'Download workflow',
+                showcaseViewAll: 'View all >',
+                showcaseProcessLabel: 'Behind the scenes',
+                showcaseLikeAria: 'Like',
+                showcaseZoomTitle: 'Enlarge',
+                showcaseZoomAria: 'View larger',
+                showcaseZoomClose: 'Close',
+                showcaseZoomDialog: 'Media preview',
+            },
+            zh: {
+                docTitle: 'AIXflow — AI 动态创作操作系统',
+                htmlLang: 'zh-CN',
+                heroEyebrow: 'AI 动态创作操作系统',
+                heroTitleHtml:
+                    '<span class="text-white">一张画布 · 所有 AI · </span>' +
+                    '<span class="text-gradient">完全掌控</span>',
+                heroSubtitle:
+                    '把开源模型、闭源模型和各种创作工具整合在一张画布中，<br>自由构建你的 AI 创作流程。',
+                ctaDownload: '下载 Windows 版',
+                ctaMac: '下载 Mac 版',
+                ctaMacHintLoading: '正在获取下载…',
+                ctaMacHintOffline: '敬请期待',
+                ctaMacTitleLoading: '正在获取下载链接…',
+                ctaMacTitleReady: '下载 macOS 安装包',
+                ctaMacTitleOffline: '暂无 Mac 安装包',
+                ctaFooter: '开始创作',
+                getStartedTitle: '开始使用',
+                getStartedSubtitle: '立即安装桌面客户端，把模型与工具接到同一张画布上。',
+                langToggleTitle: 'English',
+                langToggleAria: 'Switch to English',
+                showcaseTitle: '作品展示',
+                navShowcase: '作品',
+                showcaseLayoutHint: '按类型',
+                catImage: 'AI 图像',
+                catVideo: 'AI 视频',
+                catMusic: 'AI 音乐',
+                catWorkflow: 'AI 工作流',
+                showcaseEmpty: '暂无展示内容。',
+                showcaseLoading: '正在加载展示…',
+                showcaseFetchError: '无法加载展示数据。',
+                workflowDownload: '下载工作流',
+                showcaseViewAll: '查看全部 >',
+                showcaseProcessLabel: '查看创作过程',
+                showcaseLikeAria: '点赞',
+                showcaseZoomTitle: '放大',
+                showcaseZoomAria: '放大查看',
+                showcaseZoomClose: '关闭',
+                showcaseZoomDialog: '媒体预览',
+            },
+        };
+
+        function esc(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        /** 从媒体 URL 取「本来的文件名」（含扩展名）；工作流用 download/url 指向的 .json/.aixflow，不用封面图 URL */
+        function showcaseFileNameFromUrl(urlStr) {
+            var s = String(urlStr || '').trim();
+            if (!s) return '';
+            try {
+                var noQ = s.split('?')[0].split('#')[0];
+                var path = noQ;
+                if (/^https?:\/\//i.test(noQ)) {
+                    try {
+                        path = new URL(noQ).pathname || '';
+                    } catch (_) {
+                        path = noQ;
+                    }
+                }
+                var parts = path.split('/').filter(function (p) {
+                    return p.length > 0;
+                });
+                if (parts.length === 0) return '';
+                var last = parts[parts.length - 1];
+                try {
+                    last = decodeURIComponent(last.replace(/\+/g, ' '));
+                } catch (_) {}
+                return last;
+            } catch (_) {
+                return '';
+            }
+        }
+
+        function showcaseStripFileExtension(filename) {
+            var s = String(filename || '').trim();
+            if (!s) return s;
+            return s.replace(/\.[^./\\]+$/, '');
+        }
+
+        function showcaseDisplayTitleFromItem(it) {
+            var u = String(it.download || it.url || '').trim();
+            if (!u) u = String(it.url || '').trim();
+            var name = showcaseFileNameFromUrl(u);
+            var raw = name || String(it.title || '').trim();
+            return showcaseStripFileExtension(raw);
+        }
+
+        function showcasePseudoStarCount(it) {
+            var i = typeof it.slotIndex === 'number' ? it.slotIndex : 0;
+            return 38 + (i * 37) % 184;
+        }
+
+        function showcaseItemLikeKey(it) {
+            var raw = String(it.download || it.url || '').trim();
+            if (!raw) {
+                raw =
+                    String(it.category || '') +
+                    '\0' +
+                    String(it.slotIndex) +
+                    '\0' +
+                    String(showcaseDisplayTitleFromItem(it) || '');
+            }
+            return 'aixflow_sf_like_v1:' + encodeURIComponent(raw);
+        }
+
+        function showcaseGetLikeDelta(likeKey) {
+            try {
+                var v = localStorage.getItem(likeKey);
+                if (v == null || v === '') return 0;
+                var n = parseInt(v, 10);
+                return isNaN(n) || n < 0 ? 0 : n;
+            } catch (_) {
+                return 0;
+            }
+        }
+
+        function buildShowcaseDurationBadge(it) {
+            var d = String(it.duration || '').trim();
+            if (!d) return '';
+            return '<span class="showcase-card-duration">' + esc(d) + '</span>';
+        }
+
+        function buildShowcaseCornerExtras(it, tr, opts) {
+            opts = opts || {};
+            var parts = [];
+            var zt = String(opts.zoomType || '').trim().toLowerCase();
+            var zs = String(opts.zoomSrc || '').trim();
+            if (
+                (zt === 'image' || zt === 'video') &&
+                zs &&
+                /^https?:\/\//i.test(zs)
+            ) {
+                parts.push(
+                    '<button type="button" class="showcase-zoom-btn" data-zoom-type="' +
+                        esc(zt) +
+                        '" data-zoom-src="' +
+                        esc(zs) +
+                        '" title="' +
+                        esc(tr.showcaseZoomTitle || tr.showcaseZoomAria || '') +
+                        '" aria-label="' +
+                        esc(tr.showcaseZoomAria || tr.showcaseZoomTitle || '') +
+                        '">' +
+                        '<i class="fa-solid fa-magnifying-glass-plus" aria-hidden="true"></i></button>',
+                );
+            }
+            if (opts.workflowDl && /^https?:\/\//i.test(String(opts.workflowDl))) {
+                parts.push(
+                    '<a href="' +
+                        esc(opts.workflowDl) +
+                        '" class="showcase-dl showcase-dl--chip" download target="_blank" rel="noopener">' +
+                        esc(tr.workflowDownload || 'Download') +
+                        '</a>',
+                );
+            }
+            var purl = String(it.processUrl || '').trim();
+            if (/^https?:\/\//i.test(purl)) {
+                parts.push(
+                    '<a href="' +
+                        esc(purl) +
+                        '" class="showcase-card-corner-tr-text" target="_blank" rel="noopener noreferrer">' +
+                        esc(tr.showcaseProcessLabel || 'Process') +
+                        '</a>',
+                );
+            }
+            if (parts.length === 0) return '';
+            return '<div class="showcase-card-corner-tr">' + parts.join('') + '</div>';
+        }
+
+        function buildShowcaseBottomOverlay(it, tr, rawTitle) {
+            var base = showcasePseudoStarCount(it);
+            var likeKey = showcaseItemLikeKey(it);
+            var delta = showcaseGetLikeDelta(likeKey);
+            var total = base + delta;
+            var tEsc = esc(rawTitle);
+            var likeAria = esc(tr.showcaseLikeAria || 'Like');
+            return (
+                '<div class="showcase-card-overlay-bottom">' +
+                '<div class="showcase-card-overlay-text">' +
+                '<span class="showcase-card-titleline" title="' +
+                tEsc +
+                '">' +
+                tEsc +
+                '</span>' +
+                '</div>' +
+                '<button type="button" class="showcase-like-btn" data-like-key="' +
+                esc(likeKey) +
+                '" data-like-base="' +
+                String(base) +
+                '" aria-label="' +
+                likeAria +
+                '">' +
+                '<i class="fa-solid fa-star" aria-hidden="true"></i>' +
+                '<span class="showcase-like-count">' +
+                String(total) +
+                '</span>' +
+                '</button>' +
+                '</div>'
+            );
+        }
+
+        function flattenShowcase(data) {
+            const cats = ['video', 'image', 'music', 'workflow'];
+            const out = [];
+            for (const c of cats) {
+                const arr = data && Array.isArray(data[c]) ? data[c] : [];
+                for (let i = 0; i < arr.length; i++) {
+                    const e = arr[i];
+                    if (e && typeof e === 'object') out.push({ category: c, ...e, slotIndex: i });
+                }
+            }
+            out.sort((a, b) => {
+                const ta = Date.parse(a.addedAt || '') || 0;
+                const tb = Date.parse(b.addedAt || '') || 0;
+                return tb - ta;
+            });
+            return out;
+        }
+
+        function buildAudioWaveBarsHtml() {
+            var parts = [];
+            for (var i = 0; i < 22; i++) {
+                parts.push(
+                    '<span style="animation-delay:' + (i * 0.055).toFixed(3) + 's"></span>',
+                );
+            }
+            return parts.join('');
+        }
+
+        function buildMediaHtml(it, lang) {
+            var L = lang === 'zh' ? 'zh' : 'en';
+            var tr = i18n[L] || i18n.en;
+            var rawTitle = showcaseDisplayTitleFromItem(it);
+            if (!rawTitle) rawTitle = L === 'zh' ? '未命名' : 'Untitled';
+            var u = String(it.url || '');
+            var dl = String(it.download || u);
+            var overlay = buildShowcaseBottomOverlay(it, tr, rawTitle);
+            var durBadge = buildShowcaseDurationBadge(it);
+            if (it.category === 'workflow') {
+                var wfSvgPoster =
+                    'data:image/svg+xml,' +
+                    encodeURIComponent(
+                        '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="240" viewBox="0 0 400 240"><rect fill="%23110b18" width="400" height="240"/><text x="200" y="125" text-anchor="middle" fill="%23a78bfa" font-family="system-ui,sans-serif" font-size="13">Workflow</text></svg>'
+                    );
+                var wfCoverOnly = String(it.cover || '').trim();
+                var poster = wfCoverOnly;
+                if (
+                    !poster ||
+                    /\.(json|aixflow)(\?|#|$)/i.test(
+                        poster.split('?')[0].split('#')[0]
+                    )
+                ) {
+                    poster = wfSvgPoster;
+                }
+                var wfDlOk = dl && /^https?:\/\//i.test(dl) ? dl : '';
+                var wfZoomOk =
+                    /^https?:\/\//i.test(String(poster)) &&
+                    !/^data:/i.test(String(poster).trim());
+                var wfCornerOpts = { workflowDl: wfDlOk };
+                if (wfZoomOk) {
+                    wfCornerOpts.zoomType = 'image';
+                    wfCornerOpts.zoomSrc = poster;
+                }
+                var corner = buildShowcaseCornerExtras(it, tr, wfCornerOpts);
+                return (
+                    '<div class="showcase-card-inner showcase-card-inner--workflow">' +
+                    '<div class="showcase-card-poster">' +
+                    '<img src="' +
+                    esc(poster) +
+                    '" alt="" loading="lazy" decoding="async" class="showcase-card-fill"/>' +
+                    durBadge +
+                    corner +
+                    '<div class="showcase-card-scrim" aria-hidden="true"></div>' +
+                    overlay +
+                    '</div>' +
+                    '</div>'
+                );
+            }
+            var cover = String(it.cover || u);
+            var audioLike = it.category === 'music' || /\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/i.test(u);
+            if (audioLike) {
+                var coverPath = cover.split('?')[0].split('#')[0];
+                var hasImgCover =
+                    cover &&
+                    cover !== dl &&
+                    /\.(jpe?g|png|gif|webp|avif|bmp|svg)(\?|#|$)/i.test(coverPath);
+                var posterMedia = hasImgCover
+                    ? '<img src="' +
+                      esc(cover) +
+                      '" alt="" loading="lazy" decoding="async" class="showcase-card-fill"/>'
+                    : '<div class="showcase-card-music-fallback">' +
+                      '<div class="showcase-audio-wave" aria-hidden="true">' +
+                      buildAudioWaveBarsHtml() +
+                      '</div></div>';
+                var musicCornerOpts = {};
+                if (hasImgCover && /^https?:\/\//i.test(String(cover))) {
+                    musicCornerOpts.zoomType = 'image';
+                    musicCornerOpts.zoomSrc = cover;
+                }
+                var cornerM = buildShowcaseCornerExtras(it, tr, musicCornerOpts);
+                return (
+                    '<div class="showcase-card-inner showcase-card-inner--music">' +
+                    '<div class="showcase-card-poster">' +
+                    posterMedia +
+                    durBadge +
+                    cornerM +
+                    '<div class="showcase-card-scrim" aria-hidden="true"></div>' +
+                    overlay +
+                    '</div>' +
+                    '<audio class="showcase-audio" controls preload="metadata" src="' +
+                    esc(dl) +
+                    '"></audio>' +
+                    '</div>'
+                );
+            }
+            var videoLike = it.category === 'video' || /\.(mp4|webm|mov|m4v)(\?|$)/i.test(u);
+            var imgCornerOpts = {};
+            if (videoLike && /^https?:\/\//i.test(String(u))) {
+                imgCornerOpts.zoomType = 'video';
+                imgCornerOpts.zoomSrc = u;
+            } else if (!videoLike && /^https?:\/\//i.test(String(cover))) {
+                imgCornerOpts.zoomType = 'image';
+                imgCornerOpts.zoomSrc = cover;
+            }
+            var cornerV = buildShowcaseCornerExtras(it, tr, imgCornerOpts);
+            if (videoLike) {
+                return (
+                    '<div class="showcase-card-inner">' +
+                    '<div class="showcase-card-poster">' +
+                    '<video src="' +
+                    esc(u) +
+                    '" class="showcase-card-fill" muted loop playsinline autoplay></video>' +
+                    durBadge +
+                    cornerV +
+                    '<div class="showcase-card-scrim" aria-hidden="true"></div>' +
+                    overlay +
+                    '</div>' +
+                    '</div>'
+                );
+            }
+            return (
+                '<div class="showcase-card-inner">' +
+                '<div class="showcase-card-poster">' +
+                '<img src="' +
+                esc(cover) +
+                '" alt="" loading="lazy" decoding="async" class="showcase-card-fill"/>' +
+                durBadge +
+                cornerV +
+                '<div class="showcase-card-scrim" aria-hidden="true"></div>' +
+                overlay +
+                '</div>' +
+                '</div>'
+            );
+        }
+
+        function wireShowcaseLikes(container) {
+            if (!container || !container.addEventListener) return;
+            container.addEventListener('click', function (e) {
+                var btn = e.target && e.target.closest ? e.target.closest('.showcase-like-btn') : null;
+                if (!btn || !container.contains(btn)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                var key = btn.getAttribute('data-like-key');
+                if (!key) return;
+                var base = parseInt(btn.getAttribute('data-like-base') || '0', 10);
+                if (isNaN(base)) base = 0;
+                try {
+                    var cur = showcaseGetLikeDelta(key);
+                    cur += 1;
+                    localStorage.setItem(key, String(cur));
+                    var span = btn.querySelector('.showcase-like-count');
+                    if (span) span.textContent = String(base + cur);
+                } catch (_) {}
+            });
+        }
+
+        function getShowcaseZoomEls() {
+            return {
+                backdrop: document.getElementById('showcaseZoomBackdrop'),
+                img: document.getElementById('showcaseZoomImg'),
+                video: document.getElementById('showcaseZoomVideo'),
+                closeBtn: document.getElementById('showcaseZoomClose'),
+            };
+        }
+
+        function closeShowcaseZoom() {
+            var el = getShowcaseZoomEls();
+            if (!el.backdrop) return;
+            el.backdrop.classList.remove('showcase-zoom-backdrop--open');
+            el.backdrop.setAttribute('aria-hidden', 'true');
+            document.body.classList.remove('showcase-zoom-open');
+            if (el.video) {
+                try {
+                    el.video.pause();
+                } catch (_) {}
+                el.video.removeAttribute('src');
+                el.video.load();
+                el.video.hidden = true;
+            }
+            if (el.img) {
+                el.img.removeAttribute('src');
+                el.img.hidden = true;
+            }
+        }
+
+        function openShowcaseZoom(type, src) {
+            var el = getShowcaseZoomEls();
+            var raw = String(src || '').trim();
+            if (!el.backdrop || !/^https?:\/\//i.test(raw)) return;
+            var L = typeof currentLang !== 'undefined' ? currentLang : 'en';
+            var tr = i18n[L] || i18n.en;
+            if (el.closeBtn) {
+                el.closeBtn.setAttribute('aria-label', tr.showcaseZoomClose || 'Close');
+            }
+            el.backdrop.setAttribute('aria-label', tr.showcaseZoomDialog || 'Preview');
+            var tLower = String(type || '').toLowerCase();
+            if (tLower === 'video' && el.video) {
+                if (el.img) {
+                    el.img.removeAttribute('src');
+                    el.img.hidden = true;
+                }
+                el.video.hidden = false;
+                el.video.src = raw;
+                el.video.play().catch(function () {});
+            } else if (el.img) {
+                if (el.video) {
+                    try {
+                        el.video.pause();
+                    } catch (_) {}
+                    el.video.removeAttribute('src');
+                    el.video.load();
+                    el.video.hidden = true;
+                }
+                el.img.hidden = false;
+                el.img.src = raw;
+                el.img.alt = tr.showcaseZoomAria || '';
+            }
+            el.backdrop.classList.add('showcase-zoom-backdrop--open');
+            el.backdrop.setAttribute('aria-hidden', 'false');
+            document.body.classList.add('showcase-zoom-open');
+        }
+
+        function ensureShowcaseZoomModalWired() {
+            var E = getShowcaseZoomEls();
+            if (!E.backdrop || E.backdrop.getAttribute('data-zoom-wired') === '1') return;
+            E.backdrop.setAttribute('data-zoom-wired', '1');
+            var dim = E.backdrop.querySelector('[data-zoom-dismiss]');
+            if (dim) {
+                dim.addEventListener('click', function () {
+                    closeShowcaseZoom();
+                });
+            }
+            if (E.closeBtn) {
+                E.closeBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeShowcaseZoom();
+                });
+            }
+            document.addEventListener('keydown', function (e) {
+                if (
+                    e.key === 'Escape' &&
+                    E.backdrop.classList.contains('showcase-zoom-backdrop--open')
+                ) {
+                    closeShowcaseZoom();
+                }
+            });
+            document.addEventListener('click', function (e) {
+                var btn =
+                    e.target && e.target.closest
+                        ? e.target.closest('.showcase-zoom-btn')
+                        : null;
+                var scRoot = document.getElementById('showcaseByCategory');
+                if (!btn || !scRoot || !scRoot.contains(btn)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                var zt = btn.getAttribute('data-zoom-type') || 'image';
+                var src = btn.getAttribute('data-zoom-src') || '';
+                var card = btn.closest('.showcase-card');
+                if (card) {
+                    card.querySelectorAll('video.showcase-card-fill').forEach(function (v) {
+                        try {
+                            v.pause();
+                        } catch (_) {}
+                    });
+                }
+                openShowcaseZoom(zt, src);
+            });
+        }
+
+        function wireShowcaseAudioWaves(container) {
+            if (!container || !container.querySelectorAll) return;
+            container.querySelectorAll('.showcase-card-inner--music').forEach(function (inner) {
+                var wave = inner.querySelector('.showcase-audio-wave');
+                var audio = inner.querySelector('audio.showcase-audio');
+                if (!wave || !audio) return;
+                var onPlay = function () {
+                    wave.classList.add('showcase-audio-wave--playing');
+                };
+                var onStop = function () {
+                    wave.classList.remove('showcase-audio-wave--playing');
+                };
+                audio.addEventListener('play', onPlay);
+                audio.addEventListener('playing', onPlay);
+                audio.addEventListener('pause', onStop);
+                audio.addEventListener('ended', onStop);
+            });
+        }
+
+        function bootShowcase(lang) {
+            ensureShowcaseZoomModalWired();
+            const root = document.getElementById('showcaseByCategory');
+            const emptyEl = document.getElementById('showcaseEmpty');
+            const loadingEl = document.getElementById('showcaseLoading');
+            if (!root) return;
+            const seq = ++showcaseBootSeq;
+            const t = i18n[lang] || i18n.en;
+            if (loadingEl) {
+                loadingEl.textContent = t.showcaseLoading;
+                loadingEl.classList.remove('hidden');
+            }
+            if (emptyEl) emptyEl.classList.add('hidden');
+            root.innerHTML = '';
+            Promise.all([fetchShowcasePayload(), fetchGalleryManifestSafe()])
+                .then(([data, galleryManifest]) => {
+                    if (seq !== showcaseBootSeq) return;
+                    const categories = getShowcaseCategories(data, galleryManifest);
+                    const total = totalCategoryCount(categories);
+                    if (loadingEl) loadingEl.classList.add('hidden');
+                    if (total === 0) {
+                        if (emptyEl) {
+                            emptyEl.textContent = t.showcaseEmpty;
+                            emptyEl.classList.remove('hidden');
+                        }
+                        return;
+                    }
+                    if (emptyEl) emptyEl.classList.add('hidden');
+                    const frag = document.createDocumentFragment();
+                    for (let ci = 0; ci < SHOWCASE_CAT_ORDER.length; ci++) {
+                        const cat = SHOWCASE_CAT_ORDER[ci];
+                        const list = categories[cat] || [];
+                        if (list.length === 0) continue;
+                        const meta = CAT_SHOW_META[cat];
+                        const labelKey =
+                            cat === 'image'
+                                ? 'catImage'
+                                : cat === 'video'
+                                  ? 'catVideo'
+                                  : cat === 'music'
+                                    ? 'catMusic'
+                                    : 'catWorkflow';
+                        const block = document.createElement('div');
+                        block.className = 'showcase-category-block';
+                        block.id = 'showcase-cat-' + cat;
+                        const head = document.createElement('div');
+                        head.className = 'showcase-category-head cat-' + cat;
+                        head.innerHTML =
+                            '<div class="showcase-category-head-main">' +
+                            '<i class="fa-solid ' +
+                            meta.icon +
+                            ' ' +
+                            meta.glow +
+                            '" aria-hidden="true"></i><h3>' +
+                            esc(t[labelKey] || cat) +
+                            '</h3><span class="showcase-cat-line" aria-hidden="true"></span></div>' +
+                            '<a class="showcase-cat-viewall" href="#showcase-cat-' +
+                            cat +
+                            '">' +
+                            esc(t.showcaseViewAll || '') +
+                            '</a>';
+                        const masonry = document.createElement('div');
+                        masonry.className = 'showcase-masonry';
+                        for (const it of list) {
+                            const wrap = document.createElement('div');
+                            wrap.className = 'showcase-card';
+                            wrap.innerHTML = buildMediaHtml(it, lang);
+                            masonry.appendChild(wrap);
+                        }
+                        block.appendChild(head);
+                        block.appendChild(masonry);
+                        frag.appendChild(block);
+                    }
+                    root.appendChild(frag);
+                    wireShowcaseLikes(root);
+                    wireShowcaseAudioWaves(root);
+                })
+                .catch((e) => {
+                    if (seq !== showcaseBootSeq) return;
+                    console.warn('[Aixflow] showcase / config:', e);
+                    if (loadingEl) loadingEl.classList.add('hidden');
+                    if (emptyEl) {
+                        emptyEl.textContent =
+                            (t.showcaseFetchError || t.showcaseEmpty) +
+                            (USE_OSS_WEB_DATA
+                                ? '（请确认 OSS 已上传 web/data/showcase.json 或 web/data/config.json，并配置 CORS 与读权限）'
+                                : '');
+                        emptyEl.classList.remove('hidden');
+                    }
+                });
+        }
+
+        function wireWindowsDownloadLinks(url) {
+            const raw = typeof url === 'string' ? url.trim() : '';
+            const ok = /^https?:\/\//i.test(raw);
+
+            document.querySelectorAll('a[data-win-installer]').forEach((a) => {
+                if (ok) {
+                    a.href = raw;
+                    a.removeAttribute('target');
+                    a.removeAttribute('rel');
+                    a.removeAttribute('aria-disabled');
+                    a.classList.remove('mac-dl-btn--pending');
+                    a.classList.add('mac-dl-btn--ready');
+                    a.onclick = null;
+                } else {
+                    a.href = '#';
+                    a.removeAttribute('target');
+                    a.setAttribute('aria-disabled', 'true');
+                    a.classList.add('mac-dl-btn--pending');
+                    a.classList.remove('mac-dl-btn--ready');
+                    a.onclick = function (e) {
+                        e.preventDefault();
+                    };
+                }
+            });
+        }
+
+        function wireMacDownloadLinks(url) {
+            const raw = typeof url === 'string' ? url.trim() : '';
+            const ok = /^https?:\/\//i.test(raw);
+            macDownloadState = ok ? 'ready' : 'fail';
+
+            document.querySelectorAll('[data-mac-installer]').forEach((a) => {
+                if (ok) {
+                    a.href = raw;
+                    a.removeAttribute('aria-disabled');
+                    a.classList.remove('mac-dl-btn--pending');
+                    a.classList.add('mac-dl-btn--ready');
+                    a.onclick = null;
+                } else {
+                    a.href = '#';
+                    a.setAttribute('aria-disabled', 'true');
+                    a.classList.add('mac-dl-btn--pending');
+                    a.classList.remove('mac-dl-btn--ready');
+                    a.onclick = function (e) {
+                        e.preventDefault();
+                    };
+                }
+            });
+            applyLang(currentLang, { skipShowcase: true });
+        }
+
+        function applyLang(lang, opts) {
+            opts = opts || {};
+            const t = i18n[lang] || i18n.en;
+            const root = document.documentElement;
+            root.lang = t.htmlLang;
+
+            const titleEl = document.getElementById('docTitle');
+            if (titleEl) titleEl.textContent = t.docTitle;
+            else document.title = t.docTitle;
+
+            const eyebrow = document.getElementById('heroEyebrow');
+            const title = document.getElementById('heroTitle');
+            const sub = document.getElementById('heroSubtitle');
+            const cta = document.getElementById('ctaDownloadText');
+            const ctaFooter = document.getElementById('ctaFooterDownloadText');
+            const ctaFooterMac = document.getElementById('ctaFooterMacText');
+            const getStartedTitle = document.getElementById('getStartedTitle');
+            const getStartedSub = document.getElementById('getStartedSubtitle');
+            const ctaMac = document.getElementById('ctaMacText');
+            const ctaMacHint = document.getElementById('ctaMacHint');
+            const btn = document.getElementById('langToggle');
+            const badge = document.getElementById('langBadge');
+
+            if (badge) badge.textContent = lang === 'zh' ? '中' : 'EN';
+
+            if (eyebrow) {
+                eyebrow.textContent = t.heroEyebrow;
+                eyebrow.className =
+                    lang === 'zh'
+                        ? 'text-[10px] sm:text-[11px] font-bold text-violet-300/90 mb-4 tracking-widest'
+                        : 'text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.35em] text-violet-300/90 mb-4';
+            }
+            if (title) title.innerHTML = t.heroTitleHtml;
+            if (sub) sub.innerHTML = t.heroSubtitle;
+            if (cta) cta.textContent = t.ctaDownload;
+            if (ctaFooter) ctaFooter.textContent = t.ctaFooter;
+            if (ctaFooterMac) ctaFooterMac.textContent = t.ctaMac;
+            if (getStartedTitle) getStartedTitle.textContent = t.getStartedTitle;
+            if (getStartedSub) getStartedSub.textContent = t.getStartedSubtitle;
+            if (ctaMac) ctaMac.textContent = t.ctaMac;
+            if (ctaMacHint) {
+                if (macDownloadState === 'ready') ctaMacHint.textContent = '';
+                else if (macDownloadState === 'fail') ctaMacHint.textContent = t.ctaMacHintOffline;
+                else ctaMacHint.textContent = t.ctaMacHintLoading;
+            }
+            document.querySelectorAll('[data-mac-installer]').forEach((el) => {
+                if (macDownloadState === 'ready') {
+                    el.title = t.ctaMacTitleReady;
+                    el.setAttribute('aria-label', t.ctaMacTitleReady);
+                } else if (macDownloadState === 'fail') {
+                    el.title = t.ctaMacTitleOffline;
+                    el.setAttribute('aria-label', t.ctaMacTitleOffline);
+                } else {
+                    el.title = t.ctaMacTitleLoading;
+                    el.setAttribute('aria-label', `${t.ctaMac} — ${t.ctaMacHintLoading}`);
+                }
+            });
+            if (btn) {
+                btn.title = t.langToggleTitle;
+                btn.setAttribute('aria-label', t.langToggleAria);
+            }
+
+            const showcaseH2 = document.getElementById('showcaseSectionTitle');
+            if (showcaseH2) showcaseH2.textContent = t.showcaseTitle;
+            const layoutHint = document.getElementById('showcaseLayoutHint');
+            if (layoutHint) layoutHint.textContent = t.showcaseLayoutHint || 'By category';
+            const navSc = document.getElementById('navShowcase');
+            if (navSc) navSc.textContent = t.navShowcase || t.showcaseTitle;
+            const sl = document.getElementById('showcaseLoading');
+            if (sl && !sl.classList.contains('hidden')) sl.textContent = t.showcaseLoading;
+            const se = document.getElementById('showcaseEmpty');
+            if (se && !se.classList.contains('hidden')) se.textContent = t.showcaseEmpty;
+            if (!opts.skipShowcase) void bootShowcase(lang);
+
+            try {
+                localStorage.setItem(LANG_KEY, lang);
+            } catch (_) {}
+        }
+
+        function getStoredLang() {
+            try {
+                const v = localStorage.getItem(LANG_KEY);
+                if (v === 'zh' || v === 'en') return v;
+            } catch (_) {}
+            return 'en';
+        }
+
+        let currentLang = getStoredLang();
+        applyLang(currentLang);
+
+        function bootInstallerLinks() {
+            (async () => {
+                const [winUrl, macUrl] = await Promise.all([
+                    resolveWindowsInstallerUrl(),
+                    resolveMacInstallerUrl(),
+                ]);
+                wireWindowsDownloadLinks(winUrl);
+                wireMacDownloadLinks(macUrl);
+            })();
+        }
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bootInstallerLinks);
+        } else {
+            bootInstallerLinks();
+        }
+
+        document.getElementById('langToggle')?.addEventListener('click', () => {
+            currentLang = currentLang === 'en' ? 'zh' : 'en';
+            applyLang(currentLang);
+        });
+    </script>
+</body>
+</html>

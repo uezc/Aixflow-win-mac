@@ -1,0 +1,2 @@
+# Optional: embedded window for launch_desktop.py (WebView2). See app.py docstring.
+pywebview>=4.4

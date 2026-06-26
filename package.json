@@ -1,0 +1,254 @@
+{
+  "name": "nexflow",
+  "version": "1.6.1",
+  "description": "Aixflow-Bate - AI Workflow Platform",
+  "main": "dist-electron/main/index.js",
+  "type": "module",
+  "scripts": {
+    "copy-icon": "node scripts/copy-icon-to-public.js",
+    "dev": "npm run copy-icon && vite",
+    "build": "tsc && vite build",
+    "clean:electron": "node scripts/clean-dist-electron.js",
+    "clean:release-unpacked": "node scripts/clean-release-win-unpacked.js",
+    "build:main": "npm run clean:electron && tsc -p tsconfig.main.json && node scripts/copy-ai-provider.js && npm run build:preload",
+    "build:preload": "tsc -p tsconfig.preload.json && node scripts/create-preload-package.js",
+    "build:renderer": "npm run copy-icon && vite build",
+    "build:all": "npm run build:main && npm run build:renderer",
+    "preview": "vite preview",
+    "alipay:verify": "backend\\.venv\\Scripts\\python.exe backend\\verify_alipay_env.py",
+    "alipay:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-alipay-test.ps1",
+    "alipay:update-public-key": "backend\\.venv\\Scripts\\python.exe backend\\update_alipay_public_key.py",
+    "electron:dev": "chcp 65001 >nul 2>&1 && npm run build:main && concurrently \"npm run dev\" \"wait-on http://localhost:5274 && cross-env NODE_ENV=development electron .\"",
+    "sync:asset-library": "node scripts/sync-asset-library-to-resources.mjs",
+    "convert-icon": "node scripts/convert-icon-to-ico.js",
+    "convert-icon:force": "node scripts/convert-icon-to-ico.js --force",
+    "download-vc-redist": "node scripts/download-vc-redist.js",
+    "copy-yt-dlp": "node scripts/copy-yt-dlp-to-resources.mjs --if-missing",
+    "download-whisper-model": "node scripts/download-whisper-model-to-resources.mjs --if-missing",
+    "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
+    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && npm run download-whisper-model && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
+    "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
+    "upload:release": "node scripts/upload-release-to-oss.js",
+    "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
+    "release": "node scripts/release-with-version.js",
+    "release:current": "node scripts/release-with-version.js --current",
+    "release:patch": "node scripts/release-with-version.js --patch",
+    "release:minor": "node scripts/release-with-version.js --minor",
+    "release:major": "node scripts/release-with-version.js --major",
+    "deploy": "npm run deploy --prefix demo/aliyun-fc-init-user",
+    "check:pricing": "node scripts/check-pricing-alignment.mjs",
+    "sync:pricing-ots": "node scripts/sync-pricing-to-ots.mjs",
+    "check:tasks-table": "node scripts/check-tasks-table.mjs",
+    "fix-models": "node scripts/fix-models.mjs",
+    "publish:pricing": "node scripts/publish-pricing.mjs",
+    "fc:sync-pricing": "node scripts/sync-pricing-to-fc.mjs",
+    "fc:pack": "node scripts/build-fc-deploy.mjs",
+    "fc:pack-hk": "node scripts/build-hongkong-fc-zip.mjs",
+    "pack:aixflow-backend": "node scripts/pack-aixflow-backend-zip.mjs",
+    "pack:alipay-backend": "node scripts/pack-alipay-backend-zip.mjs",
+    "gallery-manifest": "node scripts/generate-oss-gallery-manifest.mjs",
+    "transcode:video": "node scripts/transcode-video-opencv-friendly.mjs"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "typescript",
+    "vite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "build": {
+    "appId": "com.nexflow.app",
+    "productName": "Aixflow",
+    "icon": "build/icon.ico",
+    "afterPack": "scripts/after-pack-embed-icon.cjs",
+    "fileAssociations": [
+      {
+        "ext": "aixflow",
+        "name": "Aixflow Project",
+        "description": "Aixflow 项目文件",
+        "icon": "build/icon.ico"
+      },
+      {
+        "ext": "nexflow",
+        "name": "Aixflow Project (legacy)",
+        "description": "Aixflow 项目文件（旧版后缀）",
+        "icon": "build/icon.ico"
+      },
+      {
+        "ext": "aixchars",
+        "name": "Aixflow Characters",
+        "description": "Aixflow 角色导出文件",
+        "icon": "build/icon.ico"
+      },
+      {
+        "ext": "nexchars",
+        "name": "Aixflow Characters (legacy)",
+        "description": "Aixflow 角色导出文件（旧版后缀）",
+        "icon": "build/icon.ico"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/aixflow%20uploads"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "dist/**/*",
+      "build/icon.ico",
+      "build/icon.png"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg",
+        "to": "ffmpeg"
+      },
+      {
+        "from": "resources/yt-dlp",
+        "to": "yt-dlp"
+      },
+      {
+        "from": "resources/splash-videos",
+        "to": "splash-videos"
+      },
+      {
+        "from": "resources/login-videos",
+        "to": "login-videos"
+      },
+      {
+        "from": "resources/.env",
+        "to": ".env"
+      },
+      {
+        "from": "resources/default-llm-personas.json",
+        "to": "default-llm-personas.json"
+      },
+      {
+        "from": "resources/default-asset-library",
+        "to": "default-asset-library"
+      },
+      {
+        "from": "resources/demucs",
+        "to": "demucs"
+      },
+      {
+        "from": "resources/whisper",
+        "to": "whisper"
+      },
+      {
+        "from": "build/vc_redist.x64.exe",
+        "to": "vc_redist.x64.exe"
+      },
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis-web",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Aixflow-Windows-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "shortcutName": "Aixflow",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "icon": "build/icon-512.png",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "Aixflow-Bate-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "zip"
+      ],
+      "executableArgs": [
+        "--no-sandbox"
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/ali-oss": "^6.23.2",
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@types/react-router-dom": "^5.3.3",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "png-to-ico": "^3.0.1",
+    "postcss": "^8.4.32",
+    "rcedit": "^4.0.1",
+    "tablestore": "^5.6.3",
+    "tailwindcss": "^3.3.6",
+    "typescript": "^5.9.3",
+    "vite": "^5.0.8",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
+    "@tanstack/react-virtual": "^3.13.21",
+    "@types/express": "^5.0.6",
+    "@types/form-data": "^2.5.2",
+    "adm-zip": "^0.5.16",
+    "ali-oss": "^6.23.0",
+    "axios": "^1.13.6",
+    "axios-retry": "^4.5.0",
+    "clsx": "^2.0.0",
+    "dotenv": "^17.3.1",
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.8.3",
+    "express": "^5.2.1",
+    "ffmpeg-static": "^5.3.0",
+    "form-data": "^4.0.5",
+    "framer-motion": "^12.30.0",
+    "hls.js": "^1.6.15",
+    "html2canvas": "^1.4.1",
+    "lucide-react": "^0.294.0",
+    "motion": "^12.23.24",
+    "node-machine-id": "^1.1.12",
+    "opencc-js": "^1.3.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^7.13.0",
+    "reactflow": "^11.10.1",
+    "recharts": "^3.8.1",
+    "sharp": "^0.33.5",
+    "tailwind-merge": "^2.1.0",
+    "three": "^0.183.1"
+  }
+}

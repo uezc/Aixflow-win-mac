@@ -1,0 +1,185 @@
+/**
+ * 与 src/main/utils/videoBillingSku.ts 规则一致（无 console）V2.3
+ * 海螺按 6s/10s 单档计费（不区分分辨率）；Veo 3.1 为 veo-3-1-{分辨率}-{variant}
+ */
+
+function lc(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+function joinKey(...parts) {
+  const out = [];
+  for (const p of parts) {
+    if (p == null || p === false) continue;
+    const t = lc(String(p));
+    if (!t) continue;
+    out.push(t);
+  }
+  return out.join('-');
+}
+
+const IMAGE_REVERSE_KEYS = {
+  'gpt-4o': 'gpt-4o-image-reverse',
+  'joy-caption-two': 'joy-caption-two-image-reverse',
+};
+
+function klingO1CapabilitySuffix(model) {
+  const m = lc(model);
+  const p = 'kling-video-o1';
+  if (!m.startsWith(p)) return '';
+  if (m.length <= p.length) return '';
+  return m.slice(p.length + 1);
+}
+
+function hailuoSeriesAndI2v(model) {
+  const m = lc(model);
+  if (!m.startsWith('hailuo-')) return null;
+  if (m.startsWith('hailuo-02-')) return { series: '02', isI2v: m.includes('i2v') };
+  if (m.startsWith('hailuo-2.3-')) return { series: '2-3', isI2v: m.includes('i2v') };
+  return null;
+}
+
+function veoVariantFromRhart(model) {
+  const m = lc(model);
+  const prefix = 'rhart-v3.1-';
+  if (!m.startsWith(prefix)) return null;
+  return m.slice(prefix.length);
+}
+
+/**
+ * @param {string} baseModel
+ * @param {Record<string, unknown>} input
+ */
+export function buildVideoBillingSkuKey(baseModel, input) {
+  const model = String(baseModel || '').trim();
+  if (!model) return '';
+
+  const m = lc(model);
+
+  const rev = IMAGE_REVERSE_KEYS[m];
+  if (rev) return rev;
+
+  const hi = hailuoSeriesAndI2v(m);
+  if (hi) {
+    const durSec = input.durationHailuo02 === '10' ? 10 : 6;
+    const durSeg = `${durSec}s`;
+    // 海螺 02 / 2.3 均不区分分辨率计费：统一按时长档计费
+    if (hi.isI2v) return joinKey('hailuo', hi.series, 'i2v', durSeg);
+    return joinKey('hailuo', hi.series, durSeg);
+  }
+
+  if (m === 'wan-2.6') {
+    const resRaw =
+      input.resolutionWan26 != null && String(input.resolutionWan26).trim() !== ''
+        ? lc(String(input.resolutionWan26))
+        : '';
+    const resSeg = resRaw === '720p' ? '720p' : undefined;
+    let durNum;
+    if (input.duration === '15') durNum = 15;
+    else if (input.duration === '10') durNum = 10;
+    else if (input.duration === '5') durNum = 5;
+    const durSeg = durNum != null && durNum !== 10 ? `${durNum}s` : undefined;
+    return joinKey('wan', '2-6', resSeg, durSeg);
+  }
+
+  if (m === 'wan-2.6-flash') {
+    const resRaw =
+      input.resolutionWan26 != null && String(input.resolutionWan26).trim() !== ''
+        ? lc(String(input.resolutionWan26))
+        : '';
+    const resSeg = resRaw === '720p' ? '720p' : undefined;
+    const n = parseInt(String(input.durationWan26Flash ?? ''), 10);
+    const durNum = Number.isFinite(n) ? Math.max(2, Math.min(15, n)) : undefined;
+    const durSeg = durNum != null && durNum !== 5 ? `${durNum}s` : undefined;
+    const audioSeg = input.enableAudio === false ? 'noaudio' : undefined;
+    return joinKey('wan', '2-6', 'flash', resSeg, durSeg, audioSeg);
+  }
+
+  if (m === 'kling-v2.6-pro') {
+    let durNum;
+    if (input.duration === '10') durNum = 10;
+    else if (input.duration === '5') durNum = 5;
+    const durSeg = durNum != null && durNum !== 10 ? `${durNum}s` : undefined;
+    const audioSeg = input.sound === 'true' ? 'audio' : undefined;
+    return joinKey('kling', 'v2-6', 'pro', durSeg, audioSeg);
+  }
+
+  if (m.startsWith('kling-video-o1')) {
+    const cap = klingO1CapabilitySuffix(model);
+    const modeSeg = input.modeKlingO1 === 'pro' ? 'pro' : '';
+    let durNum;
+    if (input.durationKlingO1 === '10') durNum = 10;
+    else if (input.durationKlingO1 === '5') durNum = 5;
+    const durSeg = durNum != null && durNum !== 5 ? `${durNum}s` : undefined;
+    const variant = joinKey(cap, modeSeg);
+    return joinKey('kling', 'o1', variant || undefined, durSeg);
+  }
+
+  if (m === 'rhart-video-g') {
+    const dg = String(input.durationRhartVideoG || '').toLowerCase();
+    const durNum =
+      dg === '10s' || dg === '10' ? 10 : dg === '6s' || dg === '6' ? 6 : undefined;
+    const durSeg = durNum != null && durNum !== 6 ? `${durNum}s` : undefined;
+    return joinKey('grok', durSeg);
+  }
+
+  const vv = veoVariantFromRhart(m);
+  if (vv && m !== 'rhart-v3.1-pro-official-i2v') {
+    const resRaw =
+      input.resolutionRhartV31 != null && String(input.resolutionRhartV31).trim() !== ''
+        ? lc(String(input.resolutionRhartV31))
+        : '';
+    const res =
+      resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    return joinKey('veo', '3-1', res, vv);
+  }
+
+  if (m === 'rhart-v3.1-pro-official-i2v') {
+    const resRaw =
+      input.resolutionRhartV31 != null && String(input.resolutionRhartV31).trim() !== ''
+        ? lc(String(input.resolutionRhartV31))
+        : '';
+    const res =
+      resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    const d = String(input.durationVeo31ProOfficial || '');
+    const durNum = d === '8' ? 8 : d === '6' ? 6 : d === '4' ? 4 : undefined;
+    const durSeg = durNum != null && durNum !== 4 ? `${durNum}s` : undefined;
+    const audioSeg = input.generateAudioVeo31ProOfficial === true ? 'audio' : undefined;
+    return joinKey('veo', '3-1', res, 'official-i2v', durSeg, audioSeg);
+  }
+
+  if (m === 'ltx-2.3-lipsync') {
+    const resRaw =
+      input.resolutionLtx23Lipsync != null && String(input.resolutionLtx23Lipsync).trim() !== ''
+        ? String(input.resolutionLtx23Lipsync).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    return joinKey('ltx', '2-3', 'lipsync', res);
+  }
+
+  if (m === 'ltx-2.3-i2v') {
+    const resRaw =
+      input.resolutionLtx23I2v != null && String(input.resolutionLtx23I2v).trim() !== ''
+        ? String(input.resolutionLtx23I2v).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const d = parseInt(String(input.durationLtx23I2v ?? ''), 10);
+    const durNum = Number.isFinite(d) && d > 0 ? d : undefined;
+    const dur = durNum != null ? `${durNum}s` : '';
+    return joinKey('ltx', '2-3', 'i2v', res, dur);
+  }
+
+  if (m === 'ltx-2.3-t2v') {
+    const resRaw =
+      input.resolutionLtx23T2v != null && String(input.resolutionLtx23T2v).trim() !== ''
+        ? String(input.resolutionLtx23T2v).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const d = parseInt(String(input.durationLtx23T2v ?? ''), 10);
+    const durNum = Number.isFinite(d) && d > 0 ? d : undefined;
+    const dur = durNum != null ? `${durNum}s` : '';
+    return joinKey('ltx', '2-3', res, dur);
+  }
+
+  return lc(model);
+}

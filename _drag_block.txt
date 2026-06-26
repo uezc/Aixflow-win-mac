@@ -1,0 +1,15 @@
+  if (draggingOverride && draggingOverride.nodeId === nodeId) {
+    let x = side === 'right' ? draggingOverride.x + draggingOverride.width : draggingOverride.x;
+    let y = draggingOverride.y + draggingOverride.height / 2;
+    const node = nodesMap?.get(nodeId);
+    if (side === 'right' && node?.type === 'textSplit' && handleId && String(handleId).startsWith('output-')) {
+      x += TEXTSPLIT_RIGHT_OFFSET;
+      if (handleId !== 'output-null') {
+        const idx = parseInt(String(handleId).replace('output-', ''), 10);
+        if (Number.isInteger(idx) && idx >= 0) {
+          y = draggingOverride.y + OUTPUT_BASE_TOP + idx * PER_HANDLE + PER_HANDLE / 2;
+        }
+      }
+    }
+    return { x, y };
+  }

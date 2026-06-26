@@ -1,0 +1,23 @@
+# 复制到 /etc/systemd/system/aixflow-alipay.service 后：
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aixflow-alipay
+#   sudo systemctl status aixflow-alipay
+#
+# 修改 User、WorkingDirectory、EnvironmentFile 为服务器实际路径。
+
+[Unit]
+Description=AIXFLOW Alipay payment API (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/aixflow/backend
+# 勿用 EnvironmentFile 加载含 PEM 的 .env（systemd 会截断 ALIPAY_APP_PRIVATE_KEY）。
+# 应用启动时由 alipay_test.py 的 load_dotenv 从 WorkingDirectory/.env 读取。
+ExecStart=/opt/aixflow/backend/.venv/bin/uvicorn alipay_test:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
