@@ -12,6 +12,7 @@
  *   3. 由 npm run release 调用时会附带 --no-confirm，跳过版本与线路交互（默认双线）
  *   4. 线路 CLI：--hk-only / --skip-cn-release（仅香港）、--cn-only（仅北京补传）、--both（双线）
  *   5. 环境变量 OSS_RELEASE_UPLOAD_MODE=hk|cn|both（CI 无交互时）
+ *   6. 仅上传 package.json 当前版本的产物；release/ 内旧版 exe/7z/zip 会被跳过（不会覆盖 OSS 上的历史对象，除非同名误传）
  *
  * OSS 主源（香港）：
  *   - Windows 与 package.json publish.url 一致：aixflow uploads/
@@ -229,6 +230,41 @@ function loadUploadOssConfig() {
   };
 }
 
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 是否为当前 package.json 版本的 Release 产物（避免 release/ 残留旧版被一并上传） */
+function isReleaseArtifactForVersion(fileName, version) {
+  if (!fileName || !version) return false;
+  const v = escapeRegExp(version);
+  if (/^latest(-mac)?\.yml$/i.test(fileName)) return true;
+  if (new RegExp(`Aixflow-Windows-Setup-${v}\\.exe`, 'i').test(fileName)) return true;
+  if (new RegExp(`Aixflow-Bate-Windows-Setup-${v}\\.exe`, 'i').test(fileName)) return true;
+  if (new RegExp(`Aixflow-Windows-Offline-${v}\\.zip`, 'i').test(fileName)) return true;
+  if (new RegExp(`^nexflow-${v}-`, 'i').test(fileName)) return true;
+  if (new RegExp(`Aixflow-Bate-${v}-`, 'i').test(fileName)) return true;
+  const base = fileName.replace(/\.blockmap$/i, '');
+  if (base !== fileName && isReleaseArtifactForVersion(base, version)) return true;
+  return false;
+}
+
+/** 扫描 release/ 与 release/nsis-web/ 中将被跳过的旧版本本地文件 */
+function listStaleLocalReleaseArtifacts(version) {
+  const nsisWebDir = path.join(releaseDir, 'nsis-web');
+  const stale = [];
+  for (const dir of [releaseDir, nsisWebDir]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) {
+      if (/^latest(-mac)?\.yml$/i.test(name)) continue;
+      if (!/\.(exe|7z|zip|blockmap|yml)$/i.test(name)) continue;
+      if (isReleaseArtifactForVersion(name, version)) continue;
+      stale.push(path.relative(releaseDir, path.join(dir, name)));
+    }
+  }
+  return stale;
+}
+
 function sha512Base64OfFile(filePath) {
   const hash = crypto.createHash('sha512');
   hash.update(fs.readFileSync(filePath));
@@ -326,6 +362,16 @@ async function uploadRelease() {
   const cnConfig = loadReleaseCnOssConfig(config);
   const uploadMode = await resolveReleaseUploadMode(Boolean(cnConfig));
 
+  const staleLocal = listStaleLocalReleaseArtifacts(version);
+  if (staleLocal.length > 0) {
+    console.warn(
+      `[upload-release] 本地 release/ 存在 ${staleLocal.length} 个旧版本文件，将不会上传：`,
+      staleLocal.join(', '),
+    );
+  }
+
+  console.log(`[upload-release] 仅上传 package.json 版本 ${version} 的 Release 产物`);
+
   const modeLabel =
     uploadMode === 'both' ? '双线（香港 + 北京）' : uploadMode === 'hk' ? '仅香港' : '仅北京';
   console.log(`[upload-release] 发布线路: ${modeLabel}`);
@@ -383,14 +429,24 @@ async function uploadRelease() {
     return null;
   }
 
-  /** 在 release/ 与 release/nsis-web/ 下查找 .nsis.7z */
+  /** 在 release/ 与 release/nsis-web/ 下查找当前版本的 .nsis.7z */
   function collectNsis7zEntries() {
+    const expected = `nexflow-${version}-x64.nsis.7z`;
     const out = [];
     for (const dir of [releaseDir, nsisWebDir]) {
       if (!fs.existsSync(dir)) continue;
       for (const f of fs.readdirSync(dir)) {
-        if (/\.nsis\.7z$/i.test(f)) out.push({ name: f, dir });
+        if (!/\.nsis\.7z$/i.test(f)) continue;
+        if (!isReleaseArtifactForVersion(f, version)) {
+          console.warn(`[upload-release] 跳过旧版本 .nsis.7z（非 ${version}）: ${path.join(dir, f)}`);
+          continue;
+        }
+        out.push({ name: f, dir });
       }
+    }
+    if (out.length === 0) {
+      const fallback = path.join(nsisWebDir, expected);
+      if (fs.existsSync(fallback)) out.push({ name: expected, dir: nsisWebDir });
     }
     return out;
   }
@@ -447,6 +503,10 @@ async function uploadRelease() {
 
     const collectedNames = new Set();
     for (const name of artifacts) {
+      if (!isReleaseArtifactForVersion(name, version)) {
+        console.warn(`[upload-release] latest.yml 引用但版本不匹配 ${version}，跳过:`, name);
+        continue;
+      }
       const local = resolveWindowsArtifactLocalPath(name);
       if (!local) {
         console.warn('[upload-release] latest.yml 引用但本地未找到:', name);
@@ -467,6 +527,7 @@ async function uploadRelease() {
     }
 
     for (const { name: z, dir: zdir } of nsis7zEntries) {
+      if (!isReleaseArtifactForVersion(z, version)) continue;
       if (!collectedNames.has(z)) {
         const local = path.join(zdir, z);
         if (fs.existsSync(local)) {
@@ -558,7 +619,17 @@ async function uploadRelease() {
   const latestMacPath = path.join(releaseDir, 'latest-mac.yml');
   if (fs.existsSync(latestMacPath)) {
     const macYmlText = fs.readFileSync(latestMacPath, 'utf8');
-    const artifacts = collectMacArtifactNamesFromYml(macYmlText);
+    const macYmlVersion = parseYmlVersionLine(macYmlText);
+    if (macYmlVersion && macYmlVersion !== version) {
+      console.warn(
+        `[upload-release] 跳过 Mac：latest-mac.yml 版本 ${macYmlVersion} 与 package.json ${version} 不一致`,
+      );
+    } else {
+    const artifacts = collectMacArtifactNamesFromYml(macYmlText).filter((name) => {
+      if (isReleaseArtifactForVersion(name, version)) return true;
+      console.warn(`[upload-release] latest-mac.yml 引用但版本不匹配 ${version}，跳过:`, name);
+      return false;
+    });
     pushManifest(latestMacPath, `${macFolder}latest-mac.yml`, {
       'Content-Type': 'text/yaml; charset=utf-8',
     });
@@ -581,6 +652,7 @@ async function uploadRelease() {
       }
     }
     console.log('[upload-release] Mac 待传:', artifacts.join(', ') || '(无)');
+    }
   } else {
     console.warn(
       '[upload-release] 未找到 latest-mac.yml，跳过 Mac（Windows 仅构建 Windows 包；Mac 请在 macOS 上 electron:build 后再上传）',

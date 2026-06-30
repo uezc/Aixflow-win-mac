@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronLeft, ChevronRight, Download, Trash2, Trash, LayoutGrid, AlertCircle } from 'lucide-react';
 import AssetLibrarySidebar from '../AssetLibrarySidebar';
-import type { Character, SceneLibraryItem } from '../characterListShared';
+import type { Character, SceneLibraryItem, DigitalHumanLibraryItem } from '../characterListShared';
 import { TaskImageDisplay } from './TaskImageDisplay';
 import { TaskMediaPreview } from './TaskMediaPreview';
 import {
@@ -16,7 +16,7 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT, type WorkspaceChromeStrings } from '../../i18n/workspaceI18n';
 import type { AppLocale } from '../../i18n/settingsI18n';
-import { assetLibBtnDanger, assetLibBtnPrimary, assetLibBtnSecondary } from '../../utils/assetLibraryChrome';
+import { assetLibBtnDanger, assetLibBtnPrimary, assetLibBtnSecondary, ASSET_LIBRARY_SIDEBAR_WIDTH_PX } from '../../utils/assetLibraryChrome';
 
 export interface Task {
   id: string;
@@ -47,12 +47,14 @@ export interface WorkspaceSidebarProps {
   onToggleCharacterList: () => void;
   characterListRefreshTrigger: number;
   sceneListRefreshTrigger: number;
+  digitalHumanListRefreshTrigger: number;
   onSelectCharacter: (character: Character) => void;
   /** 添加角色时从画布点选参考音（音频等），返回 { url, label } 或取消时 null */
   requestVoicePickFromCanvas?: () => Promise<{ url: string; label: string } | null>;
   /** 添加角色时从画布点选图片写入四视图第 slotIndex 格（0–3），取消时 null */
   requestViewSlotPickFromCanvas?: (slotIndex: number) => Promise<string | null>;
   requestSceneImagePickFromCanvas?: (role: 'normal' | 'display3d') => Promise<string | null>;
+  requestDigitalHumanVideoPickFromCanvas?: () => Promise<string | null>;
   rightSidebarOpen: boolean;
   onToggleRightSidebar: () => void;
   tasks: Task[];
@@ -73,6 +75,8 @@ export interface WorkspaceSidebarProps {
   onTaskPlaceToCanvas?: (task: Task) => void;
   /** 场景资产「导入到画布」：落点在左侧资产栏右侧 */
   onPlaceSceneToCanvas?: (scene: SceneLibraryItem, anchorScreen: { x: number; y: number }) => void;
+  /** 数字人资产「导入到画布」：创建 HeyGem 节点 */
+  onPlaceDigitalHumanToCanvas?: (item: DigitalHumanLibraryItem, anchorScreen: { x: number; y: number }) => void;
 }
 
 /** 单任务卡片高度估计值（用于虚拟列表，含视频/音频时更高，measureElement 会动态修正） */
@@ -630,10 +634,12 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
   onToggleCharacterList,
   characterListRefreshTrigger,
   sceneListRefreshTrigger,
+  digitalHumanListRefreshTrigger,
   onSelectCharacter,
   requestVoicePickFromCanvas,
   requestViewSlotPickFromCanvas,
   requestSceneImagePickFromCanvas,
+  requestDigitalHumanVideoPickFromCanvas,
   rightSidebarOpen,
   onToggleRightSidebar,
   tasks,
@@ -651,6 +657,7 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
   onClearAllTasks,
   onTaskPlaceToCanvas,
   onPlaceSceneToCanvas,
+  onPlaceDigitalHumanToCanvas,
 }: WorkspaceSidebarProps) {
   const { locale } = useAppLocale();
   const wc = workspaceChromeT(locale);
@@ -673,6 +680,21 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
       onPlaceSceneToCanvas(scene, anchor);
     },
     [onPlaceSceneToCanvas],
+  );
+
+  const handlePlaceDigitalHumanOnCanvas = React.useCallback(
+    (item: DigitalHumanLibraryItem) => {
+      if (!onPlaceDigitalHumanToCanvas) return;
+      const panel = leftAssetPanelRef.current;
+      const anchor = panel
+        ? (() => {
+            const pr = panel.getBoundingClientRect();
+            return { x: pr.right + 36, y: pr.top + pr.height * 0.38 };
+          })()
+        : { x: 320, y: 400 };
+      onPlaceDigitalHumanToCanvas(item, anchor);
+    },
+    [onPlaceDigitalHumanToCanvas],
   );
 
   useEffect(() => {
@@ -701,8 +723,8 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
           width: characterListCollapsed
             ? '48px'
             : assetLibraryGalleryWide
-              ? 'clamp(720px, min(58vw, 1100px), calc(100vw - 280px))'
-              : '280px',
+              ? `clamp(720px, min(58vw, 1100px), calc(100vw - ${ASSET_LIBRARY_SIDEBAR_WIDTH_PX}px))`
+              : `${ASSET_LIBRARY_SIDEBAR_WIDTH_PX}px`,
         }}
       >
         <AssetLibrarySidebar
@@ -712,11 +734,14 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
           onGalleryModeChange={setAssetLibraryGalleryWide}
           characterListRefreshTrigger={characterListRefreshTrigger}
           sceneListRefreshTrigger={sceneListRefreshTrigger}
+          digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
           onSelectCharacter={onSelectCharacter}
           requestVoicePickFromCanvas={requestVoicePickFromCanvas}
           requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
           requestSceneImagePickFromCanvas={requestSceneImagePickFromCanvas}
+          requestDigitalHumanVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
           onPlaceSceneToCanvas={handlePlaceSceneOnCanvas}
+          onPlaceDigitalHumanToCanvas={handlePlaceDigitalHumanOnCanvas}
         />
       </div>
 

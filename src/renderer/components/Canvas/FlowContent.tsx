@@ -34,12 +34,18 @@ import CanvasHardwareAccelToggle from './CanvasHardwareAccelToggle';
 
 const noopReverseSuperConnect = (_sourceNodeId: string, _targetNodeIds: string[]) => {};
 import { getAllowedMenuTypes, isConnectionAllowed, isCharacterConnectionDataValid } from '../../utils/connectionRules';
+import { isDigitalHumanConnectionDataValid, pickDigitalHumanVideoUrl } from '../../utils/digitalHumanNodeMedia';
 import { isTimelineMediaSourceNodeType } from '../../utils/timelineSourceMedia';
 import { snapConnectionToPlusHandle } from '../../utils/plusHandleConnectionSnap';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { getNodeDisplayPrice } from '../../utils/cloudModelPricing';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { PERF_POLICY, SILENCE_PERF_MONITOR, TAPNOW_INTERACTION_SUSPEND } from '../../config/perfPolicy';
+import {
+  ASSET_LIBRARY_CANVAS_GAP_PX,
+  ASSET_LIBRARY_SIDEBAR_COLLAPSED_WIDTH_PX,
+  ASSET_LIBRARY_SIDEBAR_WIDTH_PX,
+} from '../../utils/assetLibraryChrome';
 import {
   getGlobalInteractionSnapshot,
   setActiveVideoNodeId,
@@ -109,6 +115,17 @@ function nodeHasPickableVoiceForCharacterLibrary(n: Node): boolean {
   return false;
 }
 
+function nodeHasPickableDigitalHumanVideo(n: Node): boolean {
+  const t = n.type;
+  if (t === 'digitalHuman') {
+    return Boolean(pickDigitalHumanVideoUrl(n.data as Record<string, unknown>));
+  }
+  if (t !== 'video' && t !== 'wanAnimate' && t !== 'heyGem') return false;
+  const d = (n.data || {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof d[k] === 'string' ? (d[k] as string).trim() : '');
+  return Boolean(str('outputVideo') || str('originalVideoUrl') || str('referenceVideoUrl'));
+}
+
 function canvasPickWantsImageTarget(target: string): boolean {
   return (
     target === 'avatar' ||
@@ -119,6 +136,7 @@ function canvasPickWantsImageTarget(target: string): boolean {
 }
 
 function isNodePickableForCanvasTarget(n: Node, target: string): boolean {
+  if (target === 'digitalHumanVideo') return nodeHasPickableDigitalHumanVideo(n);
   return canvasPickWantsImageTarget(target)
     ? nodeHasPickableCharacterLibraryImage(n)
     : nodeHasPickableVoiceForCharacterLibrary(n);
@@ -140,6 +158,8 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   image: '图片',
   video: '视频',
   wanAnimate: '视频换人',
+  heyGem: 'HeyGem 数字人',
+  digitalHuman: '视频+参考音',
   videoSplice: '视频剪辑',
   character: '角色',
   audio: '音频',
@@ -594,7 +614,7 @@ interface FlowContentProps {
   /** 添加角色「从画布选参考图」：为可点选的 image 模块显示悬停绿框 */
   characterAvatarPickActive?: boolean;
   /** 与 characterAvatarPickActive 配合：avatar / view=高亮 image，voice=高亮可选取参考音的节点 */
-  characterCanvasPickTarget?: 'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d';
+  characterCanvasPickTarget?: 'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d' | 'digitalHumanVideo';
 }
 
 const FlowContent: React.FC<FlowContentProps> = (props) => {
@@ -805,7 +825,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     const runnableNodes = nodes.filter((node) => {
       const nodeType = node.type;
       const isRunnable =
-        nodeType === 'video' || nodeType === 'wanAnimate' || nodeType === 'image' || nodeType === 'llm' || nodeType === 'audio';
+        nodeType === 'video' || nodeType === 'wanAnimate' || nodeType === 'heyGem' || nodeType === 'image' || nodeType === 'llm' || nodeType === 'audio';
       if (!isRunnable) {
         return false;
       }
@@ -1251,6 +1271,17 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       if (!sourceNode || !targetNode) return false;
       if (sourceNode.type === 'character') {
         if (!isCharacterConnectionDataValid(targetNode.type ?? '', sourceNode.data as Record<string, unknown>)) {
+          return false;
+        }
+      }
+      if (sourceNode.type === 'digitalHuman') {
+        if (
+          !isDigitalHumanConnectionDataValid(
+            targetNode.type ?? '',
+            params.sourceHandle ?? null,
+            sourceNode.data as Record<string, unknown>,
+          )
+        ) {
           return false;
         }
       }
@@ -2208,7 +2239,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           const right = left + width;
           const bottom = top + height;
           const unloadIds = nodes
-            .filter((n) => (n.type === 'video' || n.type === 'wanAnimate') && !!(n.data as any)?.outputVideo)
+            .filter((n) => (n.type === 'video' || n.type === 'wanAnimate' || n.type === 'heyGem') && !!(n.data as any)?.outputVideo)
             .filter((n) => {
               const nw = Number((n.data as any)?.width || 738.91);
               const nh = Number((n.data as any)?.height || 422.22);
@@ -2503,7 +2534,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         <div
           className="absolute bottom-4 z-10 nodrag nopan flex flex-col items-center gap-2"
           style={{
-            left: characterListCollapsed ? '247px' : '479px', // 小地图面板宽 160 + gap 16 + 按钮区
+            left: characterListCollapsed
+              ? `${ASSET_LIBRARY_SIDEBAR_COLLAPSED_WIDTH_PX + 160 + ASSET_LIBRARY_CANVAS_GAP_PX + 16}px`
+              : `${ASSET_LIBRARY_SIDEBAR_WIDTH_PX + 160 + ASSET_LIBRARY_CANVAS_GAP_PX + 16}px`,
             transition: 'left 0.3s ease-in-out',
           }}
         >
@@ -2548,7 +2581,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         <div
           className="absolute bottom-4 left-4 z-10 flex flex-col gap-2 nodrag nopan"
           style={{
-            left: characterListCollapsed ? '71px' : '303px',
+            left: characterListCollapsed
+              ? `${ASSET_LIBRARY_SIDEBAR_COLLAPSED_WIDTH_PX + ASSET_LIBRARY_CANVAS_GAP_PX}px`
+              : `${ASSET_LIBRARY_SIDEBAR_WIDTH_PX + ASSET_LIBRARY_CANVAS_GAP_PX}px`,
             transition: 'left 0.3s ease-in-out',
           }}
         >

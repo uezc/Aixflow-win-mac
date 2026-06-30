@@ -6,7 +6,6 @@ import SplashScreen from './components/SplashScreen';
 import Projects from './components/Projects';
 import Workspace from './components/Workspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import NxSaaSLoginModal from './components/NxSaaSLoginModal';
 import { NxModelPricingProvider, NX_SAAS_PRICING_REFRESH } from './contexts/NxModelPricingContext';
 import AdminRouteGate, { ADMIN_OPS_SESSION_KEY } from './components/Admin/AdminRouteGate';
 import AdminConsoleLayout from './components/Admin/AdminConsoleLayout';
@@ -16,6 +15,7 @@ import AdminModelsPage from './components/Admin/AdminModelsPage';
 import AdminUsersPage from './components/Admin/AdminUsersPage';
 import AdminFinancePage from './components/Admin/AdminFinancePage';
 import RechargeSettledNotifier from './components/RechargeSettledNotifier';
+import { NxSaasAuthPromptBridge } from './components/NxSaasAuthPromptBridge';
 
 /** 鐗囧ご鍚庣殑璐︽埛椤电偣鍑汇€岃繘鍏ャ€嶅悗鎵嶅厑璁歌闂」鐩垪琛?/ 鐢诲竷锛堜笌鏄惁宸茬櫥褰曘€丯X_SAAS_MODE 鏃犲叧锛?*/
 const NX_SAAS_GATE_KEY = 'nexflow_saas_gate_ok';
@@ -72,11 +72,24 @@ const App: React.FC = () => {
   const [showSplash, setShowSplash] = useState(false);
   const [showMainUI, setShowMainUI] = useState(false);
 
-  // 产品要求：每次启动都需手动登录，进入应用后主动清空上次云端会话
+  /** 产品要求：每次启动都需手动登录，进入应用后主动清空上次云端会话 */
   useEffect(() => {
     if (!isElectronReady || !window.electronAPI?.nxCloudLogout) return;
     void window.electronAPI.nxCloudLogout().catch(() => {});
   }, [isElectronReady]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => {
+      root.dataset.nexflowWindowHidden = document.visibilityState === 'hidden' ? 'true' : 'false';
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      delete root.dataset.nexflowWindowHidden;
+    };
+  }, []);
 
   // 检查 electronAPI 是否可用和激活状态（延迟首帧发 IPC，避免与 Chromium WidgetHost 时序冲突）
   useEffect(() => {
@@ -379,14 +392,6 @@ const AppRouter: React.FC<{
   const adminBypass =
     location.pathname === '/admin' || location.pathname.startsWith('/admin/');
   const [adminUnlockBump, setAdminUnlockBump] = useState(0);
-  const [nxSaaSModalOpen, setNxSaaSModalOpen] = useState(false);
-  const [nxSaaSWelcomeToast, setNxSaaSWelcomeToast] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!nxSaaSWelcomeToast) return;
-    const t = window.setTimeout(() => setNxSaaSWelcomeToast(null), 3200);
-    return () => window.clearTimeout(t);
-  }, [nxSaaSWelcomeToast]);
 
   /** reload 后恢复跳转目标（如画布返回项目列表） */
   useEffect(() => {
@@ -454,12 +459,6 @@ const AppRouter: React.FC<{
     }, 1200);
     return () => window.clearTimeout(t);
   }, [showMainUI]);
-
-  useEffect(() => {
-    const handler = () => setNxSaaSModalOpen(true);
-    window.addEventListener('nx-saas-login-required', handler);
-    return () => window.removeEventListener('nx-saas-login-required', handler);
-  }, []);
 
   /** 单实例：双击 .aixflow 或二次启动时由主进程导入并跳转画布 */
   useEffect(() => {
@@ -609,25 +608,7 @@ const AppRouter: React.FC<{
     </Routes>
     {showMainUI ? (
       <>
-        {nxSaaSWelcomeToast ? (
-          <div
-            className="fixed bottom-8 left-1/2 z-[10001] max-w-[min(92vw,22rem)] -translate-x-1/2 rounded-lg border border-white/12 bg-neutral-900/95 px-4 py-2.5 text-center text-sm text-white/95 shadow-xl backdrop-blur-sm pointer-events-none"
-            role="status"
-          >
-            {nxSaaSWelcomeToast}
-          </div>
-        ) : null}
-        <NxSaaSLoginModal
-          open={nxSaaSModalOpen}
-          onClose={() => setNxSaaSModalOpen(false)}
-          onLoggedIn={(opts) => {
-            setNxSaaSModalOpen(false);
-            if (opts?.isNewUser) {
-              setNxSaaSWelcomeToast('欢迎来到 Aixflow，已为您创建新账户');
-            }
-            window.dispatchEvent(new Event(NX_SAAS_PRICING_REFRESH));
-          }}
-        />
+        <NxSaasAuthPromptBridge />
         <RechargeSettledNotifier />
       </>
     ) : null}

@@ -114,11 +114,26 @@ export function buildVideoBillingSkuKey(baseModel, input) {
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  if (m === 'hey-gem') {
+    return joinKey('hey', 'gem', 'plus');
+  }
+
   if (m === 'seedance-2.0-fast') {
     const resRaw = String(input.resolutionSeedance ?? '').trim().toLowerCase();
     const resSeg = resRaw === '1080p' ? '1080p' : '720p';
     const durNum = normalizeSeedanceDurationSec(input.durationSeedance, 10);
     return joinKey('seedance', '2-0-fast', resSeg, `${durNum}s`);
+  }
+
+  if (m === 'seedance-2.0-mini') {
+    const resRaw = String(input.resolutionSeedance ?? '').trim().toLowerCase();
+    let resSeg = '720p';
+    if (resRaw === '4k' || resRaw === '2160p') resSeg = '4k';
+    else if (resRaw === '2k' || resRaw === '1440p') resSeg = '2k';
+    else if (resRaw === '1080p' || resRaw === '1080') resSeg = '1080p';
+    else if (resRaw === '480p' || resRaw === '480') resSeg = '480p';
+    const durNum = normalizeSeedanceDurationSec(input.durationSeedance, 10);
+    return joinKey('seedance', '2-0-mini', resSeg, `${durNum}s`);
   }
 
   if (m === 'gemini-omni') {

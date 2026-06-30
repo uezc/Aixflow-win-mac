@@ -31,6 +31,37 @@ export const SEEDANCE_DURATION_SEC_OPTIONS = [5, 10, 15] as const;
 
 export type SeedanceDurationChoice = `${(typeof SEEDANCE_DURATION_SEC_OPTIONS)[number]}`;
 
+export const SEEDANCE_FAST_RESOLUTION_OPTIONS = ['720p', '1080p'] as const;
+export const SEEDANCE_MINI_RESOLUTION_OPTIONS = ['480p', '720p', '1080p', '2k', '4k'] as const;
+
+export type SeedanceFastResolutionChoice = (typeof SEEDANCE_FAST_RESOLUTION_OPTIONS)[number];
+export type SeedanceMiniResolutionChoice = (typeof SEEDANCE_MINI_RESOLUTION_OPTIONS)[number];
+export type SeedanceResolutionChoice = SeedanceFastResolutionChoice | SeedanceMiniResolutionChoice;
+
+function seedanceMiniResSeg(raw: string): SeedanceMiniResolutionChoice {
+  const s = lc(raw);
+  if (s === '4k' || s === '2160p') return '4k';
+  if (s === '2k' || s === '1440p') return '2k';
+  if (s === '1080p' || s === '1080' || s === '1920x1080' || s === '1080x1920') return '1080p';
+  if (s === '480p' || s === '480') return '480p';
+  return '720p';
+}
+
+function seedanceFastResSeg(raw: string): SeedanceFastResolutionChoice {
+  const s = lc(raw);
+  if (s === '1080p' || s === '1080' || s === '1920x1080' || s === '1080x1920') return '1080p';
+  return '720p';
+}
+
+/** Seedance 分辨率：Fast 仅 720p/1080p；Mini 另支持 2k/4k */
+export function coerceSeedanceResolution(
+  raw: string | undefined | null,
+  model: string,
+): SeedanceResolutionChoice {
+  if (lc(model) === 'seedance-2.0-mini') return seedanceMiniResSeg(String(raw ?? ''));
+  return seedanceFastResSeg(String(raw ?? ''));
+}
+
 export function normalizeSeedanceDurationSec(raw: string | number | undefined, fallback = 10): number {
   const allowed = SEEDANCE_DURATION_SEC_OPTIONS;
   const n = parseInt(String(raw ?? '').trim(), 10);
@@ -230,11 +261,21 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  if (m === 'hey-gem') {
+    return joinKey('hey', 'gem', 'plus');
+  }
+
   if (m === 'seedance-2.0-fast') {
     const resRaw = String(input.resolutionSeedance ?? '').trim().toLowerCase();
     const resSeg = resRaw === '1080p' ? '1080p' : '720p';
     const durNum = normalizeSeedanceDurationSec(input.durationSeedance as string | number | undefined, 10);
     return joinKey('seedance', '2-0-fast', resSeg, `${durNum}s`);
+  }
+
+  if (m === 'seedance-2.0-mini') {
+    const resSeg = seedanceMiniResSeg(String(input.resolutionSeedance ?? ''));
+    const durNum = normalizeSeedanceDurationSec(input.durationSeedance as string | number | undefined, 10);
+    return joinKey('seedance', '2-0-mini', resSeg, `${durNum}s`);
   }
 
   if (m === 'gemini-omni') {

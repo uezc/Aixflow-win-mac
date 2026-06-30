@@ -213,6 +213,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
         settled = true;
         const el = videoElRef.current;
         if (!el || isPausedRef.current) return;
+        el.playbackRate = 1;
         el.play().catch(() => {});
       };
       const onSeeked = () => {
@@ -231,6 +232,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       };
     }
 
+    v.playbackRate = 1;
     v.play().catch(() => {});
   }, [isPaused]);
   // 标准化视频 URL

@@ -15,6 +15,8 @@ const projectRoot = path.join(__dirname, '..');
 const outputRoot = path.join(projectRoot, 'resources', 'default-asset-library');
 const filesOut = path.join(outputRoot, 'files');
 const manifestPath = path.join(outputRoot, 'manifest.json');
+/** 构建时实际写入目录（staging），默认等于 filesOut */
+let filesOutActive = filesOut;
 
 const ASSET_SUBDIRS = [
   'character-views',
@@ -90,7 +92,7 @@ function importExternalAbsPath(absPath, userDataPath, importCache) {
   const hash = crypto.createHash('sha1').update(resolved).digest('hex').slice(0, 20);
   const ext = path.extname(resolved) || '';
   const rel = `bundled-imports/${hash}${ext}`;
-  const dest = path.join(filesOut, rel);
+  const dest = path.join(filesOutActive, rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   if (!fs.existsSync(dest)) fs.copyFileSync(resolved, dest);
   importCache.set(cacheKey, rel);
@@ -163,9 +165,73 @@ function copyDirRecursive(src, dest) {
   }
 }
 
-function rmDirRecursive(dir) {
-  if (!fs.existsSync(dir)) return;
-  fs.rmSync(dir, { recursive: true, force: true });
+function rmDirRecursive(dir, { label = '目录', throwOnFail = true } = {}) {
+  if (!fs.existsSync(dir)) return true;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 400 });
+    return true;
+  } catch (e) {
+    const code = e?.code || '';
+    if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+      const bak = `${dir}.bak-${process.pid}-${Date.now()}`;
+      try {
+        fs.renameSync(dir, bak);
+        console.warn(`[sync-asset-library] ${label}被占用，已重命名为 ${path.basename(bak)}`);
+        try {
+          fs.rmSync(bak, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 });
+        } catch {
+          console.warn(`[sync-asset-library] 请稍后手动删除 ${bak}`);
+        }
+        return true;
+      } catch {
+        if (throwOnFail) {
+          console.error(
+            `[sync-asset-library] 无法清理 ${dir}（${code}）。请先关闭 Aixflow / 文件资源管理器预览，再重试构建。`,
+          );
+          throw e;
+        }
+        return false;
+      }
+    }
+    if (throwOnFail) throw e;
+    return false;
+  }
+}
+
+/** 将 staging 合并到 target（覆盖同名文件），用于 target 被占用无法整目录删除时 */
+function mergeDirIntoTarget(staging, target) {
+  if (!fs.existsSync(staging)) return;
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of fs.readdirSync(staging)) {
+    const s = path.join(staging, name);
+    const d = path.join(target, name);
+    if (fs.statSync(s).isDirectory()) {
+      mergeDirIntoTarget(s, d);
+    } else {
+      fs.mkdirSync(path.dirname(d), { recursive: true });
+      try {
+        fs.copyFileSync(s, d);
+      } catch (e) {
+        if (e?.code === 'EPERM' || e?.code === 'EBUSY') {
+          console.warn(`[sync-asset-library] 跳过被占用的文件: ${d}`);
+        } else {
+          throw e;
+        }
+      }
+    }
+  }
+}
+
+function promoteStagingDir(stagingDir, targetDir) {
+  if (fs.existsSync(targetDir)) {
+    if (!rmDirRecursive(targetDir, { label: 'files', throwOnFail: false })) {
+      console.warn('[sync-asset-library] files/ 仍被占用，改为增量覆盖（可能残留已删除资产的旧文件）');
+      mergeDirIntoTarget(stagingDir, targetDir);
+      rmDirRecursive(stagingDir, { label: 'staging', throwOnFail: false });
+      return;
+    }
+  }
+  fs.renameSync(stagingDir, targetDir);
 }
 
 function countBundledImports(importCache) {
@@ -201,14 +267,16 @@ function main() {
     console.log('[sync-asset-library] 未找到本地配置，将写入空 manifest');
   }
 
-  rmDirRecursive(filesOut);
-  fs.mkdirSync(filesOut, { recursive: true });
+  const stagingRoot = `${filesOut}.staging-${process.pid}`;
+  rmDirRecursive(stagingRoot, { label: 'staging', throwOnFail: true });
+  fs.mkdirSync(stagingRoot, { recursive: true });
+  filesOutActive = stagingRoot;
 
   let copiedDirs = 0;
   for (const sub of ASSET_SUBDIRS) {
     const src = path.join(userDataPath, sub);
     if (!fs.existsSync(src)) continue;
-    copyDirRecursive(src, path.join(filesOut, sub));
+    copyDirRecursive(src, path.join(filesOutActive, sub));
     copiedDirs += 1;
   }
 
@@ -217,6 +285,9 @@ function main() {
     characters: characters.map((c) => serializeCharacter(c, userDataPath, importCache)),
     sceneLibrary: sceneLibrary.map((s) => serializeScene(s, userDataPath, importCache)),
   };
+
+  promoteStagingDir(stagingRoot, filesOut);
+  filesOutActive = filesOut;
 
   const validation = validateManifestPaths(serialized);
   if (validation.badDrive.length > 0 || validation.badLocalRes.length > 0) {

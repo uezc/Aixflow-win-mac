@@ -4,6 +4,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { isCloudAiAuthRequiredError } from '../utils/cloudAiGateMessage';
 
 /**
  * AI 状态类型
@@ -265,8 +266,34 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         });
       }
       
-      // 放弃路径依赖：有文本就先上文本，不再死等 localPath 读取
-      // 这样可以避免因为 localPath 读取失败（如乱码路径）而导致内容无法显示
+      // 视频/图片/音频 SUCCESS 优先于纯文本：VideoProvider 等会同时带 text（如「视频生成完成: …」）与 videoUrl
+      if (hasValidUrl && packet.status === 'SUCCESS') {
+        const mergedPayload = {
+          ...payload,
+          ...(displayImageUrl ? { imageUrl: displayImageUrl } : {}),
+          ...(displayVideoUrl ? { videoUrl: displayVideoUrl, url: displayVideoUrl } : {}),
+          ...(localPath ? { localPath } : {}),
+          ...(originalVideoUrl ? { originalVideoUrl } : {}),
+        };
+
+        setStatus('SUCCESS');
+        setPayload((prev) => ({
+          ...prev,
+          ...mergedPayload,
+        }));
+
+        const successPacket: AIStatusPacket = {
+          nodeId: packetNodeId,
+          status: 'SUCCESS',
+          payload: mergedPayload,
+        };
+
+        callbacksRef.current.onStatusUpdate?.(successPacket);
+        callbacksRef.current.onComplete?.(mergedPayload);
+        return;
+      }
+
+      // 放弃路径依赖：纯文本 SUCCESS 先上文本，不再死等 localPath 读取
       if (hasText && packet.status === 'SUCCESS') {
         try {
           // 优先使用 text 字段，不等待 localPath 读取
@@ -306,35 +333,6 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         }
       }
       
-      // 如果有有效的 URL（图片或视频），按原有逻辑处理
-      if (hasValidUrl) {
-        const mergedPayload = {
-          ...payload,
-          ...(displayImageUrl ? { imageUrl: displayImageUrl } : {}),
-          ...(displayVideoUrl ? { videoUrl: displayVideoUrl, url: displayVideoUrl } : {}),
-          ...(localPath ? { localPath } : {}),
-          ...(originalVideoUrl ? { originalVideoUrl } : {}), // 保存原始远程 URL
-        };
-
-        // 立即标记为 SUCCESS，停止计时逻辑由外层根据 SUCCESS / imageUrl / videoUrl 处理
-        setStatus('SUCCESS');
-        setPayload((prev) => ({
-          ...prev,
-          ...mergedPayload,
-        }));
-
-        const successPacket: AIStatusPacket = {
-          nodeId: packetNodeId, // 使用 trim 后的 ID
-          status: 'SUCCESS',
-          payload: mergedPayload,
-        };
-
-        // 通知外部状态更新和完成回调
-        callbacksRef.current.onStatusUpdate?.(successPacket);
-        callbacksRef.current.onComplete?.(mergedPayload);
-        return;
-      }
-
       // 正常状态更新（使用函数式更新，避免闭包问题）
       setStatus((prev) => {
         // 如果状态已经是 ERROR 或 SUCCESS，且新状态是 START，允许更新（用于重新生成）
@@ -422,7 +420,8 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         console.log(`[useAI] 调用 onComplete 回调，text 长度: ${textLength}, payload keys: ${Object.keys(payload).join(', ')}`);
         callbacksRef.current.onComplete?.(payload);
       } else if (packet.status === 'ERROR') {
-        if ((packet.payload as any)?.nxAuthRequired === true) {
+        const payload = callbackPacket.payload as { error?: string; nxAuthRequired?: boolean } | undefined;
+        if (isCloudAiAuthRequiredError(payload?.error, payload?.nxAuthRequired)) {
           window.dispatchEvent(new CustomEvent('nx-saas-login-required'));
         }
         callbacksRef.current.onError?.(packet.payload?.error || 'Unknown error');

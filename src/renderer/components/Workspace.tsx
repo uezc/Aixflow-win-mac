@@ -31,10 +31,14 @@ import { VideoNode, getVideoLastFrame } from './Canvas/VideoNode';
 import { AudioNode } from './Canvas/AudioNode';
 import { AudioTranscribeNode } from './Canvas/AudioTranscribeNode';
 import VideoSpliceNode, { type TimelineClip, type VideoSpliceExportPayload } from './Canvas/VideoSpliceNode';
+import { resolveSpliceExportDimensions } from './Canvas/VideoSpliceAspectRatioDropdown';
 import PhotoCollageNode, { type CollageLayer } from './Canvas/PhotoCollageNode';
 import ImageTo3dNode from './Canvas/ImageTo3dNode';
 import { collageLayerSourceNodeId } from '../utils/collageLayerTransform';
+import { buildPhotoCollageLayersFromEdges } from '../utils/photoCollageFromEdges';
+import { isLikelyVideoMediaUrl } from '../utils/mediaPreviewUrl';
 import WanAnimateNode from './Canvas/WanAnimateNode';
+import HeyGemNode from './Canvas/HeyGemNode';
 import FlowContent from './Canvas/FlowContent';
 import LLMInputPanel from './Canvas/LLMInputPanel';
 import ImageInputPanel from './Canvas/ImageInputPanel';
@@ -44,6 +48,30 @@ import AudioInputPanel from './Canvas/AudioInputPanel';
 import { VideoPreview } from './VideoPreview';
 import { ImagePreviewWithTools } from './ImagePreviewWithTools';
 import { normalizeVideoUrl } from '../utils/normalizeVideoUrl';
+import {
+  applyAspectRatioToNodeData,
+  aspectRatioLabelFromPixelSize,
+  computeNodeSizeFromMedia,
+  DEFAULT_IMAGE_ASPECT_RATIO,
+  DEFAULT_VIDEO_ASPECT_RATIO,
+  hasVideoOutputMedia,
+  imageNodeSizeForAspectRatio,
+  IMAGE_NODE_MAX_H,
+  IMAGE_NODE_MAX_W,
+  IMAGE_NODE_MIN_H,
+  IMAGE_NODE_MIN_W,
+  nodeStyleDimensions,
+  resolveAspectRatioFromNodeData,
+  resolveNodeSizeFromMediaData,
+  resolveVideoPanelAspectRatioFromNodeData,
+  snapToVideoPanelAspectRatio,
+  probeImagePixelSize,
+  videoNodeSizeForAspectRatio,
+  VIDEO_NODE_MAX_H,
+  VIDEO_NODE_MAX_W,
+  VIDEO_NODE_MIN_H,
+  VIDEO_NODE_MIN_W,
+} from '../utils/nodeSizeFromAspectRatio';
 import { applyBuiltClipsToSpliceData, normalizeVideoTracks } from '../utils/videoSpliceTracks';
 import {
   buildVideoSpliceClipsFromEdges,
@@ -55,9 +83,11 @@ import {
   timelineClipsFingerprint,
 } from '../utils/timelineSourceMedia';
 import { readVideoNodePlaybackTimeSec } from '../utils/videoPlaybackTimeRegistry';
+import { probeVideoPixelSize } from '../utils/extractVideoFrame';
 import { readVideoInputPanelProgressFromNode } from '../utils/videoInputPanelProgress';
 import { recordSetNodesPlaybackCall } from '../utils/videoPlaybackPerfStats';
 import { CharacterNode } from './Canvas/CharacterNode';
+import { DigitalHumanNode } from './Canvas/DigitalHumanNode';
 import { TextSplitNode } from './Canvas/TextSplitNode';
 import CameraControlNode from './Canvas/CameraControlNode';
 import { MinimalNodePlaceholder, TINY_ZOOM_THRESHOLD_VALUE } from './Canvas/MinimalNodePlaceholder';
@@ -67,10 +97,14 @@ import Panorama360PlacementPanel from './Canvas/Panorama360PlacementPanel';
 import {
   type Character,
   type SceneLibraryItem,
+  type DigitalHumanLibraryItem,
   sceneDisplay3dImageUrl,
   sceneNormalImageUrl,
   NEXFLOW_CHARACTER_DRAG_MIME,
   NEXFLOW_SCENE_DRAG_MIME,
+  NEXFLOW_DIGITAL_HUMAN_DRAG_MIME,
+  digitalHumanVideoUrl,
+  digitalHumanPosterUrl,
   isImageTo3dLibraryCharacter,
   resolveCharacterVoiceUrlForDrag,
 } from './characterListShared';
@@ -105,6 +139,7 @@ import {
   normalizeLtx23DurationChoice,
   normalizeSeedanceDurationChoice,
   normalizeGeminiOmniDurationChoice,
+  coerceSeedanceResolution,
 } from '../utils/videoBillingSku';
 import {
   bindContainerRef,
@@ -122,6 +157,12 @@ import {
   DEFAULT_REFERENCE_TRANSMIT_SLOTS,
   getCharacterTransmitImageUrls,
 } from '../utils/connectionRules';
+import {
+  isDigitalHumanAudioOutputHandle,
+  isDigitalHumanVideoOutputHandle,
+  pickDigitalHumanAudioUrl,
+  pickDigitalHumanVideoUrl,
+} from '../utils/digitalHumanNodeMedia';
 import { useNxModelPricing } from '../contexts/NxModelPricingContext';
 import type { NxModelConfigRow } from '../utils/nxModelConfigPricingCache';
 import {
@@ -132,6 +173,7 @@ import {
   getLlmChatDisplayPrice,
 } from '../utils/cloudModelPricing';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../utils/audioSongModels';
+import { CANVAS_PICK_NODE_EVENT, syncCanvasPickState } from '../utils/canvasPickStore';
 
 /** 旧存盘分辨率与面板挡位 720P/1080P 对齐 */
 function coerceVideoWanAnimateResolution(v) {
@@ -148,10 +190,8 @@ function coerceWanAnimateClipSec(v) {
   return '8';
 }
 
-function coerceVideoSeedanceResolution(v) {
-  const s = String(v ?? '').trim().toLowerCase();
-  if (s === '1080p' || s === '1080' || s === '1920x1080' || s === '1080x1920') return '1080p';
-  return '720p';
+function coerceVideoSeedanceResolution(v, model = 'seedance-2.0-fast') {
+  return coerceSeedanceResolution(v, model);
 }
 
 function coerceVideoGeminiOmniResolution(v) {
@@ -716,7 +756,28 @@ function pickCharacterLibraryVoiceUrlFromNode(node: Node): { url: string; label:
     if (!url) return null;
     return { url, label: title || '角色' };
   }
+  if (t === 'digitalHuman') {
+    const url = pickDigitalHumanAudioUrl(d);
+    if (!url) return null;
+    return { url, label: title || '数字人' };
+  }
   return null;
+}
+
+/** 从画布节点提取数字人库「参考视频」URL（视频 / HeyGem / 视频换人 / 数字人源模块） */
+function pickDigitalHumanVideoUrlFromNode(node: Node): string | null {
+  if (node?.type === 'digitalHuman') {
+    const url = pickDigitalHumanVideoUrl(node.data as Record<string, unknown>);
+    return url || null;
+  }
+  if (!isVideoTrackSourceNodeType(node?.type)) return null;
+  const d = (node.data || {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof d[k] === 'string' ? (d[k] as string).trim() : '');
+  const url =
+    str('outputVideo') ||
+    str('originalVideoUrl') ||
+    str('referenceVideoUrl');
+  return url || null;
 }
 
 // 格式化图片路径：统一转换为 local-resource:// 协议（同步版本）
@@ -904,12 +965,30 @@ function taskVideoDedupNorm(task: Task): string {
 
 /** 画布上与「视频生成」共用连线 / 底部面板逻辑的节点类型 */
 function isVideoModuleNodeType(t: string | undefined): boolean {
-  return t === 'video' || t === 'wanAnimate';
+  return t === 'video' || t === 'wanAnimate' || t === 'heyGem';
 }
 
-/** 可作为参考视频源：普通视频模块与视频换人模块均输出视频 */
+/** 可作为参考视频源：普通视频模块、视频换人、HeyGem 均输出视频 */
 function isVideoTrackSourceNodeType(t: string | undefined): boolean {
-  return t === 'video' || t === 'wanAnimate';
+  return t === 'video' || t === 'wanAnimate' || t === 'heyGem';
+}
+
+function isVideoReferenceOutputSource(node: Node | undefined, sourceHandle?: string | null): boolean {
+  if (!node?.type) return false;
+  if (node.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(sourceHandle);
+  return isVideoTrackSourceNodeType(node.type);
+}
+
+function pickReferenceVideoFromSourceNode(node: Node | undefined, sourceHandle?: string | null): string {
+  if (!node) return '';
+  if (node.type === 'digitalHuman') {
+    if (!isDigitalHumanVideoOutputHandle(sourceHandle)) return '';
+    return pickDigitalHumanVideoUrl(node.data as Record<string, unknown>);
+  }
+  if (isVideoTrackSourceNodeType(node.type)) {
+    return String(node.data?.outputVideo || node.data?.originalVideoUrl || '').trim();
+  }
+  return '';
 }
 
 /** 任务列表展示用：与画布定价表一致的预估元宝（抠图/去水印按任务 prompt 区分） */
@@ -926,6 +1005,87 @@ function estimateYuanbaoForTaskNodeStatic(
   if (t === 'minimalistText') return getLlmChatDisplayPrice(cloudMap, 1);
   const y = getNodeDisplayPrice(t, node.data as Record<string, unknown>, cloudMap);
   return y != null ? y : undefined;
+}
+
+function patchNodeWithAspectRatioLayout(node: Node, aspectRatio: string, kind: 'image' | 'video'): Node {
+  const nextData = applyAspectRatioToNodeData(node.data as Record<string, unknown>, aspectRatio, kind);
+  const w = Number(nextData.width);
+  const h = Number(nextData.height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) {
+    return { ...node, data: nextData };
+  }
+  return {
+    ...node,
+    data: nextData,
+    style: { ...(node.style as object), ...nodeStyleDimensions(w, h) },
+  };
+}
+
+function patchNodeWithMediaLayout(
+  node: Node,
+  mediaW: number | undefined,
+  mediaH: number | undefined,
+  kind: 'image' | 'video',
+): Node {
+  const minW = kind === 'image' ? 369.46 : VIDEO_NODE_MIN_W;
+  const minH = kind === 'image' ? 211.12 : VIDEO_NODE_MIN_H;
+  const maxW = kind === 'image' ? 2048 : VIDEO_NODE_MAX_W;
+  const maxH = kind === 'image' ? 2048 : VIDEO_NODE_MAX_H;
+  const aspectFallback =
+    kind === 'image'
+      ? imageNodeSizeForAspectRatio(String(node.data?.aspectRatio || DEFAULT_IMAGE_ASPECT_RATIO))
+      : videoNodeSizeForAspectRatio(String(node.data?.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO));
+  const size = computeNodeSizeFromMedia(
+    mediaW,
+    mediaH,
+    minW,
+    minH,
+    maxW,
+    maxH,
+    aspectFallback?.w ?? minW,
+    aspectFallback?.h ?? minH,
+  );
+  const aspectRatio =
+    mediaW && mediaH && mediaW > 0 && mediaH > 0
+      ? kind === 'video'
+        ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(mediaW, mediaH))
+        : aspectRatioLabelFromPixelSize(mediaW, mediaH)
+      : String(node.data?.aspectRatio || (kind === 'image' ? DEFAULT_IMAGE_ASPECT_RATIO : DEFAULT_VIDEO_ASPECT_RATIO));
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      width: size.w,
+      height: size.h,
+      aspectRatio,
+      isUserResized: false,
+      ...(kind === 'image' && mediaW && mediaH
+        ? {
+            imageAsset: {
+              ...((node.data?.imageAsset as object) || {}),
+              width: mediaW,
+              height: mediaH,
+            },
+          }
+        : {}),
+    },
+    style: { ...(node.style as object), ...nodeStyleDimensions(size.w, size.h) },
+  };
+}
+
+async function patchImageNodeWithProbedLayout(node: Node, probeUrl: string): Promise<Node> {
+  if (node.data?.isUserResized || node.data?.preserveExportLayout) return node;
+  const url = String(probeUrl || '').trim();
+  if (!url) return node;
+  try {
+    const px = await probeImagePixelSize(url);
+    if (px.width > 0 && px.height > 0) {
+      return patchNodeWithMediaLayout(node, px.width, px.height, 'image');
+    }
+  } catch {
+    /* 探测失败时保留当前外框 */
+  }
+  return node;
 }
 
 const Workspace: React.FC<WorkspaceProps> = () => {
@@ -948,14 +1108,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   /** 「添加角色」弹窗：从画布点选（参考图 / 参考音） */
   const characterAvatarPickPendingRef = useRef(false);
   const characterCanvasPickTargetRef = useRef<
-    'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d'
+    'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d' | 'digitalHumanVideo'
   >('avatar');
   const sceneImagePickResolveRef = useRef<((url: string | null) => void) | null>(null);
+  const digitalHumanVideoPickResolveRef = useRef<((url: string | null) => void) | null>(null);
   const characterAvatarPickResolveRef = useRef<((url: string | null) => void) | null>(null);
   const characterVoicePickResolveRef = useRef<((payload: { url: string; label: string } | null) => void) | null>(null);
   const [characterAvatarPickOverlay, setCharacterAvatarPickOverlay] = useState(false);
   const [characterCanvasPickTarget, setCharacterCanvasPickTarget] = useState<
-    'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d'
+    'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d' | 'digitalHumanVideo'
   >('avatar');
   const cancelCharacterCanvasPick = useCallback(() => {
     if (!characterAvatarPickPendingRef.current) return;
@@ -966,6 +1127,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     if (kind === 'sceneNormal' || kind === 'sceneDisplay3d') {
       const r = sceneImagePickResolveRef.current;
       sceneImagePickResolveRef.current = null;
+      r?.(null);
+    } else if (kind === 'digitalHumanVideo') {
+      const r = digitalHumanVideoPickResolveRef.current;
+      digitalHumanVideoPickResolveRef.current = null;
       r?.(null);
     } else if (kind === 'avatar' || kind === 'view') {
       const r = characterAvatarPickResolveRef.current;
@@ -978,6 +1143,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     }
     characterCanvasPickTargetRef.current = 'avatar';
   }, []);
+
+  useEffect(() => {
+    if (characterAvatarPickOverlay) {
+      syncCanvasPickState(true, characterCanvasPickTarget);
+    } else {
+      syncCanvasPickState(false);
+    }
+  }, [characterAvatarPickOverlay, characterCanvasPickTarget]);
+
   const finishCharacterAvatarPick = useCallback((url: string | null) => {
     const t = characterCanvasPickTargetRef.current;
     if (!characterAvatarPickPendingRef.current || (t !== 'avatar' && t !== 'view')) return;
@@ -1007,6 +1181,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     characterAvatarPickPendingRef.current = false;
     const r = sceneImagePickResolveRef.current;
     sceneImagePickResolveRef.current = null;
+    characterAvatarPickResolveRef.current = null;
+    characterVoicePickResolveRef.current = null;
+    characterCanvasPickTargetRef.current = 'avatar';
+    setCharacterAvatarPickOverlay(false);
+    setCharacterCanvasPickTarget('avatar');
+    r?.(url);
+  }, []);
+  const finishDigitalHumanVideoPick = useCallback((url: string | null) => {
+    if (!characterAvatarPickPendingRef.current || characterCanvasPickTargetRef.current !== 'digitalHumanVideo') return;
+    characterAvatarPickPendingRef.current = false;
+    const r = digitalHumanVideoPickResolveRef.current;
+    digitalHumanVideoPickResolveRef.current = null;
     characterAvatarPickResolveRef.current = null;
     characterVoicePickResolveRef.current = null;
     characterCanvasPickTargetRef.current = 'avatar';
@@ -1069,7 +1255,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const timeoutPollFailureCountRef = useRef(0);
   const timeoutPollDelayMsRef = useRef(60_000);
   const getNodeTaskType = useCallback((nodeType?: string): Task['taskType'] => {
-    if (nodeType === 'video' || nodeType === 'wanAnimate') return 'video';
+    if (nodeType === 'video' || nodeType === 'wanAnimate' || nodeType === 'heyGem') return 'video';
     if (nodeType === 'audio') return 'audio';
     if (nodeType === 'llm' || nodeType === 'minimalistText' || nodeType === 'text') return 'text';
     return 'image';
@@ -1138,6 +1324,42 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             };
             return next;
           }
+        }
+        // 已无 runtime 行：合并到已有正式媒体任务，或补一条 success runtime（供 handleAdd*Task 升格）
+        const mediaType: Task['taskType'] | undefined = patch.videoUrl
+          ? 'video'
+          : patch.imageUrl
+            ? 'image'
+            : patch.audioUrl
+              ? 'audio'
+              : undefined;
+        if (mediaType) {
+          const formalIdx = prev.findIndex(
+            (t) =>
+              t.nodeId === nodeId &&
+              t.taskType === mediaType &&
+              String(t.status || '').toLowerCase() === 'success' &&
+              !String(t.id).startsWith('runtime-'),
+          );
+          if (formalIdx >= 0) {
+            const next = prev.slice();
+            next[formalIdx] = { ...next[formalIdx], ...patch, taskType: mediaType };
+            return next;
+          }
+          const node = latestNodesRef.current.find((n) => n.id === nodeId);
+          const inputPrompt = nodeInputPromptForTask(node);
+          const createdAt = Date.now();
+          const nextTask: Task = {
+            id: `runtime-${nodeId}`,
+            nodeId,
+            nodeTitle: String(node?.data?.title || node?.type || 'task'),
+            prompt: typeof patch.prompt === 'string' && patch.prompt.trim() ? patch.prompt.trim() : inputPrompt,
+            createdAt,
+            status: 'success',
+            taskType: mediaType,
+            ...patch,
+          };
+          return [nextTask, ...prev];
         }
         return prev;
       }
@@ -1848,6 +2070,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 if (sourceNode?.type === 'audio') {
                   const url = pickAudioOutputUrlFromAudioNodeData(sourceNode.data as Record<string, unknown>);
                   if (url) newInputAudioUrl = url;
+                } else if (
+                  sourceNode?.type === 'digitalHuman' &&
+                  isDigitalHumanAudioOutputHandle(edge.sourceHandle)
+                ) {
+                  const url = pickDigitalHumanAudioUrl(sourceNode.data as Record<string, unknown>);
+                  if (url) newInputAudioUrl = url;
                 }
               }
               // 连线有输入则优先用连线，否则保留节点已有数据（含复制出的信息）
@@ -1877,10 +2105,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               let newReferenceVideoUrl = '';
               const refEdge = incomingEdges.find((e) => {
                 const src = nodeById.get(e.source);
+                if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
                 return isVideoTrackSourceNodeType(src?.type);
               });
               const refSource = refEdge ? nodeById.get(refEdge.source) : null;
-              if (isVideoTrackSourceNodeType(refSource?.type)) {
+              if (refSource?.type === 'digitalHuman') {
+                newReferenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
+              } else if (isVideoTrackSourceNodeType(refSource?.type)) {
                 const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
                 const t = (url || '').trim();
                 if (
@@ -1991,18 +2222,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             }
 
             if (node.type === 'photoCollage') {
-              const layers = ((node.data?.layers || []) as CollageLayer[]).slice();
-              const linkedSourceIds = new Set<string>();
-              for (const edge of incomingEdges) {
-                const sourceNode = nodeById.get(edge.source);
-                if (sourceNode?.type === 'image') linkedSourceIds.add(edge.source);
-              }
-              const nextLayers = layers.filter((layer) => {
-                const srcId = collageLayerSourceNodeId(layer);
-                if (!srcId) return true;
-                return linkedSourceIds.has(srcId);
-              });
-              if (nextLayers.length !== layers.length) {
+              const prevLayers = ((node.data?.layers || []) as CollageLayer[]).slice();
+              const nextLayers = buildPhotoCollageLayersFromEdges(
+                targetId,
+                nextEdges as Edge[],
+                Array.from(nodeById.values()),
+                prevLayers,
+              );
+              if (JSON.stringify(prevLayers) !== JSON.stringify(nextLayers)) {
                 mutated = true;
                 nextNodes[nodeIndex] = {
                   ...node,
@@ -2093,7 +2320,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           prompt: '',
           title: 'image',
           resolution: '1k',
-          aspectRatio: '9:16',
+          aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
           seedreamWidth: 2048,
           seedreamHeight: 2048,
           model: 'banana-2.0',
@@ -2334,7 +2561,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     nodeId: string;
     prompt: string;
     aspectRatio: '16:9' | '9:16' | '1:1' | '2:3' | '3:2';
-    model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+    model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
     hd: boolean;
     duration: '5' | '10' | '15' | '25';
     inputImages?: string[];
@@ -2357,7 +2584,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     resolutionWan26?: '720p' | '1080p';
     resolutionWanAnimate?: '720p' | '1080p';
     wanAnimateClipSec?: '5' | '8' | '10' | '15';
-    resolutionSeedance?: '720p' | '1080p';
+    resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
     durationSeedance?: '5' | '10' | '15';
     resolutionGeminiOmni?: '720p' | '1080p' | '4k';
     durationGeminiOmni?: '6' | '8' | '10';
@@ -2378,6 +2605,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     progress?: number;
     progressMessage?: string;
   } | null>(null);
+  const videoInputPanelDataRef = useRef<typeof videoInputPanelData>(null);
+  useEffect(() => {
+    videoInputPanelDataRef.current = videoInputPanelData;
+  }, [videoInputPanelData]);
 
   /** 选中节点 data.progress 变化时同步到底部面板（生成中重选、批量运行等） */
   useEffect(() => {
@@ -2636,6 +2867,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const [characterListCollapsed, setCharacterListCollapsed] = useState(true); // 默认收起角色列表
   const [characterListRefreshTrigger, setCharacterListRefreshTrigger] = useState(0);
   const [sceneListRefreshTrigger, setSceneListRefreshTrigger] = useState(0);
+  const [digitalHumanListRefreshTrigger, setDigitalHumanListRefreshTrigger] = useState(0);
   
   // Laf 云端元宝
   const [lafStatus, setLafStatus] = useState<'idle' | 'connecting' | 'success' | 'error'>('idle');
@@ -3125,17 +3357,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               setTimeout(() => {
                 setNodes((currentNodes) =>
                   currentNodes.map((n) => {
-                    if (n.type !== 'videoSplice') return n;
-                    const built = buildVideoSpliceClipsFromEdges(
-                      n.id,
-                      edgesWithHandles,
-                      currentNodes,
-                      n.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
-                    );
-                    return {
-                      ...n,
-                      data: { ...n.data, ...applyBuiltClipsToSpliceData(n.data, built) },
-                    };
+                    if (n.type === 'videoSplice') {
+                      const built = buildVideoSpliceClipsFromEdges(
+                        n.id,
+                        edgesWithHandles,
+                        currentNodes,
+                        n.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
+                      );
+                      return {
+                        ...n,
+                        data: { ...n.data, ...applyBuiltClipsToSpliceData(n.data, built) },
+                      };
+                    }
+                    if (n.type === 'photoCollage') {
+                      const prevLayers = ((n.data?.layers || []) as CollageLayer[]).slice();
+                      const nextLayers = buildPhotoCollageLayersFromEdges(
+                        n.id,
+                        edgesWithHandles,
+                        currentNodes,
+                        prevLayers,
+                      );
+                      return { ...n, data: { ...n.data, layers: nextLayers } };
+                    }
+                    return n;
                   }),
                 );
               }, 150);
@@ -3755,6 +3999,52 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     });
   }, [tasks, setNodes, handleVideoNodeDataChange]);
 
+  // 任务列表已成功但画布节点尚无 outputVideo 时回填（HeyGem / WanAnimate 等曾未走全局 SUCCESS 更新）
+  useEffect(() => {
+    const successVideoTasks = tasks.filter(
+      (task) => task.taskType === 'video' && task.status === 'success' && task.videoUrl && task.nodeId,
+    );
+    if (successVideoTasks.length === 0) return;
+
+    const toSync: Array<{ nodeId: string; url: string; networkUrl?: string }> = [];
+
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((node) => {
+        if (!isVideoModuleNodeType(node.type)) return node;
+        const task = successVideoTasks.find((t) => t.nodeId === node.id);
+        if (!task?.videoUrl) return node;
+        if (node.data?.outputVideo || node.data?.originalVideoUrl) return node;
+        changed = true;
+        const url = String(task.videoUrl);
+        const networkUrl = url.startsWith('http://') || url.startsWith('https://') ? url : undefined;
+        toSync.push({ nodeId: node.id, url, networkUrl });
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            outputVideo: url,
+            ...(networkUrl ? { originalVideoUrl: networkUrl } : {}),
+            progress: 0,
+            progressMessage: undefined,
+            errorMessage: undefined,
+          },
+        };
+      });
+      return changed ? next : nds;
+    });
+
+    toSync.forEach(({ nodeId, url, networkUrl }) => {
+      handleVideoNodeDataChange(nodeId, {
+        outputVideo: url,
+        ...(networkUrl ? { originalVideoUrl: networkUrl } : {}),
+        progress: 0,
+        progressMessage: undefined,
+        errorMessage: undefined,
+      });
+    });
+  }, [tasks, setNodes, handleVideoNodeDataChange]);
+
   // 当 text/LLM 节点内容变化时，同步到下游 Image / TextSplit / LLM（按入边顺序拼接）
   const textSourceContentKey = nodes
     .filter((n) => n.type === 'minimalistText' || n.type === 'text' || n.type === 'llm' || n.type === 'image' || n.type === 'textSplit' || n.type === 'audioTranscribe')
@@ -4213,7 +4503,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             isUserResized: false,
             title: '拼图导出',
             resolution: '1k',
-            aspectRatio: '9:16',
+            aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
             model: 'banana-2.0',
             seedreamWidth: 2048,
             seedreamHeight: 2048,
@@ -4266,6 +4556,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (!window.electronAPI?.exportTimelineVideoToProject) {
         throw new Error('导出功能不可用');
       }
+      const spliceData = (spliceNode.data || {}) as {
+        previewAspectId?: string;
+        exportOutputWidth?: number;
+        exportOutputHeight?: number;
+      };
+      const exportDims = resolveSpliceExportDimensions({
+        previewAspectId: spliceData.previewAspectId ?? payload.previewAspectId,
+        exportOutputWidth: spliceData.exportOutputWidth ?? payload.options.outputWidth,
+        exportOutputHeight: spliceData.exportOutputHeight ?? payload.options.outputHeight,
+      });
       const res = await window.electronAPI.exportTimelineVideoToProject(
         projectId,
         payload.clips,
@@ -4275,6 +4575,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           videoTrackMuted: payload.options.videoTrackMuted[0] ?? false,
           audioTrackVolume: payload.options.audioTrackVolume,
           audioTrackMuted: payload.options.audioTrackMuted,
+          outputWidth: exportDims.width,
+          outputHeight: exportDims.height,
         },
       );
       if (!res.success || !res.originalUrl) {
@@ -4282,8 +4584,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
 
       const GAP = 48;
-      const nodeW = 738.91;
-      const nodeH = 422.22;
+      const aspectRatioStr = exportDims.aspectRatio;
+      const exportPixelW = exportDims.width;
+      const exportPixelH = exportDims.height;
+      const exportNodeSize =
+        computeNodeSizeFromMedia(
+          exportPixelW,
+          exportPixelH,
+          VIDEO_NODE_MIN_W,
+          VIDEO_NODE_MIN_H,
+          VIDEO_NODE_MAX_W,
+          VIDEO_NODE_MAX_H,
+        ) ??
+        videoNodeSizeForAspectRatio(aspectRatioStr) ?? {
+          w: res.width ?? VIDEO_NODE_MIN_W,
+          h: res.height ?? VIDEO_NODE_MIN_H,
+        };
+      const nodeW = exportNodeSize.w;
+      const nodeH = exportNodeSize.h;
       const videoUrl = res.originalUrl;
       const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const spliceOuterW = Number(spliceNode.data?.width) || 800;
@@ -4307,9 +4625,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             prompt: '',
             width: nodeW,
             height: nodeH,
+            aspectRatio: aspectRatioStr,
+            preserveExportLayout: true,
+            videoAsset: {
+              width: exportPixelW,
+              height: exportPixelH,
+              ...(res.posterUrl ? { poster: res.posterUrl } : {}),
+              ...(res.ghostBase64 ? { ghost: res.ghostBase64 } : {}),
+            },
             ...(res.posterUrl ? { posterUrl: res.posterUrl } : {}),
             ...(res.ghostBase64 ? { ghostBase64: res.ghostBase64 } : {}),
           },
+          style: nodeStyleDimensions(nodeW, nodeH),
           selected: true,
           selectable: true,
         };
@@ -4411,6 +4738,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   ...updatedNodes[targetIndex].data,
                   ...applyBuiltClipsToSpliceData(updatedNodes[targetIndex].data, built),
                 },
+              };
+            }
+            return;
+          }
+          if (targetNode?.type === 'photoCollage') {
+            const targetIndex = updatedNodes.findIndex((n) => n.id === edge.target);
+            if (targetIndex !== -1) {
+              const prevLayers = ((updatedNodes[targetIndex].data?.layers || []) as CollageLayer[]).slice();
+              const nextLayers = buildPhotoCollageLayersFromEdges(
+                edge.target,
+                edges,
+                updatedNodes,
+                prevLayers,
+              );
+              updatedNodes[targetIndex] = {
+                ...updatedNodes[targetIndex],
+                data: { ...updatedNodes[targetIndex].data, layers: nextLayers },
               };
             }
             return;
@@ -4825,6 +5169,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return Array.isArray(list) && list.length > 1;
   }, [nodes, previewImageNodeId]);
 
+  /** 拆帧等 image 节点路径常含 "video" 字样，不能靠 includes('video') 误判为视频预览 */
+  const previewShowVideoPlayer = useMemo(() => {
+    if (!previewImage) return false;
+    const src = previewImageNodeId ? nodes.find((n) => n.id === previewImageNodeId) : undefined;
+    if (src?.type === 'image') return false;
+    if (src?.type === 'video' || isVideoModuleNodeType(src?.type)) return true;
+    return isLikelyVideoMediaUrl(previewImage);
+  }, [previewImage, previewImageNodeId, nodes]);
+
   const handleImportPreviewImageToCanvas = useCallback(async () => {
     if (!previewImageNodeId || !previewImage) return;
     const sourceNodeId = previewImageNodeId;
@@ -4947,7 +5300,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       isUserResized: false,
       title: srcTitle,
       resolution: '1k',
-      aspectRatio: '9:16',
+      aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
       model: 'banana-2.0',
       prompt: '',
       outputImage,
@@ -5261,6 +5614,28 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
     (WanAnimateNodeWrapper as any).displayName = 'WanAnimateNodeWrapper';
 
+    const HeyGemNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => {
+          const { isDarkMode, performanceMode } = useCanvasTheme();
+          return (
+          <HeyGemNode
+            {...props}
+            projectId={projectId}
+            isDarkMode={isDarkMode}
+            performanceMode={isPerformanceMode}
+            onDataChange={invokeVideoNodeDataChange}
+            interactionSettings={videoInteractionSettings}
+          />
+          );
+        },
+        videoNodeAreEqual
+      ),
+      videoNodeAreEqual,
+      true
+    );
+    (HeyGemNodeWrapper as any).displayName = 'HeyGemNodeWrapper';
+
     const CharacterNodeWrapper = withTinyZoomStatic(
       React.memo((props: any) => {
         const { isDarkMode, performanceMode } = useCanvasTheme();
@@ -5277,6 +5652,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       true
     );
     (CharacterNodeWrapper as any).displayName = 'CharacterNodeWrapper';
+
+    const DigitalHumanNodeWrapper = withTinyZoomStatic(
+      React.memo((props: any) => {
+        const { isDarkMode, performanceMode } = useCanvasTheme();
+        return (
+          <DigitalHumanNode
+            {...props}
+            isDarkMode={isDarkMode}
+            performanceMode={isPerformanceMode}
+            onDataChange={(updates) => invokeCharacterNodeDataChange(props.id, updates)}
+          />
+        );
+      }, nodeArePropsEqual),
+      nodeArePropsEqual,
+      true,
+    );
+    (DigitalHumanNodeWrapper as any).displayName = 'DigitalHumanNodeWrapper';
 
     const AudioNodeWrapper = withTinyZoomStatic(
       React.memo((props: any) => {
@@ -5432,10 +5824,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       image: ImageNodeWrapper,
       video: VideoNodeWrapper,
       wanAnimate: WanAnimateNodeWrapper,
+      heyGem: HeyGemNodeWrapper,
       videoSplice: VideoSpliceNodeWrapper,
       photoCollage: PhotoCollageNodeWrapper,
       imageTo3d: ImageTo3dNodeWrapper,
       character: CharacterNodeWrapper,
+      digitalHuman: DigitalHumanNodeWrapper,
       audio: AudioNodeWrapper,
       audioTranscribe: AudioTranscribeNodeWrapper,
       textSplit: TextSplitNodeWrapper,
@@ -5517,13 +5911,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       let videoSrc: string | undefined;
       if (
         sourceNodeForEdge &&
-        isVideoTrackSourceNodeType(sourceNodeForEdge.type) &&
         targetNodeForEdge?.type === 'videoSplice'
       ) {
-        const raw = String(
-          sourceNodeForEdge.data?.outputVideo || sourceNodeForEdge.data?.originalVideoUrl || '',
-        ).trim();
-        if (raw) videoSrc = normalizeVideoUrl(raw);
+        if (sourceNodeForEdge.type === 'digitalHuman' && isDigitalHumanVideoOutputHandle(sourceHandle)) {
+          const raw = pickDigitalHumanVideoUrl(sourceNodeForEdge.data as Record<string, unknown>);
+          if (raw) videoSrc = normalizeVideoUrl(raw);
+        } else if (isVideoTrackSourceNodeType(sourceNodeForEdge.type)) {
+          const raw = String(
+            sourceNodeForEdge.data?.outputVideo || sourceNodeForEdge.data?.originalVideoUrl || '',
+          ).trim();
+          if (raw) videoSrc = normalizeVideoUrl(raw);
+        }
       }
       const newEdge = {
         ...params,
@@ -5597,41 +5995,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }
             }
 
-            if (targetNode && targetNode.type === 'photoCollage' && sourceNode) {
-              const src = sourceNode;
-              let url = '';
-              if (src.type === 'image') {
-                url =
-                  pickPreviewUrl(buildDualImageAssetFromNodeData(src.data)) ||
-                  (src.data?.outputImage as string) ||
-                  (typeof src.data?.avatar === 'string' ? src.data.avatar.trim() : '') ||
-                  (src.data?.originalImageUrl as string) ||
-                  (src.data?.inputImages as string[])?.[0] ||
-                  '';
-              }
-              if (url) {
-                const prevLayers = ((targetNode.data?.layers || []) as CollageLayer[]).slice();
-                const maxZ = prevLayers.length ? Math.max(...prevLayers.map((L) => L.z)) : 0;
-                const gap = prevLayers.length;
-                const cw0 = Number(targetNode.data?.collageCanvasW) || 800;
-                const ch0 = Number(targetNode.data?.collageCanvasH) || 600;
-                const id = `layer-${Date.now()}-${params.source}`;
-                const newLayer: CollageLayer = {
-                  id,
-                  src: url,
-                  sourceNodeId: params.source,
-                  x: Math.min(40 + gap * 28, Math.max(0, cw0 - 200)),
-                  y: Math.min(40 + gap * 22, Math.max(0, ch0 - 160)),
-                  w: Math.min(280, Math.floor(cw0 * 0.45)),
-                  h: Math.min(210, Math.floor(ch0 * 0.45)),
-                  z: maxZ + 10,
-                };
-                return nds.map((node) =>
-                  node.id === params.target
-                    ? { ...node, data: { ...node.data, layers: [...prevLayers, newLayer] } }
-                    : node
-                );
-              }
+            if (targetNode && targetNode.type === 'photoCollage') {
+              const prevLayers = ((targetNode.data?.layers || []) as CollageLayer[]).slice();
+              const nextLayers = buildPhotoCollageLayersFromEdges(
+                params.target!,
+                updatedEdges,
+                nds,
+                prevLayers,
+              );
+              return nds.map((node) =>
+                node.id === params.target
+                  ? { ...node, data: { ...node.data, layers: nextLayers } }
+                  : node,
+              );
             }
 
             if (targetNode && targetNode.type === 'image') {
@@ -5794,9 +6170,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 }, 0);
                 
                 return updatedNodes;
-              } else if (sourceNode && isVideoTrackSourceNodeType(sourceNode.type)) {
-                // Video / 视频换人 → Image：拖线建连时此前未写入帧图，Image 节点用视频 URL 当图会导致「图片加载失败」
-                const videoUrl = (sourceNode.data?.outputVideo || sourceNode.data?.originalVideoUrl) as string | undefined;
+              } else if (sourceNode && isVideoReferenceOutputSource(sourceNode, params.sourceHandle)) {
+                const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
                 if (!videoUrl) return nds;
                 const normalizedUrl = normalizeVideoUrl(videoUrl);
                 const targetId = params.target;
@@ -6093,10 +6468,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 });
                 return updatedNodes;
               }
+
+              if (sourceNode?.type === 'digitalHuman') {
+                const patch: Record<string, unknown> = {};
+                if (isDigitalHumanVideoOutputHandle(params.sourceHandle)) {
+                  const ref = pickDigitalHumanVideoUrl(sourceNode.data as Record<string, unknown>);
+                  if (ref) patch.referenceVideoUrl = ref;
+                }
+                if (isDigitalHumanAudioOutputHandle(params.sourceHandle)) {
+                  const aud = pickDigitalHumanAudioUrl(sourceNode.data as Record<string, unknown>);
+                  if (aud) patch.inputAudioUrl = aud;
+                }
+                if (Object.keys(patch).length === 0) return nds;
+                const updatedNodes = nds.map((node) =>
+                  node.id === params.target ? { ...node, data: { ...node.data, ...patch } } : node,
+                );
+                if (selectedNode && selectedNode.id === params.target) {
+                  setVideoInputPanelData((prev) =>
+                    prev && prev.nodeId === params.target ? { ...prev, ...patch } : prev,
+                  );
+                }
+                return updatedNodes;
+              }
             }
 
             // 文本节点：接入音/视频时，准备本地转写所需音源 URL（按钮和语言选项会在 Text 节点顶部出现）
-            if (targetNode && targetNode.type === 'minimalistText' && sourceNode && (sourceNode.type === 'audio' || isVideoTrackSourceNodeType(sourceNode.type))) {
+            if (targetNode && targetNode.type === 'minimalistText' && sourceNode && (sourceNode.type === 'audio' || isVideoReferenceOutputSource(sourceNode, params.sourceHandle))) {
               if (sourceNode.type === 'audio') {
                 const d = sourceNode.data as Record<string, unknown>;
                 const url = typeof (d.outputAudio ?? d.originalAudioUrl ?? d.referenceAudioUrl) === 'string'
@@ -6118,7 +6515,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   );
                 }
               } else {
-                const videoUrl = (sourceNode.data?.outputVideo || sourceNode.data?.originalVideoUrl) as string | undefined;
+                const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
                 if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
                   const targetId = params.target;
                   window.electronAPI
@@ -6256,8 +6653,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 return updatedNodes;
               }
               // video / 视频换人 -> audio：用 ffmpeg 提取音频，写入 outputAudio 供播放
-              if (sourceNode && isVideoTrackSourceNodeType(sourceNode.type)) {
-                const videoUrl = (sourceNode.data?.outputVideo || sourceNode.data?.originalVideoUrl) as string | undefined;
+              if (sourceNode && isVideoReferenceOutputSource(sourceNode, params.sourceHandle)) {
+                const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
                 if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
                   console.log('[AudioExtract] 识别到视频源，开始提取音频:', videoUrl);
                   const targetId = params.target;
@@ -6342,6 +6739,50 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   return updatedNodes;
                 }
               }
+              // 数字人源模块 -> Audio：参考音
+              if (sourceNode && sourceNode.type === 'digitalHuman' && targetNode?.type === 'audio') {
+                const refUrl = pickDigitalHumanAudioUrl(sourceNode.data as Record<string, unknown>);
+                if (refUrl) {
+                  const isLocalRef = refUrl.startsWith('local-resource://') || refUrl.startsWith('file://');
+                  const updatedNodes = nds.map((node) => {
+                    if (node.id !== params.target) return node;
+                    const d = { ...node.data, referenceAudioUrl: refUrl } as Record<string, unknown>;
+                    if (!isAudioSongModel(d.model as string | undefined)) d.model = 'index-tts2';
+                    return { ...node, data: d };
+                  });
+                  if (selectedNode && selectedNode.id === params.target) {
+                    setAudioInputPanelData((prev) =>
+                      prev && prev.nodeId === params.target
+                        ? isAudioSongModel(prev.model)
+                          ? { ...prev, referenceAudioUrl: refUrl }
+                          : { ...prev, referenceAudioUrl: refUrl, model: 'index-tts2' }
+                        : prev
+                    );
+                  }
+                  if (isLocalRef && window.electronAPI?.uploadLocalAudioToOSS) {
+                    window.electronAPI.uploadLocalAudioToOSS(refUrl).then((res) => {
+                      if (res.success && res.url) {
+                        setNodes((n) =>
+                          n.map((node) => {
+                            if (node.id !== params.target) return node;
+                            const d = { ...node.data, referenceAudioUrl: res.url } as Record<string, unknown>;
+                            if (!isAudioSongModel(d.model as string | undefined)) d.model = 'index-tts2';
+                            return { ...node, data: d };
+                          })
+                        );
+                        setAudioInputPanelData((prev) =>
+                          prev && prev.nodeId === params.target
+                            ? isAudioSongModel(prev.model)
+                              ? { ...prev, referenceAudioUrl: res.url }
+                              : { ...prev, referenceAudioUrl: res.url, model: 'index-tts2' }
+                            : prev
+                        );
+                      }
+                    });
+                  }
+                  return updatedNodes;
+                }
+              }
               // 角色模块 -> Audio：仅参考音
               if (sourceNode && sourceNode.type === 'character' && targetNode?.type === 'audio') {
                 const refUrl = ((sourceNode.data?.voiceClip || sourceNode.data?.referenceAudioUrl) as string) || '';
@@ -6388,8 +6829,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }
             }
             if (targetNode && targetNode.type === 'audioTranscribe') {
-              if (isVideoTrackSourceNodeType(sourceNode?.type)) {
-                const videoUrl = (sourceNode.data?.outputVideo || sourceNode.data?.originalVideoUrl) as string | undefined;
+              if (
+                sourceNode?.type === 'digitalHuman' &&
+                isDigitalHumanAudioOutputHandle(params.sourceHandle)
+              ) {
+                const url = pickDigitalHumanAudioUrl(sourceNode.data as Record<string, unknown>);
+                if (url) {
+                  return nds.map((node) =>
+                    node.id === params.target
+                      ? { ...node, data: { ...node.data, audioUrl: url, errorMessage: undefined, aiStatus: 'idle' } }
+                      : node,
+                  );
+                }
+              }
+              if (isVideoReferenceOutputSource(sourceNode, params.sourceHandle)) {
+                const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
                 if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
                   const targetId = params.target;
                   setNodes((n) =>
@@ -6623,6 +7077,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [setNodes],
   );
 
+  /** 超级连线后：按全部入边一次性重建拼图图层（避免逐条连线时 layers 被覆盖） */
+  const finalizePhotoCollageLayers = useCallback(
+    (targetNodeId: string) => {
+      flushSync(() => {
+        setEdges((eds) => {
+          setNodes((nds) => {
+            const target = nds.find((n) => n.id === targetNodeId);
+            if (!target || target.type !== 'photoCollage') return nds;
+            const prevLayers = ((target.data?.layers || []) as CollageLayer[]).slice();
+            const nextLayers = buildPhotoCollageLayersFromEdges(
+              targetNodeId,
+              eds as Edge[],
+              nds,
+              prevLayers,
+            );
+            return nds.map((n) =>
+              n.id === targetNodeId ? { ...n, data: { ...n.data, layers: nextLayers } } : n,
+            );
+          });
+          return eds;
+        });
+      });
+    },
+    [setNodes, setEdges],
+  );
+
   // 超级连线：将选中模块的输出全部接入目标模块（依次调用 onConnect，保证状态正确）
   const handleSuperConnect = useCallback(
     (sourceNodeIds: string[], targetNodeId: string) => {
@@ -6645,9 +7125,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       });
       if (targetNode.type === 'videoSplice') {
         finalizeVideoSpliceTimeline(targetNodeId);
+      } else if (targetNode.type === 'photoCollage') {
+        finalizePhotoCollageLayers(targetNodeId);
       }
     },
-    [nodes, onConnect, finalizeVideoSpliceTimeline],
+    [nodes, onConnect, finalizeVideoSpliceTimeline, finalizePhotoCollageLayers],
   );
 
   /** 反向超级连线：单一源模块输出 → 批量接入各选中目标（不含源） */
@@ -6665,8 +7147,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           onConnect({ source: sourceNodeId, target: targetId, sourceHandle: null, targetHandle: null });
         });
       });
+      allowed
+        .filter((targetId) => nodes.find((n) => n.id === targetId)?.type === 'photoCollage')
+        .forEach((targetId) => finalizePhotoCollageLayers(targetId));
     },
-    [nodes, onConnect]
+    [nodes, onConnect, finalizePhotoCollageLayers],
   );
 
   // 选择节点：点击任意模块时取消连接线选中状态（绿线、剪刀一并清除）
@@ -6679,6 +7164,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (pickTarget === 'sceneNormal' || pickTarget === 'sceneDisplay3d') {
           const picked = pickCharacterLibraryAvatarUrlFromNode(node);
           if (picked) finishSceneImagePick(picked);
+          else cancelCharacterCanvasPick();
+          return;
+        }
+        if (pickTarget === 'digitalHumanVideo') {
+          const picked = pickDigitalHumanVideoUrlFromNode(node);
+          if (picked) finishDigitalHumanVideoPick(picked);
           else cancelCharacterCanvasPick();
           return;
         }
@@ -6906,7 +7397,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ),
           );
         }
-        const aspectRatioForImage = node.data?.aspectRatio || '9:16';
+        const aspectRatioForImage = resolveAspectRatioFromNodeData(node.data as Record<string, unknown>, 'image');
         const seedreamV45RatioToSize: Record<string, { width: number; height: number }> = {
           '1:1': { width: 2048, height: 2048 },
           '2:3': { width: 1664, height: 2496 },
@@ -6934,6 +7425,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           seedreamW = ratioMap[aspectRatioForImage].width;
           seedreamH = ratioMap[aspectRatioForImage].height;
         }
+        if (!node.data?.isUserResized && !node.data?.preserveExportLayout) {
+          const mediaSize = resolveNodeSizeFromMediaData(node.data as Record<string, unknown>, 'image');
+          const layoutSize =
+            mediaSize ?? imageNodeSizeForAspectRatio(aspectRatioForImage);
+          if (layoutSize) {
+            setNodes((nds) =>
+              nds.map((n) =>
+                n.id === node.id
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        width: layoutSize.w,
+                        height: layoutSize.h,
+                        aspectRatio: aspectRatioForImage,
+                      },
+                      style: { ...(n.style as object), ...nodeStyleDimensions(layoutSize.w, layoutSize.h) },
+                    }
+                  : n,
+              ),
+            );
+          }
+        }
         setImageInputPanelData({
           nodeId: node.id,
           prompt: promptText,
@@ -6950,6 +7464,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         // 视频 / 视频换人：构建输入面板数据（换人模块固定 model = wan-animate）
         const incomingEdges = edges.filter((e) => e.target === node.id);
         const isWanAnimateOnlyNode = nodeType === 'wanAnimate';
+        const isHeyGemOnlyNode = nodeType === 'heyGem';
 
         let inputImages: string[] = collectVideoTargetInputImagesFromEdges(node.id, nodes, edges);
         let resolvedPrompt = node.data?.prompt || '';
@@ -6992,10 +7507,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         let referenceVideoUrl = '';
         const refEdge = incomingEdges.find((e) => {
           const src = nodes.find((n) => n.id === e.source);
+          if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
           return isVideoTrackSourceNodeType(src?.type);
         });
         const refSource = refEdge ? nodes.find((n) => n.id === refEdge.source) : null;
-        if (isVideoTrackSourceNodeType(refSource?.type)) {
+        if (refSource?.type === 'digitalHuman') {
+          referenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
+        } else if (isVideoTrackSourceNodeType(refSource?.type)) {
           const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
           const t = (url || '').trim();
           if (
@@ -7013,16 +7531,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         let inputAudioUrl = '';
         const audioEdge = incomingEdges.find((e) => {
           const src = nodes.find((n) => n.id === e.source);
+          if (src?.type === 'digitalHuman') return isDigitalHumanAudioOutputHandle(e.sourceHandle);
           return src?.type === 'audio';
         });
         const audioSource = audioEdge ? nodes.find((n) => n.id === audioEdge.source) : null;
-        if (audioSource?.type === 'audio') {
+        if (audioSource?.type === 'digitalHuman') {
+          inputAudioUrl = pickDigitalHumanAudioUrl(audioSource.data as Record<string, unknown>);
+        } else if (audioSource?.type === 'audio') {
           const url = pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>);
           if (url) inputAudioUrl = url;
         }
 
         let videoPanelModel = isWanAnimateOnlyNode
           ? 'wan-animate'
+          : isHeyGemOnlyNode
+            ? 'hey-gem'
           : (((node.data?.model as
               | 'sora-2'
               | 'sora-2-pro'
@@ -7034,8 +7557,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               | 'wan-2.6'
               | 'wan-2.6-flash'
               | 'wan-animate'
+              | 'hey-gem'
               | 'gemini-omni'
               | 'seedance-2.0-fast'
+              | 'seedance-2.0-mini'
               | 'ltx-2.3-lipsync'
               | 'ltx-2.3-i2v'
               | 'ltx-2.3-t2v'
@@ -7065,7 +7590,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             )
           );
         }
-        if (!isWanAnimateOnlyNode && isRetiredVideoModel(videoPanelModel)) {
+        if (!isWanAnimateOnlyNode && !isHeyGemOnlyNode && isRetiredVideoModel(videoPanelModel)) {
           const nextModel = normalizeVideoModelIfRetired(videoPanelModel);
           videoPanelModel = nextModel;
           setNodes((nds) =>
@@ -7084,7 +7609,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ),
           );
         }
-        if (!isWanAnimateOnlyNode && videoPanelModel === 'rhart-video-g') {
+        if (!isWanAnimateOnlyNode && !isHeyGemOnlyNode && videoPanelModel === 'rhart-video-g') {
           videoPanelModel = 'grok-3';
           setNodes((nds) =>
             nds.map((n) =>
@@ -7105,10 +7630,50 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           );
         }
 
+        const hasVideoMedia = hasVideoOutputMedia(node.data as Record<string, unknown>);
+        const resolvedVideoAspect = hasVideoMedia
+          ? resolveVideoPanelAspectRatioFromNodeData(node.data as Record<string, unknown>)
+          : snapToVideoPanelAspectRatio(String(node.data?.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO));
+        if (!node.data?.isUserResized && !node.data?.preserveExportLayout) {
+          const layoutSize = hasVideoMedia
+            ? resolveNodeSizeFromMediaData(node.data as Record<string, unknown>, 'video') ??
+              videoNodeSizeForAspectRatio(resolvedVideoAspect)
+            : videoNodeSizeForAspectRatio(resolvedVideoAspect);
+          if (layoutSize) {
+            const curW = Number(node.data?.width);
+            const curH = Number(node.data?.height);
+            const curAspect = String(node.data?.aspectRatio || '');
+            if (curW !== layoutSize.w || curH !== layoutSize.h || curAspect !== resolvedVideoAspect) {
+              setNodes((nds) =>
+                nds.map((n) =>
+                  n.id === node.id
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          width: layoutSize.w,
+                          height: layoutSize.h,
+                          aspectRatio: resolvedVideoAspect,
+                        },
+                        style: { ...(n.style as object), ...nodeStyleDimensions(layoutSize.w, layoutSize.h) },
+                      }
+                    : n,
+                ),
+              );
+            }
+          }
+        } else if (hasVideoMedia && node.data?.aspectRatio !== resolvedVideoAspect) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, aspectRatio: resolvedVideoAspect } } : n,
+            ),
+          );
+        }
+
         setVideoInputPanelData({
           nodeId: node.id,
           prompt: resolvedPrompt,
-          aspectRatio: (node.data?.aspectRatio as '16:9' | '9:16' | '1:1' | '2:3' | '3:2') || '16:9',
+          aspectRatio: resolvedVideoAspect,
           model: videoPanelModel,
           hd: !!node.data?.hd,
           duration: (node.data?.duration as '5' | '10' | '15' | '25') || '10',
@@ -7128,7 +7693,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           resolutionWan26: (node.data?.resolutionWan26 as '720p' | '1080p') || '1080p',
           resolutionWanAnimate: coerceVideoWanAnimateResolution(node.data?.resolutionWanAnimate),
           wanAnimateClipSec: coerceWanAnimateClipSec(node.data?.wanAnimateClipSec),
-          resolutionSeedance: coerceVideoSeedanceResolution(node.data?.resolutionSeedance),
+          resolutionSeedance: coerceVideoSeedanceResolution(node.data?.resolutionSeedance, String(node.data?.model || 'seedance-2.0-fast')),
           durationSeedance: normalizeSeedanceDurationChoice(node.data?.durationSeedance, 10),
           resolutionGeminiOmni: coerceVideoGeminiOmniResolution(node.data?.resolutionGeminiOmni),
           durationGeminiOmni: normalizeGeminiOmniDurationChoice(node.data?.durationGeminiOmni, 6),
@@ -7316,6 +7881,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       finishCharacterAvatarPick,
       finishCharacterVoicePick,
       finishSceneImagePick,
+      finishDigitalHumanVideoPick,
       cancelCharacterCanvasPick,
     ]
   );
@@ -7325,6 +7891,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   useEffect(() => {
     onNodeClickRef.current = onNodeClick;
   }, [onNodeClick]);
+
+  useEffect(() => {
+    const onPickNode = (ev: Event) => {
+      const nodeId = (ev as CustomEvent<{ nodeId: string }>).detail?.nodeId;
+      if (!nodeId || !characterAvatarPickPendingRef.current) return;
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (node) onNodeClickRef.current?.({} as React.MouseEvent, node);
+    };
+    window.addEventListener(CANVAS_PICK_NODE_EVENT, onPickNode);
+    return () => window.removeEventListener(CANVAS_PICK_NODE_EVENT, onPickNode);
+  }, []);
+
   const onNodeClickStable = useCallback((e: React.MouseEvent, node: Node) => {
     if (node?.id) {
       lastNodeClickRef.current = { id: node.id, at: Date.now() };
@@ -7388,6 +7966,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
         // 与 Image 一致：避免节点 data 每次更新触发 selection 回调时用旧快照 setLlmInputPanelData，导致底部 LLM 输入框受控值被覆盖、光标跳到末尾
         if (nodeType === 'llm' && llmInputPanelDataRef.current?.nodeId === node.id) {
+          return;
+        }
+        // 与 Image/LLM 一致：避免改比例等 data 更新触发 selection 回调后重复 onNodeClick，外框反复重算抖动
+        if (isVideoModuleNodeType(nodeType) && videoInputPanelDataRef.current?.nodeId === node.id) {
           return;
         }
         try {
@@ -7634,7 +8216,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               height: 211.12,
               title: 'image',
               resolution: '1k',
-              aspectRatio: '9:16',
+              aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
               model: 'banana-2.0',
               outputImage: outputPreviewUrl,
               originalImageUrl,
@@ -7772,6 +8354,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           cancelCharacterCanvasPick();
         }
         characterAvatarPickResolveRef.current = null;
+        sceneImagePickResolveRef.current = null;
+        digitalHumanVideoPickResolveRef.current = null;
         setCharacterListCollapsed(false);
         characterCanvasPickTargetRef.current = 'voice';
         setCharacterCanvasPickTarget('voice');
@@ -7826,6 +8410,26 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     },
     [cancelCharacterCanvasPick, clearBottomModulePanelsForCanvasPick, scheduleCharacterCanvasPickArm],
   );
+
+  const requestDigitalHumanVideoPickFromCanvas = useCallback(() => {
+    return new Promise<string | null>((resolve) => {
+      scheduleCharacterCanvasPickArm(() => {
+        if (characterAvatarPickPendingRef.current) {
+          cancelCharacterCanvasPick();
+        }
+        characterAvatarPickResolveRef.current = null;
+        characterVoicePickResolveRef.current = null;
+        sceneImagePickResolveRef.current = null;
+        setCharacterListCollapsed(false);
+        characterCanvasPickTargetRef.current = 'digitalHumanVideo';
+        setCharacterCanvasPickTarget('digitalHumanVideo');
+        characterAvatarPickPendingRef.current = true;
+        clearBottomModulePanelsForCanvasPick();
+        setCharacterAvatarPickOverlay(true);
+        digitalHumanVideoPickResolveRef.current = resolve;
+      });
+    });
+  }, [cancelCharacterCanvasPick, clearBottomModulePanelsForCanvasPick, scheduleCharacterCanvasPickArm]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -7922,13 +8526,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (isVideoModuleNodeType(node.type)) {
         modelId = 'video';
         const nodeData = node.data || {};
-        let videoModel = node.type === 'wanAnimate' ? 'wan-animate' : nodeData.model || DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
+        let videoModel = node.type === 'wanAnimate' ? 'wan-animate' : node.type === 'heyGem' ? 'hey-gem' : nodeData.model || DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
         if (HIDE_SORA2_AND_SORA_CHARACTER_UI && (videoModel === 'sora-2' || videoModel === 'sora-2-pro')) {
           videoModel = DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
         }
 
         // 检查是否有必要的参数（WanAnimate 可不填提示词）
-        if (!nodeData.prompt?.trim() && videoModel !== 'wan-animate') {
+        if (!nodeData.prompt?.trim() && videoModel !== 'wan-animate' && videoModel !== 'hey-gem') {
           console.warn(`[Workspace] 视频节点 ${nodeId} 缺少提示词，跳过`);
           continue;
         }
@@ -7945,10 +8549,39 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             console.warn(`[Workspace] 视频节点 ${nodeId} ${hdrCheck.error}，跳过`);
             continue;
           }
-        } else if ((videoModel === 'ltx-2.3-lipsync' || videoModel === 'ltx-2.3-i2v' || isImageToVideoMode) && inputImages.length === 0) {
+        } else if (
+          videoModel !== 'hey-gem' &&
+          (videoModel === 'ltx-2.3-lipsync' || videoModel === 'ltx-2.3-i2v' || isImageToVideoMode) &&
+          inputImages.length === 0
+        ) {
           console.warn(`[Workspace] 视频节点 ${nodeId} 图生视频/对口型模式但缺少参考图，跳过`);
           continue;
         }
+        if (videoModel === 'hey-gem') {
+          const refEdge = edges.find((e) => {
+            if (e.target !== nodeId) return false;
+            const src = nodes.find((n) => n.id === e.source);
+            return isVideoTrackSourceNodeType(src?.type);
+          });
+          const refSource = refEdge ? nodes.find((n) => n.id === refEdge.source) : null;
+          const hasRefVideo = isVideoTrackSourceNodeType(refSource?.type) && !!(refSource?.data?.outputVideo || refSource?.data?.originalVideoUrl);
+          const audioEdge = edges.find((e) => {
+            if (e.target !== nodeId) return false;
+            const src = nodes.find((n) => n.id === e.source);
+            return src?.type === 'audio';
+          });
+          const audioSource = audioEdge ? nodes.find((n) => n.id === audioEdge.source) : null;
+          const hasAudio = !!(audioSource?.type === 'audio' && pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>));
+          if (!hasRefVideo && !nodeData.referenceVideoUrl) {
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 缺少参考视频，跳过`);
+            continue;
+          }
+          if (!hasAudio && !nodeData.inputAudioUrl) {
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 缺少驱动音频，跳过`);
+            continue;
+          }
+        }
+
         if (videoModel === 'ltx-2.3-lipsync') {
           const audioEdge = edges.find((e) => {
             if (e.target !== nodeId) return false;
@@ -7964,10 +8597,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
 
         payload = {
-          prompt: nodeData.prompt,
+          prompt:
+            videoModel === 'hey-gem' || videoModel === 'wan-animate' ? '' : nodeData.prompt,
           model: videoModel,
-          aspect_ratio: nodeData.aspectRatio || '16:9',
         };
+        if (videoModel !== 'hey-gem' && videoModel !== 'wan-animate') {
+          payload.aspect_ratio = nodeData.aspectRatio || '16:9';
+        }
 
         // sora-2 系列参数
         if (payload.model === 'sora-2' || payload.model === 'sora-2-pro') {
@@ -8057,9 +8693,80 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           payload.wanAnimateClipSec = coerceWanAnimateClipSec(nodeData.wanAnimateClipSec);
         }
 
-        if (payload.model === 'seedance-2.0-fast') {
-          payload.resolutionSeedance = coerceVideoSeedanceResolution(nodeData.resolutionSeedance);
+        if (payload.model === 'hey-gem') {
+          const refEdgeHg = edges.find((e) => {
+            if (e.target !== nodeId) return false;
+            const src = nodes.find((n) => n.id === e.source);
+            return isVideoTrackSourceNodeType(src?.type);
+          });
+          const refSourceHg = refEdgeHg ? nodes.find((n) => n.id === refEdgeHg.source) : null;
+          const refUrlHg = isVideoTrackSourceNodeType(refSourceHg?.type)
+            ? ((refSourceHg.data?.originalVideoUrl || refSourceHg.data?.outputVideo) as string | undefined)
+            : (nodeData.referenceVideoUrl as string | undefined);
+          const tHg = (refUrlHg || '').trim();
+          if (
+            !tHg ||
+            !(
+              tHg.startsWith('http://') ||
+              tHg.startsWith('https://') ||
+              tHg.startsWith('local-resource://') ||
+              tHg.startsWith('file://')
+            )
+          ) {
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 需连接参考视频，跳过`);
+            continue;
+          }
+          payload.referenceVideoUrl = tHg;
+          let inputAudioUrl = nodeData.inputAudioUrl as string | undefined;
+          if (!inputAudioUrl) {
+            const audioEdge = edges.find((e) => {
+              if (e.target !== nodeId) return false;
+              const src = nodes.find((n) => n.id === e.source);
+              return src?.type === 'audio';
+            });
+            const audioSource = audioEdge ? nodes.find((n) => n.id === audioEdge.source) : null;
+            if (audioSource?.type === 'audio') {
+              inputAudioUrl = pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>);
+            }
+          }
+          if (!inputAudioUrl) {
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 需连接音频，跳过`);
+            continue;
+          }
+          payload.inputAudioUrl = inputAudioUrl;
+        }
+
+        if (payload.model === 'seedance-2.0-fast' || payload.model === 'seedance-2.0-mini') {
+          payload.resolutionSeedance = coerceVideoSeedanceResolution(nodeData.resolutionSeedance, payload.model);
           payload.durationSeedance = normalizeSeedanceDurationChoice(nodeData.durationSeedance, 10);
+        }
+
+        if (payload.model === 'seedance-2.0-mini') {
+          const refEdgeSd = edges.find((e) => {
+            if (e.target !== nodeId) return false;
+            const src = nodes.find((n) => n.id === e.source);
+            return isVideoTrackSourceNodeType(src?.type);
+          });
+          const refSourceSd = refEdgeSd ? nodes.find((n) => n.id === refEdgeSd.source) : null;
+          const refUrlSd = isVideoTrackSourceNodeType(refSourceSd?.type)
+            ? ((refSourceSd.data?.originalVideoUrl || refSourceSd.data?.outputVideo) as string | undefined)
+            : (nodeData.referenceVideoUrl as string | undefined);
+          const tSd = (refUrlSd || '').trim();
+          if (tSd) payload.referenceVideoUrl = tSd;
+
+          let inputAudioUrlSd = nodeData.inputAudioUrl as string | undefined;
+          if (!inputAudioUrlSd) {
+            const audioEdgeSd = edges.find((e) => {
+              if (e.target !== nodeId) return false;
+              const src = nodes.find((n) => n.id === e.source);
+              return src?.type === 'audio';
+            });
+            const audioSourceSd = audioEdgeSd ? nodes.find((n) => n.id === audioEdgeSd.source) : null;
+            if (audioSourceSd?.type === 'audio') {
+              inputAudioUrlSd = pickAudioOutputUrlFromAudioNodeData(audioSourceSd.data as Record<string, unknown>);
+            }
+          }
+          if (inputAudioUrlSd) payload.inputAudioUrl = inputAudioUrlSd;
         }
 
         if (payload.model === 'gemini-omni') {
@@ -8069,14 +8776,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             nodeData.aspectRatio === '9:16' ? '9:16' : '16:9';
         }
 
-        // 图生视频模式：添加图片
-        if (payload.model !== 'ltx-2.3-hdr-multi' && isImageToVideoMode && inputImages.length > 0) {
+        // 图生视频模式：添加图片（HeyGem 仅参考视频+音频，不传参考图）
+        if (
+          payload.model !== 'hey-gem' &&
+          payload.model !== 'ltx-2.3-hdr-multi' &&
+          isImageToVideoMode &&
+          inputImages.length > 0
+        ) {
           payload.images =
             payload.model === 'ltx-2.3-lipsync' || payload.model === 'ltx-2.3-i2v' || payload.model === 'wan-animate'
               ? inputImages.slice(0, 1)
               : payload.model === 'gemini-omni'
-                ? inputImages.slice(0, 3)
-              : payload.model === 'seedance-2.0-fast'
+                ? inputImages.filter((u) => String(u || '').trim()).slice(0, 3)
+              : payload.model === 'seedance-2.0-fast' || payload.model === 'seedance-2.0-mini'
                 ? inputImages.slice(0, 9)
                 : inputImages.slice(0, 10);
         }
@@ -8163,7 +8875,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
         }
 
-        const payloadAspectRatio = nodeData.aspectRatio || '9:16';
+        const payloadAspectRatio = nodeData.aspectRatio || DEFAULT_IMAGE_ASPECT_RATIO;
         payload = {
           model,
           prompt: nodeData.prompt,
@@ -8522,25 +9234,28 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   // 视频生成完成时，创建任务记录并自动保存到本地
   const handleAddVideoTask = useCallback((nodeId: string, videoUrl: string, prompt: string, originalVideoUrl?: string) => {
+    const trimmedUrl = String(videoUrl || '').trim();
+    if (!trimmedUrl) return;
+
     setTasks((prevTasks) => {
       const remoteForDedup =
         (originalVideoUrl && /^https?:\/\//i.test(originalVideoUrl.trim())
           ? originalVideoUrl.trim()
-          : undefined) || (/^https?:\/\//i.test(videoUrl) ? videoUrl : undefined);
-      const incomingNorm = normalizeMediaUrlForTaskDedup(remoteForDedup || videoUrl);
+          : undefined) || (/^https?:\/\//i.test(trimmedUrl) ? trimmedUrl : undefined);
+      const incomingNorm = normalizeMediaUrlForTaskDedup(remoteForDedup || trimmedUrl);
 
       const existingTask = prevTasks.find(
         (task) =>
           task.nodeId === nodeId &&
           task.taskType === 'video' &&
           task.status === 'success' &&
-          (mediaUrlsLikelySameArtifact(task.videoUrl, videoUrl) ||
+          (mediaUrlsLikelySameArtifact(task.videoUrl, trimmedUrl) ||
             (() => {
               const tNorm = taskVideoDedupNorm(task);
               return Boolean(tNorm && incomingNorm && tNorm === incomingNorm);
             })()),
       );
-      if (existingTask) {
+      if (existingTask && !String(existingTask.id).startsWith('runtime-')) {
         console.log('[Workspace] 视频任务已存在，跳过添加');
         return prevTasks;
       }
@@ -8564,7 +9279,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         nodeId,
         nodeTitle,
-        videoUrl,
+        videoUrl: trimmedUrl,
         ...(remoteForDedup ? { originalVideoUrl: remoteForDedup } : {}),
         prompt: prompt || '无提示词',
         createdAt: Date.now(),
@@ -8577,7 +9292,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       // 自动保存视频到本地
       if (window.electronAPI && projectId) {
         window.electronAPI
-          .autoSaveVideo(videoUrl, nodeTitle, projectId)
+          .autoSaveVideo(trimmedUrl, nodeTitle, projectId)
           .then((result: any) => {
             if (result.success && result.filePath) {
               // 更新任务的本地文件路径
@@ -9104,7 +9819,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const isPhotoCollageType = type === 'photoCollage';
     const isImageTo3dType = type === 'imageTo3d';
     const isWanAnimateType = type === 'wanAnimate';
-    const defaultWidth =
+    const isHeyGemType = type === 'heyGem';
+    const isVideoLikeType = type === 'video' || isWanAnimateType || isHeyGemType;
+    let defaultWidth =
       type === 'text'
         ? 369.46
         : type === 'llm'
@@ -9113,7 +9830,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ? 240
             : isImageType
               ? 369.46
-              : (type === 'video' || isWanAnimateType)
+              : isVideoLikeType
                 ? 738.91
                 : type === 'character'
                   ? 624
@@ -9126,7 +9843,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         : isImageTo3dType
                           ? 480
                           : 200;
-    const defaultHeight =
+    let defaultHeight =
       type === 'text'
         ? 211.12
         : type === 'llm'
@@ -9135,7 +9852,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ? 200
             : isImageType
               ? 211.12
-              : (type === 'video' || isWanAnimateType)
+              : isVideoLikeType
                 ? 422.22
                 : type === 'character'
                   ? 468
@@ -9148,6 +9865,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         : isImageTo3dType
                           ? 270
                           : 200;
+
+    if (isImageType) {
+      const arSize = imageNodeSizeForAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
+      if (arSize) {
+        defaultWidth = arSize.w;
+        defaultHeight = arSize.h;
+      }
+    } else if (type === 'video') {
+      const arSize = videoNodeSizeForAspectRatio(DEFAULT_VIDEO_ASPECT_RATIO);
+      if (arSize) {
+        defaultWidth = arSize.w;
+        defaultHeight = arSize.h;
+      }
+    }
     
     // 调整节点位置，使节点中心在鼠标点击处
     const adjustedPosition = {
@@ -9176,6 +9907,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   ? 'video'
                   : isWanAnimateType
                     ? 'wanAnimate'
+                    : isHeyGemType
+                      ? 'heyGem'
                   : type === 'character'
                     ? 'character'
                     : isAudioType
@@ -9202,6 +9935,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     ? '视频节点'
                     : isWanAnimateType
                       ? '视频换人'
+                      : isHeyGemType
+                        ? 'HeyGem 数字人'
                       : type === 'character'
                         ? '角色节点'
                         : isAudioType
@@ -9217,7 +9952,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         width: defaultWidth,
         height: defaultHeight,
         isUserResized: false, // 新创建的节点，用户尚未手动调整尺寸
-        prompt: type === 'llm' || isImageType || type === 'video' || isWanAnimateType ? '' : undefined,
+        prompt: type === 'llm' || isImageType || isVideoLikeType ? '' : undefined,
         ...(isImageTo3dType ? { inputImageUrl: '', progress: 0 } : {}),
         title:
           type === 'llm'
@@ -9228,6 +9963,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 ? 'video'
                 : isWanAnimateType
                   ? 'wanAnimate'
+                  : isHeyGemType
+                    ? 'heyGem'
                   : type === 'character'
                     ? 'character'
                     : isAudioType
@@ -9244,16 +9981,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         trimAndFilterEmpty: type === 'textSplit' ? true : undefined,
         convertType: type === 'textSplit' ? 'string' : undefined,
         resolution: isImageType ? '1k' : undefined,
-        aspectRatio: isImageType ? '9:16' : (type === 'video' || isWanAnimateType) ? '16:9' : undefined,
+        aspectRatio: isImageType ? DEFAULT_IMAGE_ASPECT_RATIO : isVideoLikeType ? DEFAULT_VIDEO_ASPECT_RATIO : undefined,
         seedreamWidth: isImageType ? 2048 : undefined,
         seedreamHeight: isImageType ? 2048 : undefined,
-        model: isImageType ? 'banana-2.0' : type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : isWanAnimateType ? 'wan-animate' : isAudioType ? 'speech-2.8-hd' : undefined, // 兜底为 undefined，避免非法值
-        hd: (type === 'video' || isWanAnimateType) ? false : undefined,
-        duration: (type === 'video' || isWanAnimateType) ? '10' : undefined,
-        resolutionSeedance: (type === 'video' || isWanAnimateType) ? '720p' : undefined,
-        durationSeedance: (type === 'video' || isWanAnimateType) ? '10' : undefined,
-        resolutionGeminiOmni: (type === 'video' || isWanAnimateType) ? '720p' : undefined,
-        durationGeminiOmni: (type === 'video' || isWanAnimateType) ? '6' : undefined,
+        model: isImageType ? 'banana-2.0' : type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : isWanAnimateType ? 'wan-animate' : isHeyGemType ? 'hey-gem' : isAudioType ? 'speech-2.8-hd' : undefined, // 兜底为 undefined，避免非法值
+        hd: isVideoLikeType ? false : undefined,
+        duration: isVideoLikeType ? '10' : undefined,
+        resolutionSeedance: isVideoLikeType ? '720p' : undefined,
+        durationSeedance: isVideoLikeType ? '10' : undefined,
+        resolutionGeminiOmni: isVideoLikeType ? '720p' : undefined,
+        durationGeminiOmni: isVideoLikeType ? '6' : undefined,
         videoUrl: type === 'character' ? '' : undefined,
         nickname: type === 'character' ? '' : undefined,
         timestamp: type === 'character' ? '1,3' : undefined, // 默认时间戳为 "1,3"
@@ -9637,7 +10374,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         nodeId: nodeToAdd.id,
         prompt: (nodeToAdd.data?.prompt as string) || '',
         aspectRatio: (nodeToAdd.data?.aspectRatio as '16:9' | '9:16' | '1:1' | '2:3' | '3:2') || '16:9',
-        model: (isWanAnimateType ? 'wan-animate' : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
+        model: (isWanAnimateType ? 'wan-animate' : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
         hd: !!(nodeToAdd.data?.hd),
         duration: ((nodeToAdd.data?.duration as string) || '10') as '5' | '10' | '15' | '25',
         inputImages,
@@ -9655,7 +10392,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         resolutionWan26: ((nodeToAdd.data?.resolutionWan26 as string) || '1080p') as '720p' | '1080p',
         resolutionWanAnimate: coerceVideoWanAnimateResolution(nodeToAdd.data?.resolutionWanAnimate),
         wanAnimateClipSec: coerceWanAnimateClipSec(nodeToAdd.data?.wanAnimateClipSec),
-        resolutionSeedance: coerceVideoSeedanceResolution(nodeToAdd.data?.resolutionSeedance),
+        resolutionSeedance: coerceVideoSeedanceResolution(nodeToAdd.data?.resolutionSeedance, String(nodeToAdd.data?.model || 'seedance-2.0-fast')),
         durationSeedance: normalizeSeedanceDurationChoice(nodeToAdd.data?.durationSeedance, 10),
         resolutionGeminiOmni: coerceVideoGeminiOmniResolution(nodeToAdd.data?.resolutionGeminiOmni),
         durationGeminiOmni: normalizeGeminiOmniDurationChoice(nodeToAdd.data?.durationGeminiOmni, 6),
@@ -9829,7 +10566,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           height: defaultHeight,
           title: 'image',
           resolution: '1k',
-          aspectRatio: '9:16',
+          aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
           model: 'banana-2.0',
           outputImage,
           originalImageUrl,
@@ -9883,16 +10620,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const normalizedPath = path ? `local-resource://${path.replace(/\\/g, '/')}` : '';
 
     if (isImage) {
+      const imageSize = imageNodeSizeForAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
       return {
         type: 'image',
         nodeType: 'image',
         extraData: {
           outputImage: normalizedPath,
           title: 'image',
-          width: 369.46,
-          height: 211.12,
+          width: imageSize?.w ?? 369.46,
+          height: imageSize?.h ?? 211.12,
           resolution: '1k',
-          aspectRatio: '9:16',
+          aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
           model: 'banana-2.0',
           seedreamWidth: 2048,
           seedreamHeight: 2048,
@@ -9900,16 +10638,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       };
     }
     if (isVideo) {
+      const videoSize = videoNodeSizeForAspectRatio(DEFAULT_VIDEO_ASPECT_RATIO);
       return {
         type: 'video',
         nodeType: 'video',
         extraData: {
           outputVideo: normalizedPath,
           title: 'video',
-          width: 738.91,
-          height: 422.22,
+          width: videoSize?.w ?? 738.91,
+          height: videoSize?.h ?? 422.22,
           prompt: '',
-          aspectRatio: '16:9',
+          aspectRatio: DEFAULT_VIDEO_ASPECT_RATIO,
           model: HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2',
           hd: false,
           duration: '10',
@@ -10108,6 +10847,85 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [placeSceneLibraryOnCanvas],
   );
 
+  const placeDigitalHumanLibraryOnCanvas = useCallback(
+    (item: DigitalHumanLibraryItem, anchorFlowPosition: { x: number; y: number }) => {
+      void (async () => {
+        const videoUrl = digitalHumanVideoUrl(item);
+        if (!videoUrl) return;
+
+        const displayName = (item.nickname || item.name || '数字人').trim();
+        const poster = digitalHumanPosterUrl(item);
+        const pixel = await probeVideoPixelSize(videoUrl).catch(() => undefined);
+
+        const aspectRatio =
+          pixel?.width && pixel?.height
+            ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(pixel.width, pixel.height))
+            : '9:16';
+        const fallbackSize = videoNodeSizeForAspectRatio(aspectRatio);
+        const nodeW = fallbackSize?.w ?? VIDEO_NODE_MIN_W;
+        const nodeH = fallbackSize?.h ?? VIDEO_NODE_MIN_H;
+        const nodeId = `video-${Date.now()}`;
+
+        let newNode: Node = {
+          id: nodeId,
+          type: 'video',
+          position: { x: anchorFlowPosition.x - nodeW / 2, y: anchorFlowPosition.y - nodeH / 2 },
+          data: {
+            label: 'video',
+            title: displayName,
+            outputVideo: videoUrl,
+            originalVideoUrl: item.originalVideoUrl || (videoUrl.startsWith('http') ? videoUrl : undefined),
+            prompt: '',
+            isUserResized: false,
+            videoAsset: {
+              ...(poster ? { poster } : {}),
+              ...(pixel?.width && pixel?.height ? { width: pixel.width, height: pixel.height } : {}),
+            },
+          },
+          selected: true,
+          selectable: true,
+        };
+        if (pixel?.width && pixel?.height) {
+          newNode = patchNodeWithMediaLayout(newNode, pixel.width, pixel.height, 'video');
+        } else {
+          newNode = patchNodeWithAspectRatioLayout(newNode, aspectRatio, 'video');
+        }
+
+        setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNode));
+        setSelectedNode(newNode);
+        setAudioInputPanelData(null);
+        setCharacterInputPanelData(null);
+        setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+        setLlmInputPanelData(null);
+        setVideoInputPanelData(null);
+      })();
+    },
+    [
+      setNodes,
+      setSelectedNode,
+      setAudioInputPanelData,
+      setCharacterInputPanelData,
+      setImageInputPanelData,
+      setImageTo3dInputPanelData,
+      setLlmInputPanelData,
+      setVideoInputPanelData,
+    ],
+  );
+
+  const handleDigitalHumanPlaceToCanvas = useCallback(
+    (item: DigitalHumanLibraryItem, anchorScreen: { x: number; y: number }) => {
+      const api = flowContentApiRef.current;
+      if (!api?.screenToFlowPosition) {
+        placeDigitalHumanLibraryOnCanvas(item, { x: 400, y: 300 });
+        return;
+      }
+      const flowPos = api.screenToFlowPosition(anchorScreen);
+      placeDigitalHumanLibraryOnCanvas(item, flowPos);
+    },
+    [placeDigitalHumanLibraryOnCanvas],
+  );
+
   // 在画布上放置节点（支持从左侧拖拽节点 或 从系统拖入文件，flowPosition 由 FlowContent 传入）
   // 本地拖入的图片/视频/音频会先复制到项目 assets，画布从项目路径读取，避免 OSS 次日删除或原路径失效导致“图片加载失败”
   const onDrop = useCallback(
@@ -10131,6 +10949,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const normalUrl = sceneNormalImageUrl(scene);
         if (!normalUrl) return;
         placeSceneLibraryOnCanvas(scene, position);
+        return;
+      }
+
+      const digitalHumanPayload = event.dataTransfer.getData(NEXFLOW_DIGITAL_HUMAN_DRAG_MIME);
+      if (digitalHumanPayload?.trim()) {
+        let item: DigitalHumanLibraryItem;
+        try {
+          item = JSON.parse(digitalHumanPayload) as DigitalHumanLibraryItem;
+        } catch {
+          return;
+        }
+        placeDigitalHumanLibraryOnCanvas(item, position);
         return;
       }
 
@@ -10413,14 +11243,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
 
           const nodeId = `${fileInfo.type}-${Date.now()}-${idx}`;
-          const newNode: Node = {
+          let newNode: Node = {
             id: nodeId,
             type: fileInfo.nodeType as any,
             position: nodePosition,
-            data: { label: fileInfo.type, ...extraData },
+            data: { label: fileInfo.type, ...extraData, isUserResized: false },
             selected: supportedFiles.length === 1,
             selectable: true,
           };
+          if (fileInfo.type === 'image') {
+            const asset = extraData.imageAsset as { width?: number; height?: number } | undefined;
+            if (asset?.width && asset?.height) {
+              newNode = patchNodeWithMediaLayout(newNode, asset.width, asset.height, 'image');
+            } else {
+              newNode = patchNodeWithAspectRatioLayout(newNode, String(extraData.aspectRatio || DEFAULT_IMAGE_ASPECT_RATIO), 'image');
+            }
+          } else if (fileInfo.type === 'video') {
+            const asset = extraData.videoAsset as { width?: number; height?: number } | undefined;
+            if (asset?.width && asset?.height) {
+              newNode = patchNodeWithMediaLayout(newNode, asset.width, asset.height, 'video');
+            } else {
+              newNode = patchNodeWithAspectRatioLayout(newNode, String(extraData.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO), 'video');
+            }
+          }
           newNodes.push(newNode);
 
           // 文本文件：异步读取内容，稍后更新节点
@@ -10778,6 +11623,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           : data.type === 'image' ? 'image'
           : data.type === 'video' ? 'video'
           : data.type === 'wanAnimate' ? 'wanAnimate'
+          : data.type === 'heyGem' ? 'heyGem'
           : data.type === 'character' ? 'character'
           : data.type === 'audio' ? 'audio'
           : 'custom';
@@ -10798,7 +11644,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           trimAndFilterEmpty: data.type === 'textSplit' ? true : undefined,
           convertType: data.type === 'textSplit' ? 'string' : undefined,
           resolution: data.type === 'image' ? '1k' : undefined,
-          aspectRatio: data.type === 'image' ? '9:16' : (data.type === 'video' || data.type === 'wanAnimate') ? '16:9' : undefined,
+          aspectRatio: data.type === 'image' ? DEFAULT_IMAGE_ASPECT_RATIO : (data.type === 'video' || data.type === 'wanAnimate') ? DEFAULT_VIDEO_ASPECT_RATIO : undefined,
           seedreamWidth: data.type === 'image' ? 2048 : undefined,
           seedreamHeight: data.type === 'image' ? 2048 : undefined,
           model: data.type === 'image' ? 'banana-2.0' : data.type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : data.type === 'wanAnimate' ? 'wan-animate' : data.type === 'audio' ? 'speech-2.8-hd' : undefined,
@@ -10891,6 +11737,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       setImageTo3dInputPanelData,
       placeImageTo3dCharacterOnCanvas,
       placeSceneLibraryOnCanvas,
+      placeDigitalHumanLibraryOnCanvas,
       setCharacterListCollapsed,
       setCharacterListRefreshTrigger,
       showAlert,
@@ -10906,7 +11753,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       types.includes('Files') ||
       types.includes('application/nexflow-task') ||
       types.includes(NEXFLOW_CHARACTER_DRAG_MIME) ||
-      types.includes(NEXFLOW_SCENE_DRAG_MIME);
+      types.includes(NEXFLOW_SCENE_DRAG_MIME) ||
+      types.includes(NEXFLOW_DIGITAL_HUMAN_DRAG_MIME);
     event.dataTransfer.dropEffect = useCopy ? 'copy' : 'move';
   }, []);
 
@@ -11119,11 +11967,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         // 使用函数式更新，确保基于最新状态
         setNodes((nds) => {
           const targetNode = nds.find((n) => n.id === nodeId);
-          if (!targetNode || targetNode.type !== 'video') {
-            return nds; // 不是视频节点，不处理
+          if (!targetNode || !isVideoModuleNodeType(targetNode.type)) {
+            return nds; // 不是视频模块节点，不处理
           }
           
-          console.log(`[Workspace] 视频节点 ${nodeId} 生成失败，停止进度条并显示错误:`, errorMessage);
+          console.log(`[Workspace] 视频模块节点 ${nodeId} 生成失败，停止进度条并显示错误:`, errorMessage);
           
           // 更新节点数据：停止进度条并设置错误信息
           const updatedNodes = nds.map((node) =>
@@ -11280,6 +12128,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const ybVid = estimateYuanbaoForTaskNodeStatic(nVid, cloudMapRef.current);
         upsertRuntimeTask(nodeId, {
           status: 'success',
+          taskType: 'video',
           videoUrl: String(videoUrl || ''),
           ...(ybVid !== undefined ? { yuanbaoConsumed: ybVid } : {}),
         });
@@ -11295,12 +12144,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         // 使用函数式更新，确保基于最新状态
         setNodes((nds) => {
           const targetNode = nds.find((n) => n.id === nodeId);
-          if (!targetNode || targetNode.type !== 'video') {
-            return nds; // 不是视频节点，不处理
+          if (!targetNode || !isVideoModuleNodeType(targetNode.type)) {
+            return nds; // 不是视频模块节点，不处理
           }
           
           // 打通双链路：始终执行全局更新，即使子组件也在处理，确保 props 强制更新
-          console.log(`[Workspace] 批量运行：视频节点 ${nodeId} 生成成功，执行全局更新（双链路保障）`);
+          console.log(`[Workspace] 批量运行：视频模块节点 ${nodeId} 生成成功，执行全局更新（双链路保障）`);
           
           // 格式化视频路径
           let formattedVideoUrl = videoUrl;
@@ -11367,21 +12216,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             
             // 添加任务到任务列表：与图片节点一致，仅当底部 VideoInputPanel 未对该节点展示时由全局写入，
             // 否则由 VideoInputPanel 的 onOutputVideoChange 写入，避免双链路各加一条（URL 形态不同还会绕过去重）。
-            const videoPanelVisibleForNode =
-              !previewImage &&
-              !previewAudio &&
-              videoInputPanelData?.nodeId === nodeId &&
-              selectedNode?.id === nodeId &&
-              selectedNode?.type === 'video';
             const currentNode = updatedNodes.find((n) => n.id === nodeId);
-            if (currentNode && formattedVideoUrl && !videoPanelVisibleForNode) {
-              // 如果 formattedVideoUrl 是 local-resource://，使用原始远程 URL 作为任务 URL
-              const taskUrl = networkUrl || (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl) || formattedVideoUrl;
+            if (currentNode && formattedVideoUrl) {
+              const taskUrl =
+                networkUrl ||
+                (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl) ||
+                formattedVideoUrl;
               handleAddVideoTask(
                 nodeId,
                 taskUrl,
                 currentNode.data?.prompt || '',
-                networkUrl || (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl)
+                networkUrl || (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl),
               );
             }
           }, 0);
@@ -11495,6 +12340,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
         
         // 使用函数式更新，确保基于最新状态
+        let layoutProbeUrl = '';
         setNodes((nds) => {
           const targetNode = nds.find((n) => n.id === nodeId);
           if (!targetNode || targetNode.type !== 'image') {
@@ -11563,6 +12409,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             const cleanPath = u.replace(/^(file:\/\/|local-resource:\/\/)/, '').replace(/\\/g, '/');
             return `local-resource://${cleanPath}`;
           });
+          layoutProbeUrl = formattedOutputImages[0] || formattedImageUrl;
 
           // 确定原始远程 URL：主进程在自动下载到本地时会把 payload.imageUrl 变成 local-resource，公网在 originalImageUrl
           const originalImageUrlResolved =
@@ -11654,6 +12501,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           
           return updatedNodes;
         });
+
+        void (async () => {
+          if (!layoutProbeUrl) return;
+          try {
+            const px = await probeImagePixelSize(layoutProbeUrl);
+            if (px.width <= 0 || px.height <= 0) return;
+            setNodes((nds) =>
+              nds.map((node) => {
+                if (node.id !== nodeId || node.type !== 'image') return node;
+                if (node.data?.isUserResized || node.data?.preserveExportLayout) return node;
+                return patchNodeWithMediaLayout(node, px.width, px.height, 'image');
+              }),
+            );
+          } catch {
+            /* 探测失败时保留当前外框 */
+          }
+        })();
       }
       
       // 处理音频节点的 SUCCESS 状态（批量运行时，未选中的节点没有 AudioInputPanel，需要在这里更新）
@@ -12258,7 +13122,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         width,
                         height,
                         resolution: (srcData.resolution as string) || '1k',
-                        aspectRatio: (srcData.aspectRatio as string) || '9:16',
+                        aspectRatio: (srcData.aspectRatio as string) || DEFAULT_IMAGE_ASPECT_RATIO,
                         model: (srcData.model as string) || 'banana-2.0',
                         prompt: (srcData.prompt as string) || '',
                         outputImage,
@@ -12340,10 +13204,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           onToggleCharacterList={() => setCharacterListCollapsed(!characterListCollapsed)}
           characterListRefreshTrigger={characterListRefreshTrigger}
           sceneListRefreshTrigger={sceneListRefreshTrigger}
+          digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
           onSelectCharacter={handleSelectCharacter}
           requestVoicePickFromCanvas={requestVoicePickFromCanvas}
           requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
           requestSceneImagePickFromCanvas={requestSceneImagePickFromCanvas}
+          requestDigitalHumanVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
           rightSidebarOpen={rightSidebarOpen}
           onToggleRightSidebar={() => setRightSidebarOpen(!rightSidebarOpen)}
           tasks={dedupedSortedTasks}
@@ -12361,6 +13227,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           onClearAllTasks={handleClearAllTasks}
           onTaskPlaceToCanvas={handleTaskPlaceToCanvas}
           onPlaceSceneToCanvas={handleScenePlaceToCanvas}
+          onPlaceDigitalHumanToCanvas={handleDigitalHumanPlaceToCanvas}
         />
         
         {/* 中间画布区域 - 覆盖整个区域，左侧边栏覆盖在上面 */}
@@ -12379,7 +13246,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 className="absolute inset-0 z-[50] pointer-events-none bg-violet-400/20"
                 aria-hidden
               />
-              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[55] pointer-events-auto">
+              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[55] pointer-events-auto flex flex-col items-center gap-3">
+                <p className="rounded-lg bg-black/55 px-4 py-2 text-sm text-white/90 shadow-lg backdrop-blur-sm">
+                  {characterCanvasPickTarget === 'voice'
+                    ? '点击画布上的音频模块以选取驱动音频'
+                    : characterCanvasPickTarget === 'digitalHumanVideo'
+                      ? '点击画布上的视频模块以选取参考视频'
+                      : characterCanvasPickTarget === 'sceneNormal' || characterCanvasPickTarget === 'sceneDisplay3d'
+                        ? '点击画布上的图片模块以选取场景图'
+                        : '点击画布上的图片模块以选取参考图'}
+                </p>
                 <button
                   type="button"
                   onClick={() => cancelCharacterCanvasPick()}
@@ -12445,7 +13321,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
         {/* 任务预览全屏查看（支持图片和视频；图片支持打标签工具） */}
         {previewImage && (
-          (previewImage.match(/\.(mp4|webm|ogg|mov)$/i) || previewImage.includes('video')) ? (
+          previewShowVideoPlayer ? (
             <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center">
               <div className="flex flex-col items-center gap-4 px-4">
                 <VideoPreview
@@ -12777,9 +13653,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 setNodes((nds) =>
                   nds.map((node) =>
                     node.id === imageInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, aspectRatio: value } }
-                      : node
-                  )
+                      ? patchNodeWithAspectRatioLayout(node, value, 'image')
+                      : node,
+                  ),
                 );
                 setImageInputPanelData((prev) => (prev ? { ...prev, aspectRatio: value } : prev));
               }}
@@ -12793,69 +13669,107 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 );
                 setImageInputPanelData((prev) => (prev ? { ...prev, model: value } : prev));
               }}
-              onOutputImageChange={(imageUrl, originalImageUrlFromPayload) => {
-                // 使用闭包保存 nodeId，确保更新到正确的节点（并发任务时很重要）
-                const targetNodeId = imageInputPanelData.nodeId;
-                const promptToKeep = imageInputPanelData.prompt ?? '';
-                const publicOrig =
-                  typeof originalImageUrlFromPayload === 'string' && /^https?:\/\//i.test(originalImageUrlFromPayload.trim())
-                    ? originalImageUrlFromPayload.trim()
-                    : undefined;
-                console.log('[Workspace] onOutputImageChange 被调用:', { targetNodeId, imageUrl, publicOrig: publicOrig || '—' });
-                
-                // 格式化图片路径（使用同步版本）
-                const formattedImageUrl = formatImagePathSync(imageUrl);
-                setNodes((nds) => {
-                  const updatedNodes = nds.map((node) =>
-                    node.id === targetNodeId
-                      ? {
-                          ...node,
-                          data: {
-                            ...node.data,
-                            outputImage: formattedImageUrl,
-                            ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
-                            // 生成完成后强制保留当前提示词，避免被异步状态刷新覆盖为空
-                            prompt: (node.data?.prompt as string | undefined) ?? promptToKeep,
-                          },
-                        }
-                      : node
-                  );
-                  
-                  // 验证节点是否被正确更新
-                  const updatedNode = updatedNodes.find(n => n.id === targetNodeId);
-                  console.log('[Workspace] 图片节点更新结果:', { 
-                    targetNodeId, 
-                    found: !!updatedNode, 
-                    hasOutputImage: !!updatedNode?.data?.outputImage 
+              onOutputImageChange={(imageUrl, originalImageUrlFromPayload, outputImagesFromPayload) => {
+                void (async () => {
+                  const targetNodeId = imageInputPanelData.nodeId;
+                  const promptToKeep = imageInputPanelData.prompt ?? '';
+                  const publicOrig =
+                    typeof originalImageUrlFromPayload === 'string' && /^https?:\/\//i.test(originalImageUrlFromPayload.trim())
+                      ? originalImageUrlFromPayload.trim()
+                      : undefined;
+                  const formattedImageUrl = formatImagePathSync(imageUrl);
+                  const formattedOutputImages =
+                    Array.isArray(outputImagesFromPayload) && outputImagesFromPayload.length > 0
+                      ? outputImagesFromPayload.map((u) => formatImagePathSync(String(u || ''))).filter(Boolean)
+                      : undefined;
+                  console.log('[Workspace] onOutputImageChange 被调用:', {
+                    targetNodeId,
+                    imageUrl: formattedImageUrl,
+                    publicOrig: publicOrig || '—',
+                    outputCount: formattedOutputImages?.length ?? 1,
                   });
-                  
-                  // 触发 handleImageNodeDataChange 以同步到连接的节点
-                  handleImageNodeDataChange(targetNodeId, { outputImage: formattedImageUrl, originalImageUrl: publicOrig });
-                  
-                  // 添加任务到任务列表
-                  const currentNode = updatedNodes.find((n) => n.id === targetNodeId);
-                  if (currentNode && formattedImageUrl) {
-                    const panelOrig =
-                      publicOrig ||
-                      (typeof currentNode.data?.originalImageUrl === 'string'
-                        ? String(currentNode.data.originalImageUrl).trim()
-                        : undefined);
-                    handleAddTask(
-                      targetNodeId,
-                      formattedImageUrl,
-                      imageInputPanelData.prompt || currentNode.data?.prompt || '',
-                      panelOrig,
-                    );
+
+                  const probeUrl = formattedOutputImages?.[0] || formattedImageUrl;
+                  const currentNodeSnapshot = latestNodesRef.current.find((n) => n.id === targetNodeId);
+                  let layoutPatchedNode: Node | undefined;
+                  if (currentNodeSnapshot && probeUrl && !currentNodeSnapshot.data?.isUserResized) {
+                    const baseNode: Node = {
+                      ...currentNodeSnapshot,
+                      data: {
+                        ...currentNodeSnapshot.data,
+                        outputImage: formattedImageUrl,
+                        ...(formattedOutputImages && formattedOutputImages.length > 0
+                          ? { outputImages: formattedOutputImages }
+                          : {}),
+                        ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
+                        prompt: (currentNodeSnapshot.data?.prompt as string | undefined) ?? promptToKeep,
+                      },
+                    };
+                    layoutPatchedNode = await patchImageNodeWithProbedLayout(baseNode, probeUrl);
                   }
-                  
-                  return updatedNodes;
-                });
-                // 输入面板也强制保留提示词，不因 SUCCESS/进度回调导致重置
-                setImageInputPanelData((prev) =>
-                  prev && prev.nodeId === targetNodeId
-                    ? { ...prev, prompt: prev.prompt ?? promptToKeep }
-                    : prev
-                );
+
+                  setNodes((nds) => {
+                    const updatedNodes = nds.map((node) => {
+                      if (node.id !== targetNodeId) return node;
+                      if (layoutPatchedNode) {
+                        return {
+                          ...node,
+                          data: { ...node.data, ...layoutPatchedNode.data },
+                          style: layoutPatchedNode.style ?? node.style,
+                        };
+                      }
+                      return {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          outputImage: formattedImageUrl,
+                          ...(formattedOutputImages && formattedOutputImages.length > 0
+                            ? { outputImages: formattedOutputImages }
+                            : {}),
+                          ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
+                          prompt: (node.data?.prompt as string | undefined) ?? promptToKeep,
+                        },
+                      };
+                    });
+
+                    handleImageNodeDataChange(targetNodeId, {
+                      outputImage: formattedImageUrl,
+                      ...(formattedOutputImages && formattedOutputImages.length > 0
+                        ? { outputImages: formattedOutputImages }
+                        : {}),
+                      originalImageUrl: publicOrig,
+                      ...(layoutPatchedNode
+                        ? {
+                            width: layoutPatchedNode.data?.width as number | undefined,
+                            height: layoutPatchedNode.data?.height as number | undefined,
+                          }
+                        : {}),
+                    });
+
+                    const currentNode = updatedNodes.find((n) => n.id === targetNodeId);
+                    if (currentNode && formattedImageUrl) {
+                      const panelOrig =
+                        publicOrig ||
+                        (typeof currentNode.data?.originalImageUrl === 'string'
+                          ? String(currentNode.data.originalImageUrl).trim()
+                          : undefined);
+                      handleAddTask(
+                        targetNodeId,
+                        formattedImageUrl,
+                        imageInputPanelData.prompt || currentNode.data?.prompt || '',
+                        panelOrig,
+                        formattedOutputImages,
+                      );
+                    }
+
+                    return updatedNodes;
+                  });
+                  setImageInputPanelData((prev) =>
+                    prev && prev.nodeId === targetNodeId
+                      ? { ...prev, prompt: prev.prompt ?? promptToKeep }
+                      : prev,
+                  );
+                })();
               }}
               onProgressChange={(progress) => {
                 const targetNodeId = imageInputPanelData.nodeId;
@@ -13036,6 +13950,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               progress={videoInputPanelData.progress ?? 0}
               progressMessage={videoInputPanelData.progressMessage}
               wanAnimateStandalone={selectedNode?.type === 'wanAnimate'}
+              heyGemStandalone={selectedNode?.type === 'heyGem'}
               onKeepOriginalSoundChange={(value) => {
                 setNodes((nds) =>
                   nds.map((node) =>
@@ -13380,9 +14295,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 setNodes((nds) =>
                   nds.map((node) =>
                     node.id === videoInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, aspectRatio: value } }
-                      : node
-                  )
+                      ? patchNodeWithAspectRatioLayout(node, value, 'video')
+                      : node,
+                  ),
                 );
                 setVideoInputPanelData({ ...videoInputPanelData, aspectRatio: value });
               }}
@@ -13491,21 +14406,27 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   }
 
                   setNodes((nds) =>
-                    nds.map((node) =>
-                      node.id === targetNodeId
-                        ? {
-                            ...node,
-                            data: {
-                              ...node.data,
-                              outputVideo: outputVideoFinal,
-                              originalVideoUrl: networkUrl,
-                              ...(videoAsset ? { videoAsset } : {}),
-                              progress: 0,
-                              errorMessage: undefined,
-                            },
-                          }
-                        : node
-                    )
+                    nds.map((node) => {
+                      if (node.id !== targetNodeId) return node;
+                      const withMedia = {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          outputVideo: outputVideoFinal,
+                          originalVideoUrl: networkUrl,
+                          ...(videoAsset ? { videoAsset } : {}),
+                          progress: 0,
+                          errorMessage: undefined,
+                        },
+                      };
+                      if (node.data?.isUserResized) return withMedia;
+                      return patchNodeWithMediaLayout(
+                        withMedia,
+                        videoAsset?.width,
+                        videoAsset?.height,
+                        'video',
+                      );
+                    }),
                   );
 
                   handleVideoNodeDataChange(targetNodeId, {

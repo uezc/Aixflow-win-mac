@@ -1,4 +1,30 @@
+; Aixflow 安装器暗黑主题（与官网 #051A24 一致；须在 MUI2 之前由 electron-builder include）
+!ifndef MUI_BGCOLOR
+  !define MUI_BGCOLOR 051A24
+!endif
+!ifndef MUI_TEXTCOLOR
+  !define MUI_TEXTCOLOR FFFFFF
+!endif
+!ifndef MUI_INSTFILESPAGE_COLORS
+  !define MUI_INSTFILESPAGE_COLORS "FFFFFF 051A24"
+!endif
+!ifndef MUI_INSTFILESPAGE_PROGRESSBAR
+  !define MUI_INSTFILESPAGE_PROGRESSBAR "colored"
+!endif
+
 ; 安装包名称与路径：默认安装到 Aixflow 文件夹（由 electron-builder 的 instFilesPre 实现）
+
+!macro customWelcomePage
+  !define MUI_WELCOMEPAGE_TITLE "安装 Aixflow"
+  !define MUI_WELCOMEPAGE_TEXT "欢迎使用 Aixflow AI 动态创作操作系统。$\r$\n$\r$\n点击「下一步」选择安装位置。"
+  !insertmacro MUI_PAGE_WELCOME
+!macroend
+
+!macro customUnWelcomePage
+  !define MUI_UNWELCOMEPAGE_TITLE "卸载 Aixflow"
+  !define MUI_UNWELCOMEPAGE_TEXT "即将从本机移除 Aixflow。$\r$\n$\r$\n点击「下一步」继续。"
+  !insertmacro MUI_UNPAGE_WELCOME
+!macroend
 
 ; 升级/重装前：结束进程 + 清理 %TEMP% 下 NSIS 残留，降低解压 WinShell.dll「无法写入文件」概率
 !macro customInit

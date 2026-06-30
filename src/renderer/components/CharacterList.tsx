@@ -24,7 +24,7 @@ import ImageTo3dLibraryHoverPreview from './ImageTo3dLibraryHoverPreview';
 import ImageTo3dInlineGlbPreview from './ImageTo3dInlineGlbPreview';
 import {
   assetLibBtnIcon,
-  assetLibBtnDanger,
+  assetLibDeleteToolbarBtn,
   assetLibBtnPrimary,
   assetLibCardActionBtn,
   assetLibBtnSecondary,
@@ -1038,12 +1038,10 @@ const CharacterList: React.FC<CharacterListProps> = ({
           {filteredCharacters.length > 0 && (
             <>
               <button
+                type="button"
                 onClick={handleDeleteSelected}
-                className={`p-1 rounded transition-colors ${
-                  isDarkMode
-                    ? 'hover:bg-red-500/20 text-white/60 hover:text-red-400'
-                    : assetLibBtnDanger(isDarkMode, '!p-1 !min-w-0')
-                }`}
+                disabled={selectedIds.size === 0}
+                className={assetLibDeleteToolbarBtn(isDarkMode, selectedIds.size > 0)}
                 title={libT.roleDeleteSelected}
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -1402,7 +1400,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       <span
                         onDoubleClick={(e) => handleNicknameDoubleClick(character, e)}
                         className={`character-card-title flex-1 text-sm font-bold truncate cursor-text ${
-                          isDarkMode || selectedIds.has(character.id) ? 'text-white' : 'text-gray-900'
+                          isDarkMode ? 'text-white' : 'text-gray-900'
                         }`}
                         title="双击编辑昵称"
                       >

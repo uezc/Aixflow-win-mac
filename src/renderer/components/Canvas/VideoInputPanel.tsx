@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useCallback, useRef, useEffect, useState, useMemo } from 'react';
-import { Play, ChevronUp, ChevronDown, Mic, Loader2 } from 'lucide-react';
+import { Play, ChevronUp, ChevronDown, Mic, Loader2, Video, Check, Image as ImageIcon } from 'lucide-react';
 import { useAI } from '../../hooks/useAI';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
@@ -20,6 +20,7 @@ import {
   normalizeGrok3StableDurationStr,
   SEEDANCE_DURATION_SEC_OPTIONS,
   normalizeSeedanceDurationChoice,
+  coerceSeedanceResolution,
   GEMINI_OMNI_DURATION_SEC_OPTIONS,
   normalizeGeminiOmniDurationChoice,
 } from '../../utils/videoBillingSku';
@@ -40,13 +41,28 @@ import {
   splitLtx23HdrMultiImagesFromCollected,
 } from '../../../common/ltx23HdrMulti';
 
+/** 判断 AI 返回的地址是否应视为视频（含 local-resource 无扩展名但带 localPath 的情况） */
+function isLikelyGeneratedVideoUrl(
+  url: string,
+  extras?: { localPath?: string; originalVideoUrl?: string },
+): boolean {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (/\.(mp4|webm|mov|avi|mkv)$/i.test(u)) return true;
+  if (/^https?:\/\//i.test(u)) return true;
+  if (u.startsWith('local-resource://') || u.startsWith('file://')) {
+    if (extras?.localPath || extras?.originalVideoUrl) return true;
+    return /\.(mp4|webm|mov|avi|mkv)$/i.test(u);
+  }
+  return false;
+}
 
 interface VideoInputPanelProps {
   nodeId: string;
   isDarkMode: boolean;
   prompt: string;
   aspectRatio: '16:9' | '9:16' | '1:1' | '2:3' | '3:2';
-  model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+  model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
   hd: boolean;
   duration: '5' | '10' | '15' | '25';
   inputImages?: string[]; // 图生视频参考图
@@ -126,10 +142,10 @@ interface VideoInputPanelProps {
   onModeKlingO1Change?: (value: 'std' | 'pro') => void;
   onResolutionWanAnimateChange?: (value: '720p' | '1080p') => void;
   onWanAnimateClipSecChange?: (value: '5' | '8' | '10' | '15') => void;
-  /** Seedance 2.0 Fast 多模态：720p|1080p，时长 5|10|15 秒 */
-  resolutionSeedance?: '720p' | '1080p';
+  /** Seedance 2.0 Fast / Mini：720p|1080p（Mini 另支持 480p/2k/4k），时长 5|10|15 秒 */
+  resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
   durationSeedance?: '5' | '10' | '15';
-  onResolutionSeedanceChange?: (value: '720p' | '1080p') => void;
+  onResolutionSeedanceChange?: (value: '480p' | '720p' | '1080p' | '2k' | '4k') => void;
   onDurationSeedanceChange?: (value: '5' | '10' | '15') => void;
   /** Gemini Omni 图生视频：720p|1080p|4k，时长 4|6|8|10 秒 */
   resolutionGeminiOmni?: '720p' | '1080p' | '4k';
@@ -138,7 +154,7 @@ interface VideoInputPanelProps {
   onDurationGeminiOmniChange?: (value: '6' | '8' | '10') => void;
   onPromptChange: (value: string) => void;
   onAspectRatioChange: (value: '16:9' | '9:16' | '1:1' | '2:3' | '3:2') => void;
-  onModelChange: (value: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end') => void;
+  onModelChange: (value: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end') => void;
   onHdChange: (value: boolean) => void;
   onDurationChange: (value: '5' | '10' | '15' | '25') => void;
   onOutputVideoChange: (
@@ -154,6 +170,8 @@ interface VideoInputPanelProps {
   progressMessage?: string;
   /** 独立「视频换人」画布模块：固定 WanAnimate，隐藏模型下拉，且不因图+音频强制切对口型 */
   wanAnimateStandalone?: boolean;
+  /** 独立 HeyGem 数字人模块：固定 hey-gem，参考视频 + 驱动音频 */
+  heyGemStandalone?: boolean;
 }
 
 const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
@@ -179,6 +197,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   progress = 0,
   progressMessage = '',
   wanAnimateStandalone = false,
+  heyGemStandalone = false,
   guidanceScale = 0.5,
   sound = 'false',
   shotType = 'single',
@@ -577,7 +596,14 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const isLtx23T2vModel = model === 'ltx-2.3-t2v';
   const isLtx23HdrMultiModel = model === 'ltx-2.3-hdr-multi';
   const isWanAnimateModel = model === 'wan-animate';
+  const isHeyGemModel = model === 'hey-gem' || heyGemStandalone;
+  /** 独立 HeyGem / WanAnimate 模块：提交时强制模型 id，避免误走文生视频链路 */
+  const effectiveVideoModel = (
+    heyGemStandalone ? 'hey-gem' : wanAnimateStandalone ? 'wan-animate' : model
+  ) as VideoInputPanelProps['model'];
   const isSeedanceFastModel = model === 'seedance-2.0-fast';
+  const isSeedanceMiniModel = model === 'seedance-2.0-mini';
+  const isSeedanceModel = isSeedanceFastModel || isSeedanceMiniModel;
   const isGeminiOmniModel = model === 'gemini-omni';
 
   /** LTX2.3 高动态已下架 1920，旧节点数据归一为 1280 */
@@ -795,9 +821,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     return urls.length;
   }, [hdrBackground, ltx23HdrBackgroundImage, storyboardSlots, inputImages]);
 
-  const isImageToVideoMode = isLtx23HdrMultiModel
-    ? isLtx23HdrMultiRunnable(hdrBackground, storyboardSlots)
-    : orderedInputImages.length > 0;
+  const isImageToVideoMode = isHeyGemModel
+    ? false
+    : isLtx23HdrMultiModel
+      ? isLtx23HdrMultiRunnable(hdrBackground, storyboardSlots)
+      : orderedInputImages.length > 0;
 
   /** 已接参考视频（无图+音频强制对口型场景） */
   const hasReferenceVideo =
@@ -817,6 +845,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'grok-3',
     'grok-3-stable',
     'seedance-2.0-fast',
+    'seedance-2.0-mini',
     'gemini-omni',
     'wan-animate',
   ] as const);
@@ -825,7 +854,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const getMaxRefImagesVideo = (m: string): number => {
     if (m === 'grok-3' || m === 'grok-3-stable') return 7;
     if (m === 'ltx-2.3-hdr-multi') return 5;
-    if (m === 'seedance-2.0-fast') return 9;
+    if (m === 'seedance-2.0-fast' || m === 'seedance-2.0-mini') return 9;
     if (m === 'rhart-v3.1-fast') return 3;
     if (m === 'gemini-omni') return 3;
     if (['rhart-v3.1-fast-se', 'rh-video-start-end'].includes(m)) return 2;
@@ -850,6 +879,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'rhart-v3.1-fast-se',
     'rh-video-start-end',
     'seedance-2.0-fast',
+    'seedance-2.0-mini',
     'gemini-omni',
     'grok-3',
     'grok-3-stable',
@@ -865,6 +895,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'rhart-v3.1-fast-se': { label: 'Veo3.1 fast (首尾帧)' },
     'rh-video-start-end': { label: 'LTX2.3（首位帧）' },
     'seedance-2.0-fast': { label: 'Seedance 2.0 Fast', title: '支持 0–9 张参考图' },
+    'seedance-2.0-mini': { label: 'Seedance 2.0 Mini', title: '支持参考图/视频/音频，0–9 张参考图' },
     'gemini-omni': { label: 'Gemini Omni', title: '图生视频：1–3 张参考图 + 提示词' },
     'grok-3': { label: 'Grok video3', title: '文生无参考图；图生 1–7 张' },
     'grok-3-stable': { label: 'Grok video3 plus', title: '参考图生 1–7 张，仅 720p，时长 6s/10s' },
@@ -981,7 +1012,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
   // 图+音频同时接入时，强制对口型模式（独立 WanAnimate 模块不切换）
   useEffect(() => {
-    if (wanAnimateStandalone) return;
+    if (wanAnimateStandalone || heyGemStandalone) return;
     if (hasImageAndAudio && model !== 'ltx-2.3-lipsync') {
       onModelChange('ltx-2.3-lipsync');
     }
@@ -992,7 +1023,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     imageAndVideoReady: false,
   });
   useEffect(() => {
-    if (wanAnimateStandalone || hasImageAndAudio) return;
+    if (wanAnimateStandalone || heyGemStandalone || hasImageAndAudio) return;
     const imageAndVideoReady = hasImageAndVideo && imageCount === 1;
     const becameReady =
       imageAndVideoReady && !prevWanAnimateInputsRef.current.imageAndVideoReady;
@@ -1015,35 +1046,24 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
   /** 参考视频断开时，若当前为 WanAnimate 则回退默认模型 */
   useEffect(() => {
-    if (wanAnimateStandalone) return;
+    if (wanAnimateStandalone || heyGemStandalone) return;
     if (model !== 'wan-animate' || hasReferenceVideo) return;
     onModelChange(DEFAULT_VIDEO_MODEL_REPLACING_SORA2 as Parameters<typeof onModelChange>[0]);
   }, [wanAnimateStandalone, model, hasReferenceVideo, onModelChange]);
 
-  /** Seedance 不支持参考视频：接入参考视频时自动切走 */
   useEffect(() => {
-    if (wanAnimateStandalone || !isSeedanceFastModel || !hasReferenceVideo) return;
-    if (hasImageAndVideo && imageCount === 1) {
-      onModelChange('wan-animate');
-      onResolutionWanAnimateChange?.('720p');
-      onWanAnimateClipSecChange?.('8');
-      return;
+    if (!isSeedanceFastModel) return;
+    const normalized = coerceSeedanceResolution(resolutionSeedance, 'seedance-2.0-fast');
+    if (normalized !== resolutionSeedance) {
+      onResolutionSeedanceChange?.(normalized);
     }
-    const fallback =
-      (availableModels.find((m) => m !== 'seedance-2.0-fast') as Parameters<typeof onModelChange>[0] | undefined) ||
-      (DEFAULT_VIDEO_MODEL_REPLACING_SORA2 as Parameters<typeof onModelChange>[0]);
-    onModelChange(fallback);
-  }, [
-    wanAnimateStandalone,
-    isSeedanceFastModel,
-    hasReferenceVideo,
-    hasImageAndVideo,
-    imageCount,
-    availableModels,
-    onModelChange,
-    onResolutionWanAnimateChange,
-    onWanAnimateClipSecChange,
-  ]);
+  }, [isSeedanceFastModel, resolutionSeedance, onResolutionSeedanceChange]);
+
+  /** Seedance Fast 不支持参考视频：接入参考视频时自动切到 Mini */
+  useEffect(() => {
+    if (wanAnimateStandalone || heyGemStandalone || !isSeedanceFastModel || !hasReferenceVideo) return;
+    onModelChange('seedance-2.0-mini');
+  }, [wanAnimateStandalone, heyGemStandalone, isSeedanceFastModel, hasReferenceVideo, onModelChange]);
 
   // Grok video3 / 稳定版 最多 7 张参考图：从其他模型切过来时裁掉多余
   useEffect(() => {
@@ -1060,7 +1080,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
   // 图生视频：当前模型不支持参考图数量时自动切换
   useEffect(() => {
-    if (wanAnimateStandalone) return;
+    if (wanAnimateStandalone || heyGemStandalone) return;
     if (isImageToVideoMode && !hasImageAndAudio) {
       if (!availableModels.includes(model as any)) {
         const defaultModel = (availableModels[0] as string) || DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
@@ -1075,9 +1095,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   // 模式标签和按钮文案
   const modeLabel = isLtx23LipsyncModel
     ? vt.modeLipsync
+    : isHeyGemModel
+      ? vt.heyGemInputLabel
     : isWanAnimateModel
       ? vt.wanAnimateInputLabel
-      : isSeedanceFastModel
+      : isSeedanceModel
         ? vt.modeMultimodalVideo
         : isImageToVideoMode
         ? vt.modeImageToVideo
@@ -1238,9 +1260,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       
       // 检查 URL 是否是视频文件（通过文件扩展名或协议判断）
       if (videoUrl) {
-        const isVideoFile = /\.(mp4|webm|mov|avi|mkv)$/i.test(videoUrl) || 
-                           /^https?:\/\//.test(videoUrl) || // 远程 URL 假设是视频
-                           (videoUrl.startsWith('local-resource://') && /\.(mp4|webm|mov|avi|mkv)$/i.test(videoUrl));
+        const isVideoFile = isLikelyGeneratedVideoUrl(videoUrl, {
+          localPath: currentPayload.localPath,
+          originalVideoUrl: originalVideoUrl,
+        });
         
         if (isVideoFile) {
           console.log('[VideoInputPanel] 检测到视频 URL:', videoUrl);
@@ -1270,10 +1293,20 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       }
       
       // URL 嗅探：如果 payload 中包含 URL，立即更新（支持 HTTP/HTTPS 和 local-resource://）
-      let videoUrl = payload?.url || 
-                      payload?.videoUrl ||
-                      (typeof payload?.text === 'string' && 
-                       payload.text.match(/https?:\/\/[^\s\)]+/)?.[0]);
+      const localPathComplete = payload?.localPath;
+      let videoUrl = payload?.url || payload?.videoUrl;
+      if (!videoUrl && localPathComplete) {
+        let filePath = String(localPathComplete).replace(/\\/g, '/');
+        if (filePath.match(/^\/[a-zA-Z]:/)) {
+          filePath = filePath.substring(1);
+        }
+        videoUrl = `local-resource://${filePath}`;
+      }
+      if (!videoUrl && typeof payload?.text === 'string') {
+        const localFromText = payload.text.match(/local-resource:\/\/[^\s\)]+/)?.[0];
+        const httpFromText = payload.text.match(/https?:\/\/[^\s\)]+/)?.[0];
+        videoUrl = localFromText || httpFromText;
+      }
       
       // 验证 videoUrl 是否为有效的字符串（排除 false、null、undefined 等）
       if (!videoUrl || typeof videoUrl !== 'string' || videoUrl === 'false' || videoUrl === 'null' || videoUrl.trim() === '') {
@@ -1306,9 +1339,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       }
       
       // 检查 URL 是否是视频文件（通过文件扩展名或协议判断）
-      const isVideoFile = /\.(mp4|webm|mov|avi|mkv)$/i.test(videoUrl) || 
-                         /^https?:\/\//.test(videoUrl) || // 远程 URL 假设是视频
-                         (videoUrl.startsWith('local-resource://') && /\.(mp4|webm|mov|avi|mkv)$/i.test(videoUrl));
+      const isVideoFile = isLikelyGeneratedVideoUrl(videoUrl, {
+        localPath: localPathComplete,
+        originalVideoUrl: originalVideoUrl,
+      });
       
       // 清除超时定时器
       if (timeoutRef.current) {
@@ -1386,7 +1420,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     flushPromptSync();
     if (progress > 0 && progress < 100) return;
     if (aiStatus === 'START' || aiStatus === 'PROCESSING') return;
-    if (!isWanAnimateModel && !localPrompt.trim()) return;
+    if (!isWanAnimateModel && !isHeyGemModel && !localPrompt.trim()) return;
 
     // MSR：工作流需 1 背景 + 至少 2 分镜（RH ImageResizeKJv2 要求 image2 非空）
     if (isLtx23HdrMultiModel) {
@@ -1431,10 +1465,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       console.log('[VideoInputPanel] 准备发送图片路径给后端处理:', orderedInputImages);
 
       const payload: any = {
-        prompt: isWanAnimateModel ? '' : localPrompt,
-        model,
-        aspect_ratio: aspectRatio,
+        prompt: isWanAnimateModel || isHeyGemModel ? '' : localPrompt,
+        model: effectiveVideoModel,
       };
+      if (!isHeyGemModel && !isWanAnimateModel) {
+        payload.aspect_ratio = aspectRatio;
+      }
 
       // sora-2 系列参数
       if (model === 'sora-2' || model === 'sora-2-pro') {
@@ -1495,9 +1531,19 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         payload.wanAnimateClipSec = wanAnimateClipSec;
       }
 
-      if (isSeedanceFastModel) {
+      if (isHeyGemModel) {
+        payload.referenceVideoUrl = (referenceVideoUrl || '').trim();
+        payload.inputAudioUrl = (inputAudioUrl || '').trim();
+      }
+
+      if (isSeedanceModel) {
         payload.resolutionSeedance = resolutionSeedance;
         payload.durationSeedance = normalizeSeedanceDurationChoice(durationSeedance, 10);
+      }
+
+      if (isSeedanceMiniModel) {
+        payload.referenceVideoUrl = (referenceVideoUrl || '').trim();
+        payload.inputAudioUrl = (inputAudioUrl || '').trim();
       }
 
       if (isGeminiOmniModel) {
@@ -1564,8 +1610,8 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           isLtx23LipsyncModel || isLtx23I2vModel || isWanAnimateModel
             ? orderedInputImages.slice(0, 1)
             : isGeminiOmniModel
-              ? orderedInputImages.slice(0, 3)
-            : isSeedanceFastModel
+              ? orderedInputImages.filter((u) => String(u || '').trim()).slice(0, 3)
+            : isSeedanceModel
               ? orderedInputImages.slice(0, 9)
               : isGrok3Model || isGrok3StableModel
                 ? orderedInputImages.slice(0, 7)
@@ -1601,7 +1647,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         onErrorTask(error.message || '视频生成失败，请检查提示词或稍后重试');
       }
     }
-  }, [flushPromptSync, progress, aiStatus, localPrompt, model, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isSeedanceFastModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, inputAudioUrl, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, isRhartV31FastModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, onProgressChange, onProgressMessageChange]);
+  }, [flushPromptSync, progress, aiStatus, localPrompt, model, effectiveVideoModel, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isHeyGemModel, isSeedanceModel, isSeedanceMiniModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, inputAudioUrl, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, isRhartV31FastModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, onProgressChange, onProgressMessageChange]);
 
   // 清理超时定时器
   useEffect(() => {
@@ -1620,12 +1666,14 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const isRunDisabled =
     isGenerating ||
     isAiBusy ||
-    (!isWanAnimateModel && !localPrompt.trim()) ||
+    (!isWanAnimateModel && !isHeyGemModel && !localPrompt.trim()) ||
     (isImageToVideoMode && !isLtx23HdrMultiModel && (!inputImages || inputImages.length === 0)) ||
     (isLtx23HdrMultiModel && !isLtx23HdrMultiRunnable(hdrBackground, storyboardImages)) ||
     (isKlingVideoO1RefModel && !(referenceVideoUrl || '').trim()) ||
     (isWanAnimateModel &&
       (!(referenceVideoUrl || '').trim() || orderedInputImages.length === 0)) ||
+    (isHeyGemModel &&
+      (!(referenceVideoUrl || '').trim() || !(inputAudioUrl || '').trim())) ||
     (isLtx23LipsyncModel && (!inputImages || inputImages.length === 0)) ||
     (isLtx23LipsyncModel && !(inputAudioUrl || '').trim());
 
@@ -1663,6 +1711,17 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               title="WanAnimate（角色替换）"
             >
               WanAnimate（角色替换）
+            </span>
+          ) : heyGemStandalone ? (
+            <span
+              className={`px-2 py-1 rounded-lg text-xs whitespace-nowrap ${
+                isDarkMode
+                  ? 'bg-black/30 text-white border border-gray-600/50'
+                  : 'bg-white/90 text-gray-900 border border-gray-300'
+              }`}
+              title="HeyGem 数字人"
+            >
+              HeyGem 数字人
             </span>
           ) : (
           <select
@@ -1809,6 +1868,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 {!hasReferenceVideo ? (
                   <option value="seedance-2.0-fast" title="文/图多模态，最多 9 张参考图">Seedance 2.0 Fast</option>
                 ) : null}
+                <option value="seedance-2.0-mini" title="文/图/视频多模态，支持参考视频与音频">Seedance 2.0 Mini</option>
                 <option value="rhart-v3.1-fast">Veo3.1 fast</option>
                 <option value="grok-3" title="文生无参考图；图生 1–7 张">Grok video3</option>
                 <option value="grok-3-stable" title="参考图生 1–7 张，仅 720p">Grok video3 plus</option>
@@ -1956,7 +2016,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
             </>
           )}
 
-          {!isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isWanAnimateModel && !isSeedanceFastModel && !isGeminiOmniModel && !isGrok3StableModel && (
+          {!isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isWanAnimateModel && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniModel && !isGrok3StableModel && (
           <>
           <span
             className={`text-xs ${
@@ -2187,19 +2247,26 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
             </>
           )}
 
-          {isSeedanceFastModel && (
+          {isSeedanceModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
               <select
-                value={resolutionSeedance}
-                onChange={(e) => onResolutionSeedanceChange?.(e.target.value as '720p' | '1080p')}
+                value={coerceSeedanceResolution(resolutionSeedance, model)}
+                onChange={(e) => onResolutionSeedanceChange?.(e.target.value as '480p' | '720p' | '1080p' | '2k' | '4k')}
                 className={`px-2 py-1 rounded-lg text-xs ${
                   isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
                 } outline-none`}
-                title={vt.titleSeedanceResolution}
+                title={isSeedanceMiniModel ? '480P / 720P / 1080P / 2K / 4K' : vt.titleSeedanceResolution}
               >
+                {isSeedanceMiniModel ? <option value="480p">480P</option> : null}
                 <option value="720p">720P</option>
                 <option value="1080p">1080P</option>
+                {isSeedanceMiniModel ? (
+                  <>
+                    <option value="2k">2K</option>
+                    <option value="4k">4K</option>
+                  </>
+                ) : null}
               </select>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
               <select
@@ -2301,7 +2368,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           )}
 
           {/* sora-2、kling、万相2.6：显示时长选项（Veo3.1 Pro 文生固定 8s，不显示此项） */}
-          {!isWan26FlashModel && !isRhartV31FastModel && !isGrok3Model && !isGrok3StableModel && !isHailuo02Model && !isHailuo23Model && !isHailuo02I2vModel && !isHailuo23I2vModel && !isKlingVideoO1Model && !isKlingVideoO1I2vModel && !isKlingVideoO1StartEndModel && !isRhVideoStartEndModel && !isKlingVideoO1RefModel && !isRhartV31ProSEModel && !isRhartV31ProModel && !isRhartV31ProOfficialI2vModel && !isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isWanAnimateModel && !isSeedanceFastModel && !isGeminiOmniModel && (
+          {!isWan26FlashModel && !isRhartV31FastModel && !isGrok3Model && !isGrok3StableModel && !isHailuo02Model && !isHailuo23Model && !isHailuo02I2vModel && !isHailuo23I2vModel && !isKlingVideoO1Model && !isKlingVideoO1I2vModel && !isKlingVideoO1StartEndModel && !isRhVideoStartEndModel && !isKlingVideoO1RefModel && !isRhartV31ProSEModel && !isRhartV31ProModel && !isRhartV31ProOfficialI2vModel && !isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isWanAnimateModel && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniModel && (
             <>
               <span
                 className={`text-xs ${
@@ -2616,88 +2683,92 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
       {/* 输入区：WanAnimate 无需提示词；其余模式见下方 */}
       <div className="p-3 pt-2 pb-2 flex-1 min-h-0 flex flex-col">
-        {isWanAnimateModel ? (
-          <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-x-3 gap-y-1">
-            <div className="h-[30px] flex items-center gap-2 min-w-0 flex-wrap">
-              <label
-                className={`text-xs font-medium shrink-0 ${
-                  isDarkMode ? 'text-white/80' : 'text-gray-900'
-                }`}
-              >
-                {vt.wanAnimateInputLabel}
-              </label>
-              <span
-                className={`text-xs shrink-0 ${
-                  orderedInputImages.length > 0
+        {(isHeyGemModel || isWanAnimateModel) ? (
+          <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
+            {(isHeyGemModel
+              ? [
+                  {
+                    key: 'video',
+                    label: vt.heyGemSlotVideoLabel,
+                    connected: !!(referenceVideoUrl || '').trim(),
+                    Icon: Video,
+                  },
+                  {
+                    key: 'audio',
+                    label: vt.heyGemSlotAudioLabel,
+                    connected: !!(inputAudioUrl || '').trim(),
+                    Icon: Mic,
+                  },
+                ]
+              : [
+                  {
+                    key: 'video',
+                    label: vt.heyGemSlotVideoLabel,
+                    connected: !!(referenceVideoUrl || '').trim(),
+                    Icon: Video,
+                  },
+                  {
+                    key: 'refImage',
+                    label: vt.wanAnimateSlotRefImageLabel,
+                    connected: orderedInputImages.length > 0,
+                    Icon: ImageIcon,
+                  },
+                ]
+            ).map(({ key, label, connected, Icon }) => (
+              <div
+                key={key}
+                className={`flex flex-col items-center justify-center gap-1.5 min-h-[96px] rounded-xl border transition-colors ${
+                  connected
                     ? isDarkMode
-                      ? 'text-green-400'
-                      : 'text-green-600'
+                      ? 'border-emerald-500/45 bg-emerald-500/10'
+                      : 'border-emerald-400/70 bg-emerald-50/90'
                     : isDarkMode
-                      ? 'text-amber-400'
-                      : 'text-amber-600'
+                      ? 'border-white/12 bg-black/30'
+                      : 'border-gray-300/80 bg-gray-50/90'
                 }`}
               >
-                {orderedInputImages.length > 0
-                  ? vt.refImageThumbTitle(1)
-                  : vt.wanAnimateImageNeedConnect}
-              </span>
-              <span
-                className={`text-xs shrink-0 ${
-                  (referenceVideoUrl || '').trim()
-                    ? isDarkMode
-                      ? 'text-green-400'
-                      : 'text-green-600'
-                    : isDarkMode
-                      ? 'text-amber-400'
-                      : 'text-amber-600'
-                }`}
-              >
-                {(referenceVideoUrl || '').trim()
-                  ? vt.wanAnimateVideoConnected
-                  : vt.wanAnimateVideoNeedConnect}
-              </span>
-            </div>
-            <div
-              className={`h-[30px] flex items-center text-xs font-medium ${
-                isDarkMode ? 'text-white/80' : 'text-gray-900'
-              }`}
-            >
-              {vt.refImageColumn}
-            </div>
-            <div
-              className={`min-w-0 h-[112px] rounded-xl px-3 py-2 text-xs flex items-center ${
-                isDarkMode
-                  ? 'bg-black/40 text-white/60 border border-gray-700/70'
-                  : 'bg-white text-gray-600 border border-gray-300'
-              }`}
-            >
-              {vt.wanAnimateNoPromptHint}
-            </div>
-            <div
-              className={`rounded-lg border p-1.5 h-[112px] overflow-hidden ${
-                isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
-              }`}
-            >
-              {orderedInputImages.length > 0 ? (
-                <div className="grid grid-cols-1 grid-rows-1 h-full">
-                  <div className="relative w-full h-full rounded-md overflow-hidden border border-white/20">
-                    <img
-                      src={orderedInputImages[0]}
-                      alt={vt.refImageThumbAlt(1)}
-                      className="w-full h-full object-contain bg-black/20"
-                    />
-                  </div>
-                </div>
-              ) : (
                 <div
-                  className={`h-full flex items-center justify-center text-[10px] text-center px-1 ${
-                    isDarkMode ? 'text-white/35' : 'text-gray-400'
+                  className={`flex h-9 w-9 items-center justify-center rounded-full ${
+                    connected
+                      ? isDarkMode
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-emerald-100 text-emerald-600'
+                      : isDarkMode
+                        ? 'bg-white/5 text-white/30'
+                        : 'bg-gray-200/80 text-gray-400'
                   }`}
                 >
-                  {vt.wanAnimateImageNeedConnect}
+                  <Icon className="h-4 w-4" strokeWidth={2} />
                 </div>
-              )}
-            </div>
+                <span
+                  className={`text-xs font-medium ${
+                    isDarkMode ? 'text-white/85' : 'text-gray-800'
+                  }`}
+                >
+                  {label}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
+                    connected
+                      ? isDarkMode
+                        ? 'text-emerald-400'
+                        : 'text-emerald-600'
+                      : isDarkMode
+                        ? 'text-white/40'
+                        : 'text-gray-400'
+                  }`}
+                >
+                  {connected ? (
+                    <>
+                      <Check className="h-3 w-3" strokeWidth={2.5} />
+                      {vt.heyGemSlotConnected}
+                    </>
+                  ) : (
+                    vt.heyGemSlotPending
+                  )}
+                </span>
+              </div>
+            ))}
           </div>
         ) : isLtx23HdrMultiModel ? (
           <div className="grid grid-cols-[minmax(0,1fr)_240px] gap-x-3 gap-y-1">
@@ -3070,7 +3141,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                     onDragEnd={(e) => finalizeThumbDrag(e)}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (isSeedanceFastModel) {
+                      if (isSeedanceModel) {
                         appendSeedanceImageTagToPrompt(index + 1);
                       } else {
                         appendToPrompt(vt.appendImageSubject(index + 1));
@@ -3090,7 +3161,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                       zIndex: isDragSource || isDropTarget ? 10 : 1,
                     }}
                     title={
-                      isSeedanceFastModel
+                      isSeedanceModel
                         ? vt.seedanceRefImageThumbTitle(index + 1)
                         : vt.refImageThumbTitle(index + 1)
                     }

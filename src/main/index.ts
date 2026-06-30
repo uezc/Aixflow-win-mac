@@ -4815,6 +4815,273 @@ ipcMain.handle('import-scenes', async () => {
   };
 });
 
+// —— 数字人资产库（HeyGem 参考视频 + 驱动音频） ——
+function copyFileIntoDigitalHumanLibraryDir(srcFsPath: string, destFileName: string): string | null {
+  if (!srcFsPath || !fs.existsSync(srcFsPath)) return null;
+  const userDataPath = app.getPath('userData');
+  const dir = path.join(userDataPath, 'digital-human-library');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, destFileName);
+  try {
+    if (!fs.existsSync(dest)) {
+      fs.copyFileSync(srcFsPath, dest);
+    }
+    return dest;
+  } catch (e) {
+    console.error('[数字人库] 复制文件失败:', e);
+    return null;
+  }
+}
+
+type DigitalHumanMediaRole = 'video' | 'audio' | 'poster';
+
+async function persistDigitalHumanLibraryMedia(
+  itemId: string,
+  role: DigitalHumanMediaRole,
+  raw: string,
+): Promise<{ url: string; localPath?: string; originalUrl?: string } | null> {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+  const suffix =
+    role === 'video' ? '-video' : role === 'audio' ? '-audio' : '-poster';
+
+  if (trimmed.startsWith('data:image/')) {
+    const one = await persistCharacterViewImageSlot(`${itemId}${suffix}`, 0, trimmed);
+    if (!one?.url) return null;
+    return { url: one.url, localPath: one.fsPath };
+  }
+
+  if (trimmed.startsWith('data:audio/')) {
+    const persisted = persistCharacterVoiceDataUrl(`${itemId}${suffix}`, trimmed);
+    if (!persisted) return null;
+    return { url: persisted.localResourceUrl, localPath: persisted.fsPath };
+  }
+
+  let localRef = resolveFsPathFromUrlish(trimmed);
+  if (!localRef && trimmed.startsWith('local-resource://')) {
+    try {
+      const body = trimmed.slice('local-resource://'.length);
+      const decoded = localResourceUrlBodyToFsPath(body, false);
+      if (decoded && fs.existsSync(decoded)) localRef = decoded;
+    } catch {
+      /* fallback below */
+    }
+  }
+  if (localRef) {
+    const ext = path.extname(localRef) || (role === 'audio' ? '.mp3' : role === 'video' ? '.mp4' : '.png');
+    const copied = copyFileIntoDigitalHumanLibraryDir(localRef, `${itemId}${suffix}${ext}`);
+    if (copied) {
+      return { url: fsPathToLocalResourceUrl(copied), localPath: copied };
+    }
+    const fallbackUrl = trimmed.startsWith('local-resource://')
+      ? trimmed
+      : fsPathToLocalResourceUrl(localRef);
+    return { url: fallbackUrl, localPath: localRef };
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const userDataPath = app.getPath('userData');
+      const dir = path.join(userDataPath, 'digital-human-library');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const fallback =
+        role === 'audio'
+          ? `${itemId}${suffix}.mp3`
+          : role === 'video'
+            ? `${itemId}${suffix}.mp4`
+            : `${itemId}${suffix}.png`;
+      const saved = await downloadRemoteAssetToDir(trimmed, dir, fallback);
+      if (!saved) return null;
+      return { url: fsPathToLocalResourceUrl(saved), localPath: saved, originalUrl: trimmed };
+    } catch (e) {
+      console.error('[数字人库] 下载远程媒体失败:', e);
+      return { url: trimmed, originalUrl: trimmed };
+    }
+  }
+
+  return { url: trimmed };
+}
+
+ipcMain.handle('get-digital-humans', () => store.get('digitalHumanLibrary') || []);
+
+ipcMain.handle(
+  'register-digital-human',
+  async (
+    _,
+    payload: {
+      nickname?: string;
+      videoUrl?: string;
+      audioUrl?: string;
+      posterUrl?: string;
+    },
+  ) => {
+    const items = (store.get('digitalHumanLibrary') || []) as Array<Record<string, unknown>>;
+    const itemId = `dh-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const stamp = new Date();
+    const defaultName = `数字人 ${stamp.getMonth() + 1}/${stamp.getDate()} ${String(stamp.getHours()).padStart(2, '0')}:${String(stamp.getMinutes()).padStart(2, '0')}`;
+    const displayName = (payload.nickname || '').trim() || defaultName;
+
+    const videoRaw = (payload.videoUrl || '').trim();
+    const audioRaw = (payload.audioUrl || '').trim();
+    if (!videoRaw) {
+      throw new Error('请提供参考视频');
+    }
+
+    const video = await persistDigitalHumanLibraryMedia(itemId, 'video', videoRaw);
+    if (!video?.url) {
+      throw new Error('参考视频保存失败');
+    }
+
+    let audioUrl: string | undefined;
+    let localAudioPath: string | undefined;
+    let originalAudioUrl: string | undefined;
+    if (audioRaw) {
+      const audio = await persistDigitalHumanLibraryMedia(itemId, 'audio', audioRaw);
+      if (!audio?.url) {
+        throw new Error('驱动音频保存失败');
+      }
+      audioUrl = audio.url;
+      localAudioPath = audio.localPath;
+      originalAudioUrl = audio.originalUrl || (audioRaw.startsWith('http') ? audioRaw : undefined);
+    }
+
+    let posterUrl = '';
+    let localPosterPath: string | undefined;
+    const posterRaw = (payload.posterUrl || '').trim();
+    if (posterRaw) {
+      const poster = await persistDigitalHumanLibraryMedia(itemId, 'poster', posterRaw);
+      if (poster?.url) {
+        posterUrl = poster.url;
+        localPosterPath = poster.localPath;
+      }
+    }
+
+    const newItem = {
+      id: itemId,
+      nickname: displayName,
+      name: displayName,
+      poster: posterUrl || undefined,
+      localPosterPath,
+      videoUrl: video.url,
+      localVideoPath: video.localPath,
+      originalVideoUrl: video.originalUrl || (videoRaw.startsWith('http') ? videoRaw : undefined),
+      audioUrl,
+      localAudioPath,
+      originalAudioUrl,
+      createdAt: Date.now(),
+    };
+
+    items.push(newItem);
+    store.set('digitalHumanLibrary', items);
+    return newItem;
+  },
+);
+
+ipcMain.handle(
+  'update-digital-human',
+  async (
+    _,
+    itemId: string,
+    updates: {
+      nickname?: string;
+      videoUrl?: string;
+      audioUrl?: string;
+      posterUrl?: string;
+    },
+  ) => {
+    const items = (store.get('digitalHumanLibrary') || []) as Array<Record<string, unknown>>;
+    const idx = items.findIndex((s) => s.id === itemId);
+    if (idx < 0) throw new Error('数字人条目不存在');
+
+    const item = { ...items[idx] } as Record<string, unknown>;
+
+    if (updates.nickname !== undefined) {
+      const n = updates.nickname.trim();
+      item.nickname = n;
+      item.name = n;
+    }
+
+    if (updates.videoUrl !== undefined) {
+      const raw = updates.videoUrl.trim();
+      if (!raw) {
+        item.videoUrl = '';
+        item.localVideoPath = undefined;
+        item.originalVideoUrl = undefined;
+      } else {
+        const one = await persistDigitalHumanLibraryMedia(itemId, 'video', raw);
+        if (!one?.url) throw new Error('参考视频保存失败');
+        item.videoUrl = one.url;
+        item.localVideoPath = one.localPath;
+        item.originalVideoUrl = one.originalUrl || (raw.startsWith('http') ? raw : item.originalVideoUrl);
+      }
+    }
+
+    if (updates.audioUrl !== undefined) {
+      const raw = updates.audioUrl.trim();
+      if (!raw) {
+        item.audioUrl = '';
+        item.localAudioPath = undefined;
+        item.originalAudioUrl = undefined;
+      } else {
+        const one = await persistDigitalHumanLibraryMedia(itemId, 'audio', raw);
+        if (!one?.url) throw new Error('驱动音频保存失败');
+        item.audioUrl = one.url;
+        item.localAudioPath = one.localPath;
+        item.originalAudioUrl = one.originalUrl || (raw.startsWith('http') ? raw : item.originalAudioUrl);
+      }
+    }
+
+    if (updates.posterUrl !== undefined) {
+      const raw = updates.posterUrl.trim();
+      if (!raw) {
+        item.poster = '';
+        item.localPosterPath = undefined;
+      } else {
+        const one = await persistDigitalHumanLibraryMedia(itemId, 'poster', raw);
+        if (one?.url) {
+          item.poster = one.url;
+          item.localPosterPath = one.localPath;
+        }
+      }
+    }
+
+    items[idx] = item;
+    store.set('digitalHumanLibrary', items);
+    return item;
+  },
+);
+
+ipcMain.handle('delete-digital-humans', async (_, itemIds: string[]) => {
+  const ids = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
+  if (!ids.length) return { success: true };
+  const remove = new Set(ids);
+  const items = (store.get('digitalHumanLibrary') || []) as Array<{
+    id: string;
+    localVideoPath?: string;
+    localAudioPath?: string;
+    localPosterPath?: string;
+  }>;
+
+  for (const s of items) {
+    if (!remove.has(s.id)) continue;
+    for (const p of [s.localVideoPath, s.localAudioPath, s.localPosterPath]) {
+      if (p && fs.existsSync(p)) {
+        try {
+          fs.unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  store.set(
+    'digitalHumanLibrary',
+    items.filter((s) => !remove.has(s.id)),
+  );
+  return { success: true };
+});
+
 ipcMain.handle('image-to-3d', async (_, imageUrl: string, projectId?: string, nodeId?: string) => {
   const check = checkLicenseStatus(getUserDataPath());
   if (check.status !== 'VALID') {
@@ -5781,6 +6048,8 @@ ipcMain.handle(
       videoTrackMuted?: boolean;
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
+      outputWidth?: number;
+      outputHeight?: number;
     },
   ) => {
     try {
@@ -5842,6 +6111,8 @@ ipcMain.handle(
       videoTrackMuted?: boolean;
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
+      outputWidth?: number;
+      outputHeight?: number;
     },
   ) => {
     try {
@@ -5860,7 +6131,13 @@ ipcMain.handle(
       } catch {
         // ignore
       }
-      return { success: true, hasAudio, ...resource };
+      return {
+        success: true,
+        hasAudio,
+        ...resource,
+        width: options?.outputWidth ?? resource.width,
+        height: options?.outputHeight ?? resource.height,
+      };
     } catch (error) {
       console.error('[export-timeline-video-to-project] 失败:', error);
       return {

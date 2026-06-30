@@ -1,19 +1,21 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, User, Box, Mountain, LayoutGrid, List } from 'lucide-react';
+import { ChevronLeft, ChevronRight, User, Box, Mountain, LayoutGrid, List, ScanFace } from 'lucide-react';
 import CharacterList from './CharacterList';
 import SceneLibraryList from './SceneLibraryList';
-import type { Character, SceneLibraryItem } from './characterListShared';
+import DigitalHumanLibraryList from './DigitalHumanLibraryList';
+import type { Character, SceneLibraryItem, DigitalHumanLibraryItem } from './characterListShared';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { assetLibraryT } from '../i18n/assetLibraryI18n';
 import {
+  ASSET_LIBRARY_SIDEBAR_WIDTH_PX,
   assetLibBtnIcon,
   assetLibGalleryToggleActive,
   assetLibTabActive,
   assetLibTabInactive,
 } from '../utils/assetLibraryChrome';
 
-export type AssetLibraryTab = 'role' | 'model3d' | 'scene';
+export type AssetLibraryTab = 'role' | 'model3d' | 'scene' | 'digitalHuman';
 
 export type AssetLibraryViewMode = 'list' | 'gallery';
 
@@ -25,11 +27,14 @@ export interface AssetLibrarySidebarProps {
   onGalleryModeChange?: (wide: boolean) => void;
   characterListRefreshTrigger: number;
   sceneListRefreshTrigger: number;
+  digitalHumanListRefreshTrigger: number;
   onSelectCharacter?: (character: Character) => void;
   requestVoicePickFromCanvas?: () => Promise<{ url: string; label: string } | null>;
   requestViewSlotPickFromCanvas?: (slotIndex: number) => Promise<string | null>;
   requestSceneImagePickFromCanvas?: (role: 'normal' | 'display3d') => Promise<string | null>;
+  requestDigitalHumanVideoPickFromCanvas?: () => Promise<string | null>;
   onPlaceSceneToCanvas?: (scene: SceneLibraryItem) => void;
+  onPlaceDigitalHumanToCanvas?: (item: DigitalHumanLibraryItem) => void;
 }
 
 const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
@@ -39,11 +44,14 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   onGalleryModeChange,
   characterListRefreshTrigger,
   sceneListRefreshTrigger,
+  digitalHumanListRefreshTrigger,
   onSelectCharacter,
   requestVoicePickFromCanvas,
   requestViewSlotPickFromCanvas,
   requestSceneImagePickFromCanvas,
+  requestDigitalHumanVideoPickFromCanvas,
   onPlaceSceneToCanvas,
+  onPlaceDigitalHumanToCanvas,
 }) => {
   const { locale } = useAppLocale();
   const t = assetLibraryT(locale);
@@ -95,9 +103,20 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
         <SceneLibraryList
           viewMode={mode}
           isDarkMode={isDarkMode}
+          listActive={!isCollapsed && tab === 'scene'}
           refreshTrigger={sceneListRefreshTrigger}
           requestSceneImagePickFromCanvas={requestSceneImagePickFromCanvas}
           onPlaceSceneToCanvas={onPlaceSceneToCanvas}
+        />
+      )}
+      {tab === 'digitalHuman' && (
+        <DigitalHumanLibraryList
+          viewMode={mode}
+          isDarkMode={isDarkMode}
+          listActive={!isCollapsed && tab === 'digitalHuman'}
+          refreshTrigger={digitalHumanListRefreshTrigger}
+          requestVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
+          onPlaceToCanvas={onPlaceDigitalHumanToCanvas}
         />
       )}
     </>
@@ -107,12 +126,13 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
     <button
       type="button"
       onClick={() => setTab(id)}
-      className={`flex-1 px-1.5 py-1.5 rounded-full text-[11px] font-medium transition-all flex items-center justify-center gap-0.5 border whitespace-nowrap ${
+      title={label}
+      className={`min-w-0 px-1 py-1.5 rounded-full text-[10px] leading-tight font-medium transition-all flex flex-col items-center justify-center gap-0.5 border ${
         tab === id ? assetLibTabActive(isDarkMode, id) : assetLibTabInactive(isDarkMode)
       }`}
     >
       <Icon className="w-3.5 h-3.5 shrink-0" />
-      <span>{label}</span>
+      <span className="truncate w-full text-center">{label}</span>
     </button>
   );
 
@@ -148,6 +168,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           <ChevronRight className="w-5 h-5" />
         </button>
         {iconBtn('role', User, t.tabRole)}
+        {iconBtn('digitalHuman', ScanFace, t.tabDigitalHuman)}
         {iconBtn('scene', Mountain, t.tabScene)}
         {iconBtn('model3d', Box, t.tabModel3d)}
       </div>
@@ -156,12 +177,13 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
 
   const headerChrome = (
     <div
-      className={`p-3 border-b flex items-center gap-2 flex-shrink-0 ${
+      className={`p-2.5 border-b flex items-center gap-1.5 flex-shrink-0 ${
         isDarkMode ? 'border-white/10' : 'border-gray-300/30'
       }`}
     >
-      <div className="flex flex-1 min-w-0 gap-0.5">
+      <div className="grid grid-cols-4 gap-1 flex-1 min-w-0">
         {tabBtn('role', t.tabRole, User)}
+        {tabBtn('digitalHuman', t.tabDigitalHuman, ScanFace)}
         {tabBtn('scene', t.tabScene, Mountain)}
         {tabBtn('model3d', t.tabModel3d, Box)}
       </div>
@@ -205,9 +227,10 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
 
   return (
     <div
-      className={`h-full w-[280px] flex flex-col border-r ${
+      className={`h-full flex flex-col border-r ${
         isDarkMode ? 'apple-panel border-white/10' : 'apple-panel-light border-gray-300/30'
       }`}
+      style={{ width: ASSET_LIBRARY_SIDEBAR_WIDTH_PX }}
     >
       {headerChrome}
       <div className="flex-1 min-h-0 flex flex-col">{renderTabPanel('list')}</div>

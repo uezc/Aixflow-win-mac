@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Image, Video, User, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box } from 'lucide-react';
+import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { contextMenuLabelForType } from '../../i18n/contextMenuI18n';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../../config/sora2UiPolicy';
@@ -20,6 +20,7 @@ const baseMenuItems = [
   { type: 'image', icon: Image },
   { type: 'canvas-tool', icon: Palette },
   { type: 'video', icon: Video },
+  { type: 'heyGem', icon: UserRound },
   { type: 'videoSplice', icon: Film },
   { type: 'photoCollage', icon: Layers },
   { type: 'imageTo3d', icon: Box },

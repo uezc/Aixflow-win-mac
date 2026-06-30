@@ -2,7 +2,13 @@
 
 import { scratchTintClass, type ScratchColorId } from '../theme/scratchColors';
 
-export type AssetLibTabId = 'role' | 'scene' | 'model3d';
+/** 展开时资产库宽度（与 WorkspaceSidebar / FlowContent 小地图偏移同步） */
+export const ASSET_LIBRARY_SIDEBAR_WIDTH_PX = 320;
+export const ASSET_LIBRARY_SIDEBAR_COLLAPSED_WIDTH_PX = 48;
+/** 画布控件相对侧栏右缘的内边距 */
+export const ASSET_LIBRARY_CANVAS_GAP_PX = 23;
+
+export type AssetLibTabId = 'role' | 'scene' | 'model3d' | 'digitalHuman';
 
 export function assetLibBtnSecondary(isDarkMode: boolean, extra = '', scratch?: ScratchColorId) {
   const base = `nexflow-btn-secondary nexflow-btn-secondary-sm inline-flex items-center justify-center ${extra}`;
@@ -26,13 +32,10 @@ export function assetLibBtnIcon(isDarkMode: boolean, scratch?: ScratchColorId) {
   return assetLibBtnSecondary(isDarkMode, '!p-1.5 !min-w-0', isDarkMode ? undefined : scratch);
 }
 
-export function assetLibTabActive(isDarkMode: boolean, tab?: AssetLibTabId) {
-  if (!isDarkMode && tab) {
-    return `scratch-tab-active scratch-tab-active--${tab} px-1.5 py-1.5 rounded-full text-[11px] font-medium border shadow-sm flex items-center justify-center gap-0.5 whitespace-nowrap`;
-  }
+export function assetLibTabActive(isDarkMode: boolean, _tab?: AssetLibTabId) {
   return isDarkMode
-    ? 'bg-white/12 text-white border border-white/15 shadow-sm'
-    : 'bg-white text-gray-900 border border-gray-200/80 shadow-sm';
+    ? 'text-white bg-blue-500/12 border border-blue-400/65 shadow-sm'
+    : 'text-gray-900 bg-blue-50 border border-blue-500/75 shadow-sm';
 }
 
 export function assetLibTabInactive(isDarkMode: boolean) {
@@ -41,13 +44,21 @@ export function assetLibTabInactive(isDarkMode: boolean) {
     : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100/80 border border-transparent';
 }
 
-export function assetLibSelectionRing(isDarkMode: boolean, strong = false) {
-  if (!isDarkMode) {
-    return strong ? 'ring-2 ring-[var(--scratch-control)]/80' : 'ring-1 ring-[var(--scratch-control)]/70';
-  }
-  return strong
-    ? 'ring-2 ring-amber-400/70'
-    : 'ring-1 ring-amber-400/60';
+/** 资产库卡片选中：统一蓝色呼吸灯边框 */
+export function assetLibCardSelected(_isDarkMode: boolean): string {
+  return 'asset-lib-selection-breathe';
+}
+
+export function assetLibSelectionRing(isDarkMode: boolean, _strong = false) {
+  return assetLibCardSelected(isDarkMode);
+}
+
+export function assetLibListCardSelected(isDarkMode: boolean) {
+  return `${assetLibListCard(isDarkMode)} ${assetLibCardSelected(isDarkMode)}`;
+}
+
+export function assetLibGalleryCardSelected(isDarkMode: boolean) {
+  return assetLibCardSelected(isDarkMode);
 }
 
 export function assetLibMsgSuccess(isDarkMode: boolean) {
@@ -58,17 +69,6 @@ export function assetLibListCard(isDarkMode: boolean) {
   return isDarkMode
     ? 'nexflow-glass-panel border border-white/10 hover:border-sky-500/35'
     : 'bg-white hover:bg-gray-50 border border-gray-200 hover:border-[var(--scratch-motion)]/50';
-}
-
-export function assetLibListCardSelected(_isDarkMode: boolean) {
-  return 'asset-lib-card-selected bg-[#52525b] border border-[#3f3f46] shadow-sm';
-}
-
-export function assetLibGalleryCardSelected(isDarkMode: boolean) {
-  if (!isDarkMode) {
-    return 'border-[var(--scratch-looks)] bg-[var(--scratch-looks)]/10 ring-2 ring-[var(--scratch-looks)]/40';
-  }
-  return 'border-sky-500/55 bg-sky-500/10 ring-2 ring-sky-400/40';
 }
 
 export function assetLibAddDashed(isDarkMode: boolean) {
@@ -93,6 +93,21 @@ export function assetLibBtnDanger(isDarkMode: boolean, extra = '') {
     return assetLibBtnSecondary(isDarkMode, extra, 'myBlocks');
   }
   return `nexflow-btn-secondary nexflow-btn-secondary-sm inline-flex items-center justify-center ${extra} !border-red-400/35 !text-red-300 hover:!bg-red-500/15`.trim();
+}
+
+/** 资产库工具栏删除：未勾选素材为浅粉（图一），已勾选为深红（图二） */
+export function assetLibDeleteToolbarBtn(isDarkMode: boolean, hasSelection: boolean, extra = ''): string {
+  const base = `inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-colors disabled:pointer-events-none disabled:opacity-100 ${extra}`;
+  if (hasSelection) {
+    if (isDarkMode) {
+      return `${base} bg-red-500 text-white hover:bg-red-400 border border-red-400/50`;
+    }
+    return `${base} bg-[#D85C71] text-white hover:bg-[#C94F64] border border-[#C94F64]/40 shadow-sm`;
+  }
+  if (isDarkMode) {
+    return `${base} bg-red-500/22 text-white/75 border border-red-400/25`;
+  }
+  return `${base} bg-[#F8D7DA] text-white border border-[#F5C2C7]`;
 }
 
 /** 画布节点悬浮工具栏图标按钮（拼图 / 文本 / LLM 同款） */

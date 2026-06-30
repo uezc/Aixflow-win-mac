@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import { useViewportIntersection } from '../../hooks/useViewportIntersection';
 import { Handle, Position, NodeProps, useReactFlow, useStore } from 'reactflow';
 import { createPortal } from 'react-dom';
 import { Film, Plus, Play, Pause, Volume2, VolumeX, Video, Maximize2, Minimize2, Trash2, Download, RotateCcw, Scissors, ZoomIn, ZoomOut, Magnet, ChevronDown } from 'lucide-react';
@@ -29,6 +30,13 @@ import {
   WORKSPACE_HEADER_SELECTOR,
 } from '../../utils/workspaceChromeLayout';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
+import {
+  DEFAULT_SPLICE_PREVIEW_ASPECT_ID,
+  resolveSpliceExportDimensions,
+  resolveSplicePreviewAspectGroup,
+  VideoSpliceAspectRatioDropdown,
+} from './VideoSpliceAspectRatioDropdown';
+import { resolveCollage1080pDefaultSize } from './photoCollageAspectRatio';
 import {
   DEFAULT_VIDEO_TRACK_COUNT,
   DEFAULT_IMAGE_CLIP_DURATION_SEC,
@@ -97,7 +105,10 @@ export type VideoSpliceExportPayload = {
     videoTrackMuted: boolean[];
     audioTrackVolume: number[];
     audioTrackMuted: boolean[];
+    outputWidth?: number;
+    outputHeight?: number;
   };
+  previewAspectId?: string;
 };
 
 export interface VideoSpliceNodeData {
@@ -139,6 +150,11 @@ export interface VideoSpliceNodeData {
   audioTrackLeftSnap?: boolean[];
   /** 自动吸附：靠近其他素材边缘时吸附并显示对齐线，默认 true */
   autoSnap?: boolean;
+  /** 预览与导出画面比例（COLLAGE_ASPECT_GROUPS id，默认 16-9） */
+  previewAspectId?: string;
+  /** 与 previewAspectId 对应的导出分辨率（1080p 档） */
+  exportOutputWidth?: number;
+  exportOutputHeight?: number;
 }
 
 interface VideoSpliceNodeProps extends NodeProps<VideoSpliceNodeData> {
@@ -186,6 +202,27 @@ const SPLICE_TIMELINE_SCROLLBAR_THUMB_PX = 36;
 const SPLICE_TIMELINE_SCROLLBAR_PAD_PX = 10;
 const SPLICE_TIMELINE_SCROLLBAR_LANE_PX = SPLICE_TIMELINE_SCROLLBAR_THUMB_PX + SPLICE_TIMELINE_SCROLLBAR_PAD_PX;
 const SPLICE_EMPTY_PREVIEW_PX = 120;
+/** 预览视口固定 16:9，切换导出比例时主模块尺寸不变 */
+const SPLICE_PREVIEW_VIEWPORT_AR = 16 / 9;
+const splicePreviewCanvasBg = (isDarkMode: boolean) =>
+  isDarkMode ? 'bg-zinc-500' : 'bg-gray-400';
+const splicePreviewViewportBg = (isDarkMode: boolean) =>
+  isDarkMode ? 'bg-zinc-950' : 'bg-zinc-800/80';
+
+/** 有效画布：高度固定为视口高度，宽度 = 高度 × 比例（居中显示，超宽时由视口裁切） */
+function computeSplicePreviewCanvasSize(
+  viewportW: number,
+  viewportH: number,
+  rw: number,
+  rh: number,
+): { w: number; h: number } {
+  if (viewportH <= 0 || rw <= 0 || rh <= 0) {
+    return { w: Math.max(1, viewportW), h: Math.max(1, viewportH) };
+  }
+  const h = viewportH;
+  const w = Math.round((h * rw) / rh);
+  return { w: Math.max(1, w), h: Math.max(1, h) };
+}
 /** 播放头细线宽度 / 拖拽热区（中心对准时间坐标） */
 const PLAYHEAD_LINE_PX = 4;
 const PLAYHEAD_HIT_PX = 12;
@@ -1072,7 +1109,7 @@ const TimelineStackedVideoPreview: React.FC<{
   hasVideoLayer: boolean[];
   trackMuted: boolean[];
 }> = ({ trackCount, layerRefs, imageSrcs, hasVideoLayer, trackMuted }) => (
-  <div className="relative w-full h-full bg-black">
+  <div className="relative h-full w-full bg-transparent">
     {[...Array(trackCount).keys()].reverse().map((trackIdx) => {
       const zIndex = trackCount - trackIdx;
       const imgSrc = imageSrcs[trackIdx];
@@ -1489,6 +1526,10 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   );
   const audioRefsRef = useRef<(HTMLAudioElement | null)[]>([]);
   const previewHostRef = useRef<HTMLDivElement>(null);
+  const spliceOuterRef = useRef<HTMLDivElement>(null);
+  const isSpliceInViewport = useViewportIntersection(spliceOuterRef, '120px', 0.02);
+  const fullscreenPreviewViewportRef = useRef<HTMLDivElement>(null);
+  const [fullscreenPreviewViewport, setFullscreenPreviewViewport] = useState({ w: 800, h: 450 });
   const timelineRef = useRef<HTMLDivElement>(null);
   const timelineScrollbarRef = useRef<HTMLDivElement>(null);
   const fullscreenTimelineRef = useRef<HTMLDivElement>(null);
@@ -2949,10 +2990,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     if (!isPlaying) syncAudioToTime(currentTime);
   }, [isPlaying, currentTime, syncAudioToTime]);
 
-  // 暂停时截取当前帧；scrub 期间不截帧，避免静态图与实时 seek 冲突
+  // 暂停时截取当前帧；scrub 期间不截帧；离屏或窗口隐藏时不截帧（减轻 canvas 压力）
   useEffect(() => {
     if (isPlaying || !activeVideoClip || activeVideoClip.type !== 'video') return;
     if (playheadDragging || timelineScrubbing) return;
+    if (!isSpliceInViewport || document.visibilityState === 'hidden') return;
+
     const capture = () => {
       const v = getActiveVideo();
       if (v && v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
@@ -2963,15 +3006,23 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(v, 0, 0);
-            setPausedFrameDataUrl(canvas.toDataURL('image/jpeg', 0.9));
+            setPausedFrameDataUrl(canvas.toDataURL('image/jpeg', 0.82));
           }
         } catch (_) {}
       }
     };
-    capture();
-    const id = setInterval(capture, 300);
-    return () => clearInterval(id);
-  }, [isPlaying, activeVideoClip, currentTime, playheadDragging, timelineScrubbing, getActiveVideo]);
+
+    const timer = window.setTimeout(capture, 180);
+    return () => window.clearTimeout(timer);
+  }, [
+    isPlaying,
+    activeVideoClip,
+    currentTime,
+    playheadDragging,
+    timelineScrubbing,
+    getActiveVideo,
+    isSpliceInViewport,
+  ]);
 
   const seekTimelineAtClientX = useCallback(
     (clientX: number) => {
@@ -4059,8 +4110,62 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   ) : null;
 
   const timelinePreviewPane = hasTimelineVisual ? (
-    <div className="relative w-full h-full bg-black nexflow-splice-video-preview">{timelinePreviewInner}</div>
+    <div className="absolute inset-0 z-[1] overflow-hidden bg-transparent nexflow-splice-video-preview nodrag nopan">
+      {timelinePreviewInner}
+    </div>
   ) : null;
+
+  const renderPreviewCanvasContent = (emptyIconSize: 'sm' | 'lg') => {
+    const iconCls = emptyIconSize === 'lg' ? 'w-16 h-16' : 'w-12 h-12';
+    const textCls = emptyIconSize === 'lg' ? 'text-base' : 'text-sm';
+    if (timelinePreviewPane) return timelinePreviewPane;
+    if (activeImageClip) {
+      return <img src={activeImageClip.src} alt="" className="absolute inset-0 h-full w-full object-contain" />;
+    }
+    if (isFullscreen) {
+      return (
+        <div className={`flex h-full min-h-[120px] flex-col items-center justify-center gap-2 ${textMuted}`}>
+          <Film className={`${iconCls} opacity-50`} />
+          <span className={textCls}>{vs.fullscreenEditing}</span>
+        </div>
+      );
+    }
+    return (
+      <div className={`flex h-full min-h-[80px] flex-col items-center justify-center gap-2 ${textMuted}`}>
+        <Film className={`${iconCls} opacity-50`} />
+        <span className={textCls}>{vs.emptyAddClips}</span>
+      </div>
+    );
+  };
+
+  const renderAspectPreviewFrame = (
+    variant: 'node' | 'fullscreen',
+    canvasSize: { w: number; h: number },
+  ) => {
+    const badgeText = variant === 'fullscreen' ? 'text-xs' : 'text-[10px]';
+    const badgePad = variant === 'fullscreen' ? 'px-2 py-0.5' : 'px-1.5 py-0.5';
+    return (
+      <div
+        className={`relative shrink-0 overflow-hidden shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)] ${splicePreviewCanvasBg(!!isDarkMode)}`}
+        style={{
+          width: canvasSize.w,
+          height: canvasSize.h,
+          transition: 'width 0.32s cubic-bezier(0.22, 1, 0.36, 1)',
+        }}
+      >
+        {renderPreviewCanvasContent(variant === 'fullscreen' ? 'lg' : 'sm')}
+        <div className="pointer-events-none absolute inset-0 border border-black/20" aria-hidden />
+        <div
+          className={`pointer-events-none absolute top-1.5 right-1.5 z-[3] rounded-md border border-black/15 bg-black/55 ${badgePad} font-medium tracking-wide text-white/90 ${badgeText}`}
+        >
+          {previewAspectGroup.label}
+          <span className="ml-1 text-white/45">
+            {previewExportResolution[0]}×{previewExportResolution[1]}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   const [workspaceHeaderBottom, setWorkspaceHeaderBottom] = useState(0);
   useLayoutEffect(() => {
@@ -4095,15 +4200,19 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const buildExportPayload = useCallback((): VideoSpliceExportPayload => {
     const tracks = videoTracks.map((t) => t.filter((c) => c.type === 'video' || c.type === 'image'));
     const clips = tracks[0] ?? [];
+    const exportDims = resolveSpliceExportDimensions(data);
     return {
       videoTracks: tracks,
       clips,
       audioTracks,
+      previewAspectId: exportDims.aspectId,
       options: {
         videoTrackVolume: videoTrackVolumeList.map((v) => Math.min(2, (v ?? 1) * 2)),
         videoTrackMuted: videoTrackMutedList,
         audioTrackVolume: audioTrackVolume.map((v) => Math.min(2, (v ?? 1) * 2)),
         audioTrackMuted,
+        outputWidth: exportDims.width,
+        outputHeight: exportDims.height,
       },
     };
   }, [
@@ -4113,7 +4222,21 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     videoTrackMutedList,
     audioTrackVolume,
     audioTrackMuted,
+    data,
   ]);
+
+  const handlePreviewAspectSelect = useCallback(
+    (aspectId: string) => {
+      const aspectGroup = resolveSplicePreviewAspectGroup(aspectId);
+      const [exportWidth, exportHeight] = resolveCollage1080pDefaultSize(aspectGroup);
+      updateData({
+        previewAspectId: aspectId,
+        exportOutputWidth: exportWidth,
+        exportOutputHeight: exportHeight,
+      });
+    },
+    [updateData],
+  );
 
   const handleSaveToComputer = useCallback(async () => {
     const payload = buildExportPayload();
@@ -4144,6 +4267,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           videoTrackMuted: payload.options.videoTrackMuted[0] ?? false,
           audioTrackVolume: payload.options.audioTrackVolume,
           audioTrackMuted: payload.options.audioTrackMuted,
+          outputWidth: payload.options.outputWidth,
+          outputHeight: payload.options.outputHeight,
         },
       );
       if (res.success && res.videoPath) {
@@ -4495,8 +4620,45 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   };
 
   const nodeWidth = data?.width ?? 800;
+  const previewAspectId = data?.previewAspectId ?? DEFAULT_SPLICE_PREVIEW_ASPECT_ID;
+  const spliceExportDims = useMemo(() => resolveSpliceExportDimensions(data), [data]);
+  const previewAspectGroup = useMemo(
+    () => resolveSplicePreviewAspectGroup(previewAspectId),
+    [previewAspectId],
+  );
+  const previewExportResolution = useMemo(
+    () => [spliceExportDims.width, spliceExportDims.height] as const,
+    [spliceExportDims.width, spliceExportDims.height],
+  );
   const hasPreviewMedia = hasTimelineVisual || !!activeImageClip;
-  const previewHeightPx = hasPreviewMedia ? Math.round(nodeWidth * (9 / 16)) : SPLICE_EMPTY_PREVIEW_PX;
+  const previewHeightPx = hasPreviewMedia
+    ? Math.round(nodeWidth / SPLICE_PREVIEW_VIEWPORT_AR)
+    : SPLICE_EMPTY_PREVIEW_PX;
+  const nodePreviewCanvasSize = useMemo(
+    () =>
+      computeSplicePreviewCanvasSize(
+        nodeWidth,
+        previewHeightPx,
+        previewAspectGroup.rw,
+        previewAspectGroup.rh,
+      ),
+    [nodeWidth, previewHeightPx, previewAspectGroup.rw, previewAspectGroup.rh],
+  );
+  const fullscreenPreviewCanvasSize = useMemo(
+    () =>
+      computeSplicePreviewCanvasSize(
+        fullscreenPreviewViewport.w,
+        fullscreenPreviewViewport.h,
+        previewAspectGroup.rw,
+        previewAspectGroup.rh,
+      ),
+    [
+      fullscreenPreviewViewport.w,
+      fullscreenPreviewViewport.h,
+      previewAspectGroup.rw,
+      previewAspectGroup.rh,
+    ],
+  );
   const timelineContentHeight =
     RULER_HEIGHT + videoTracks.length * TRACK_HEIGHT + audioTracks.length * TRACK_HEIGHT;
   const timelineContentHeightFs =
@@ -4512,8 +4674,33 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     }
   }, [compactNodeHeight, data?.height, updateData]);
 
+  useEffect(() => {
+    if (!data?.previewAspectId || (data.exportOutputWidth && data.exportOutputHeight)) return;
+    const g = resolveSplicePreviewAspectGroup(data.previewAspectId);
+    const [w, h] = resolveCollage1080pDefaultSize(g);
+    updateData({ exportOutputWidth: w, exportOutputHeight: h });
+  }, [data?.previewAspectId, data?.exportOutputWidth, data?.exportOutputHeight, updateData]);
+
+  useLayoutEffect(() => {
+    if (!isFullscreen) return;
+    const el = fullscreenPreviewViewportRef.current;
+    if (!el) return;
+    const measure = () => {
+      setFullscreenPreviewViewport({ w: el.clientWidth, h: el.clientHeight });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [isFullscreen]);
+
   return (
     <div
+      ref={spliceOuterRef}
       data-id={id}
       className={`custom-node-container nexflow-splice-node group relative rounded-xl overflow-visible ${isPlaying ? 'nexflow-media-playing-glow' : ''}`}
       style={{
@@ -4533,6 +4720,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         <Film className={`w-4 h-4 ${uiFilmIcon}`} />
         <span className={`text-sm font-medium ${text}`}>{vs.title}</span>
         <div className="ml-auto flex items-center gap-2 nodrag nopan">
+          <VideoSpliceAspectRatioDropdown
+            selectedAspectId={previewAspectId}
+            isDarkMode={isDarkMode}
+            placement="down"
+            onSelect={handlePreviewAspectSelect}
+          />
           <button
             type="button"
             onClick={handleSaveToComputer}
@@ -4572,37 +4765,25 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         </div>
       </div>
 
-      {/* 播放区：固定比例高度，不 flex 撑满，避免节点底部留白 */}
+      {/* 播放区：视口固定 16:9，内部灰色画布随导出比例变化 */}
       <div className="flex flex-col flex-shrink-0 w-full">
         <div
           ref={previewHostRef}
-          className={`relative w-full flex shrink-0 items-center justify-center nopan overflow-hidden ${isDarkMode ? 'bg-black' : 'bg-black/90'}`}
-          style={
-            hasPreviewMedia
-              ? { aspectRatio: '16 / 9', width: '100%' }
-              : { height: SPLICE_EMPTY_PREVIEW_PX }
-          }
+          className={`relative flex w-full shrink-0 items-center justify-center nopan overflow-hidden ${splicePreviewViewportBg(!!isDarkMode)}`}
+          style={{
+            height: previewHeightPx,
+            width: '100%',
+            ...(hasPreviewMedia ? {} : { minHeight: SPLICE_EMPTY_PREVIEW_PX }),
+          }}
         >
-          {!isFullscreen && hasTimelineVisual && <div className="absolute inset-0 bg-black" aria-hidden />}
-          {!isFullscreen &&
-            !hasTimelineVisual &&
-            (activeImageClip ? (
-              <img src={activeImageClip.src} alt="" className="w-full h-full object-contain" />
-            ) : (
-              <div className={`flex flex-col items-center gap-2 ${textMuted}`}>
-                <Film className="w-12 h-12 opacity-50" />
-                <span className="text-sm">{vs.emptyAddClips}</span>
-              </div>
-            ))}
-          {isFullscreen && (
+          {!isFullscreen ? (
+            <div className="relative flex h-full w-full items-center justify-center">
+              {renderAspectPreviewFrame('node', nodePreviewCanvasSize)}
+            </div>
+          ) : (
             <div className={`flex flex-col items-center gap-2 ${textMuted}`}>
               <Film className="w-12 h-12 opacity-50" />
               <span className="text-sm">{vs.fullscreenEditing}</span>
-            </div>
-          )}
-          {!isFullscreen && hasTimelineVisual && (
-            <div className="absolute inset-0 z-[1] overflow-hidden bg-black nexflow-splice-video-preview nodrag nopan">
-              {timelinePreviewInner}
             </div>
           )}
           {/* 隐藏的音频轨道元素，用于混音播放 */}
@@ -5047,6 +5228,13 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                   <span className={`text-base font-medium ${text}`}>{vs.title}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  <VideoSpliceAspectRatioDropdown
+                    selectedAspectId={previewAspectId}
+                    isDarkMode={isDarkMode}
+                    md
+                    placement="down"
+                    onSelect={handlePreviewAspectSelect}
+                  />
                   <button
                     type="button"
                     onClick={handleSaveToComputer}
@@ -5086,17 +5274,14 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                 </div>
               </div>
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                {/* 全屏播放区 */}
-                <div className="relative flex items-center justify-center bg-black flex-1 min-h-[200px]">
-                  {timelinePreviewPane ??
-                    (activeImageClip ? (
-                      <img src={activeImageClip.src} alt="" className="w-full h-full object-contain" />
-                    ) : (
-                      <div className="flex flex-col items-center gap-2 text-white/60">
-                        <Film className="w-16 h-16 opacity-50" />
-                        <span className="text-base">{vs.emptyAddClips}</span>
-                      </div>
-                    ))}
+                {/* 全屏播放区：视口居中，内部灰色画布随导出比例变化 */}
+                <div
+                  ref={fullscreenPreviewViewportRef}
+                  className={`relative flex flex-1 min-h-0 items-center justify-center p-3 ${splicePreviewViewportBg(!!isDarkMode)}`}
+                >
+                  <div className="flex h-full w-full items-center justify-center">
+                    {renderAspectPreviewFrame('fullscreen', fullscreenPreviewCanvasSize)}
+                  </div>
                   <div
                     className="absolute bottom-4 left-4 right-4 flex items-center gap-3 z-[100] text-white text-sm font-mono"
                     style={{ pointerEvents: 'auto' }}

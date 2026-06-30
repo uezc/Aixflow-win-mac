@@ -112,6 +112,10 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  if (m === 'hey-gem') {
+    return joinKey('hey', 'gem', 'plus');
+  }
+
   if (m === 'kling-v2.6-pro') {
     let durNum;
     if (inp.duration === '10') durNum = 10;

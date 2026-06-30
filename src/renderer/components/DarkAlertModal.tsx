@@ -18,6 +18,8 @@ interface DarkAlertModalProps {
   size?: 'default' | 'lg' | 'double';
   /** loginShell：与登录页 nexflow-glass-panel 同系（账户/登录成功弹窗） */
   appearance?: 'default' | 'loginShell';
+  /** 主按钮文案（loginShell 等）；默认「确定」/ OK */
+  confirmLabel?: string;
   /** 覆盖最外层 z-index（全屏层如 z-[100001] 时需高于该层） */
   stackZClass?: string;
 }
@@ -32,6 +34,7 @@ export const DarkAlertModal: React.FC<DarkAlertModalProps> = ({
   size = 'default',
   appearance = 'default',
   stackZClass = DARK_MODAL_Z,
+  confirmLabel,
 }) => {
   const { locale } = useAppLocale();
   if (!open) return null;
@@ -42,7 +45,7 @@ export const DarkAlertModal: React.FC<DarkAlertModalProps> = ({
     message.includes('元宝不足') ||
     message.includes('余额不足') ||
     /insufficient|low balance|top up/i.test(message);
-  const okLabel = locale === 'en' ? 'OK' : '确定';
+  const okLabel = confirmLabel ?? (locale === 'en' ? 'OK' : '确定');
 
   if (isLoginShell) {
     return (

@@ -1,7 +1,7 @@
 /**
  * 官网安装包下载：Release 双区域（香港主源 + 北京副本）。
  * - latest.yml / latest-mac.yml
- * - Windows：优先 Aixflow-Windows-Offline-{version}.zip，否则 stub exe
+ * - Windows：优先 Aixflow-Windows-Setup-{version}.exe（在线安装，无需解压）；离线 zip 为备用
  *
  * 选源：VITE_DOWNLOAD_REGION=cn|hk|auto（默认 auto：先试北京，失败回退香港）
  * 可覆盖：VITE_RELEASE_CN_WIN_BASE / VITE_RELEASE_HK_WIN_BASE 等
@@ -122,15 +122,15 @@ async function resolveWindowsFromRegion(region: ReleaseDownloadRegion): Promise<
   if (!text) return null;
 
   const version = parseVersionFromLatestYml(text);
+  const fileName = parseInstallerFileNameFromLatestYml(text);
+  if (fileName) {
+    const stubUrl = buildObjectUrl(winBase, fileName);
+    if (await headObjectExists(stubUrl)) return stubUrl;
+  }
   if (version) {
     const offlineUrl = buildObjectUrl(winBase, `Aixflow-Windows-Offline-${version}.zip`);
     if (await headObjectExists(offlineUrl)) return offlineUrl;
-    return null;
   }
-  const fileName = parseInstallerFileNameFromLatestYml(text);
-  if (!fileName) return null;
-  const stubUrl = buildObjectUrl(winBase, fileName);
-  if (await headObjectExists(stubUrl)) return stubUrl;
   return null;
 }
 

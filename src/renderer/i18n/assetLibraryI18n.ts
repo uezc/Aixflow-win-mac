@@ -4,6 +4,7 @@ export type AssetLibraryStrings = {
   tabRole: string;
   tabModel3d: string;
   tabScene: string;
+  tabDigitalHuman: string;
   expandLibrary: string;
   collapseLibrary: string;
   galleryMode: string;
@@ -93,12 +94,47 @@ export type AssetLibraryStrings = {
   roleSaved: string;
   roleSaveFailed: string;
   roleAddFailed: string;
+  dhAdd: string;
+  dhAddTitle: string;
+  dhEditTitle: string;
+  dhEmpty: string;
+  dhDragHint: string;
+  dhDeleteSelected: string;
+  dhNickname: string;
+  dhNicknamePlaceholder: string;
+  dhReferenceVideo: string;
+  dhDriveAudio: string;
+  dhUploadVideo: string;
+  dhUploadVideoUnavailable: string;
+  dhUploadAudio: string;
+  dhPickFromCanvas: string;
+  dhPickVideoFromCanvas: string;
+  dhPickAudioFromCanvas: string;
+  dhNeedBothMedia: string;
+  dhNeedVideo: string;
+  dhDriveAudioOptional: string;
+  dhSaved: string;
+  dhSaveFailed: string;
+  dhPreviewAudio: string;
+  dhPlaceOnCanvas: string;
+  dhHasVideo: string;
+  dhHasAudio: string;
+  dhNoVideo: string;
+  dhNoAudio: string;
+  dhAudioSelected: string;
+  dhAudioReady: string;
+  dhModalPreviewAudio: string;
+  dhModalStopAudio: string;
+  dhHoverVideoPreview: string;
+  dhUntitled: string;
+  dhSaveNotReady: string;
 };
 
 const zh: AssetLibraryStrings = {
   tabRole: '角色',
   tabModel3d: '模型',
   tabScene: '场景',
+  tabDigitalHuman: '数字人',
   expandLibrary: '展开资产库',
   collapseLibrary: '收起资产库',
   galleryMode: '大窗口',
@@ -188,12 +224,47 @@ const zh: AssetLibraryStrings = {
   roleSaved: '已保存素材',
   roleSaveFailed: '保存失败',
   roleAddFailed: '添加角色失败',
+  dhAdd: '添加数字人',
+  dhAddTitle: '添加参考视频',
+  dhEditTitle: '编辑参考视频',
+  dhEmpty: '暂无数字人素材，请添加参考视频',
+  dhDragHint: '拖到画布创建视频模块',
+  dhDeleteSelected: '删除勾选的数字人素材',
+  dhNickname: '名称',
+  dhNicknamePlaceholder: '如：新娘、主播 A',
+  dhReferenceVideo: '参考视频（数字人形象）',
+  dhDriveAudio: '驱动音频',
+  dhUploadVideo: '本地上传',
+  dhUploadVideoUnavailable: '本地上传需在桌面版 Electron 中使用',
+  dhUploadAudio: '上传音频',
+  dhPickFromCanvas: '画布中选择',
+  dhPickVideoFromCanvas: '画布选视频',
+  dhPickAudioFromCanvas: '画布选音频',
+  dhNeedBothMedia: '请同时设置参考视频与驱动音频',
+  dhNeedVideo: '请设置参考视频',
+  dhDriveAudioOptional: '驱动音频（可选）',
+  dhSaved: '数字人素材已保存',
+  dhSaveFailed: '保存失败',
+  dhPreviewAudio: '试听驱动音频',
+  dhPlaceOnCanvas: '导入到画布（视频模块）',
+  dhHasVideo: '有视频',
+  dhHasAudio: '有音频',
+  dhNoVideo: '缺视频',
+  dhNoAudio: '缺音频',
+  dhAudioSelected: '已选择音频',
+  dhAudioReady: '驱动音频已添加',
+  dhModalPreviewAudio: '点击试听',
+  dhModalStopAudio: '点击停止',
+  dhHoverVideoPreview: '悬停预览参考视频',
+  dhUntitled: '未命名数字人',
+  dhSaveNotReady: '保存功能未就绪，请重新编译主进程并重启应用',
 };
 
 const en: AssetLibraryStrings = {
   tabRole: 'Characters',
   tabModel3d: 'Models',
   tabScene: 'Scenes',
+  tabDigitalHuman: 'Digital human',
   expandLibrary: 'Expand asset library',
   collapseLibrary: 'Collapse asset library',
   galleryMode: 'Gallery',
@@ -285,6 +356,40 @@ const en: AssetLibraryStrings = {
   roleSaved: 'Assets saved',
   roleSaveFailed: 'Save failed',
   roleAddFailed: 'Failed to add character',
+  dhAdd: 'Add digital human',
+  dhAddTitle: 'Add reference video',
+  dhEditTitle: 'Edit reference video',
+  dhEmpty: 'No digital human assets yet — add a reference video',
+  dhDragHint: 'Drag to canvas to create a video module',
+  dhDeleteSelected: 'Delete selected digital human assets',
+  dhNickname: 'Name',
+  dhNicknamePlaceholder: 'e.g. Host A',
+  dhReferenceVideo: 'Reference video (avatar)',
+  dhDriveAudio: 'Drive audio',
+  dhUploadVideo: 'Upload from disk',
+  dhUploadVideoUnavailable: 'Local upload requires the desktop Electron app',
+  dhUploadAudio: 'Upload audio',
+  dhPickFromCanvas: 'Pick from canvas',
+  dhPickVideoFromCanvas: 'Pick video on canvas',
+  dhPickAudioFromCanvas: 'Pick audio on canvas',
+  dhNeedBothMedia: 'Both reference video and drive audio are required',
+  dhNeedVideo: 'Reference video is required',
+  dhDriveAudioOptional: 'Drive audio (optional)',
+  dhSaved: 'Digital human assets saved',
+  dhSaveFailed: 'Save failed',
+  dhPreviewAudio: 'Preview drive audio',
+  dhPlaceOnCanvas: 'Place on canvas (video module)',
+  dhHasVideo: 'Video',
+  dhHasAudio: 'Audio',
+  dhNoVideo: 'No video',
+  dhNoAudio: 'No audio',
+  dhAudioSelected: 'Audio selected',
+  dhAudioReady: 'Drive audio added',
+  dhModalPreviewAudio: 'Tap to preview',
+  dhModalStopAudio: 'Tap to stop',
+  dhHoverVideoPreview: 'Hover to preview reference video',
+  dhUntitled: 'Untitled',
+  dhSaveNotReady: 'Save not ready — rebuild the main process and restart the app',
 };
 
 export function assetLibraryT(locale: AppLocale): AssetLibraryStrings {

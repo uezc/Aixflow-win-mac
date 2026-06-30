@@ -554,7 +554,11 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
                 }}
                 title={at.selectFileTitle}
                 aria-label={at.selectFileAria}
-                className={`px-2 py-1.5 rounded-lg text-xs font-medium flex-shrink-0 ${isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 hover:bg-gray-700/50' : 'bg-white border border-gray-300 hover:bg-gray-100'} outline-none focus:ring-2 focus:ring-green-500/50`}
+                className={`px-2 py-1.5 rounded-lg text-xs font-medium flex-shrink-0 transition-colors ${
+                  isDarkMode
+                    ? 'bg-blue-500/90 text-white border border-blue-400/55 hover:bg-blue-500'
+                    : 'bg-blue-500 text-white border border-blue-500 hover:bg-blue-600'
+                } outline-none focus:ring-2 focus:ring-blue-400/50`}
               >
                 {at.selectFileButton}
               </button>

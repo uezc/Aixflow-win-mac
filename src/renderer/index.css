@@ -1828,24 +1828,6 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
 .light-mode .scratch-tint--myBlocks,
 .light-mode .scratch-chrome-btn--myBlocks { background: var(--scratch-myblocks) !important; }
 
-.light-mode .scratch-tab-active--role {
-  background: var(--scratch-looks) !important;
-  border-color: rgba(102, 51, 204, 0.45) !important;
-  color: #ffffff !important;
-}
-
-.light-mode .scratch-tab-active--scene {
-  background: var(--scratch-events) !important;
-  border-color: rgba(204, 153, 0, 0.55) !important;
-  color: #1f2937 !important;
-}
-
-.light-mode .scratch-tab-active--model3d {
-  background: var(--scratch-sensing) !important;
-  border-color: rgba(46, 130, 163, 0.55) !important;
-  color: #ffffff !important;
-}
-
 .light-mode [data-nexflow-workspace-header] .apple-panel {
   background: #eef2f7 !important;
   border-color: rgba(148, 163, 184, 0.35) !important;
@@ -1855,10 +1837,42 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
   accent-color: var(--scratch-control);
 }
 
-/* 明亮 / 深色模式：角色列表选中卡深灰底 */
-.light-mode .asset-lib-card-selected,
-.dark-mode .asset-lib-card-selected {
-  background: #52525b !important;
-  border-color: #3f3f46 !important;
-  color: #f4f4f5;
+/* 资产库卡片选中：统一蓝色呼吸灯边框（仅选中卡片，标签页用静态高亮） */
+@keyframes asset-lib-selection-breathe {
+  0%,
+  100% {
+    border-color: rgba(76, 151, 255, 0.62);
+  }
+  50% {
+    border-color: rgba(10, 132, 255, 1);
+  }
 }
+
+.asset-lib-selection-breathe {
+  border-color: rgba(76, 151, 255, 0.85) !important;
+  animation: asset-lib-selection-breathe 2.2s ease-in-out infinite;
+  contain: layout style paint;
+  will-change: border-color;
+}
+
+/* 窗口不可见时暂停侧栏动画，减轻 GPU 合成压力 */
+:root[data-nexflow-window-hidden='true'] .asset-lib-selection-breathe {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .asset-lib-selection-breathe {
+    animation: none;
+    border-color: rgba(10, 132, 255, 0.95) !important;
+  }
+}
+
+.light-mode .asset-lib-selection-breathe {
+  background-color: rgba(76, 151, 255, 0.08) !important;
+}
+
+.dark-mode .asset-lib-selection-breathe,
+.apple-panel .asset-lib-selection-breathe {
+  background-color: rgba(76, 151, 255, 0.1) !important;
+}
+

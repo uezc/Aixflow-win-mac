@@ -53,7 +53,7 @@ export interface VideoPriceParams {
   /** WanAnimate 角色替换：与 buildVideoBillingModelId / VideoProvider 一致 */
   resolutionWanAnimate?: '720p' | '1080p';
   wanAnimateClipSec?: '5' | '8' | '10' | '15';
-  resolutionSeedance?: '720p' | '1080p';
+  resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
   durationSeedance?: '5' | '10' | '15';
   resolutionGeminiOmni?: '720p' | '1080p' | '4k';
   durationGeminiOmni?: '6' | '8' | '10';

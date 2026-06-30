@@ -43,11 +43,13 @@ const TEXTSPLIT_RIGHT_OFFSET = 8;
 const NODE_DEFAULT_FLOW_SIZE: Record<string, { w: number; h: number }> = {
   video: { w: 738.91, h: 422.22 },
   wanAnimate: { w: 738.91, h: 422.22 },
+  heyGem: { w: 738.91, h: 422.22 },
   image: { w: 369.46, h: 211.12 },
   text: { w: 369.46, h: 211.12 },
   llm: { w: 280, h: 160 },
   textSplit: { w: 240, h: 200 },
   character: { w: 624, h: 468 },
+  digitalHuman: { w: 624, h: 468 },
   audio: { w: 280, h: 160 },
 };
 

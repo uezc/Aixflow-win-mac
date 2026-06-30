@@ -35,11 +35,12 @@ import {
   normalizeLtx23DurationSec,
   normalizeSeedanceDurationSec,
   normalizeGeminiOmniDurationSec,
+  coerceSeedanceResolution,
 } from '../../utils/videoBillingSku.js';
 import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/fcBalanceError.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { fcForwardRequest } from '../../utils/fcForwardTask.js';
-import { getCloudAiBlockReason } from '../../utils/cloudAiGate.js';
+import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -74,7 +75,7 @@ type Wan26FlashDuration = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' |
 
 interface VideoInput {
   prompt: string;
-  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
   aspect_ratio?: '16:9' | '9:16' | '1:1' | '2:3' | '3:2';
   hd?: boolean;
   duration?: '5' | '10' | '15' | '25';
@@ -132,7 +133,7 @@ interface VideoInput {
   /** WanAnimate：node 250 数值（工作流侧参数） */
   wanAnimateClipSec?: '5' | '8' | '10' | '15';
   /** Seedance 2.0 Fast 多模态：分辨率 720p|1080p，时长 5|10|15 秒 */
-  resolutionSeedance?: '720p' | '1080p';
+  resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
   durationSeedance?: '5' | '10' | '15';
   /** Gemini Omni 图生视频：分辨率 720p|1080p|4k，时长 4|6|8|10 秒 */
   resolutionGeminiOmni?: '720p' | '1080p' | '4k';
@@ -801,9 +802,12 @@ export class VideoProvider extends BaseProvider {
       const images = resolveOriginalImageUrls(rawImages);
 
       const isWanAnimateModel = model === 'wan-animate';
+      const isHeyGemModel = model === 'hey-gem';
       const isGeminiOmniModel = model === 'gemini-omni';
       const isSeedanceFastModel = model === 'seedance-2.0-fast';
-      if (!isWanAnimateModel && !(prompt || '').trim()) {
+      const isSeedanceMiniModel = model === 'seedance-2.0-mini';
+      const isSeedanceModel = isSeedanceFastModel || isSeedanceMiniModel;
+      if (!isWanAnimateModel && !isHeyGemModel && !(prompt || '').trim()) {
         throw new Error('提示词是必需的');
       }
 
@@ -884,7 +888,7 @@ export class VideoProvider extends BaseProvider {
         isRhartV31ProSEModel ||
         isGrok3Model ||
         isGrok3StableModel ||
-        isSeedanceFastModel ||
+        isSeedanceModel ||
         isHailuo02Model ||
         isHailuo23Model ||
         isHailuo02I2vModel ||
@@ -899,7 +903,8 @@ export class VideoProvider extends BaseProvider {
           model === 'ltx-2.3-t2v' ||
           isLtx23HdrMultiModel ||
           isWanAnimateModel ||
-          isSeedanceFastModel ||
+          isHeyGemModel ||
+          isSeedanceModel ||
           isKlingModel ||
           isKlingVideoO1Model ||
           isKlingVideoO1I2vModel ||
@@ -955,6 +960,26 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: { error: 'WanAnimate（角色替换）需连接参考视频节点。' },
+          });
+          return;
+        }
+      }
+
+      // HeyGem 数字人：参考视频 + 驱动音频
+      if (isHeyGemModel) {
+        if (!String(inputReferenceVideoUrl || '').trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'HeyGem 数字人需连接参考视频节点。' },
+          });
+          return;
+        }
+        if (!inputAudioUrl || !inputAudioUrl.trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'HeyGem 数字人需连接音频节点。' },
           });
           return;
         }
@@ -1237,7 +1262,7 @@ export class VideoProvider extends BaseProvider {
 
       const cloudBlock = getCloudAiBlockReason();
       if (cloudBlock) {
-        onStatus({ nodeId, status: 'ERROR', payload: { error: cloudBlock } });
+        onStatus({ nodeId, status: 'ERROR', payload: buildCloudAiBlockedPayload() });
         return;
       }
       if (usesFcRunningHub) {
@@ -1286,6 +1311,7 @@ export class VideoProvider extends BaseProvider {
           'wan-animate',
           'gemini-omni',
           'seedance-2.0-fast',
+          'seedance-2.0-mini',
           'ltx-2.3-lipsync',
           'ltx-2.3-i2v', // LTX2.3 图生视频，仅 1 张
           'ltx-2.3-hdr-multi', // LTX2.3 高动态：背景 + 1–4 分镜
@@ -1301,11 +1327,11 @@ export class VideoProvider extends BaseProvider {
           'rh-video-start-end',
         ];
 
-        if (isSeedanceFastModel && imageCount > 9) {
+        if (isSeedanceModel && imageCount > 9) {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: 'Seedance 2.0 Fast 最多支持 9 张参考图，当前提供了 ' + imageCount + ' 张。' },
+            payload: { error: 'Seedance 最多支持 9 张参考图，当前提供了 ' + imageCount + ' 张。' },
           });
           return;
         }
@@ -1320,11 +1346,12 @@ export class VideoProvider extends BaseProvider {
         }
 
         if (isGeminiOmniModel) {
-          if (imageCount < 1 || imageCount > 3) {
+          const geminiImageCount = images.filter((img) => String(img || '').trim()).length;
+          if (geminiImageCount < 1 || geminiImageCount > 3) {
             onStatus({
               nodeId,
               status: 'ERROR',
-              payload: { error: `Gemini Omni 需要 1–3 张参考图，当前提供了 ${imageCount} 张。` },
+              payload: { error: `Gemini Omni 需要 1–3 张参考图，当前提供了 ${geminiImageCount} 张。` },
             });
             return;
           }
@@ -1353,8 +1380,8 @@ export class VideoProvider extends BaseProvider {
           return;
         }
         
-        // 根据图片数量验证模型：2 张图时可选首尾帧(fast-se/pro-se)或图生(rhart-v3.1-fast/海螺-02-图生)
-        if (imageCount === 2) {
+        // 根据图片数量验证模型：2 张图时可选首尾帧(fast-se/pro-se)或图生；Seedance 支持 1–9 张多参考图，不走此分支
+        if (imageCount === 2 && !isSeedanceModel) {
           const allowedForTwo =
             supportedFirstLastFrameModels.includes(model) ||
             model === 'rhart-v3.1-fast' ||
@@ -1363,19 +1390,18 @@ export class VideoProvider extends BaseProvider {
             model === 'rh-video-start-end' ||
             model === 'grok-3' ||
             model === 'grok-3-stable' ||
-            model === 'seedance-2.0-fast' ||
             model === 'gemini-omni';
           if (!allowedForTwo) {
             onStatus({
               nodeId,
               status: 'ERROR',
               payload: {
-                error: '2 张参考图时请选择支持首尾帧或图生的模型（如 Grok video3、Grok video3 plus、全能视频V3.1-fast、海螺-02-图生视频-标准等）。',
+                error: '2 张参考图时请选择支持首尾帧或多参考图的模型（如 Seedance 2.0 Mini、Grok video3、全能视频V3.1-fast 等）。',
               },
             });
             return;
           }
-        } else {
+        } else if (imageCount !== 2 || !isSeedanceModel) {
           if (!supportedImageToVideoModels.includes(model)) {
             onStatus({
               nodeId,
@@ -2133,6 +2159,132 @@ export class VideoProvider extends BaseProvider {
         }
       }
 
+      // HeyGem 数字人：RunningHub ai-app 2071200225913565185（参考视频 + 音频，plus 48G）
+      if (isHeyGemModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const RH_HEYGEM_APP_ID = '2071200225913565185';
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const ensureAudioRemoteHg = async (url: string): Promise<string> => {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            if (isOurOssOrCdnObjectUrl(url)) {
+              return preferDirectOssUrlForThirdPartyImageRef(url);
+            }
+            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+            const ct = res.headers['content-type'] || '';
+            const mimeType = ct.includes('wav') ? 'audio/wav' : ct.includes('ogg') ? 'audio/ogg' : ct.includes('m4a') ? 'audio/mp4' : 'audio/mpeg';
+            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+          }
+          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+            return this.uploadLocalAudioToOSS(url);
+          }
+          if (url.startsWith('data:audio/')) {
+            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+            const buf = Buffer.from(m ? m[2] : '', 'base64');
+            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+            return this.uploadAudioToOSS(buf, mime);
+          }
+          return url;
+        };
+
+        let videoUrlHg = '';
+        let audioUrlHg = '';
+        let heyGemChargedTaskId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 5, text: '正在上传参考视频与音频…' } });
+          videoUrlHg = await this.prepareWanAnimateVideoRemoteUrl(String(inputReferenceVideoUrl || '').trim());
+          audioUrlHg = await ensureAudioRemoteHg(inputAudioUrl!.trim());
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交 HeyGem 任务…' } });
+
+          const runPayloadHg = {
+            nodeInfoList: [
+              { nodeId: '1', fieldName: 'file', fieldValue: videoUrlHg, description: 'file' },
+              { nodeId: '4', fieldName: 'audio', fieldValue: audioUrlHg, description: 'audio' },
+            ],
+            instanceType: 'plus',
+            usePersonalQueue: 'false',
+          };
+
+          const fcBaseIdHg = randomUUID();
+          const runResHg = await rhPostChargeVideo(
+            `${RUN_BASE}/run/ai-app/${RH_HEYGEM_APP_ID}`,
+            runPayloadHg as Record<string, unknown>,
+            fcBaseIdHg,
+            { billingModelId: buildVideoBillingModelId('hey-gem', input as Record<string, unknown>) },
+          );
+          heyGemChargedTaskId = fcBaseIdHg;
+          const taskIdHg = runResHg?.taskId ?? runResHg?.task_id;
+          if (!taskIdHg) {
+            throw new Error(`提交失败：${formatRunningHubTaskError(runResHg ?? {}, '未返回 taskId')}`);
+          }
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskIdHg) },
+          });
+
+          const deadlineHg = Date.now() + POLL_DEADLINE_MS;
+          let lastProgressHg = 15;
+          let pollRoundHg = 0;
+          while (Date.now() < deadlineHg) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgressHg = Math.min(95, lastProgressHg + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgressHg, text: 'HeyGem 生成中…', taskId: String(taskIdHg) },
+            });
+            pollRoundHg += 1;
+            const queryResHg = await rhQueryPollVideo(String(taskIdHg), `${fcBaseIdHg}:poll:${pollRoundHg}`);
+            const stHg = queryResHg.status;
+            if (stHg === 'SUCCESS') {
+              const resultsHg = queryResHg.results as Array<{ url?: unknown; outputType?: unknown }> | undefined;
+              if (resultsHg && Array.isArray(resultsHg) && resultsHg.length > 0) {
+                const pickUrl = (it: { url?: unknown } | undefined): string => {
+                  if (!it) return '';
+                  if (typeof it.url === 'string') return it.url;
+                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
+                };
+                const mp4Item = resultsHg.find((it) => {
+                  const out = String(it?.outputType ?? '').trim().toLowerCase();
+                  const u = pickUrl(it).toLowerCase();
+                  return out === 'mp4' || u.endsWith('.mp4');
+                });
+                const bestItem = mp4Item || resultsHg[0];
+                const urlHg = pickUrl(bestItem);
+                if (urlHg) {
+                  onStatus({ nodeId, status: 'SUCCESS', payload: { url: urlHg, videoUrl: urlHg, originalVideoUrl: urlHg } });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (stHg === 'FAILED' || stHg === 'FAILURE') {
+              throw rhPollFailureError('HeyGem', queryResHg, String(taskIdHg));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(heyGemChargedTaskId, 'video', 'hey_gem_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'HeyGem 数字人生成失败'),
+          });
+          return;
+        }
+      }
+
       // Gemini Omni 图生视频：RunningHub ai-app 2067153261005721602（1–3 张参考图 + prompt）
       if (isGeminiOmniModel) {
         if (!getAliyunFcInitUserUrl().trim()) {
@@ -2143,7 +2295,7 @@ export class VideoProvider extends BaseProvider {
           });
           return;
         }
-        if (!Array.isArray(images) || images.length < 1) {
+        if (!Array.isArray(images) || images.filter((img) => String(img || '').trim()).length < 1) {
           onStatus({
             nodeId,
             status: 'ERROR',
@@ -2157,12 +2309,16 @@ export class VideoProvider extends BaseProvider {
         const POLL_DEADLINE_MS = 60 * 60 * 1000;
 
         const imageNodeIds = ['1', '2', '3'] as const;
+        const geminiImages = images
+          .map((img) => String(img || '').trim())
+          .filter(Boolean)
+          .slice(0, 3);
         let uploadedImageUrls: string[] = [];
         try {
           onStatus({ nodeId, status: 'START', payload: {} });
           onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 5, text: '正在上传参考图...' } });
           uploadedImageUrls = await Promise.all(
-            images.slice(0, 3).map((img) => this.processImageToOssUrl(img)),
+            geminiImages.map((img) => this.processImageToOssUrl(img)),
           );
         } catch (e: unknown) {
           onStatus({
@@ -2178,10 +2334,11 @@ export class VideoProvider extends BaseProvider {
         const durationVal = String(normalizeGeminiOmniDurationSec(inputDurationGeminiOmni, 6));
         const aspectVal = aspect_ratio === '9:16' ? '9:16' : '16:9';
 
-        const nodeInfoList: Array<Record<string, string>> = uploadedImageUrls.map((url, idx) => ({
-          nodeId: imageNodeIds[idx],
+        /** 始终写满 3 个参考图槽位，空位传 ''，避免 RH 工作流沿用上次任务的残留参考图 */
+        const nodeInfoList: Array<Record<string, string>> = imageNodeIds.map((nodeId, idx) => ({
+          nodeId,
           fieldName: 'image',
-          fieldValue: url,
+          fieldValue: uploadedImageUrls[idx] || '',
           description: 'image',
         }));
         nodeInfoList.push(
@@ -3138,9 +3295,9 @@ export class VideoProvider extends BaseProvider {
           '[视频生成] Grok video3（稳定版）参考图生视频 请求体:',
           JSON.stringify({ ...payload, imageUrls: imageUrlsG3s.map((u) => (u.length > 90 ? `${u.slice(0, 90)}…` : u)) }, null, 2),
         );
-      } else if (isSeedanceFastModel) {
-        // Seedance 2.0 Fast 多模态：/rhart-video/sparkvideo-2.0-fast/multimodal-video
-        const resVal = String(inputResolutionSeedance || '720p').toLowerCase() === '1080p' ? '1080p' : '720p';
+      } else if (isSeedanceModel) {
+        // Seedance 2.0 Fast / Mini 多模态：sparkvideo-2.0-{fast|mini}/multimodal-video
+        const resVal = coerceSeedanceResolution(inputResolutionSeedance, model);
         const durVal = String(normalizeSeedanceDurationSec(inputDurationSeedance, 10));
         const imageUrlsSd: string[] = [];
         for (const imageUrl of (images || []).slice(0, 9)) {
@@ -3187,27 +3344,67 @@ export class VideoProvider extends BaseProvider {
             imageUrlsSd.push(preferDirectOssUrlForThirdPartyImageRef(processed));
           }
         }
+
+        const ensureAudioRemoteSd = async (url: string): Promise<string> => {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            if (isOurOssOrCdnObjectUrl(url)) {
+              return preferDirectOssUrlForThirdPartyImageRef(url);
+            }
+            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+            const ct = res.headers['content-type'] || '';
+            const mimeType = ct.includes('wav') ? 'audio/wav' : ct.includes('ogg') ? 'audio/ogg' : ct.includes('m4a') ? 'audio/mp4' : 'audio/mpeg';
+            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+          }
+          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+            return this.uploadLocalAudioToOSS(url);
+          }
+          if (url.startsWith('data:audio/')) {
+            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+            const buf = Buffer.from(m ? m[2] : '', 'base64');
+            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+            return this.uploadAudioToOSS(buf, mime);
+          }
+          return url;
+        };
+
         const videoUrlsSd: string[] = [];
+        const refVideoSd = String(inputReferenceVideoUrl || '').trim();
+        if (isSeedanceMiniModel && refVideoSd) {
+          videoUrlsSd.push(await this.prepareWanAnimateVideoRemoteUrl(refVideoSd));
+        }
+
+        const audioUrlsSd: string[] = [];
+        const refAudioSd = String(inputAudioUrl || '').trim();
+        if (isSeedanceMiniModel && refAudioSd) {
+          audioUrlsSd.push(await ensureAudioRemoteSd(refAudioSd));
+        }
+
         payload = {
           prompt: String(prompt || '').trim(),
           resolution: resVal,
           duration: durVal,
           imageUrls: imageUrlsSd,
           videoUrls: videoUrlsSd,
-          audioUrls: [],
+          audioUrls: audioUrlsSd,
           generateAudio: true,
           ratio: 'adaptive',
           realPersonMode: true,
+          ...(isSeedanceMiniModel ? { conversionSlots: ['all'] as string[] } : {}),
           returnLastFrame: false,
           seed: -1,
         };
-        apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video/sparkvideo-2.0-fast/multimodal-video`;
+        apiEndpoint = isSeedanceMiniModel
+          ? `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video/sparkvideo-2.0-mini/multimodal-video`
+          : `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video/sparkvideo-2.0-fast/multimodal-video`;
+        const seedanceLabel = isSeedanceMiniModel ? 'Seedance 2.0 Mini' : 'Seedance 2.0 Fast';
         console.log(
-          '[视频生成] Seedance 2.0 Fast 多模态 请求体:',
+          `[视频生成] ${seedanceLabel} 多模态 请求体:`,
           JSON.stringify(
             {
               ...payload,
               imageUrls: imageUrlsSd.map((u) => (u.length > 90 ? `${u.slice(0, 90)}…` : u)),
+              videoUrls: videoUrlsSd.map((u) => (u.length > 90 ? `${u.slice(0, 90)}…` : u)),
+              audioUrls: audioUrlsSd.map((u) => (u.length > 90 ? `${u.slice(0, 90)}…` : u)),
             },
             null,
             2,
@@ -3842,7 +4039,7 @@ export class VideoProvider extends BaseProvider {
           console.log(`[视频生成] sora-2 图生视频：获取到 taskId: ${taskId}，已存储到状态中`);
           // 可以将 taskId 存储到 store 中，但通常通过 onStatus 回调传递给前端即可
         }
-      } else if (isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceFastModel || isSora2ProModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel) {
+      } else if (isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isSora2ProModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel) {
         taskId = d.taskId || d.task_id || d.data?.taskId || d.data?.task_id;
         videoUrl = d.results?.[0]?.url || d.data?.results?.[0]?.url || d.data?.output || d.url || d.data?.url;
       } else {
@@ -3855,7 +4052,7 @@ export class VideoProvider extends BaseProvider {
       }
 
       // 若首次响应即返回 FAILED（如系统繁忙 1011），立即发送 ERROR 并退出，避免进入轮询后进度条继续跑
-      const isRunningHubModel = !isSora2Core && (isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isSora2Model || isSora2ProModel || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceFastModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel);
+      const isRunningHubModel = !isSora2Core && (isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isSora2Model || isSora2ProModel || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel);
       if ((isRunningHubModel || isSora2Core) && (d.status === 'FAILED' || d.status === 'FAILURE')) {
         const failReason = d.fail_reason || d.errorMessage || d.error || d.message || '视频生成失败';
         const fullReason = d.errorCode ? `[错误码: ${d.errorCode}] ${failReason}` : failReason;
@@ -4040,14 +4237,14 @@ export class VideoProvider extends BaseProvider {
                 pollData.output ||
                 pollData.url;
               if (possibleVideoUrl) console.log(`[视频生成] Sora2 核心算力 - 提取到视频 URL: ${possibleVideoUrl}`);
-            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceFastModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateModel) {
+            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateModel) {
               const resultsArray = Array.isArray(pollData.results) ? pollData.results : pollData.data?.results;
               if (resultsArray && resultsArray.length > 0) {
                 possibleVideoUrl = this.firstRhMediaUrlFromResultItem(resultsArray[0]);
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.log(`[视频生成] ${name} - 从 results[0].url 提取到视频 URL: ${possibleVideoUrl}`);
               } else {
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.warn(`[视频生成] ${name} - 未找到视频 URL，完整响应:`, JSON.stringify(pollData, null, 2));
               }
             } else if (isKlingModel) {

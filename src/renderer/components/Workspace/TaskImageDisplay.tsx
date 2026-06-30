@@ -207,8 +207,12 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
       )}
       {inView && (
         <button
-          onClick={() => handlePreview()}
-          className={`absolute top-2 right-2 p-1.5 rounded-lg ${
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handlePreview();
+          }}
+          className={`absolute top-2 right-2 z-10 pointer-events-auto p-1.5 rounded-lg ${
             isDarkMode ? 'bg-black/50 hover:bg-black/70 text-white' : 'bg-white/80 hover:bg-white text-gray-700'
           } transition-colors`}
           title="预览"

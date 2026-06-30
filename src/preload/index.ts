@@ -433,13 +433,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     projectId: string | undefined,
     videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
     audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[] }
+    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
     ) => ipcRenderer.invoke('export-timeline-video', projectId, videoClips, audioTracks, options),
   exportTimelineVideoToProject: (
     projectId: string | undefined,
     videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
     audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[] }
+    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
   ) => ipcRenderer.invoke('export-timeline-video-to-project', projectId, videoClips, audioTracks, options),
 
   setSharpQueuePaused: (paused: boolean) =>
@@ -718,6 +718,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
       canceled?: boolean;
       error?: string;
     }>,
+
+  getDigitalHumans: () => ipcRenderer.invoke('get-digital-humans'),
+  registerDigitalHuman: (payload: {
+    nickname?: string;
+    videoUrl?: string;
+    audioUrl?: string;
+    posterUrl?: string;
+  }) => ipcRenderer.invoke('register-digital-human', payload),
+  updateDigitalHuman: (
+    itemId: string,
+    updates: { nickname?: string; videoUrl?: string; audioUrl?: string; posterUrl?: string },
+  ) => ipcRenderer.invoke('update-digital-human', itemId, updates),
+  deleteDigitalHumans: (itemIds: string[]) => ipcRenderer.invoke('delete-digital-humans', itemIds),
 
   // 上传视频到 OSS
   uploadVideoToOSS: (videoUrl: string) => ipcRenderer.invoke('upload-video-to-oss', videoUrl),

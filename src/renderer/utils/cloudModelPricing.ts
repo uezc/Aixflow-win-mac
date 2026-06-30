@@ -67,7 +67,13 @@ export function yuanbaoCostFromCloudRow(
 
 function pickRow(map: Record<string, NxModelConfigRow> | null | undefined, id: string): NxModelConfigRow | undefined {
   if (!map || !id) return undefined;
-  return map[id.trim()];
+  const t = id.trim();
+  if (map[t]) return map[t];
+  const lower = t.toLowerCase();
+  for (const k of Object.keys(map)) {
+    if (k.toLowerCase() === lower) return map[k];
+  }
+  return undefined;
 }
 
 /** 无云端行时：与 FC getFinalPrice 一致，零售价(CNY)→元宝（cnyRetailToYuanbaoInt，默认倍率 10） */
@@ -310,10 +316,11 @@ export function getNodeDisplayPrice(
         cloudMap,
       );
     }
-    if (nodeType === 'video' || nodeType === 'wanAnimate') {
+    if (nodeType === 'video' || nodeType === 'wanAnimate' || nodeType === 'heyGem') {
       const vd = {
         ...data,
-        model: nodeType === 'wanAnimate' ? 'wan-animate' : String(data.model || 'sora-2'),
+        model:
+          nodeType === 'wanAnimate' ? 'wan-animate' : nodeType === 'heyGem' ? 'hey-gem' : String(data.model || 'sora-2'),
       } as VideoPriceParams;
       return getVideoDisplayPrice(vd, cloudMap);
     }

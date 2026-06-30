@@ -1255,8 +1255,8 @@
         /**
          * Windows 下载逻辑（与 electron-updater / latest.yml / nsis-web 一致）：
          * 1) fetch latest.yml（cache: 'no-store'）；
-         * 2) 优先使用 OSS 上的 Aixflow-Windows-Offline-{version}.zip（离线傻瓜包，解压后 exe+7z 同目录）；
-         * 3) 若无离线 zip，则使用 yml 的 path: stub exe（在线安装，安装过程从 OSS 拉 .nsis.7z）。
+         * 2) 优先使用 latest.yml 的 stub exe（在线安装，安装过程从 OSS 拉 .nsis.7z，无需解压）；
+         * 3) 若无 stub exe，则回退 Aixflow-Windows-Offline-{version}.zip（离线包，需解压）。
          * OSS 须配置 CORS（GET/HEAD），否则 fetch 会被浏览器拦截。
          */
         const LATEST_YML_URL =
@@ -1800,18 +1800,23 @@
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const text = await res.text();
                 const version = parseVersionFromLatestYml(text);
+                const fileName = parseInstallerFileNameFromLatestYml(text);
+                if (fileName) {
+                    const stubUrl = buildWinInstallerObjectUrl(fileName);
+                    if (await ossObjectExists(stubUrl)) {
+                        console.info('[Aixflow] Windows 下载：在线 stub', fileName);
+                        return stubUrl;
+                    }
+                }
                 if (version) {
                     const offlineZip = 'Aixflow-Windows-Offline-' + version + '.zip';
                     const offlineUrl = buildWinInstallerObjectUrl(offlineZip);
                     if (await ossObjectExists(offlineUrl)) {
-                        console.info('[Aixflow] Windows 下载：离线包', offlineZip);
+                        console.info('[Aixflow] Windows 下载：离线包（备用）', offlineZip);
                         return offlineUrl;
                     }
                 }
-                const fileName = parseInstallerFileNameFromLatestYml(text);
-                if (!fileName) throw new Error('latest.yml 中无有效 path（.exe）');
-                console.info('[Aixflow] Windows 下载：在线 stub', fileName);
-                return buildWinInstallerObjectUrl(fileName);
+                throw new Error('latest.yml 中无有效 path（.exe）且离线 zip 不可用');
             } catch (e) {
                 console.warn('[Aixflow] 无法获取最新安装包链接:', e);
                 return '';

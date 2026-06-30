@@ -17,7 +17,7 @@ import { buildFcErrorPayload } from '../../utils/fcBalanceError.js';
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { preferDirectOssUrlForThirdPartyImageRef } from '../../config/ossConfig.js';
-import { getCloudAiBlockReason } from '../../utils/cloudAiGate.js';
+import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 import {
   imageRhPollSleepMs,
   rhQueryPollImage,
@@ -73,6 +73,58 @@ function extractImageUrlsFromRhPoll(queryResult: Record<string, unknown>): strin
   const relaxed = extractAllRunningHubImageUrlsFromPoll(queryResult, { relaxed: true });
   if (relaxed.length > 0) return relaxed;
   return extractImageUrlsFromResults(queryResult.results);
+}
+
+/** 多图结果（如 MJ V7 四宫格）逐张落盘，避免仅首张本地化后 outputImages 被压成单张 */
+async function downloadRhOutputImagesToLocal(
+  outputImageUrls: string[],
+  primaryRemoteUrl: string,
+  meta: {
+    nodeId: string;
+    nodeTitle: string;
+    projectId?: string;
+    prompt: string;
+    model: string;
+  },
+): Promise<{ finalImageUrl: string; outputImages: string[]; localPath?: string }> {
+  const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
+  const sourceUrls = outputImageUrls.length > 0 ? outputImageUrls : [primaryRemoteUrl].filter(Boolean);
+  const finalList: string[] = [];
+  let localPath: string | undefined;
+
+  for (let i = 0; i < sourceUrls.length; i++) {
+    const url = sourceUrls[i];
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      try {
+        const downloadedPath = await autoDownloadResource(url, 'image', {
+          resourceType: 'image',
+          nodeId: meta.nodeId,
+          nodeTitle: meta.nodeTitle,
+          projectId: meta.projectId,
+          prompt: meta.prompt,
+          model: meta.model,
+        });
+        if (downloadedPath) {
+          finalList.push(`local-resource://${downloadedPath.replace(/\\/g, '/')}`);
+          if (i === 0) localPath = downloadedPath;
+        } else {
+          finalList.push(url);
+        }
+      } catch (downloadError) {
+        console.error(`[图片生成] 多图第 ${i + 1} 张自动下载失败:`, downloadError);
+        finalList.push(url);
+      }
+    } else {
+      finalList.push(url);
+    }
+  }
+
+  const finalImageUrl = finalList[0] || primaryRemoteUrl;
+  return {
+    finalImageUrl,
+    outputImages: finalList.length > 0 ? finalList : [primaryRemoteUrl].filter(Boolean),
+    localPath,
+  };
 }
 
 export class ImageProvider extends BaseProvider {
@@ -221,7 +273,7 @@ export class ImageProvider extends BaseProvider {
     
     const cloudBlock = getCloudAiBlockReason();
     if (cloudBlock) {
-      onStatus({ nodeId, status: 'ERROR', payload: { error: cloudBlock } });
+      onStatus({ nodeId, status: 'ERROR', payload: buildCloudAiBlockedPayload() });
       return;
     }
     if (!getAliyunFcInitUserUrl().trim()) {
@@ -806,43 +858,31 @@ export class ImageProvider extends BaseProvider {
           throw new Error('任务超时：超过最大轮询次数');
         }
         
-        // 自动下载并保存图片到本地
+        // 自动下载并保存图片到本地（多图时逐张落盘）
         let localPath: string | undefined;
         let finalImageUrl = imageUrl;
-        
+        let finalOutputImages = outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean);
+
         if (imageUrl && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
           try {
-            // 自动下载图片到本地
-            const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
-            // 从 input 中获取项目 ID 和节点标题（如果存在）
             const projectId = (input as any)?.projectId;
             const nodeTitle = (input as any)?.nodeTitle || 'image';
-            
-            const downloadedPath = await autoDownloadResource(
+            const downloaded = await downloadRhOutputImagesToLocal(
+              outputImageUrls,
               imageUrl,
-              'image',
-              {
-                resourceType: 'image',
-                nodeId: nodeId,
-                nodeTitle: nodeTitle,
-                projectId: projectId,
-                prompt: prompt,
-                model: model,
-              }
+              { nodeId, nodeTitle, projectId, prompt, model },
             );
-            
-            if (downloadedPath) {
-              localPath = downloadedPath;
-              // 使用本地路径作为最终 URL
-              finalImageUrl = `local-resource://${downloadedPath.replace(/\\/g, '/')}`;
+            finalImageUrl = downloaded.finalImageUrl;
+            finalOutputImages = downloaded.outputImages;
+            localPath = downloaded.localPath;
+            if (localPath) {
               console.log(`[图片生成] 图片已自动下载到本地: ${localPath}`);
             }
           } catch (downloadError) {
             console.error(`[图片生成] 自动下载图片失败:`, downloadError);
-            // 下载失败不影响图片显示，继续使用远程 URL
           }
         }
-        
+
         if (perfForwardDoneI2I > 0) {
           const now = Date.now();
           const createMs = (perfCreateDoneI2I || perfForwardDoneI2I) - perfStartI2I;
@@ -861,7 +901,7 @@ export class ImageProvider extends BaseProvider {
           payload: {
             imageUrl: finalImageUrl, // 优先使用本地路径
             originalImageUrl: imageUrl, // 保存原始远程 URL
-            outputImages: outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean),
+            outputImages: finalOutputImages,
             originalImageUrls: outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean),
             localPath: localPath, // 传递本地路径
             progress: 100, // 设置为 100% 表示完成
@@ -1305,40 +1345,28 @@ export class ImageProvider extends BaseProvider {
         throw new Error('任务超时：超过最大轮询次数');
       }
 
-      // 自动下载并保存图片到本地
+      // 自动下载并保存图片到本地（多图时逐张落盘）
       let localPath: string | undefined;
       let finalImageUrl = imageUrl;
+      let finalOutputImages = outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean);
 
       if (imageUrl && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
         try {
-          // 自动下载图片到本地
-          const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
-          // 从 input 中获取项目 ID 和节点标题（如果存在）
           const projectId = (input as any)?.projectId;
           const nodeTitle = (input as any)?.nodeTitle || 'image';
-          
-          const downloadedPath = await autoDownloadResource(
+          const downloaded = await downloadRhOutputImagesToLocal(
+            outputImageUrls,
             imageUrl,
-            'image',
-            {
-              resourceType: 'image',
-              nodeId: nodeId,
-              nodeTitle: nodeTitle,
-              projectId: projectId,
-              prompt: prompt,
-              model: model,
-            }
+            { nodeId, nodeTitle, projectId, prompt, model },
           );
-          
-          if (downloadedPath) {
-            localPath = downloadedPath;
-            // 使用本地路径作为最终 URL
-            finalImageUrl = `local-resource://${downloadedPath.replace(/\\/g, '/')}`;
+          finalImageUrl = downloaded.finalImageUrl;
+          finalOutputImages = downloaded.outputImages;
+          localPath = downloaded.localPath;
+          if (localPath) {
             console.log(`[图片生成] 图片已自动下载到本地: ${localPath}`);
           }
         } catch (downloadError) {
           console.error(`[图片生成] 自动下载图片失败:`, downloadError);
-          // 下载失败不影响图片显示，继续使用远程 URL
         }
       }
       
@@ -1358,7 +1386,7 @@ export class ImageProvider extends BaseProvider {
         payload: {
           imageUrl: finalImageUrl, // 优先使用本地路径
           originalImageUrl: imageUrl, // 保存原始远程 URL
-          outputImages: outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean),
+          outputImages: finalOutputImages,
           originalImageUrls: outputImageUrls.length > 0 ? outputImageUrls : [imageUrl].filter(Boolean),
           localPath: localPath, // 传递本地路径
           progress: 100, // 设置为 100% 表示完成

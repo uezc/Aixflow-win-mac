@@ -173,6 +173,64 @@ export function sceneDisplay3dImageUrl(scene: SceneLibraryItem): string {
 /** 从场景库拖到画布 */
 export const NEXFLOW_SCENE_DRAG_MIME = 'application/x-nexflow-scene';
 
+/** 数字人资产库条目：HeyGem 参考视频 + 驱动音频 */
+export interface DigitalHumanLibraryItem {
+  id: string;
+  nickname: string;
+  name: string;
+  createdAt: number;
+  /** 列表缩略图（视频 poster，可选） */
+  poster?: string;
+  localPosterPath?: string;
+  /** 数字人参考视频 */
+  videoUrl?: string;
+  localVideoPath?: string;
+  originalVideoUrl?: string;
+  /** 驱动音频 */
+  audioUrl?: string;
+  localAudioPath?: string;
+  originalAudioUrl?: string;
+}
+
+function digitalHumanMediaUrlFromPaths(
+  url?: string,
+  localPath?: string,
+  remoteFallback?: string,
+): string {
+  const lp = (localPath || '').trim();
+  if (lp && pathLooksAbsolute(lp)) {
+    const normalized = lp.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
+    return `local-resource://${normalized}`;
+  }
+  const u = (url || '').trim();
+  if (isLoadableMediaUrl(u)) return u;
+  const remote = (remoteFallback || '').trim();
+  if (isLoadableMediaUrl(remote)) return remote;
+  return '';
+}
+
+/** 数字人库参考视频 URL */
+export function digitalHumanVideoUrl(item: DigitalHumanLibraryItem): string {
+  return digitalHumanMediaUrlFromPaths(item.videoUrl, item.localVideoPath, item.originalVideoUrl);
+}
+
+/** 数字人库驱动音频 URL */
+export function digitalHumanAudioUrl(item: DigitalHumanLibraryItem): string {
+  return digitalHumanMediaUrlFromPaths(item.audioUrl, item.localAudioPath, item.originalAudioUrl);
+}
+
+/** 数字人库列表缩略图 */
+export function digitalHumanPosterUrl(item: DigitalHumanLibraryItem): string {
+  const poster = digitalHumanMediaUrlFromPaths(item.poster, item.localPosterPath);
+  if (poster) return poster;
+  const video = digitalHumanVideoUrl(item);
+  if (video && /\.(mp4|webm|mov)(\?|$)/i.test(video)) return video;
+  return '';
+}
+
+/** 从数字人库拖到画布 */
+export const NEXFLOW_DIGITAL_HUMAN_DRAG_MIME = 'application/x-nexflow-digital-human';
+
 /** 解析角色参考音 URL（角色列表试听 / 拖入画布与主进程 local-resource 规则一致） */
 export function resolveCharacterVoiceUrlForDrag(character: Character): string | null {
   if (character.localVoicePath) {

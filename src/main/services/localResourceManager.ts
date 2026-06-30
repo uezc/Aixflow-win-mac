@@ -1556,7 +1556,7 @@ export class LocalResourceManager {
     videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>,
     audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
     outputPath: string,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[] }
+    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
   ): Promise<{ videoPath: string; hasAudio: boolean }> {
     const hasFfmpeg = await ensureFfmpegAvailable();
     if (!hasFfmpeg) {
@@ -1578,7 +1578,9 @@ export class LocalResourceManager {
       const sortedClips = [...videoClips].filter((c) => c.type === 'video' || c.type === 'image').sort((a, b) => a.startTime - b.startTime);
       if (sortedClips.length === 0) throw new Error('没有可导出的视频或图片素材');
       const ffmpegBin = resolveFfmpegPath();
-      const scaleFilter = 'scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p';
+      const outW = Math.max(2, Math.round(Number(options?.outputWidth) || 1280));
+      const outH = Math.max(2, Math.round(Number(options?.outputHeight) || 720));
+      const scaleFilter = `scale=${outW}:${outH}:force_original_aspect_ratio=decrease,pad=${outW}:${outH}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`;
       const videoTrackMuted = options?.videoTrackMuted ?? false;
       const videoTrackVolume = Math.max(0, Math.min(2, options?.videoTrackVolume ?? 1));
       const audioTrackMuted = options?.audioTrackMuted ?? [];

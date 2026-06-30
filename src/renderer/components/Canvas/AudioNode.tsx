@@ -23,6 +23,7 @@ import {
 } from '../../hooks/useReferenceMicRecording';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../../utils/audioSongModels';
 import { setAudioNodePlaying } from '../../utils/audioNodePlaybackStore';
+import { dispatchCanvasPickNode, isCanvasPickVoiceTarget } from '../../utils/canvasPickStore';
 
 interface AudioNodeData {
   width?: number;
@@ -1368,6 +1369,13 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
         }}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
+        onClickCapture={() => {
+          if (!isCanvasPickVoiceTarget()) return;
+          const pickable =
+            !!(outputAudio || data?.outputAudio || data?.originalAudioUrl || data?.referenceAudioUrl);
+          if (!pickable) return;
+          dispatchCanvasPickNode(id);
+        }}
       >
         <Handle type="target" position={Position.Left} id="audio-input" className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
         <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />

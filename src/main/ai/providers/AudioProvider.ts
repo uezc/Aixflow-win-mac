@@ -13,7 +13,7 @@ import { rhPostChargeAudio, rhQueryPollAudio } from '../../utils/runningHubFcHel
 import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/fcBalanceError.js';
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
-import { getCloudAiBlockReason } from '../../utils/cloudAiGate.js';
+import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 
 /**
  * 轮询 FC→RunningHub 时：525（CDN SSL）、网络抖动等应重试，避免「第三方已成功但本地误判失败并退款」。
@@ -134,7 +134,7 @@ export class AudioProvider extends BaseProvider {
 
       const cloudBlock = getCloudAiBlockReason();
       if (cloudBlock) {
-        onStatus({ nodeId, status: 'ERROR', payload: { error: cloudBlock } });
+        onStatus({ nodeId, status: 'ERROR', payload: buildCloudAiBlockedPayload() });
         return;
       }
       if (!getAliyunFcInitUserUrl().trim()) {

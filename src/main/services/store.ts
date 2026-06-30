@@ -48,6 +48,21 @@ export const store = new Store({
       viewImages?: string[]; // 四视图槽位 URL（最多 4 项，空串占位）
       localViewPaths?: string[]; // 四视图本地文件（删除角色时清理）
     }>,
+    /** 数字人资产库（HeyGem 参考视频 + 可选驱动音频） */
+    digitalHumanLibrary: [] as Array<{
+      id: string;
+      nickname: string;
+      name: string;
+      createdAt: number;
+      poster?: string;
+      localPosterPath?: string;
+      videoUrl?: string;
+      localVideoPath?: string;
+      originalVideoUrl?: string;
+      audioUrl?: string;
+      localAudioPath?: string;
+      originalAudioUrl?: string;
+    }>,
     // 阿里云 OSS 配置（可选，优先使用环境变量）
     ossAccessKeyId: '',
     ossAccessKeySecret: '',

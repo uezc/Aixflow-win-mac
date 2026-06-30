@@ -19,6 +19,8 @@ type InteractionSnapshot = {
   hoveredVideoNodeId: string | null;
   /** 全局单例播放：仅此 ID 挂载 video 并播放，其余显示 poster/缓存帧并 releaseVideo */
   activeVideoNodeId: string | null;
+  /** 数字人节点参考视频：全局仅一个实例解码/播放，避免多路并发拖慢帧率 */
+  activeDigitalHumanVideoNodeId: string | null;
   /** VideoNode 使用的视口快照，交互期间冻结，避免订阅 transform 触发重渲染 */
   videoViewportSnapshot: { x: number; y: number; zoom: number };
   /** 正在退出到项目列表，Workspace 停止渲染重型节点，仅保留加载动画 */
@@ -41,12 +43,14 @@ let snapshot: InteractionSnapshot = {
   emergencyUnloadCount: 0,
   hoveredVideoNodeId: null,
   activeVideoNodeId: null,
+  activeDigitalHumanVideoNodeId: null,
   videoViewportSnapshot: { x: 0, y: 0, zoom: 1 },
   isExiting: false,
   videoSpliceFullscreenNodeId: null,
 };
 
 let activeVideoClearTimer: ReturnType<typeof setTimeout> | null = null;
+let activeDigitalHumanVideoClearTimer: ReturnType<typeof setTimeout> | null = null;
 const ACTIVE_VIDEO_LEAVE_DEBOUNCE_MS = 100;
 
 // 拖拽/缩放期间速度值会高频变化；这里做全局限流，避免每帧广播导致全节点重渲染。
@@ -152,6 +156,9 @@ export function setActiveVideoNodeId(nodeId: string | null) {
     activeVideoClearTimer = null;
   }
   if (snapshot.activeVideoNodeId === nodeId) return;
+  if (nodeId != null && snapshot.activeDigitalHumanVideoNodeId != null) {
+    snapshot = { ...snapshot, activeDigitalHumanVideoNodeId: null };
+  }
   snapshot = { ...snapshot, activeVideoNodeId: nodeId };
   emit();
 }
@@ -165,6 +172,32 @@ export function scheduleClearActiveVideoNodeId() {
     if (snapshot.isGlobalInteracting || snapshot.isVisualInteractionLocked) return;
     if (snapshot.activeVideoNodeId !== null) {
       snapshot = { ...snapshot, activeVideoNodeId: null };
+      emit();
+    }
+  }, ACTIVE_VIDEO_LEAVE_DEBOUNCE_MS);
+}
+
+/** 数字人参考视频：全局单例播放，避免画布多节点同时解码 */
+export function setActiveDigitalHumanVideoNodeId(nodeId: string | null) {
+  if (activeDigitalHumanVideoClearTimer) {
+    clearTimeout(activeDigitalHumanVideoClearTimer);
+    activeDigitalHumanVideoClearTimer = null;
+  }
+  if (snapshot.activeDigitalHumanVideoNodeId === nodeId) return;
+  if (nodeId != null && snapshot.activeVideoNodeId != null) {
+    snapshot = { ...snapshot, activeVideoNodeId: null };
+  }
+  snapshot = { ...snapshot, activeDigitalHumanVideoNodeId: nodeId };
+  emit();
+}
+
+export function scheduleClearActiveDigitalHumanVideoNodeId() {
+  if (activeDigitalHumanVideoClearTimer) return;
+  activeDigitalHumanVideoClearTimer = setTimeout(() => {
+    activeDigitalHumanVideoClearTimer = null;
+    if (snapshot.isGlobalInteracting || snapshot.isVisualInteractionLocked) return;
+    if (snapshot.activeDigitalHumanVideoNodeId !== null) {
+      snapshot = { ...snapshot, activeDigitalHumanVideoNodeId: null };
       emit();
     }
   }, ACTIVE_VIDEO_LEAVE_DEBOUNCE_MS);

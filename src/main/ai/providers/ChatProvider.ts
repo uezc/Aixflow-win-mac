@@ -14,7 +14,7 @@ import { callFCChat } from '../../ai-provider.js';
 import { buildFcErrorPayload } from '../../utils/fcBalanceError.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { runJoyCaptionTwoViaFc } from '../../services/runningHubAiAppFc.js';
-import { getCloudAiBlockReason } from '../../utils/cloudAiGate.js';
+import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -93,7 +93,7 @@ export class ChatProvider extends BaseProvider {
 
     const cloudBlock = getCloudAiBlockReason();
     if (cloudBlock) {
-      onStatus({ nodeId, status: 'ERROR', payload: { error: cloudBlock } });
+      onStatus({ nodeId, status: 'ERROR', payload: buildCloudAiBlockedPayload() });
       return;
     }
 

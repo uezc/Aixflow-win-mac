@@ -112,7 +112,7 @@ async function loadNxModelConfigMapForBilling(dbModule) {
   const map = Object.create(null);
   for (const r of rows || []) {
     if (r && typeof r === 'object' && r.model_id != null) {
-      const id = String(r.model_id).trim();
+      const id = String(r.model_id).trim().toLowerCase();
       if (id) map[id] = r;
     }
   }
@@ -940,7 +940,17 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
 
   let cost;
   try {
-    cost = getFinalPrice(modelId, { taskType: fwdTaskType, nodeData: bodyObj, modelConfigMap });
+    const billingNodeData =
+      bodyObj && typeof bodyObj === 'object' && !Array.isArray(bodyObj) ? { ...bodyObj } : {};
+    if (fwdTaskType === 'video') {
+      const midNorm = String(modelId || '')
+        .trim()
+        .toLowerCase();
+      if (midNorm === 'hey-gem-plus' && !billingNodeData.model) {
+        billingNodeData.model = 'hey-gem';
+      }
+    }
+    cost = getFinalPrice(modelId, { taskType: fwdTaskType, nodeData: billingNodeData, modelConfigMap });
   } catch (e) {
     if (isModelNotPricedError(e)) {
       const err = new Error('该模型暂未上线或定价错误');

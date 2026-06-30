@@ -5,9 +5,9 @@ import { MusicPlayer } from './MusicPlayer';
 
 /** 视频/音频懒挂载：仅进入视口时渲染，减轻任务列表过多时的内存与渲染压力 */
 export const TaskMediaPreview: React.FC<{
-  task: { taskType?: string; videoUrl?: string; audioUrl?: string };
+  task: { taskType?: string; videoUrl?: string; audioUrl?: string; nodeId?: string };
   isDarkMode: boolean;
-  onPreviewVideo: (url: string) => void;
+  onPreviewVideo: (url: string, nodeId?: string) => void;
   onPreviewAudio: (url: string) => void;
 }> = ({ task, isDarkMode, onPreviewVideo, onPreviewAudio }) => {
   const [inView, setInView] = React.useState(false);
@@ -50,8 +50,12 @@ export const TaskMediaPreview: React.FC<{
             onClick={() => onPreviewVideo(task.videoUrl!)}
           />
           <button
-            onClick={() => onPreviewVideo(task.videoUrl!)}
-            className={`absolute top-2 right-2 nexflow-btn-secondary nexflow-btn-secondary-sm !p-1.5 ${
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreviewVideo(task.videoUrl!, task.nodeId);
+            }}
+            className={`absolute top-2 right-2 z-10 pointer-events-auto nexflow-btn-secondary nexflow-btn-secondary-sm !p-1.5 ${
               isDarkMode ? '' : '!border-gray-300/80 !bg-white/95 !text-gray-700 hover:!bg-gray-50'
             }`}
             title="预览"

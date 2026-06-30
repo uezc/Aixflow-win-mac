@@ -561,7 +561,8 @@ function nxModelRowToYuanbao(row, quantity) {
  */
 function tryNxModelConfigById(map, modelId, quantity = 1) {
   if (!map || typeof map !== 'object' || !modelId) return null;
-  const row = map[String(modelId).trim()];
+  const key = String(modelId).trim().toLowerCase();
+  const row = map[key] ?? map[String(modelId).trim()];
   return nxModelRowToYuanbao(row, quantity);
 }
 

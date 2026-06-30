@@ -277,6 +277,24 @@ export const VIDEO_SEEDANCE_2_0_FAST_CNY = {
   '1080p': { 5: 6.4, 10: 12.8, 15: 19.2 },
 };
 
+/** Seedance 2.0 Mini 多模态视频：支持参考图/视频/音频，分辨率 × 时长（秒） */
+export const VIDEO_SEEDANCE_2_0_MINI_CNY = {
+  '480p': { 5: 3, 10: 6, 15: 9 },
+  '720p': { 5: 4, 10: 8, 15: 12 },
+  '1080p': { 5: 5.12, 10: 10.24, 15: 15.36 },
+  '2k': { 5: 6.4, 10: 12.8, 15: 19.2 },
+  '4k': { 5: 8, 10: 16, 15: 24 },
+};
+
+function coerceSeedanceMiniResKey(raw) {
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (s === '4k' || s === '2160p') return '4k';
+  if (s === '2k' || s === '1440p') return '2k';
+  if (s === '1080p' || s === '1080' || s === '1920x1080' || s === '1080x1920') return '1080p';
+  if (s === '480p' || s === '480') return '480p';
+  return '720p';
+}
+
 /** Gemini Omni 图生视频：分辨率 × 时长（秒）；720p/6s 对齐 Veo 3.1 fast 单档 */
 export const VIDEO_GEMINI_OMNI_CNY = {
   '720p': { 6: 0.2, 8: 0.26, 10: 0.32 },
@@ -448,6 +466,11 @@ export function tryComputeRawVideoCny(merged) {
     const sec = normalizeSeedanceDurationSec(durationSeedance, 10);
     const row = VIDEO_SEEDANCE_2_0_FAST_CNY[resKey] || VIDEO_SEEDANCE_2_0_FAST_CNY['720p'];
     base = row[sec] ?? row[10];
+  } else if (model === 'seedance-2.0-mini') {
+    const resKey = coerceSeedanceMiniResKey(resolutionSeedance);
+    const sec = normalizeSeedanceDurationSec(durationSeedance, 10);
+    const row = VIDEO_SEEDANCE_2_0_MINI_CNY[resKey] || VIDEO_SEEDANCE_2_0_MINI_CNY['720p'];
+    base = row[sec] ?? row[10];
   } else if (model === 'gemini-omni') {
     const r = String(resolutionGeminiOmni || '').trim().toLowerCase();
     const resKey = r === '1080p' ? '1080p' : r === '4k' ? '4k' : '720p';
@@ -540,6 +563,14 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
     }
     if (model === 'seedance-2.0-fast') {
       for (const resolutionSeedance of ['720p', '1080p']) {
+        for (const durationSeedance of ['5', '10', '15']) {
+          out.push({ model, input: { resolutionSeedance, durationSeedance } });
+        }
+      }
+      continue;
+    }
+    if (model === 'seedance-2.0-mini') {
+      for (const resolutionSeedance of ['480p', '720p', '1080p', '2k', '4k']) {
         for (const durationSeedance of ['5', '10', '15']) {
           out.push({ model, input: { resolutionSeedance, durationSeedance } });
         }
@@ -661,6 +692,7 @@ function buildVideoBillingSkuCnyTable() {
     'wan-2.6-flash',
     'wan-animate',
     'seedance-2.0-fast',
+    'seedance-2.0-mini',
     'gemini-omni',
     'rhart-v3.1-pro-official-i2v',
   ];
@@ -710,6 +742,7 @@ export const MODEL_INDEX = {
     'wan-2.6-flash',
     'wan-animate',
     'seedance-2.0-fast',
+    'seedance-2.0-mini',
     'gemini-omni',
     'rhart-v3.1-pro-official-i2v',
   ],

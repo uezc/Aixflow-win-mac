@@ -55,26 +55,26 @@ async function main() {
   const version = parseVersion(text);
   console.log('[verify-website-download] latest.yml version:', version, '| CORS:', acaoYml || '(none)');
 
+  const exe = parseExeName(text);
+  if (exe) {
+    const stubUrl = WIN_BASE + encodeURIComponent(exe);
+    const stub = await headOk(stubUrl);
+    if (stub.ok) {
+      console.log('[verify-website-download] 官网将下载在线 stub:', exe, '| CORS:', stub.acao || '(none)');
+      return;
+    }
+  }
+
   const offlineZip = `Aixflow-Windows-Offline-${version}.zip`;
   const offlineUrl = WIN_BASE + encodeURIComponent(offlineZip);
   const offline = await headOk(offlineUrl);
   if (offline.ok) {
-    console.log('[verify-website-download] 官网将下载离线包:', offlineZip, '| CORS:', offline.acao || '(none)');
+    console.log('[verify-website-download] 官网将下载离线包（备用）:', offlineZip, '| CORS:', offline.acao || '(none)');
     return;
   }
 
-  const exe = parseExeName(text);
-  if (!exe) {
-    console.error('[verify-website-download] 无离线 zip 且 latest.yml 无 stub exe');
-    process.exit(1);
-  }
-  const stubUrl = WIN_BASE + encodeURIComponent(exe);
-  const stub = await headOk(stubUrl);
-  if (!stub.ok) {
-    console.error('[verify-website-download] stub exe 不可用 HTTP', stub.status);
-    process.exit(1);
-  }
-  console.log('[verify-website-download] 官网将下载在线 stub:', exe, '| CORS:', stub.acao || '(none)');
+  console.error('[verify-website-download] stub exe 与离线 zip 均不可用');
+  process.exit(1);
 }
 
 main().catch((e) => {

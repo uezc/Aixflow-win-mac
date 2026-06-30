@@ -63,6 +63,8 @@ export type VideoSpliceStrings = {
   exportFailed: string;
   exportFailedMsg: (msg: string) => string;
   importMediaSkipped: (names: string) => string;
+  aspectRatioLabel: string;
+  pickAspectRatioTitle: string;
 };
 
 const zh: VideoSpliceStrings = {
@@ -128,6 +130,8 @@ const zh: VideoSpliceStrings = {
   exportFailed: '导出失败',
   exportFailedMsg: (msg) => msg || '导出失败',
   importMediaSkipped: (names) => `以下文件未能导入剪辑轨道（格式不支持或读取失败）：${names}`,
+  aspectRatioLabel: '画面比例',
+  pickAspectRatioTitle: '选择预览与导出的画面比例',
 };
 
 const en: VideoSpliceStrings = {
@@ -194,6 +198,8 @@ const en: VideoSpliceStrings = {
   exportFailed: 'Export failed',
   exportFailedMsg: (msg) => msg || 'Export failed',
   importMediaSkipped: (names) => `Could not import to timeline (unsupported or failed): ${names}`,
+  aspectRatioLabel: 'Aspect ratio',
+  pickAspectRatioTitle: 'Preview and export aspect ratio',
 };
 
 export function videoSpliceT(locale: AppLocale): VideoSpliceStrings {

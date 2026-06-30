@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -22,11 +22,12 @@
     "sync:asset-library": "node scripts/sync-asset-library-to-resources.mjs",
     "convert-icon": "node scripts/convert-icon-to-ico.js",
     "convert-icon:force": "node scripts/convert-icon-to-ico.js --force",
+    "generate-nsis-branding": "node scripts/generate-nsis-installer-branding.mjs",
     "download-vc-redist": "node scripts/download-vc-redist.js",
     "copy-yt-dlp": "node scripts/copy-yt-dlp-to-resources.mjs --if-missing",
     "download-whisper-model": "node scripts/download-whisper-model-to-resources.mjs --if-missing",
     "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
-    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && npm run download-whisper-model && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
+    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && npm run download-whisper-model && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
     "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
     "upload:release": "node scripts/upload-release-to-oss.js",
     "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
@@ -167,6 +168,8 @@
       "shortcutName": "Aixflow",
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp",
       "installerLanguages": [
         "zh_CN",
         "en_US"

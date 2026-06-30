@@ -25,7 +25,7 @@ function clampCaptureTimeSec(video: HTMLVideoElement, timeSec: number): number {
   return t;
 }
 
-function captureFrameFromVideo(video: HTMLVideoElement): { ok: true; imageUrl: string } | { ok: false; error: string } {
+function captureFrameFromVideo(video: HTMLVideoElement): { ok: true; imageUrl: string; width: number; height: number } | { ok: false; error: string } {
   let w = video.videoWidth;
   let h = video.videoHeight;
   if (!w || !h) {
@@ -49,7 +49,7 @@ function captureFrameFromVideo(video: HTMLVideoElement): { ok: true; imageUrl: s
     if (!imageUrl || imageUrl.length < 32) {
       return { ok: false, error: '导出帧为空' };
     }
-    return { ok: true, imageUrl };
+    return { ok: true, imageUrl, width: w, height: h };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : '导出帧失败';
     return { ok: false, error: msg };
@@ -103,7 +103,7 @@ export async function extractVideoFrameAtTime(
           finish(false, undefined, cap.error);
           return;
         }
-        finish(true, cap.imageUrl, undefined, video.videoWidth, video.videoHeight);
+        finish(true, cap.imageUrl, undefined, cap.width, cap.height);
       });
 
       video.addEventListener('error', () => {
@@ -217,8 +217,8 @@ export async function extractVideoFramesAtTimes(
             timeSec: timeSecs[idx]!,
             success: true,
             imageUrl: cap.imageUrl,
-            width: video.videoWidth,
-            height: video.videoHeight,
+            width: cap.width,
+            height: cap.height,
           });
         }
         idx += 1;
@@ -248,6 +248,47 @@ export async function extractVideoFramesAtTimes(
     }, 20000);
 
     video.load();
+  });
+}
+
+/** 读取视频像素尺寸 */
+export function probeVideoPixelSize(videoUrl: string): Promise<{ width: number; height: number } | undefined> {
+  return new Promise((resolve) => {
+    try {
+      const video = document.createElement('video');
+      configureVideoElementCrossOriginForCapture(video, videoUrl);
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = videoUrl;
+
+      let settled = false;
+      const done = (size?: { width: number; height: number }) => {
+        if (settled) return;
+        settled = true;
+        try {
+          video.src = '';
+          video.load();
+        } catch {
+          /* ignore */
+        }
+        resolve(size);
+      };
+
+      video.addEventListener('loadedmetadata', () => {
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        if (w > 0 && h > 0) done({ width: w, height: h });
+        else done(undefined);
+      });
+      video.addEventListener('error', () => done(undefined));
+      setTimeout(() => {
+        if (!settled) done(undefined);
+      }, 15000);
+      video.load();
+    } catch {
+      resolve(undefined);
+    }
   });
 }
 

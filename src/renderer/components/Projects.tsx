@@ -9,7 +9,7 @@ import { useDarkAlert } from '../contexts/DarkAlertContext';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { projectsT } from '../i18n/projectsI18n';
 import SettingsFullscreenToggle from './SettingsFullscreenToggle';
-import { readIsDarkMode, NEXFLOW_THEME_CHANGE_EVENT } from '../utils/appTheme';
+import { readIsDarkMode, writeIsDarkMode, NEXFLOW_THEME_CHANGE_EVENT, NEXFLOW_DARK_MODE_KEY, applyThemeToDocument } from '../utils/appTheme';
 import { assetLibBtnPrimary, assetLibBtnSecondary, assetLibBtnDanger, assetLibBtnIcon } from '../utils/assetLibraryChrome';
 import { projectCardColorForId, projectCardTextClasses } from '../utils/projectCardColors';
 import { SCRATCH_COLORS, scratchTintClass, type ScratchColorId } from '../theme/scratchColors';
@@ -66,6 +66,18 @@ const Projects: React.FC<ProjectsProps> = ({ onBack, onOpenCloudAccount }) => {
   const dragCardSizeRef = useRef<{ w: number; h: number }>({ w: 280, h: 158 });
   const longPressCleanupRef = useRef<(() => void) | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(() => readIsDarkMode());
+
+  useEffect(() => {
+    const stored = localStorage.getItem(NEXFLOW_DARK_MODE_KEY);
+    if (stored == null || stored === '') {
+      writeIsDarkMode(true);
+      setIsDarkMode(true);
+      return;
+    }
+    const dark = readIsDarkMode();
+    setIsDarkMode(dark);
+    applyThemeToDocument(dark);
+  }, []);
 
   useEffect(() => {
     const onTheme = (e: Event) => {
@@ -587,7 +599,7 @@ const Projects: React.FC<ProjectsProps> = ({ onBack, onOpenCloudAccount }) => {
       )}
     <div
       className={`projects-page-scrollbar w-full h-screen overflow-y-auto overflow-x-hidden p-10 flex flex-col items-start justify-start box-border ${
-        isDarkMode ? 'custom-scrollbar-dark bg-black' : 'custom-scrollbar light-mode bg-[#E5E7EB]'
+        isDarkMode ? 'custom-scrollbar-dark bg-black dark-mode' : 'custom-scrollbar light-mode bg-[#E5E7EB]'
       }`}
     >
       {/* 头部：左侧「返回登陆」+ 标题；右侧保存路径与操作 */}

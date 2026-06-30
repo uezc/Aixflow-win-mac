@@ -53,8 +53,8 @@ interface ImageInputPanelProps {
   onModelChange: (value: string) => void;
   onSeedreamWidthChange?: (value: number) => void;
   onSeedreamHeightChange?: (value: number) => void;
-  /** 第二项为 FC 回传的公网原图地址（有本地落盘时仍保留，供下游/任务列表使用） */
-  onOutputImageChange: (imageUrl: string, originalImageUrl?: string) => void;
+  /** 第二项为 FC 回传的公网原图地址；第三项为多图结果（如 MJ V7 四宫格） */
+  onOutputImageChange: (imageUrl: string, originalImageUrl?: string, outputImages?: string[]) => void;
   onInputImagesChange?: (images: string[]) => void;
   onProgressChange?: (progress: number) => void;
   onProgressMessageChange?: (message: string) => void; // 进度文案更新回调
@@ -378,7 +378,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
     { value: 'z-image', label: 'Z-image' },
     { value: 'lens', label: 'Lens' },
     { value: 'flux2-klein', label: 'Flux2 Klein' },
-    { value: 'mj-v7', label: 'MJ V7 (Lite)' },
+    { value: 'mj-v7', label: 'Mj v7' },
     { value: 'gpt-image-2', label: 'GPT image 2' },
     { value: 'seedream-v5', label: 'Seedream v5' },
   ]);
@@ -634,27 +634,49 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
     },
     // 仅在完成时更新输出图片，避免任务列表重复记录
     onComplete: (result) => {
-      // 优先使用 localPath（如果存在）
       const localPath = result?.localPath;
       const originalHttp = typeof (result as { originalImageUrl?: string })?.originalImageUrl === 'string'
         ? String((result as { originalImageUrl?: string }).originalImageUrl).trim()
         : '';
-      let imageUrl = result?.imageUrl;
-      
-      if (localPath) {
-        // 如果有本地路径，转换为 local-resource:// 格式
-        let filePath = localPath.replace(/\\/g, '/');
-        // 确保 Windows 路径格式正确（C:/Users 而不是 /C:/Users）
+      const rawOutputImages = Array.isArray((result as { outputImages?: unknown[] })?.outputImages)
+        ? (result as { outputImages: unknown[] }).outputImages
+            .filter((u): u is string => typeof u === 'string' && String(u).trim() !== '')
+        : [];
+
+      const toLocalResource = (diskPath: string) => {
+        let filePath = diskPath.replace(/\\/g, '/');
         if (filePath.match(/^\/[a-zA-Z]:/)) {
-          filePath = filePath.substring(1); // 移除开头的 /
+          filePath = filePath.substring(1);
         }
-        imageUrl = `local-resource://${filePath}`;
+        return `local-resource://${filePath}`;
+      };
+
+      let imageUrl = result?.imageUrl;
+      if (localPath) {
+        imageUrl = toLocalResource(localPath);
         console.log('[ImageInputPanel] onComplete 使用本地路径:', localPath, '->', imageUrl, '公网原图:', originalHttp || '无');
       }
-      
+
+      let outputImages: string[] = [];
+      if (rawOutputImages.length > 0) {
+        outputImages = rawOutputImages.map((u, idx) => {
+          if (idx === 0 && imageUrl) return imageUrl;
+          if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:') || u.startsWith('local-resource://')) {
+            return u;
+          }
+          const cleanPath = u.replace(/^(file:\/\/|local-resource:\/\/)/, '').replace(/\\/g, '/');
+          return `local-resource://${cleanPath}`;
+        });
+      } else if (imageUrl) {
+        outputImages = [imageUrl];
+      }
+
       if (imageUrl) {
-        onOutputImageChange(imageUrl, originalHttp && /^https?:\/\//i.test(originalHttp) ? originalHttp : undefined);
-        // 图片生成完成后，ImageNode 会自动根据图片尺寸调整大小
+        onOutputImageChange(
+          imageUrl,
+          originalHttp && /^https?:\/\//i.test(originalHttp) ? originalHttp : undefined,
+          outputImages.length > 1 ? outputImages : undefined,
+        );
       }
       // 清除进度
       if (onProgressChange) {

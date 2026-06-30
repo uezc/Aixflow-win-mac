@@ -7,7 +7,7 @@ import { AIExecuteParams } from '../types.js';
 import { VideoProvider } from './VideoProvider.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { runVideoAnalysisViaFc } from '../../services/runningHubAiAppFc.js';
-import { getCloudAiBlockReason } from '../../utils/cloudAiGate.js';
+import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 
 interface VideoAnalysisInput {
   videoUrl: string;
@@ -44,7 +44,7 @@ export class VideoAnalysisProvider extends BaseProvider {
 
     const cloudBlock = getCloudAiBlockReason();
     if (cloudBlock) {
-      onStatus({ nodeId, status: 'ERROR', payload: { error: cloudBlock } });
+      onStatus({ nodeId, status: 'ERROR', payload: buildCloudAiBlockedPayload() });
       return;
     }
     if (!getAliyunFcInitUserUrl().trim()) {

@@ -45,6 +45,18 @@ export type VideoInputPanelStrings = {
   wanAnimateVideoConnected: string;
   wanAnimateVideoNeedConnect: string;
   wanAnimateImageNeedConnect: string;
+  wanAnimateSlotRefImageLabel: string;
+  /** HeyGem 数字人：参考视频 + 驱动音频 */
+  heyGemInputLabel: string;
+  heyGemNoPromptHint: string;
+  heyGemVideoConnected: string;
+  heyGemVideoNeedConnect: string;
+  heyGemAudioConnected: string;
+  heyGemAudioNeedConnect: string;
+  heyGemSlotVideoLabel: string;
+  heyGemSlotAudioLabel: string;
+  heyGemSlotConnected: string;
+  heyGemSlotPending: string;
   placeholderVideoPrompt: string;
   voiceTranscribing: string;
   defaultLipsyncAction: string;
@@ -173,6 +185,17 @@ const zh: VideoInputPanelStrings = {
   wanAnimateVideoConnected: '✓ 已连接参考视频',
   wanAnimateVideoNeedConnect: '⚠ 请连接参考视频节点',
   wanAnimateImageNeedConnect: '⚠ 请连接 1 张角色参考图',
+  wanAnimateSlotRefImageLabel: '角色参考图',
+  heyGemInputLabel: 'HeyGem 数字人',
+  heyGemNoPromptHint: '连接参考视频与驱动音频即可生成，无需填写提示词（Plus 48G 显存）。',
+  heyGemVideoConnected: '✓ 已连接参考视频',
+  heyGemVideoNeedConnect: '⚠ 请连接参考视频节点',
+  heyGemAudioConnected: '✓ 已连接驱动音频',
+  heyGemAudioNeedConnect: '⚠ 请连接音频节点',
+  heyGemSlotVideoLabel: '参考视频',
+  heyGemSlotAudioLabel: '驱动音频',
+  heyGemSlotConnected: '已接入',
+  heyGemSlotPending: '待接入',
   placeholderVideoPrompt:
     '请输入视频提示词，例如：一只小狗在草地上奔跑，镜头缓慢移动，电影级灯光...',
   voiceTranscribing: '正在将语音转为文字…',
@@ -297,6 +320,17 @@ const en: VideoInputPanelStrings = {
   wanAnimateVideoConnected: '✓ Reference video connected',
   wanAnimateVideoNeedConnect: '⚠ Connect a reference video node',
   wanAnimateImageNeedConnect: '⚠ Connect 1 character reference image',
+  wanAnimateSlotRefImageLabel: 'Character reference',
+  heyGemInputLabel: 'HeyGem digital human',
+  heyGemNoPromptHint: 'Connect reference video and driving audio — no prompt required (Plus 48G VRAM).',
+  heyGemVideoConnected: '✓ Reference video connected',
+  heyGemVideoNeedConnect: '⚠ Connect a reference video node',
+  heyGemAudioConnected: '✓ Driving audio connected',
+  heyGemAudioNeedConnect: '⚠ Connect an audio node',
+  heyGemSlotVideoLabel: 'Reference video',
+  heyGemSlotAudioLabel: 'Driving audio',
+  heyGemSlotConnected: 'Connected',
+  heyGemSlotPending: 'Not connected',
   placeholderVideoPrompt:
     'Describe the video, e.g. A puppy running on grass, slow camera move, cinematic lighting...',
   voiceTranscribing: 'Converting speech to text…',

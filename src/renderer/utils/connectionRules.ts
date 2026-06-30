@@ -1,4 +1,8 @@
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../config/sora2UiPolicy';
+import {
+  isDigitalHumanAudioOutputHandle,
+  isDigitalHumanVideoOutputHandle,
+} from './digitalHumanNodeMedia';
 
 /**
  * 节点连线兼容规则：谁可以连到谁
@@ -14,10 +18,12 @@ export const MENU_TYPE_TO_NODE_TYPE: Record<string, string> = {
   image: 'image',
   video: 'video',
   wanAnimate: 'wanAnimate',
+  heyGem: 'heyGem',
   videoSplice: 'videoSplice',
   photoCollage: 'photoCollage',
   imageTo3d: 'imageTo3d',
   character: 'character',
+  digitalHuman: 'digitalHuman',
   audio: 'audio',
 };
 
@@ -28,15 +34,18 @@ export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
   image: 'image',
   video: 'video',
   wanAnimate: 'wanAnimate',
+  heyGem: 'heyGem',
   videoSplice: 'videoSplice',
   photoCollage: 'photoCollage',
   imageTo3d: 'imageTo3d',
   character: 'character',
+  digitalHuman: 'digitalHuman',
   audio: 'audio',
   audioTranscribe: 'audioTranscribe',
 };
 
-/** 角色节点：旧版「上图」磁吸把手 id（兼容已存边） */
+/** 数字人源模块：参考视频 / 参考音输出把手（再导出供画布组件使用） */
+export { DIGITAL_HUMAN_OUTPUT_VIDEO_HANDLE, DIGITAL_HUMAN_OUTPUT_AUDIO_HANDLE } from './digitalHumanNodeMedia';
 export const CHARACTER_OUTPUT_IMAGES_HANDLE = 'output-images';
 /** 角色节点：旧版「参考音」磁吸把手 id（兼容已存边） */
 export const CHARACTER_OUTPUT_AUDIO_HANDLE = 'output-audio';
@@ -45,28 +54,31 @@ export const CHARACTER_SOURCE_OUTPUT_HANDLE = 'output';
 
 /** 从源节点类型看：不能作为“新建目标”的菜单类型（拖线创建菜单中要隐藏） */
 const FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE: Record<string, string[]> = {
-  text: ['text', 'character', 'videoSplice', 'photoCollage'],
-  minimalistText: ['text', 'character', 'videoSplice', 'photoCollage'],
-  llm: ['text', 'character', 'videoSplice', 'photoCollage'],
-  textSplit: ['text', 'character', 'videoSplice', 'photoCollage'],
-  image: ['text', 'textSplit', 'character', 'audio'],
+  text: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  minimalistText: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  llm: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  textSplit: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  image: ['text', 'textSplit', 'character', 'audio', 'heyGem'],
   video: ['textSplit'], // 允许 video -> text（转写）、image、audio、videoSplice、llm 等
   wanAnimate: ['textSplit'],
+  heyGem: ['textSplit'],
   videoSplice: ['text', 'llm', 'textSplit', 'character'],
   // 角色模块：仅连到 图片 / 视频 / 视频换人 / 声音（由目标类型决定传参）
   character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool'],
   audio: ['llm', 'textSplit', 'image', 'character'], // 允许 audio -> text（转写）；LLM 尚未接音轨输入故禁止
+  digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool', 'imageTo3d'],
 };
 
 /** 从源节点类型看：不能连到的目标节点 type（用于 isValidConnection） */
 const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
-  minimalistText: ['minimalistText', 'character', 'videoSplice', 'photoCollage'],
-  text: ['minimalistText', 'character', 'videoSplice', 'photoCollage'],
-  llm: ['minimalistText', 'character', 'videoSplice', 'photoCollage'],
-  textSplit: ['minimalistText', 'character', 'videoSplice', 'photoCollage'],
-  image: ['minimalistText', 'textSplit', 'character', 'audio'],
+  minimalistText: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  text: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  llm: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  textSplit: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
+  image: ['minimalistText', 'textSplit', 'character', 'audio', 'heyGem'],
   video: ['textSplit'], // 允许 video -> minimalistText（转写）、image、audio、videoSplice、llm
   wanAnimate: ['textSplit'],
+  heyGem: ['textSplit'],
   videoSplice: ['minimalistText', 'llm', 'textSplit', 'character', 'photoCollage'],
   character: [
     'minimalistText',
@@ -80,10 +92,22 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'cameraControl',
   ],
   audio: ['llm', 'textSplit', 'image', 'character'], // 允许 audio -> minimalistText（转写）
+  digitalHuman: [
+    'minimalistText',
+    'text',
+    'llm',
+    'textSplit',
+    'character',
+    'videoSplice',
+    'photoCollage',
+    'audioTranscribe',
+    'cameraControl',
+    'imageTo3d',
+  ],
   cameraControl: ['minimalistText', 'text', 'llm', 'textSplit', 'video', 'character', 'audio', 'cameraControl'], // 旧项目兼容：3D 只能连到 image
 };
 
-const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'videoSplice', 'photoCollage', 'imageTo3d', 'character', 'audio'];
+const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'imageTo3d', 'character', 'audio'];
 
 /** 四视图勾选：显式 boolean[4]；缺省视为旧数据「未存勾选」 */
 export function parseReferenceTransmitSlots(raw: unknown): boolean[] | null {
@@ -152,19 +176,67 @@ export function getForbiddenMenuTypesBySourceNodeType(sourceNodeType: string): s
   return FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE[normalized] ?? [];
 }
 
+/** 拖线创建 HeyGem：仅允许从声音节点 / 视频节点（含视频换人）拉出 */
+export const HEYGEM_DRAG_CREATE_SOURCE_NODE_TYPES = ['audio', 'video', 'wanAnimate'] as const;
+
+export function canCreateHeyGemFromSource(
+  sourceNodeType: string | null | undefined,
+  _sourceHandleId?: string | null,
+): boolean {
+  if (!sourceNodeType) return false;
+  return (HEYGEM_DRAG_CREATE_SOURCE_NODE_TYPES as readonly string[]).includes(sourceNodeType);
+}
+
+function filterHeyGemFromMenuTypes(sourceNodeType: string, types: string[]): string[] {
+  if (canCreateHeyGemFromSource(sourceNodeType)) return types;
+  return types.filter((t) => t !== 'heyGem');
+}
+
 /**
  * 拖线创建菜单：根据源节点 type 返回允许创建的菜单类型；null 表示全部展示
  * 当源为 video 时，将 'image' 替换为首帧/当前帧/末帧选项，供用户选择
  */
 export function getAllowedMenuTypes(
   sourceNodeType: string | null,
-  _sourceHandleId?: string | null
+  sourceHandleId?: string | null
 ): string[] | undefined {
   if (sourceNodeType == null) return undefined;
 
+  if (sourceNodeType === 'digitalHuman') {
+    if (isDigitalHumanAudioOutputHandle(sourceHandleId)) {
+      return filterHeyGemFromMenuTypes(
+        sourceNodeType,
+        ['audio', 'videoSplice'].filter((t) => t !== 'character' || !HIDE_SORA2_AND_SORA_CHARACTER_UI),
+      );
+    }
+    if (isDigitalHumanVideoOutputHandle(sourceHandleId)) {
+      let types = ALL_MENU_TYPES.filter((t) => !getForbiddenMenuTypesBySourceNodeType('video').includes(t));
+      if (types.includes('image')) {
+        types = types.filter((t) => t !== 'image').concat(['image-first-frame', 'image-current-frame', 'image-last-frame']);
+      }
+      if (types.includes('audio')) {
+        types = types.filter((t) => t !== 'audio').concat(['audio-extract-from-video']);
+      }
+      if (
+        types.includes('image') ||
+        types.includes('image-first-frame') ||
+        types.includes('image-current-frame') ||
+        types.includes('image-last-frame')
+      ) {
+        if (!types.includes('canvas-tool')) types = types.concat(['canvas-tool']);
+      }
+      if (HIDE_SORA2_AND_SORA_CHARACTER_UI) {
+        types = types.filter((t) => t !== 'character');
+      }
+      types = types.filter((t) => t !== 'imageTo3d');
+      return filterHeyGemFromMenuTypes(sourceNodeType, types);
+    }
+    return [];
+  }
+
   const forbidden = getForbiddenMenuTypesBySourceNodeType(sourceNodeType);
   let types = ALL_MENU_TYPES.filter((t) => !forbidden.includes(t));
-  if (sourceNodeType === 'video' || sourceNodeType === 'wanAnimate') {
+  if (sourceNodeType === 'video' || sourceNodeType === 'wanAnimate' || sourceNodeType === 'heyGem') {
     if (types.includes('image')) {
       types = types.filter((t) => t !== 'image').concat(['image-first-frame', 'image-current-frame', 'image-last-frame']);
     }
@@ -190,11 +262,11 @@ export function getAllowedMenuTypes(
   if (sourceNodeType !== 'image') {
     types = types.filter((t) => t !== 'imageTo3d');
   }
-  return types;
+  return filterHeyGemFromMenuTypes(sourceNodeType, types);
 }
 
 /** 角色节点：只能由视频类模块作为输入 */
-const CHARACTER_INPUT_ALLOWED_SOURCES = ['video', 'wanAnimate'];
+const CHARACTER_INPUT_ALLOWED_SOURCES = ['video', 'wanAnimate', 'heyGem'];
 
 /**
  * 判断从 source 连到 target 是否允许（用于 isValidConnection）
@@ -208,12 +280,34 @@ export function isConnectionAllowed(
   const src = sourceNodeType === 'minimalistText' ? 'minimalistText' : sourceNodeType;
   const tgt = targetNodeType;
 
+  // HeyGem 数字人：仅接受声音 / 视频类模块作为输入源
+  if (tgt === 'heyGem') {
+    return canCreateHeyGemFromSource(src);
+  }
+
   // 角色节点：只能输入来自 video；可从右侧磁吸连出到图/视频等
   if (tgt === 'character') {
     return CHARACTER_INPUT_ALLOWED_SOURCES.includes(src);
   }
   if (src === 'character') {
     return tgt === 'image' || tgt === 'audio' || tgt === 'video' || tgt === 'wanAnimate';
+  }
+  if (src === 'digitalHuman') {
+    if (isDigitalHumanAudioOutputHandle(sourceHandleId)) {
+      return tgt === 'audio' || tgt === 'videoSplice' || tgt === 'audioTranscribe';
+    }
+    if (isDigitalHumanVideoOutputHandle(sourceHandleId)) {
+      return (
+        tgt === 'video' ||
+        tgt === 'wanAnimate' ||
+        tgt === 'videoSplice' ||
+        tgt === 'minimalistText' ||
+        tgt === 'text' ||
+        tgt === 'image' ||
+        tgt === 'audio'
+      );
+    }
+    return false;
   }
   if (tgt === 'imageTo3d') {
     return src === 'image';

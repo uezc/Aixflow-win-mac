@@ -16,10 +16,13 @@ import {
   assetLibBtnIcon,
   assetLibBtnPrimary,
   assetLibBtnSecondary,
+  assetLibDeleteToolbarBtn,
+  assetLibGalleryCardSelected,
   assetLibListCard,
+  assetLibListCardSelected,
   assetLibMsgSuccess,
-  assetLibSelectionRing,
 } from '../utils/assetLibraryChrome';
+import { useIdlePoll } from '../hooks/useIdlePoll';
 
 function scenePanoramaUrlForCanvas(scene: SceneLibraryItem): string {
   return sceneDisplay3dImageUrl(scene);
@@ -38,6 +41,8 @@ export interface SceneLibraryListProps {
   isDarkMode: boolean;
   viewMode?: AssetLibraryViewMode;
   refreshTrigger?: number;
+  /** 当前 Tab 可见且侧栏展开时才后台轮询 */
+  listActive?: boolean;
   onSelectScene?: (scene: SceneLibraryItem) => void;
   requestSceneImagePickFromCanvas?: (role: 'normal' | 'display3d') => Promise<string | null>;
 }
@@ -46,6 +51,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
   isDarkMode,
   viewMode = 'list',
   refreshTrigger,
+  listActive = true,
   onSelectScene,
   requestSceneImagePickFromCanvas,
   onPlaceSceneToCanvas,
@@ -95,10 +101,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
     loadScenes();
   }, [loadScenes, refreshTrigger]);
 
-  useEffect(() => {
-    const interval = setInterval(loadScenes, 5000);
-    return () => clearInterval(interval);
-  }, [loadScenes]);
+  useIdlePoll(listActive, loadScenes, 20000);
 
   useEffect(() => {
     if (!scenePanoramaHover) return;
@@ -346,9 +349,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                 type="button"
                 onClick={handleDeleteSelected}
                 disabled={selectedIds.size === 0}
-                className={`p-1 rounded hover:bg-red-500/20 transition-colors disabled:opacity-30 ${
-                  isDarkMode ? 'text-white/60 hover:text-red-400' : 'text-gray-500 hover:text-red-600'
-                }`}
+                className={assetLibDeleteToolbarBtn(isDarkMode, selectedIds.size > 0)}
                 title={t.sceneDeleteSelected}
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -358,7 +359,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                 onClick={() =>
                   setSelectedIds(allSelected ? new Set() : new Set(scenes.map((s) => s.id)))
                 }
-                className={`text-xs ${assetLibBtnSecondary(isDarkMode, '!py-0.5 !px-2')}`}
+                className={`text-xs ${assetLibBtnSecondary(isDarkMode, '!py-0.5 !px-2', isDarkMode ? undefined : 'operators')}`}
               >
                 {allSelected ? t.sceneDeselectAll : t.sceneSelectAll}
               </button>
@@ -367,12 +368,12 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
           <button
             type="button"
             onClick={openAddModal}
-            className={`text-xs flex items-center gap-1.5 shrink-0 ${assetLibBtnSecondary(isDarkMode, '!py-0.5 !px-2')}`}
+            className={`text-xs flex items-center gap-1.5 shrink-0 ${assetLibBtnPrimary(isDarkMode, '!py-0.5 !px-2', 'control')}`}
             title={t.sceneAddTitle}
           >
             <span
               className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-dashed ${
-                isDarkMode ? 'border-white/30 text-white/55' : 'border-gray-400 text-gray-500'
+                isDarkMode ? 'border-white/30 text-white/55' : 'border-white/55 text-white/90'
               }`}
             >
               <Plus className="w-3 h-3" strokeWidth={2.5} />
@@ -459,13 +460,15 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                         : undefined
                     }
                     onMouseLeave={hasPanoramaHover ? () => setScenePanoramaHover(null) : undefined}
-                    className={`flex flex-col gap-1.5 cursor-pointer group ${
-                      selectedIds.has(scene.id) ? `${assetLibSelectionRing(isDarkMode, true)} rounded-xl` : ''
-                    }`}
+                    className={`flex flex-col gap-1.5 cursor-pointer group`}
                   >
                     <div
                       className={`relative aspect-[4/3] rounded-xl overflow-hidden border ${
-                        isDarkMode ? 'border-white/10 bg-zinc-900/90' : 'border-gray-200 bg-gray-100'
+                        selectedIds.has(scene.id)
+                          ? assetLibGalleryCardSelected(isDarkMode)
+                          : isDarkMode
+                            ? 'border-white/10 bg-zinc-900/90'
+                            : 'border-gray-200 bg-gray-100'
                       }`}
                     >
                       {normalThumb ? (
@@ -528,8 +531,10 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                 }
                 onMouseLeave={hasPanoramaHover ? () => setScenePanoramaHover(null) : undefined}
                 title={hasPanoramaHover ? '悬停预览 360 场景' : t.sceneDragHint}
-                className={`group relative flex items-center p-3 rounded-xl transition-all cursor-pointer ${assetLibListCard(isDarkMode)} ${
-                  selectedIds.has(scene.id) ? assetLibSelectionRing(isDarkMode) : ''
+                className={`group relative flex items-center p-3 rounded-xl transition-all cursor-pointer ${
+                  selectedIds.has(scene.id)
+                    ? assetLibListCardSelected(isDarkMode)
+                    : assetLibListCard(isDarkMode)
                 }`}
               >
                 <div className="flex shrink-0">

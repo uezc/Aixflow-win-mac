@@ -5,7 +5,10 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { DarkAlertProvider } from './contexts/DarkAlertContext';
 import { AppLocaleProvider } from './contexts/AppLocaleContext';
 import './index.css';
+import { initAppTheme } from './utils/appTheme';
 import { installVideoPlaybackPerfDebugGlobals } from './utils/videoPlaybackPerfStats';
+
+initAppTheme();
 
 // 全局错误处理：捕获并忽略 dragEvent 相关错误（来自 React Flow 内部，不影响功能）
 if (typeof window !== 'undefined') {

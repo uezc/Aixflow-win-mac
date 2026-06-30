@@ -29,3 +29,8 @@ export function getCloudAiBlockReason(): string | null {
   }
   return null;
 }
+
+/** 未登录/离线拦截：渲染进程据此弹窗并跳转登录（与 ChatProvider nxAuthRequired 约定一致） */
+export function buildCloudAiBlockedPayload(): { error: string; nxAuthRequired: true } {
+  return { error: CLOUD_AI_GATE_USER_MESSAGE, nxAuthRequired: true };
+}

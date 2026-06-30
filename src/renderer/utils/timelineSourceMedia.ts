@@ -2,6 +2,12 @@ import { normalizeVideoUrl } from './normalizeVideoUrl';
 import { DEFAULT_IMAGE_CLIP_DURATION_SEC, normalizeVideoTracks } from './videoSpliceTracks';
 import { mapProjectPath } from './pathMapper';
 import { pickImageUrlFromNodeData } from './pickImageUrlFromNodeData';
+import {
+  isDigitalHumanAudioOutputHandle,
+  isDigitalHumanVideoOutputHandle,
+  pickDigitalHumanAudioUrl,
+  pickDigitalHumanVideoUrl,
+} from './digitalHumanNodeMedia';
 
 export type TimelineSourceMediaKind = 'video' | 'image' | 'audio';
 
@@ -29,11 +35,12 @@ export type VideoSpliceClipLabels = {
   audio: string;
 };
 
-const isVideoSourceNodeType = (t: string | undefined) => t === 'video' || t === 'wanAnimate';
+const isVideoSourceNodeType = (t: string | undefined) =>
+  t === 'video' || t === 'wanAnimate' || t === 'heyGem';
 
 /** 可连入剪辑轨道的源模块类型 */
 export function isTimelineMediaSourceNodeType(t: string | undefined): boolean {
-  return t === 'image' || isVideoSourceNodeType(t) || t === 'audio';
+  return t === 'image' || isVideoSourceNodeType(t) || t === 'audio' || t === 'digitalHuman';
 }
 
 function sortIncomingEdgesBySourceLayout(
@@ -306,10 +313,23 @@ function trackMaxEnd(clips: TimelineClipRecord[]): number {
  */
 export function resolveTimelineMediaFromSource(
   sourceNode: { type?: string; data?: Record<string, unknown> },
-  edge?: { data?: unknown },
+  edge?: { data?: unknown; sourceHandle?: string | null },
 ): TimelineSourceMedia | null {
   const d = sourceNode.data || {};
   const t = sourceNode.type;
+
+  if (t === 'digitalHuman') {
+    const sh = edge?.sourceHandle ?? null;
+    if (isDigitalHumanAudioOutputHandle(sh)) {
+      const url = normalizeVideoUrl(pickDigitalHumanAudioUrl(d));
+      return url ? { clipType: 'audio', url } : null;
+    }
+    if (isDigitalHumanVideoOutputHandle(sh)) {
+      const url = normalizeVideoUrl(pickDigitalHumanVideoUrl(d));
+      return url ? { clipType: 'video', url } : null;
+    }
+    return null;
+  }
 
   if (isVideoSourceNodeType(t)) {
     const edgeVideo = edge

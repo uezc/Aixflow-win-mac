@@ -454,13 +454,13 @@ interface Window {
       projectId: string | undefined,
       videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[] }
+      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
     ) => Promise<{ success: boolean; videoPath?: string; hasAudio?: boolean; error?: string }>;
     exportTimelineVideoToProject: (
       projectId: string | undefined,
       videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[] }
+      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
     ) => Promise<{
       success: boolean;
       hasAudio?: boolean;
@@ -693,6 +693,34 @@ interface Window {
       canceled?: boolean;
       error?: string;
     }>;
+
+    getDigitalHumans: () => Promise<
+      Array<{
+        id: string;
+        nickname: string;
+        name: string;
+        createdAt: number;
+        poster?: string;
+        localPosterPath?: string;
+        videoUrl?: string;
+        localVideoPath?: string;
+        originalVideoUrl?: string;
+        audioUrl?: string;
+        localAudioPath?: string;
+        originalAudioUrl?: string;
+      }>
+    >;
+    registerDigitalHuman: (payload: {
+      nickname?: string;
+      videoUrl?: string;
+      audioUrl?: string;
+      posterUrl?: string;
+    }) => Promise<Record<string, unknown>>;
+    updateDigitalHuman: (
+      itemId: string,
+      updates: { nickname?: string; videoUrl?: string; audioUrl?: string; posterUrl?: string },
+    ) => Promise<Record<string, unknown>>;
+    deleteDigitalHumans: (itemIds: string[]) => Promise<{ success: boolean }>;
 
     // 上传图片到 runninghub（用于 sora-2 图生视频）
     uploadImageToRunningHub: (imageUrl: string) => Promise<{ success: boolean; url: string }>;

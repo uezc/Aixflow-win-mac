@@ -10,6 +10,17 @@ import { VideoPreview, type VideoPreviewRef } from '../VideoPreview';
 import { useViewportIntersection } from '../../hooks/useViewportIntersection';
 import { normalizeVideoUrl } from '../../utils/normalizeVideoUrl';
 import {
+  aspectRatioLabelFromPixelSize,
+  computeNodeSizeFromMedia,
+  IMAGE_NODE_MIN_W,
+  IMAGE_NODE_MIN_H,
+  IMAGE_NODE_MAX_W,
+  IMAGE_NODE_MAX_H,
+  nodeStyleDimensions,
+  NODE_SIZE_TRANSITION,
+  snapToVideoPanelAspectRatio,
+} from '../../utils/nodeSizeFromAspectRatio';
+import {
   registerVideoNodePlaybackReader,
   unregisterVideoNodePlaybackReader,
 } from '../../utils/videoPlaybackTimeRegistry';
@@ -33,6 +44,7 @@ import {
 } from '../../utils/userErrorMessageCn';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
+import { dispatchCanvasPickNode, isCanvasPickDigitalHumanVideoTarget } from '../../utils/canvasPickStore';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { getVideoWatermarkRemovalDisplayPrice } from '../../utils/cloudModelPricing';
 import { assetLibBtnPrimary, assetLibBtnSecondary, nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
@@ -43,6 +55,7 @@ import {
   dataUrlToArrayBuffer,
   extractVideoFramesAtTimes,
   probeVideoDuration,
+  probeVideoPixelSize,
 } from '../../utils/extractVideoFrame';
 
 const ZOOM_THRESHOLD_ICON_ONLY = 0.08;
@@ -63,10 +76,19 @@ const LOW_RES_TRANSITION = 'opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), filter
 /** 与主进程 `videoScraper.ts` 中 `YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER` 保持一致 */
 const YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER = '[[NX:SHOW_PROXY_SETTING_UI]]';
 const MAX_VIDEO_FRAME_SPLIT_COUNT = 100;
-const FRAME_IMAGE_MIN_W = 369.46;
-const FRAME_IMAGE_MIN_H = 211.12;
-const FRAME_IMAGE_MAX_W = 2048;
-const FRAME_IMAGE_MAX_H = 2048;
+
+function resolveFrameSplitPixelSize(
+  ...candidates: Array<{ width?: number; height?: number } | undefined>
+): { width: number; height: number } | null {
+  for (const c of candidates) {
+    const w = Number(c?.width);
+    const h = Number(c?.height);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      return { width: w, height: h };
+    }
+  }
+  return null;
+}
 
 function formatSplitFrameImagePath(path: string): string {
   if (!path) return '';
@@ -725,7 +747,7 @@ interface VideoNodeData {
   title?: string;
   prompt?: string;
   aspectRatio?: '16:9' | '9:16';
-  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'rh-video-start-end';
+  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'rh-video-start-end';
   hd?: boolean;
   duration?: '5' | '10' | '15' | '25';
   shotType?: 'single' | 'multi';
@@ -755,6 +777,8 @@ interface VideoNodeData {
   mediaDurationSec?: number;
   /** 从上游视频模块连线解析的参考视频 URL（与 Workspace videoInputPanelData 一致） */
   referenceVideoUrl?: string;
+  /** 为 true 时 loadedmetadata 不自动改外框（如剪辑导出到画布） */
+  preserveExportLayout?: boolean;
 }
 
 interface VideoNodeProps extends NodeProps<VideoNodeData> {
@@ -801,27 +825,43 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   } = props as any;
 
   // 视频节点采用“最小尺寸下限 + 按素材比例自适应”的外框策略。
-  const MIN_NODE_WIDTH = 738.91;
-  const MIN_NODE_HEIGHT = 422.22;
-  const MAX_NODE_WIDTH = 4096;
-  const MAX_NODE_HEIGHT = 4096;
-  const clampW = (v: number) => Math.max(MIN_NODE_WIDTH, Math.min(MAX_NODE_WIDTH, v));
-  const clampH = (v: number) => Math.max(MIN_NODE_HEIGHT, Math.min(MAX_NODE_HEIGHT, v));
-  const computeAdaptiveVideoSize = useCallback((videoW?: number, videoH?: number) => {
-    if (!videoW || !videoH || videoW <= 0 || videoH <= 0) {
-      return { w: MIN_NODE_WIDTH, h: MIN_NODE_HEIGHT };
-    }
-    const scale = Math.max(MIN_NODE_WIDTH / videoW, MIN_NODE_HEIGHT / videoH);
-    return {
-      w: clampW(Math.round(videoW * scale)),
-      h: clampH(Math.round(videoH * scale)),
-    };
-  }, []);
+  // preserveExportLayout（库拖入/拆帧等）：与 Image 模块同尺度，允许小于 738px 的竖屏外框
+  const useCompactLayout = !!data?.preserveExportLayout;
+  /** 资产库拖入的参考成片：默认静帧 poster，仅悬停时挂载解码/播放 */
+  const isLibraryReferenceVideo = useCompactLayout;
+  const layoutMinW = useCompactLayout ? IMAGE_NODE_MIN_W : 738.91;
+  const layoutMinH = useCompactLayout ? IMAGE_NODE_MIN_H : 422.22;
+  const layoutMaxW = useCompactLayout ? IMAGE_NODE_MAX_W : 4096;
+  const layoutMaxH = useCompactLayout ? IMAGE_NODE_MAX_H : 4096;
+  const clampW = useCallback(
+    (v: number) => Math.max(layoutMinW, Math.min(layoutMaxW, v)),
+    [layoutMinW, layoutMaxW],
+  );
+  const clampH = useCallback(
+    (v: number) => Math.max(layoutMinH, Math.min(layoutMaxH, v)),
+    [layoutMinH, layoutMaxH],
+  );
+  const computeAdaptiveVideoSize = useCallback(
+    (videoW?: number, videoH?: number) => {
+      if (!videoW || !videoH || videoW <= 0 || videoH <= 0) {
+        return { w: layoutMinW, h: layoutMinH };
+      }
+      if (useCompactLayout) {
+        return computeNodeSizeFromMedia(videoW, videoH, layoutMinW, layoutMinH, layoutMaxW, layoutMaxH);
+      }
+      const scale = Math.max(layoutMinW / videoW, layoutMinH / videoH);
+      return {
+        w: clampW(Math.round(videoW * scale)),
+        h: clampH(Math.round(videoH * scale)),
+      };
+    },
+    [useCompactLayout, layoutMinW, layoutMinH, layoutMaxW, layoutMaxH, clampW, clampH],
+  );
 
-  const [size, setSize] = useState({
-    w: clampW(data?.width ?? MIN_NODE_WIDTH),
-    h: clampH(data?.height ?? MIN_NODE_HEIGHT),
-  });
+  const [size, setSize] = useState(() => ({
+    w: Math.max(layoutMinW, Math.min(layoutMaxW, data?.width ?? layoutMinW)),
+    h: Math.max(layoutMinH, Math.min(layoutMaxH, data?.height ?? layoutMinH)),
+  }));
   // 验证视频 URL 是否是有效的视频文件，并将 file:// 格式转换为 local-resource://
   const isValidVideoUrl = (url: string): boolean => {
     if (!url) return false;
@@ -1171,10 +1211,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     };
   }, [isInViewportFromIO]);
   /** 视口裁剪：使用滞后后的值，避免快速缩放时频繁挂载/卸载 */
-  /** 全局单例：activeVideoNodeId 或「选中且已出片且非生成中」可挂载，与任务列表预览对齐 */
-  const isActiveVideoSingleton =
-    activeVideoNodeId === id ||
-    (Boolean(selected) && !!videoDisplayUrl && Number(progress) <= 0 && !errorMessage);
+  /** 全局单例：activeVideoNodeId 或「选中且已出片且非生成中」可挂载；库参考片仅悬停时挂载 */
+  const isActiveVideoSingleton = isLibraryReferenceVideo
+    ? isVideoAreaHovered && activeVideoNodeId === id
+    : activeVideoNodeId === id ||
+      (Boolean(selected) && !!videoDisplayUrl && Number(progress) <= 0 && !errorMessage);
   const hoverBypassesViewport = isVideoAreaHovered && isActiveVideoSingleton;
   const shouldMountVideoTag =
     isActiveVideoSingleton && (isInViewportDelayed || hoverBypassesViewport) && shouldMountVideoTagRaw;
@@ -1214,6 +1255,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     nodeInternals.forEach((node) => {
       if (node.type !== 'video' || !(node as any).selected) return;
       const nodeData = (node as any).data || {};
+      if (nodeData.preserveExportLayout && node.id !== hoveredVideoNodeId) return;
       if (Number(nodeData.progress ?? 0) > 0) return;
       if (nodeData.outputVideo || nodeData.originalVideoUrl) ids.add(node.id);
     });
@@ -1604,12 +1646,58 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       videoDurationRef.current = duration;
       onDataChange?.(id, { mediaDurationSec: duration });
     }
-    const adapted = computeAdaptiveVideoSize(videoWidth, videoHeight);
-    if (size.w !== adapted.w || size.h !== adapted.h) {
-      setSize(adapted);
-      onDataChange?.(id, { width: adapted.w, height: adapted.h });
+    // 库拖入等 compact 外框：按成片像素 + Image 尺度重算，使外框贴合视频比例
+    if (data?.preserveExportLayout) {
+      const adapted = computeNodeSizeFromMedia(
+        videoWidth,
+        videoHeight,
+        IMAGE_NODE_MIN_W,
+        IMAGE_NODE_MIN_H,
+        IMAGE_NODE_MAX_W,
+        IMAGE_NODE_MAX_H,
+      );
+      const aspectLabel = aspectRatioLabelFromPixelSize(videoWidth, videoHeight);
+      const aspectRatio = snapToVideoPanelAspectRatio(aspectLabel);
+      const prevAsset =
+        data?.videoAsset && typeof data.videoAsset === 'object'
+          ? (data.videoAsset as Record<string, unknown>)
+          : {};
+      if (size.w !== adapted.w || size.h !== adapted.h || data?.aspectRatio !== aspectRatio) {
+        setSize(adapted);
+        onDataChange?.(id, {
+          width: adapted.w,
+          height: adapted.h,
+          aspectRatio,
+          videoAsset: {
+            ...prevAsset,
+            width: videoWidth,
+            height: videoHeight,
+          },
+        });
+      }
+      return;
     }
-  }, [computeAdaptiveVideoSize, size.w, size.h, id, onDataChange]);
+    const adapted = computeAdaptiveVideoSize(videoWidth, videoHeight);
+    const aspectLabel = aspectRatioLabelFromPixelSize(videoWidth, videoHeight);
+    const aspectRatio = snapToVideoPanelAspectRatio(aspectLabel);
+    const prevAsset =
+      data?.videoAsset && typeof data.videoAsset === 'object'
+        ? (data.videoAsset as Record<string, unknown>)
+        : {};
+    if (size.w !== adapted.w || size.h !== adapted.h || data?.aspectRatio !== aspectRatio) {
+      setSize(adapted);
+      onDataChange?.(id, {
+        width: adapted.w,
+        height: adapted.h,
+        aspectRatio,
+        videoAsset: {
+          ...prevAsset,
+          width: videoWidth,
+          height: videoHeight,
+        },
+      });
+    }
+  }, [computeAdaptiveVideoSize, size.w, size.h, id, onDataChange, data?.preserveExportLayout, data?.width, data?.height, data?.aspectRatio, data?.videoAsset]);
 
   const handleTrimClick = useCallback(() => {
     setTrimError(null);
@@ -1710,6 +1798,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           return;
         }
 
+        let sourcePixelSize = resolveFrameSplitPixelSize(data?.videoAsset);
+        if (!sourcePixelSize) {
+          sourcePixelSize = (await probeVideoPixelSize(captureUrl)) ?? null;
+        }
+
         const times = buildVideoFrameTimestamps(duration, intervalSec);
         if (times.length > MAX_VIDEO_FRAME_SPLIT_COUNT) {
           showAlert(vt.videoFrameSplitTooMany(MAX_VIDEO_FRAME_SPLIT_COUNT, times.length));
@@ -1725,20 +1818,18 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           throw new Error(frames[0]?.error || vt.videoFrameSplitFailed);
         }
 
-        const clampFrameW = (v: number) => Math.max(FRAME_IMAGE_MIN_W, Math.min(FRAME_IMAGE_MAX_W, v));
-        const clampFrameH = (v: number) => Math.max(FRAME_IMAGE_MIN_H, Math.min(FRAME_IMAGE_MAX_H, v));
-        const computeFrameNodeSize = (mediaW?: number, mediaH?: number) => {
-          if (!mediaW || !mediaH || mediaW <= 0 || mediaH <= 0) {
-            return { w: FRAME_IMAGE_MIN_W, h: FRAME_IMAGE_MIN_H };
-          }
-          const scale = Math.max(FRAME_IMAGE_MIN_W / mediaW, FRAME_IMAGE_MIN_H / mediaH);
-          return {
-            w: clampFrameW(Math.round(mediaW * scale)),
-            h: clampFrameH(Math.round(mediaH * scale)),
-          };
-        };
+        const resolveTilePixelSize = (frame: (typeof okFrames)[number], tile?: { width?: number; height?: number }) =>
+          resolveFrameSplitPixelSize(tile, frame, sourcePixelSize ?? undefined) ?? sourcePixelSize;
 
-        const firstSize = computeFrameNodeSize(okFrames[0]?.width, okFrames[0]?.height);
+        const firstPixel = resolveTilePixelSize(okFrames[0]!) ?? { width: IMAGE_NODE_MIN_W, height: IMAGE_NODE_MIN_H };
+        const firstSize = computeNodeSizeFromMedia(
+          firstPixel.width,
+          firstPixel.height,
+          IMAGE_NODE_MIN_W,
+          IMAGE_NODE_MIN_H,
+          IMAGE_NODE_MAX_W,
+          IMAGE_NODE_MAX_H,
+        );
         const splitW = firstSize.w;
         const splitH = firstSize.h;
         const GAP = 40;
@@ -1801,7 +1892,16 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
         const lastIdx = tilePayloads.length - 1;
         const newNodes: Node[] = tilePayloads.map((tile, i) => {
-          const adapted = computeFrameNodeSize(tile.width, tile.height);
+          const pixel = resolveTilePixelSize(okFrames[i]!, tile) ?? firstPixel;
+          const adapted = computeNodeSizeFromMedia(
+            pixel.width,
+            pixel.height,
+            IMAGE_NODE_MIN_W,
+            IMAGE_NODE_MIN_H,
+            IMAGE_NODE_MAX_W,
+            IMAGE_NODE_MAX_H,
+          );
+          const aspectLabel = aspectRatioLabelFromPixelSize(pixel.width, pixel.height);
           return {
             id: `image-${ts}-${i}`,
             type: 'image',
@@ -1812,26 +1912,30 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               width: adapted.w,
               height: adapted.h,
               isUserResized: false,
+              preserveExportLayout: true,
               title: 'image',
               resolution: '1k',
-              aspectRatio: '9:16',
+              aspectRatio: aspectLabel,
               model: 'banana-2.0',
-              seedreamWidth: 2048,
-              seedreamHeight: 2048,
+              seedreamWidth: pixel.width,
+              seedreamHeight: pixel.height,
               outputImage: tile.outputImage,
               outputImages: [tile.outputImage],
               originalImageUrl: tile.originalImageUrl,
               tinyThumbUrl: tile.tinyThumbUrl ?? '',
               localPath: tile.localPath,
-              imageAsset: tile.imageAsset,
+              imageAsset: {
+                ...tile.imageAsset,
+                width: pixel.width,
+                height: pixel.height,
+              },
               progress: 0,
               errorMessage: undefined,
             },
             style: {
-              width: `${adapted.w}px`,
-              height: `${adapted.h}px`,
-              minWidth: `${FRAME_IMAGE_MIN_W}px`,
-              minHeight: `${FRAME_IMAGE_MIN_H}px`,
+              ...nodeStyleDimensions(adapted.w, adapted.h),
+              minWidth: `${IMAGE_NODE_MIN_W}px`,
+              minHeight: `${IMAGE_NODE_MIN_H}px`,
             },
           };
         });
@@ -1897,6 +2001,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       if (!res?.originalUrl) throw new Error('未返回视频地址');
       const adapted = computeAdaptiveVideoSize(res.width, res.height);
       setSize(adapted);
+      const aspectRatio =
+        res.width && res.height
+          ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(res.width, res.height))
+          : undefined;
       const out = res.originalUrl;
       prevOutputVideoRef.current = out;
       setOutputVideo(out);
@@ -1912,6 +2020,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         },
         width: adapted.w,
         height: adapted.h,
+        ...(aspectRatio ? { aspectRatio } : {}),
         progress: 0,
         progressMessage: '',
         errorMessage: undefined,
@@ -1989,12 +2098,17 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     setErrorMessage('');
     const adapted = computeAdaptiveVideoSize(width, height);
     setSize(adapted);
+    const aspectRatio =
+      width && height && width > 0 && height > 0
+        ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(width, height))
+        : data?.aspectRatio;
     onDataChange?.(id, {
       outputVideo: url,
       progress: 0,
       errorMessage: undefined,
       width: adapted.w,
       height: adapted.h,
+      ...(aspectRatio ? { aspectRatio } : {}),
       videoAsset: {
         poster: posterUrl,
         ghost,
@@ -2002,7 +2116,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         height,
       },
     });
-  }, [id, onDataChange, computeAdaptiveVideoSize]);
+  }, [id, onDataChange, computeAdaptiveVideoSize, data?.aspectRatio]);
 
   const handleDownloadVideo = useCallback(async () => {
     const localUrl = (videoDisplayUrl || outputVideo || '').trim();
@@ -2151,11 +2265,14 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       style={{
         width: size.w,
         height: size.h,
-        minWidth: MIN_NODE_WIDTH,
-        minHeight: MIN_NODE_HEIGHT,
+        minWidth: layoutMinW,
+        minHeight: layoutMinH,
         isolation: 'isolate',
         transform: 'translateZ(0)',
         willChange: data?._isResizing ? 'transform, width, height' : 'transform',
+        transition: data?._isResizing || dragging
+          ? 'none'
+          : `${NODE_SIZE_TRANSITION}, box-shadow 0.2s, border-color 0.2s`,
       }}
       className={`custom-node-container nexflow-video-node group relative rounded-2xl overflow-visible ${
         hasRenderableVideo
@@ -2164,6 +2281,18 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       } ${isPreviewPlaying && !data?._isResizing ? 'nexflow-media-playing-glow' : ''} ${selected && !isPreviewPlaying && isDarkMode && !data?._isResizing ? 'ring-2 ring-green-400/80' : ''} ${selected && !isPreviewPlaying && !isDarkMode && !data?._isResizing ? 'ring-2 ring-green-500' : ''} ${data?._isResizing ? '!shadow-none !ring-0' : ''} transition-all duration-200`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onClickCapture={() => {
+        if (!isCanvasPickDigitalHumanVideoTarget()) return;
+        const ref = (
+          (data?.outputVideo as string | undefined) ||
+          (data?.originalVideoUrl as string | undefined) ||
+          (data?.referenceVideoUrl as string | undefined) ||
+          outputVideo ||
+          ''
+        ).trim();
+        if (!ref) return;
+        dispatchCanvasPickNode(id);
+      }}
     >
       {/* 统一输入点：自动识别 Image（图生视频）、Audio（口型同步）、Video（参考视频） */}
       <Handle type="target" position={Position.Left} id="input" style={{ top: '50%' }} className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} title="输入图片/音频/参考视频" />
@@ -2295,8 +2424,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 recordPlaybackPersistCall('VideoNode.onMouseLeave');
                 onDataChange?.(id, { playbackCurrentTimeSec: raw });
               }
-              if (videoDisplayUrl) {
+              if (videoDisplayUrl && !isLibraryReferenceVideo) {
                 pv.captureCurrentFrame?.(videoDisplayUrl, onFrameCaptured);
+              }
+              if (isLibraryReferenceVideo) {
+                pv.releaseVideo?.();
+                setVideoStatus('loading');
+                setDecodedFrameReady(true);
               }
             }
           } catch {
@@ -2331,15 +2465,19 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                       initial={{ opacity: 0 }}
                       animate={{
                         opacity: videoStatus === 'finished' ? 1 : 0,
-                        filter: videoStatus === 'finished' ? 'blur(0px)' : 'blur(8px)',
+                        filter:
+                          isLibraryReferenceVideo || videoStatus === 'finished' ? 'blur(0px)' : 'blur(8px)',
                       }}
                       exit={{ opacity: 0 }}
                       transition={{
-                        duration: isInteractionVisualLock
-                          ? 0
-                          : (!isInteractionVisualLock && !isFastMoving
-                          ? (isVideoAreaHovered ? VIDEO_HOVER_FADE_DURATION : VIDEO_FADE_DURATION)
-                          : 0.12),
+                        duration:
+                          isLibraryReferenceVideo || isInteractionVisualLock
+                            ? 0
+                            : !isInteractionVisualLock && !isFastMoving
+                              ? isVideoAreaHovered
+                                ? VIDEO_HOVER_FADE_DURATION
+                                : VIDEO_FADE_DURATION
+                              : 0.12,
                         ease: FOCUS_EASE,
                       }}
                       className="absolute inset-0 w-full h-full"
@@ -2353,7 +2491,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         poster={effectivePosterSrc || undefined}
                         className="w-full h-full bg-transparent rounded-2xl object-contain"
                         style={{ borderRadius: 16 }}
-                        preload={isVideoAreaHovered ? 'auto' : 'metadata'}
+                        preload={isVideoAreaHovered ? 'auto' : isLibraryReferenceVideo ? 'none' : 'metadata'}
                         playsInline
                         muted={!isVideoAreaHovered}
                         controls={showDetailedUi && (selected || isVideoAreaHovered)}
@@ -2364,7 +2502,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         onCanPlay={() => {
                           if (videoDisplayUrl) {
                             readyVideoSrcSetRef.current.add(videoDisplayUrl);
-                            if (!effectivePosterSrc && firstFrameCapturedForUrlRef.current !== videoDisplayUrl) {
+                            if (
+                              !isLibraryReferenceVideo &&
+                              !effectivePosterSrc &&
+                              firstFrameCapturedForUrlRef.current !== videoDisplayUrl
+                            ) {
                               firstFrameCapturedForUrlRef.current = videoDisplayUrl;
                               videoPreviewRef.current?.captureCurrentFrame?.(videoDisplayUrl, onFrameCaptured);
                             }

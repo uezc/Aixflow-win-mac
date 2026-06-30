@@ -13,6 +13,10 @@
 
 3. icon.png 若存在，还会被 copy-icon-to-public.js 复制到 public/，用于激活页等界面。
 
+4. 安装器品牌图（暗黑主题）
+   - npm run generate-nsis-branding 会生成 installerSidebar.bmp（164×314）、installerHeader.bmp（150×57）。
+   - electron:build 会自动执行；颜色与官网 #051A24 一致。
+
 当前配置（package.json）已指向 build/icon.ico 作为 Windows 图标。
 
 npm run convert-icon -- --force

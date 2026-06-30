@@ -8,6 +8,7 @@ export type ContextMenuStrings = {
   canvasTool: string;
   video: string;
   wanAnimate: string;
+  heyGem: string;
   videoSplice: string;
   photoCollage: string;
   imageTo3d: string;
@@ -30,6 +31,7 @@ const zh: ContextMenuStrings = {
   canvasTool: '画板工具',
   video: '视频',
   wanAnimate: '视频换人',
+  heyGem: 'HeyGem 数字人',
   videoSplice: '视频剪辑',
   photoCollage: '拼图',
   imageTo3d: '图片转 3D',
@@ -52,6 +54,7 @@ const en: ContextMenuStrings = {
   canvasTool: 'Canvas tools',
   video: 'Video',
   wanAnimate: 'WanAnimate',
+  heyGem: 'HeyGem',
   videoSplice: 'Video edit',
   photoCollage: 'Photo collage',
   imageTo3d: 'Image to 3D',
@@ -80,6 +83,7 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     'canvas-tool': 'canvasTool',
     video: 'video',
     wanAnimate: 'wanAnimate',
+    heyGem: 'heyGem',
     videoSplice: 'videoSplice',
     photoCollage: 'photoCollage',
     imageTo3d: 'imageTo3d',

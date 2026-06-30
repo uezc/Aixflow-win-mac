@@ -22,7 +22,18 @@ import {
   FlipVertical2,
 } from 'lucide-react';
 import { ModuleProgressBar } from './ModuleProgressBar';
-import { mapProjectPath } from '../../utils/pathMapper';
+import {
+  computeNodeSizeFromMedia,
+  DEFAULT_IMAGE_ASPECT_RATIO,
+  IMAGE_NODE_MAX_H,
+  IMAGE_NODE_MAX_W,
+  IMAGE_NODE_MIN_H,
+  IMAGE_NODE_MIN_W,
+  NODE_SIZE_TRANSITION,
+  aspectRatioLabelFromPixelSize,
+  nodeStyleDimensions,
+  probeImagePixelSize,
+} from '../../utils/nodeSizeFromAspectRatio';
 import {
   enqueueImageLoad,
   calcViewportPriority,
@@ -105,6 +116,8 @@ interface ImageNodeData {
   flipH?: boolean;
   /** 预览垂直镜像 */
   flipV?: boolean;
+  /** 拆帧/导出等已写入目标外框时，避免被面板或 onLoad 覆盖比例 */
+  preserveExportLayout?: boolean;
 }
 
 interface ImageNodeProps extends NodeProps<ImageNodeData> {
@@ -649,26 +662,22 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     ),
   );
   // 图片节点采用“最小尺寸下限 + 按素材比例自适应”的外框策略。
-  const MIN_NODE_WIDTH = 369.46;
-  const MIN_NODE_HEIGHT = 211.12;
-  const MAX_NODE_WIDTH = 2048;
-  const MAX_NODE_HEIGHT = 2048;
-  const clampW = (v: number) => Math.max(MIN_NODE_WIDTH, Math.min(MAX_NODE_WIDTH, v));
-  const clampH = (v: number) => Math.max(MIN_NODE_HEIGHT, Math.min(MAX_NODE_HEIGHT, v));
+  const clampW = (v: number) => Math.max(IMAGE_NODE_MIN_W, Math.min(IMAGE_NODE_MAX_W, v));
+  const clampH = (v: number) => Math.max(IMAGE_NODE_MIN_H, Math.min(IMAGE_NODE_MAX_H, v));
   const computeAdaptiveNodeSize = useCallback((mediaW?: number, mediaH?: number) => {
-    if (!mediaW || !mediaH || mediaW <= 0 || mediaH <= 0) {
-      return { w: MIN_NODE_WIDTH, h: MIN_NODE_HEIGHT };
-    }
-    const scale = Math.max(MIN_NODE_WIDTH / mediaW, MIN_NODE_HEIGHT / mediaH);
-    return {
-      w: clampW(Math.round(mediaW * scale)),
-      h: clampH(Math.round(mediaH * scale)),
-    };
+    return computeNodeSizeFromMedia(
+      mediaW,
+      mediaH,
+      IMAGE_NODE_MIN_W,
+      IMAGE_NODE_MIN_H,
+      IMAGE_NODE_MAX_W,
+      IMAGE_NODE_MAX_H,
+    );
   }, []);
 
   const [size, setSize] = useState({
-    w: clampW(data?.width ?? MIN_NODE_WIDTH),
-    h: clampH(data?.height ?? MIN_NODE_HEIGHT),
+    w: clampW(data?.width ?? IMAGE_NODE_MIN_W),
+    h: clampH(data?.height ?? IMAGE_NODE_MIN_H),
   });
 
   useEffect(() => {
@@ -1392,7 +1401,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             mode === 'four' ? imgc.splitFourNodeLabel(i) : imgc.splitNineNodeLabel(i),
           ),
           resolution: data?.resolution ?? '1k',
-          aspectRatio: data?.aspectRatio ?? '9:16',
+          aspectRatio: data?.aspectRatio ?? DEFAULT_IMAGE_ASPECT_RATIO,
           model: data?.model ?? 'banana-2.0',
           seedreamWidth: d?.seedreamWidth ?? 2048,
           seedreamHeight: d?.seedreamHeight ?? 2048,
@@ -1472,8 +1481,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           style: {
             width: `${p.splitW}px`,
             height: `${p.splitH}px`,
-            minWidth: `${MIN_NODE_WIDTH}px`,
-            minHeight: `${MIN_NODE_HEIGHT}px`,
+            minWidth: `${IMAGE_NODE_MIN_W}px`,
+            minHeight: `${IMAGE_NODE_MIN_H}px`,
           },
         };
       });
@@ -1550,12 +1559,14 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const baseStyle: React.CSSProperties = {
     width: size.w,
     height: size.h,
-    minWidth: `${MIN_NODE_WIDTH}px`,
-    minHeight: `${MIN_NODE_HEIGHT}px`,
+    minWidth: `${IMAGE_NODE_MIN_W}px`,
+    minHeight: `${IMAGE_NODE_MIN_H}px`,
     userSelect: isResizing ? 'none' : 'auto',
     willChange: isResizing ? 'transform, width, height' : dragging ? 'transform' : 'auto',
     backfaceVisibility: isResizing ? 'hidden' : 'visible',
-    transition: isResizing ? 'none' : 'background-color 0.2s, border-color 0.2s',
+    transition: isResizing || dragging
+      ? 'none'
+      : `${NODE_SIZE_TRANSITION}, background-color 0.2s, border-color 0.2s`,
   };
   const combinedStyle: React.CSSProperties = baseStyle;
 
@@ -1763,6 +1774,129 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const hasAvgColor = !!resolvedAvgColor;
   const skeletonColor = resolvedAvgColor || '#6b7280';
   const isUserResized = Boolean((data as any)?.isUserResized);
+
+  const applyLayoutFromMediaPixels = useCallback(
+    (naturalW: number, naturalH: number, srcKey: string) => {
+      if (!naturalW || !naturalH || naturalW <= 0 || naturalH <= 0) return;
+      if (data?.preserveExportLayout && data?.width && data?.height) return;
+      if (isUserResized) return;
+      const adapted = computeAdaptiveNodeSize(naturalW, naturalH);
+      const lastApplied = lastAppliedSizeRef.current;
+      if (
+        lastApplied &&
+        lastApplied.srcKey === srcKey &&
+        lastApplied.w === adapted.w &&
+        lastApplied.h === adapted.h
+      ) {
+        return;
+      }
+      lastAppliedSizeRef.current = { srcKey, w: adapted.w, h: adapted.h };
+      lastOnLoadSrcRef.current = srcKey;
+      setSize((prev) => (prev.w === adapted.w && prev.h === adapted.h ? prev : adapted));
+      const aspectRatio = aspectRatioLabelFromPixelSize(naturalW, naturalH);
+      const styleDims = nodeStyleDimensions(adapted.w, adapted.h);
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  width: adapted.w,
+                  height: adapted.h,
+                  aspectRatio,
+                  isUserResized: false,
+                  imageAsset: {
+                    ...((node.data?.imageAsset as object) || {}),
+                    width: naturalW,
+                    height: naturalH,
+                  },
+                },
+                style: { ...(node.style as object), ...styleDims },
+              }
+            : node,
+        ),
+      );
+      if (onDataChange) {
+        onDataChange(id, { width: adapted.w, height: adapted.h });
+      }
+    },
+    [
+      computeAdaptiveNodeSize,
+      data?.preserveExportLayout,
+      data?.width,
+      data?.height,
+      id,
+      isUserResized,
+      onDataChange,
+      setNodes,
+    ],
+  );
+
+  const mediaLayoutProbeKey = useMemo(() => {
+    const first = outputImages[0] || outputImage || primaryOutputImage || '';
+    return `${outputImages.length}:${formatImagePath(first)}`;
+  }, [outputImages, outputImage, primaryOutputImage]);
+
+  useEffect(() => {
+    if (!mediaLayoutProbeKey || mediaLayoutProbeKey.endsWith(':')) return;
+    if (data?.preserveExportLayout && data?.width && data?.height) return;
+    if (isUserResized) return;
+
+    const rawPath = outputImages[0] || outputImage || primaryOutputImage || '';
+    if (!rawPath.trim()) return;
+
+    const formattedPath = formatImagePath(rawPath);
+    const asset = data?.imageAsset as { width?: number; height?: number; preview?: string; original?: string } | undefined;
+    const aw = Number(asset?.width);
+    const ah = Number(asset?.height);
+    const assetUrlMatches =
+      !!asset &&
+      (formatImagePath(String(asset.preview || '')) === formattedPath ||
+        formatImagePath(String(asset.original || '')) === formattedPath ||
+        formatImagePath(String(data?.outputImage || '')) === formattedPath);
+    if (aw > 0 && ah > 0 && assetUrlMatches) {
+      applyLayoutFromMediaPixels(aw, ah, mediaLayoutProbeKey);
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const displaySrc = await resolveImageSrcForElectronDisplay(rawPath, projectId);
+        const px = await probeImagePixelSize(displaySrc);
+        if (!cancelled && px.width > 0 && px.height > 0) {
+          applyLayoutFromMediaPixels(px.width, px.height, mediaLayoutProbeKey);
+        }
+      } catch {
+        try {
+          const px = await probeImagePixelSize(formattedPath);
+          if (!cancelled && px.width > 0 && px.height > 0) {
+            applyLayoutFromMediaPixels(px.width, px.height, mediaLayoutProbeKey);
+          }
+        } catch {
+          /* 探测失败时保留当前外框 */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    applyLayoutFromMediaPixels,
+    data?.imageAsset,
+    data?.outputImage,
+    data?.preserveExportLayout,
+    data?.width,
+    data?.height,
+    isUserResized,
+    mediaLayoutProbeKey,
+    outputImage,
+    outputImages,
+    primaryOutputImage,
+    projectId,
+  ]);
+
   const isInViewportRef = useRef(true);
   const hasMultiOutputImagesForViewport = outputImages.length > 1;
   const hasImageOutputForViewport = !!(primaryOutputImage || outputImages.length > 0);
@@ -2888,23 +3022,22 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   const img = e.currentTarget;
                   const srcKey = currentImageSrc || primaryOutputImage || img.src || '';
                   if (lastOnLoadSrcRef.current === srcKey) return;
-                  lastOnLoadSrcRef.current = srcKey;
 
                   if (fallbackUrl) setFallbackUrl(null);
-                  // 始终根据图片比例更新模块尺寸，不受 LOD 影响，确保模块比例符合图片
-                  setImageNaturalPx({ w: img.naturalWidth, h: img.naturalHeight });
-                  const adapted = computeAdaptiveNodeSize(img.naturalWidth, img.naturalHeight);
-                  const lastApplied = lastAppliedSizeRef.current;
-                  const alreadyApplied =
-                    !!lastApplied &&
-                    lastApplied.srcKey === srcKey &&
-                    lastApplied.w === adapted.w &&
-                    lastApplied.h === adapted.h;
-                  if (!alreadyApplied) {
-                    lastAppliedSizeRef.current = { srcKey, w: adapted.w, h: adapted.h };
-                    setSize((prev) => (prev.w === adapted.w && prev.h === adapted.h ? prev : adapted));
-                    updateNodeData({ width: adapted.w, height: adapted.h });
-                  }
+                  const assetW = Number(data?.imageAsset?.width);
+                  const assetH = Number(data?.imageAsset?.height);
+                  const imgRatio = img.naturalWidth / Math.max(img.naturalHeight, 1);
+                  const assetRatio = assetW > 0 && assetH > 0 ? assetW / assetH : 0;
+                  const assetMatchesLoaded =
+                    assetW > 0 &&
+                    assetH > 0 &&
+                    img.naturalWidth > 0 &&
+                    img.naturalHeight > 0 &&
+                    Math.abs(assetRatio - imgRatio) / Math.max(imgRatio, 0.01) < 0.08;
+                  const naturalW = assetMatchesLoaded ? assetW : img.naturalWidth;
+                  const naturalH = assetMatchesLoaded ? assetH : img.naturalHeight;
+                  setImageNaturalPx({ w: naturalW, h: naturalH });
+                  applyLayoutFromMediaPixels(naturalW, naturalH, srcKey);
                 }}
                 onError={async (e) => {
                 // 图片加载失败时，检查是否有本地文件路径可以回退

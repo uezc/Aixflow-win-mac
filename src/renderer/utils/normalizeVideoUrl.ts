@@ -52,3 +52,14 @@ export function normalizeVideoUrl(url: string): string {
 
   return cleanUrl;
 }
+
+/** Electron 渲染进程：<video> 对 local-resource:// 常无法解码，转为 file:/// 播放 */
+export function toElectronVideoElementSrc(url: string): string {
+  const clean = normalizeVideoUrl((url || '').trim());
+  if (!clean) return '';
+  if (clean.startsWith('local-resource://') && typeof window !== 'undefined' && (window as Window & { electronAPI?: unknown }).electronAPI) {
+    const pathPart = clean.replace(/^local-resource:\/\/+/, '');
+    return pathPart ? `file:///${pathPart.replace(/\\/g, '/')}` : clean;
+  }
+  return clean;
+}
