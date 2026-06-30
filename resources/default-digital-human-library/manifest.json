@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "syncedAt": "2026-06-30T12:00:53.877Z",
+  "sourceUserData": "C:\\Users\\Administrator\\AppData\\Roaming\\NEXFLOW",
+  "digitalHumanLibrary": [
+    {
+      "id": "dh-1782700657630-ozbpwwkvv",
+      "nickname": "hailun 海伦",
+      "name": "hailun 海伦",
+      "createdAt": 1782700657635,
+      "localVideoPath": "digital-human-library/dh-1782700657630-ozbpwwkvv-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782700657630-ozbpwwkvv-video.mp4"
+    },
+    {
+      "id": "dh-1782711297234-xiw5ekqm3",
+      "nickname": "lisa 丽丽",
+      "name": "lisa 丽丽",
+      "createdAt": 1782711297238,
+      "localVideoPath": "digital-human-library/dh-1782711297234-xiw5ekqm3-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782711297234-xiw5ekqm3-video.mp4"
+    },
+    {
+      "id": "dh-1782717255219-s1qf6nkv1",
+      "nickname": "elle 艾尔",
+      "name": "elle 艾尔",
+      "createdAt": 1782717255223,
+      "localVideoPath": "digital-human-library/dh-1782717255219-s1qf6nkv1-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782717255219-s1qf6nkv1-video.mp4"
+    },
+    {
+      "id": "dh-1782721448057-v665s4oxx",
+      "nickname": "jack 杰克",
+      "name": "jack 杰克",
+      "createdAt": 1782721448061,
+      "localVideoPath": "digital-human-library/dh-1782721448057-v665s4oxx-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782721448057-v665s4oxx-video.mp4"
+    },
+    {
+      "id": "dh-1782723061258-fskc6iozx",
+      "nickname": "lyona 亚纳",
+      "name": "lyona 亚纳",
+      "createdAt": 1782723061261,
+      "localVideoPath": "digital-human-library/dh-1782723061258-fskc6iozx-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782723061258-fskc6iozx-video.mp4"
+    },
+    {
+      "id": "dh-1782724797397-24hhbw43y",
+      "nickname": "Nora 诺拉",
+      "name": "Nora 诺拉",
+      "createdAt": 1782724797403,
+      "localVideoPath": "digital-human-library/dh-1782724797397-24hhbw43y-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782724797397-24hhbw43y-video.mp4"
+    },
+    {
+      "id": "dh-1782801109740-lttsx5e0e",
+      "nickname": "Gavin 加文",
+      "name": "Gavin 加文",
+      "createdAt": 1782801109745,
+      "localVideoPath": "digital-human-library/dh-1782801109740-lttsx5e0e-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782801109740-lttsx5e0e-video.mp4"
+    },
+    {
+      "id": "dh-1782801925572-tilhs9kgi",
+      "nickname": "Winnie 温妮",
+      "name": "Winnie 温妮",
+      "createdAt": 1782801925577,
+      "localVideoPath": "digital-human-library/dh-1782801925572-tilhs9kgi-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782801925572-tilhs9kgi-video.mp4"
+    },
+    {
+      "id": "dh-1782802927142-n83q77o4o",
+      "nickname": "Leo 里奥",
+      "name": "Leo 里奥",
+      "createdAt": 1782802927147,
+      "localVideoPath": "digital-human-library/dh-1782802927142-n83q77o4o-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782802927142-n83q77o4o-video.mp4"
+    },
+    {
+      "id": "dh-1782803895971-5jrbgtejp",
+      "nickname": "lisa 丽萨",
+      "name": "lisa 丽萨",
+      "createdAt": 1782803895977,
+      "localVideoPath": "digital-human-library/dh-1782803895971-5jrbgtejp-video.mp4",
+      "videoUrl": "digital-human-library/dh-1782803895971-5jrbgtejp-video.mp4"
+    }
+  ]
+}

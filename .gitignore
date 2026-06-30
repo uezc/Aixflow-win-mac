@@ -8,7 +8,12 @@ dist_final/
 aixflow-final.zip
 dist-electron/
 release/
+release-build/
 build/icon-512.png
+
+# 默认数字人库媒体（构建时 sync-digital-human-library 从本机同步，勿提交）
+resources/default-digital-human-library/files/
+resources/default-digital-human-library/files.staging-*/
 
 # Whisper：模型与预编译 CLI 体积/版权按需本机放置（勿提交）
 resources/whisper/*.bin

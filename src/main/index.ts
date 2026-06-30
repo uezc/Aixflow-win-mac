@@ -27,6 +27,10 @@ import {
 } from './utils/assetDownloadDialog.js';
 import { importDefaultAssetLibraryIfNeeded, repairAssetLibraryInStore } from './utils/defaultAssetLibrary.js';
 import {
+  importDefaultDigitalHumanLibraryIfNeeded,
+  repairDigitalHumanLibraryInStore,
+} from './utils/defaultDigitalHumanLibrary.js';
+import {
   clearSessionBeijingFcProxyUpload,
   ensureOssUploadRouteProbed,
   applyMediaOssRegion,
@@ -968,6 +972,8 @@ function applyFirstRunAfterInstall() {
 
   importDefaultAssetLibraryIfNeeded(store);
   repairAssetLibraryInStore(store);
+  importDefaultDigitalHumanLibraryIfNeeded(store);
+  repairDigitalHumanLibraryInStore(store);
 }
 
 /** 禁止多开：再次启动时聚焦已有窗口（Windows 任务切换里不再出现多个 Aixflow） */
