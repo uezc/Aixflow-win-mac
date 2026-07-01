@@ -1,7 +1,9 @@
 默认数字人资产库
 ================
 
-构建安装包时会从本机 NEXFLOW 用户数据同步到此目录（npm run sync:digital-human-library，已并入 electron:build）。
+默认数字人库媒体已纳入 Git（Mac clone 后可直接构建，无需本机 sync）。
+
+构建安装包时也可从本机 NEXFLOW 用户数据重新同步（npm run sync:digital-human-library，已并入 electron:build）。
 
 【操作步骤】
 1. 在本机 Aixflow 数字人库中添加参考视频（及可选驱动音频）。
