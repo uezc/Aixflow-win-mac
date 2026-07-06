@@ -142,8 +142,9 @@ export function getAudioDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
 ): number {
-  const qty = Math.max(1, Number(quantity) || 1);
   const m = String(model || '').trim();
+  if (m === 'ai-voice-cover') return 0;
+  const qty = Math.max(1, Number(quantity) || 1);
   const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, m), qty);
   if (y != null) return y;
   return localRetailCnyToYuanbao(getAudioPrice(m), qty);
@@ -221,8 +222,10 @@ export const WATERMARK_REMOVAL_AI_APP_ID = '2022127885233950721';
 export const VIDEO_WATERMARK_REMOVAL_AI_APP_ID = '2049450731266121729';
 /** 人物多角度 RunningHub AI 应用 ID（与 runningHubAiAppFc、FC billingModelId 一致） */
 export const CHARACTER_MULTI_ANGLE_AI_APP_ID = '1990056102572290049';
-/** 图片转 3D（GLB）RunningHub AI App */
+/** 图片转 3D（GLB）RunningHub AI App — Hy3D 经典 */
 export const IMAGE_TO_3D_AI_APP_ID = '2059618241806430209';
+export { TRELLIS2_IMAGE_TO_3D_APP_ID } from '../../shared/imageTo3dModels';
+import { imageTo3dAppIdForModel, resolveImageTo3dModelId } from '../../shared/imageTo3dModels';
 
 /**
  * 抠图 / 去水印单次预估：nx_model_config 主键为 RunningHub 应用 ID；无表时按种子 base 0.01 元（sync BASE_PRICE_CNY）。
@@ -248,8 +251,10 @@ export function getMattingDisplayPrice(
 export function getImageTo3dDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
+  modelId?: string | null,
 ): number {
-  return getRunningHubImageAuxDisplayPrice(IMAGE_TO_3D_AI_APP_ID, cloudMap, quantity);
+  const appId = imageTo3dAppIdForModel(resolveImageTo3dModelId(modelId));
+  return getRunningHubImageAuxDisplayPrice(appId, cloudMap, quantity);
 }
 
 export function getWatermarkRemovalDisplayPrice(

@@ -127,7 +127,19 @@ function promoteStagingDir(stagingDir, targetDir) {
       return;
     }
   }
-  fs.renameSync(stagingDir, targetDir);
+  try {
+    fs.renameSync(stagingDir, targetDir);
+  } catch (e) {
+    const code = e?.code || '';
+    if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+      console.warn('[sync-digital-human] rename 失败，改为增量覆盖:', e.message);
+      fs.mkdirSync(targetDir, { recursive: true });
+      mergeDirIntoTarget(stagingDir, targetDir);
+      rmDirRecursive(stagingDir, { label: 'staging', throwOnFail: false });
+      return;
+    }
+    throw e;
+  }
 }
 
 function bundleMediaField(raw, userDataPath) {

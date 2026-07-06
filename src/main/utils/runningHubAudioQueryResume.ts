@@ -5,13 +5,14 @@ import { randomUUID } from 'crypto';
 import { rhQueryPollAudio } from './runningHubFcHelpers.js';
 import { getAliyunFcInitUserUrl } from '../config/aliyunConfig.js';
 import { normalizeRunningHubPollStatus } from './runningHubVideoQueryResume.js';
+import { isRvcModelPackageUrl, pickRhModelPackageUrlFromResults } from '../../shared/rvcVoiceTrainUtils.js';
 
 function firstRhAudioUrlFromResultItem(item: unknown): string | undefined {
   if (!item || typeof item !== 'object') return undefined;
   const o = item as Record<string, unknown>;
   for (const k of ['url', 'fileUrl', 'audioUrl', 'audio_url', 'videoUrl', 'video_url']) {
     const v = o[k];
-    if (typeof v === 'string' && /^https?:\/\//i.test(v)) return v;
+    if (typeof v === 'string' && /^https?:\/\//i.test(v) && !isRvcModelPackageUrl(v)) return v;
   }
   const nested = o.url;
   if (nested && typeof nested === 'object' && 'url' in nested && typeof (nested as { url?: string }).url === 'string') {
@@ -60,7 +61,8 @@ export function extractRunningHubAudioUrlFromPoll(pollData: Record<string, unkno
 }
 
 export type RunningHubAudioResumeResult =
-  | { ok: true; audioUrl: string }
+  | { ok: true; kind: 'audio'; audioUrl: string }
+  | { ok: true; kind: 'rvc-model'; modelUrl: string }
   | { ok: false; error: string };
 
 const DEFAULT_TIMEOUT_MS = 25 * 60 * 1000;
@@ -105,9 +107,16 @@ export async function pollRunningHubAudioUntilTerminal(
     options?.onTick?.({ attempt, normalizedStatus: normalized });
 
     if (normalized === 'SUCCESS') {
+      const d = pollData as Record<string, any>;
+      const modelUrl = pickRhModelPackageUrlFromResults(
+        Array.isArray(d.results) ? d.results : d.data?.results,
+      );
+      if (modelUrl && (modelUrl.startsWith('http://') || modelUrl.startsWith('https://'))) {
+        return { ok: true, kind: 'rvc-model', modelUrl };
+      }
       const url = extractRunningHubAudioUrlFromPoll(pollData);
       if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
-        return { ok: true, audioUrl: url };
+        return { ok: true, kind: 'audio', audioUrl: url };
       }
       successWithoutUrlRounds += 1;
       if (successWithoutUrlRounds >= MAX_SUCCESS_WITHOUT_URL_ROUNDS) {

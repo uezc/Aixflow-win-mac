@@ -24,6 +24,14 @@ export interface AIStatusPacket {
     originalImageUrls?: string[]; // 批量图片原始远程 URL（备用）
     videoUrl?: string;  // 生成的视频 URL（用于视频生成，远程 URL）
     audioUrl?: string;  // 生成的音频 URL（用于音频生成）
+    /** RVC 训练输出的模型文件（本地或远程 URL） */
+    outputModelUrl?: string;
+    outputModelRemoteUrl?: string;
+    outputModelLocalPath?: string;
+    rvcTrainModelName?: string;
+    /** 多段音频结果（如 AI 翻唱宫格） */
+    outputAudios?: string[];
+    originalOutputAudios?: string[];
     originalAudioUrl?: string; // 原始音频远程 URL（备用）
     localPath?: string; // 本地文件路径（自动下载后）
     originalImageUrl?: string; // 原始图片远程 URL（备用，用于图片加载失败时回退）
@@ -38,6 +46,10 @@ export interface AIStatusPacket {
     model?: string;     // 使用的模型（用于保存元数据）
     nodeTitle?: string; // 节点标题（用于保存元数据）
     projectId?: string; // 项目 ID（用于保存元数据）
+    /** 本地 RVC 翻唱进度 */
+    localRvcCover?: boolean;
+    stage?: string;
+    engineDownload?: { phase: string; percent: number; message: string };
   };
 }
 

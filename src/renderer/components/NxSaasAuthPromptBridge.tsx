@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppLocale } from '../contexts/AppLocaleContext';
+import { NX_SAAS_LOGIN_REQUIRED_EVENT } from '../utils/cloudAiGateMessage';
 import { DarkAlertModal } from './DarkAlertModal';
 
 /** 算力门禁 / 未登录：提示「账号未登录」，点按钮回到账户登录页（/settings） */
@@ -19,8 +20,8 @@ export const NxSaasAuthPromptBridge: React.FC = () => {
       showingRef.current = true;
       setOpen(true);
     };
-    window.addEventListener('nx-saas-login-required', handler);
-    return () => window.removeEventListener('nx-saas-login-required', handler);
+    window.addEventListener(NX_SAAS_LOGIN_REQUIRED_EVENT, handler);
+    return () => window.removeEventListener(NX_SAAS_LOGIN_REQUIRED_EVENT, handler);
   }, []);
 
   const goToLoginPage = () => {

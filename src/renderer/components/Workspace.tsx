@@ -28,7 +28,7 @@ import { MinimalistTextNode } from './Canvas/MinimalistTextNode';
 import { LLMNode } from './Canvas/LLMNode';
 import { ImageNode } from './Canvas/ImageNode';
 import { VideoNode, getVideoLastFrame } from './Canvas/VideoNode';
-import { AudioNode } from './Canvas/AudioNode';
+import { AudioNode, AUDIO_NODE_HEIGHT, AUDIO_NODE_WIDTH, type AudioSeparateAllPayload } from './Canvas/AudioNode';
 import { AudioTranscribeNode } from './Canvas/AudioTranscribeNode';
 import VideoSpliceNode, { type TimelineClip, type VideoSpliceExportPayload } from './Canvas/VideoSpliceNode';
 import { resolveSpliceExportDimensions } from './Canvas/VideoSpliceAspectRatioDropdown';
@@ -43,6 +43,8 @@ import FlowContent from './Canvas/FlowContent';
 import LLMInputPanel from './Canvas/LLMInputPanel';
 import ImageInputPanel from './Canvas/ImageInputPanel';
 import ImageTo3dInputPanel from './Canvas/ImageTo3dInputPanel';
+import RvcTrainNode from './Canvas/RvcTrainNode';
+import RvcTrainInputPanel from './Canvas/RvcTrainInputPanel';
 import VideoInputPanel from './Canvas/VideoInputPanel';
 import AudioInputPanel from './Canvas/AudioInputPanel';
 import { VideoPreview } from './VideoPreview';
@@ -103,22 +105,37 @@ import {
   NEXFLOW_CHARACTER_DRAG_MIME,
   NEXFLOW_SCENE_DRAG_MIME,
   NEXFLOW_DIGITAL_HUMAN_DRAG_MIME,
+  NEXFLOW_RVC_VOICE_DRAG_MIME,
+  deriveRvcPackageDisplayName,
+  type RvcVoiceLibraryItem,
   digitalHumanVideoUrl,
   digitalHumanPosterUrl,
   isImageTo3dLibraryCharacter,
   resolveCharacterVoiceUrlForDrag,
+  rvcVoiceAvatarUrl,
+  rvcVoiceDisplayName,
+  rvcVoiceModelPackageUrl,
+  rvcVoiceTrainAudioUrl,
 } from './characterListShared';
 import { scenePanoramaUrlForCanvas } from './SceneLibraryList';
 import { buildImageTo3dNodeFromCharacter } from '../utils/imageTo3dCanvasPlacement';
+import { buildEmptyRvcTrainNode, buildRvcTrainNodeFromLibraryItem, resolveRvcTrainNickname } from '../utils/rvcTrainCanvasPlacement';
+import { resolveRvcTrainAudioFromEdges } from '../utils/rvcTrainNodeEdgeInputs';
+import { ensureOssAudioUrlForRhTrain, pickBestAudioUrlForRhTrainFromNodeData } from '../utils/rvcTrainAudioUrl';
+import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
+import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../constants/rvcTrainLayout';
+import { DEFAULT_IMAGE_TO_3D_MODEL } from '../../shared/imageTo3dModels';
 import { importImageTo3dAssetsToCharacters } from '../utils/importImageTo3dAsset';
 import { userFacingErrorMessage } from '../utils/userErrorMessageCn';
 import WorkspaceHeader from './Workspace/WorkspaceHeader';
+import { OptionalEngineDownloadBar } from './Canvas/OptionalEngineDownloadBar';
 import WorkspaceSidebar from './Workspace/WorkspaceSidebar';
 import { mapProjectPath } from '../utils/pathMapper';
 import { useDarkAlert } from '../contexts/DarkAlertContext';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { CanvasThemeProvider, useCanvasTheme } from '../contexts/CanvasThemeContext';
 import { workspaceChromeT } from '../i18n/workspaceI18n';
+import { assetLibraryT } from '../i18n/assetLibraryI18n';
 import { imageNodeChromeT } from '../i18n/imageNodeI18n';
 import { panoramaPlacementT } from '../i18n/panoramaPlacementI18n';
 import { PERF_POLICY } from '../config/perfPolicy';
@@ -173,6 +190,10 @@ import {
   getLlmChatDisplayPrice,
 } from '../utils/cloudModelPricing';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../utils/audioSongModels';
+import { buildAudioIncomingPatchFromEdges, buildCoverTargetPatchesAfterSourceDurationChange } from '../utils/audioNodeEdgeInputs';
+import { isAudioCoverModel, AI_VOICE_COVER_MODEL_ID, resolveRvcCoverModelPath, deriveRvcCoverModelPath, normalizeRvcCoverOutputMode, clampCoverPitch, clampCoverIndexRate, clampCoverVocalMixPct, clampCoverAccompanimentMixPct, resolveCoverAccompanimentMixPct, type RvcCoverOutputMode } from '../utils/audioCoverModel';
+import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from '../utils/audioRvcTrainModel';
+import { isRvcModelPackageUrl } from '../../shared/rvcVoiceTrainUtils';
 import { CANVAS_PICK_NODE_EVENT, syncCanvasPickState } from '../utils/canvasPickStore';
 
 /** 旧存盘分辨率与面板挡位 720P/1080P 对齐 */
@@ -249,7 +270,10 @@ function videoStillCoalesceKey(normalizedUrl: string, t: number | undefined) {
  */
 function pickAudioOutputUrlFromAudioNodeData(data: Record<string, unknown> | undefined): string | undefined {
   if (!data) return undefined;
-  const raw = (data.originalAudioUrl ?? data.outputAudio ?? data.referenceAudioUrl) as string | undefined;
+  const multi = Array.isArray(data.outputAudios)
+    ? (data.outputAudios as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
+    : [];
+  const raw = (data.originalAudioUrl ?? data.outputAudio ?? multi[0] ?? data.referenceAudioUrl) as string | undefined;
   const s = typeof raw === 'string' ? raw.trim() : '';
   return s || undefined;
 }
@@ -1088,6 +1112,27 @@ async function patchImageNodeWithProbedLayout(node: Node, probeUrl: string): Pro
   return node;
 }
 
+/** VideoNode 外框变更时同步 React Flow 选框尺寸（style） */
+function patchVideoNodeData(node: Node, nodeId: string, updates: Record<string, unknown>): Node {
+  if (node.id !== nodeId) return node;
+  const next: Node = {
+    ...node,
+    data: {
+      ...node.data,
+      ...updates,
+    },
+  };
+  const w = updates.width;
+  const h = updates.height;
+  if (typeof w === 'number' && w > 0 && typeof h === 'number' && h > 0) {
+    next.style = {
+      ...(node.style as object),
+      ...nodeStyleDimensions(w, h),
+    };
+  }
+  return next;
+}
+
 const Workspace: React.FC<WorkspaceProps> = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
@@ -1256,7 +1301,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const timeoutPollDelayMsRef = useRef(60_000);
   const getNodeTaskType = useCallback((nodeType?: string): Task['taskType'] => {
     if (nodeType === 'video' || nodeType === 'wanAnimate' || nodeType === 'heyGem') return 'video';
-    if (nodeType === 'audio') return 'audio';
+    if (nodeType === 'audio' || nodeType === 'rvcTrain') return 'audio';
     if (nodeType === 'llm' || nodeType === 'minimalistText' || nodeType === 'text') return 'text';
     return 'image';
   }, []);
@@ -1764,9 +1809,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           setEdgeDeleteModeId(null);
         }
       }
-      // ESC：弹出退出确认窗口（画布界面）
+      // ESC：优先关闭预览，否则弹出退出确认
       else if (e.key === 'Escape') {
         e.preventDefault();
+        if (previewImage) {
+          setPreviewImage(null);
+          setPreviewImageNodeId(null);
+          return;
+        }
+        if (previewAudio) {
+          setPreviewAudio(null);
+          return;
+        }
         void (async () => {
           const ok = await showConfirm('确认退出 Aixflow-Bate 吗？', { variant: 'danger', okLabel: '退出' });
           if (ok) void handleQuitApp();
@@ -1778,7 +1832,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp]);
+  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp, previewImage, previewAudio]);
 
   // 画布上删除节点时，仅从任务列表中移除该节点下的任务；不删除项目文件夹内的图片/视频文件
   const removeTasksForNodeIds = useCallback((nodeIds: string[]) => {
@@ -1866,7 +1920,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const nonSelectChanges = immediateChanges.filter((c: any) => c.type !== 'select');
 
       if (nonSelectChanges.length > 0) {
-        onNodesChangeBase(nonSelectChanges);
+        const normalizedNonSelectChanges = nonSelectChanges.map((change: any) => {
+          if (change?.type !== 'dimensions' || !change.id) return change;
+          const node = nodeMap.get(change.id);
+          if (node?.type !== 'audio') return change;
+          return {
+            ...change,
+            dimensions: { width: AUDIO_NODE_WIDTH, height: AUDIO_NODE_HEIGHT },
+          };
+        });
+        onNodesChangeBase(normalizedNonSelectChanges);
       }
 
       // 选中变化走最小化更新，避免 applyNodeChanges 在大画布下引发额外重绘
@@ -2199,6 +2262,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               return;
             }
 
+            if (node.type === 'audio') {
+              const patch = buildAudioIncomingPatchFromEdges(
+                targetId,
+                Array.from(nodeById.values()),
+                nextEdges as Edge[],
+                node.data as Record<string, unknown>,
+              );
+              if (patch) {
+                const cur = node.data as Record<string, unknown>;
+                const changed =
+                  String(cur.sourceSongAudioUrl ?? '') !== String(patch.sourceSongAudioUrl ?? '') ||
+                  String(cur.referenceAudioUrl ?? '') !== String(patch.referenceAudioUrl ?? '') ||
+                  String(cur.model ?? '') !== String(patch.model ?? '');
+                if (changed) {
+                  mutated = true;
+                  nextNodes[nodeIndex] = { ...node, data: { ...node.data, ...patch } };
+                  if (selectedNode?.id === node.id) {
+                    setAudioInputPanelData((prev) =>
+                      prev && prev.nodeId === node.id ? { ...prev, ...patch } : prev,
+                    );
+                  }
+                }
+              }
+              return;
+            }
+
             if (node.type === 'videoSplice') {
               const built = buildVideoSpliceClipsFromEdges(
                 targetId,
@@ -2207,10 +2296,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 node.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
               );
               const prevFp = timelineClipsFingerprint(
-                normalizeVideoTracks(node.data as { videoTracks?: TimelineClip[][]; videoClips?: TimelineClip[] })[0] as TimelineClip[],
+                normalizeVideoTracks(node.data as { videoTracks?: TimelineClip[][]; videoClips?: TimelineClip[] }),
                 (node.data?.audioTracks || [[]]) as TimelineClip[][],
               );
-              const nextFp = timelineClipsFingerprint(built.videoClips, built.audioTracks);
+              const nextFp = timelineClipsFingerprint(built.videoTracks, built.audioTracks);
               if (prevFp !== nextFp) {
                 mutated = true;
                 nextNodes[nodeIndex] = {
@@ -2550,11 +2639,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     nodeId: string;
     inputImageUrl: string;
     resultTextureUrl?: string;
+    model?: string;
   } | null>(null);
   const imageTo3dInputPanelDataRef = useRef<typeof imageTo3dInputPanelData>(null);
   useEffect(() => {
     imageTo3dInputPanelDataRef.current = imageTo3dInputPanelData;
   }, [imageTo3dInputPanelData]);
+
+  const [rvcTrainInputPanelData, setRvcTrainInputPanelData] = useState<{
+    nodeId: string;
+    rvcTrainModelName?: string;
+    referenceAudioUrl?: string;
+    libraryAvatarUrl?: string;
+  } | null>(null);
+  const rvcTrainInputPanelDataRef = useRef<typeof rvcTrainInputPanelData>(null);
+  useEffect(() => {
+    rvcTrainInputPanelDataRef.current = rvcTrainInputPanelData;
+  }, [rvcTrainInputPanelData]);
 
   // Video 输入面板状态（用于底部弹窗）
   const [videoInputPanelData, setVideoInputPanelData] = useState<{
@@ -2659,6 +2760,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     pitch: number;
     emotion?: 'happy' | 'sad' | 'angry' | 'fearful' | 'disgusted' | 'surprised' | 'neutral';
     referenceAudioUrl?: string;
+    sourceSongAudioUrl?: string;
+    coverPitch?: number;
+    coverIndexRate?: number;
+    coverVocalMixPct?: number;
+    coverAccompanimentMixPct?: number;
+    coverRhVolume?: number;
+    coverOutputMode?: RvcCoverOutputMode;
+    rvcTrainModelName?: string;
+    rvcCoverModelName?: string;
+    outputModelUrl?: string;
+    outputModelRemoteUrl?: string;
+    coverReferenceAudioUrl?: string;
     songName?: string;
     styleDesc?: string;
     lyrics?: string;
@@ -2868,6 +2981,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const [characterListRefreshTrigger, setCharacterListRefreshTrigger] = useState(0);
   const [sceneListRefreshTrigger, setSceneListRefreshTrigger] = useState(0);
   const [digitalHumanListRefreshTrigger, setDigitalHumanListRefreshTrigger] = useState(0);
+  const [rvcVoiceListRefreshTrigger, setRvcVoiceListRefreshTrigger] = useState(0);
   
   // Laf 云端元宝
   const [lafStatus, setLafStatus] = useState<'idle' | 'connecting' | 'success' | 'error'>('idle');
@@ -3362,7 +3476,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         n.id,
                         edgesWithHandles,
                         currentNodes,
-                        n.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
+                        n.data as {
+                          videoTracks?: TimelineClip[][];
+                          videoClips?: TimelineClip[];
+                          audioTracks?: TimelineClip[][];
+                        },
                       );
                       return {
                         ...n,
@@ -3613,17 +3731,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const applyUpdate = () => {
       // 通过对象解构生成新引用，保证 React 能正确检测 state 变更
       setNodes((nds) => {
-        const updatedNodes = nds.map((node) =>
-          node.id === nodeId
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  ...updates,
-                },
-              }
-            : node
-        );
+        const updatedNodes = nds.map((node) => patchVideoNodeData(node, nodeId, updates));
 
       // 如果 video 节点的 outputVideo 或 originalVideoUrl 更新了，自动更新连接到它的 character 节点
       // 优先使用网络 URL（originalVideoUrl），如果没有则使用 outputVideo（如果是网络 URL）
@@ -4385,19 +4493,49 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   }, [setNodes]);
 
   // 用于 AudioNode 更新数据的回调
-  const handleAudioNodeDataChange = useCallback((nodeId: string, updates: { outputAudio?: string; originalAudioUrl?: string; referenceAudioUrl?: string; mediaDurationSec?: number; model?: string; width?: number; height?: number; title?: string; errorMessage?: string; aiStatus?: 'idle' | 'START' | 'PROCESSING' | 'SUCCESS' | 'ERROR'; progress?: number }) => {
+  const handleAudioNodeDataChange = useCallback((nodeId: string, updates: { outputAudio?: string; outputAudios?: string[]; originalOutputAudios?: string[]; originalAudioUrl?: string; referenceAudioUrl?: string; sourceSongAudioUrl?: string; coverPitch?: number; coverIndexRate?: number; coverVocalMixPct?: number; coverAccompanimentMixPct?: number; coverRhVolume?: number; coverOutputMode?: RvcCoverOutputMode; outputModelUrl?: string; outputModelRemoteUrl?: string; rvcTrainModelName?: string; rvcCoverModelName?: string; libraryRvcVoiceId?: string; mediaDurationSec?: number; model?: string; width?: number; height?: number; title?: string; errorMessage?: string; aiStatus?: 'idle' | 'START' | 'PROCESSING' | 'SUCCESS' | 'ERROR'; progress?: number }) => {
     const applyUpdate = () => {
-      setNodes((nds) =>
-        nds.map((node) => {
+      setNodes((nds) => {
+        let nextNodes = nds.map((node) => {
           if (node.id !== nodeId) return node;
           const next = { ...node.data, ...updates } as Record<string, unknown>;
           const ref = String(next.referenceAudioUrl ?? '').trim();
-          if (updates.referenceAudioUrl !== undefined && ref && !isAudioSongModel(next.model as string | undefined)) {
+          const hasCoverSource = String(next.sourceSongAudioUrl ?? '').trim();
+          if (
+            updates.referenceAudioUrl !== undefined &&
+            ref &&
+            !isAudioSongModel(next.model as string | undefined) &&
+            !isAudioCoverModel(next.model as string | undefined) &&
+            !hasCoverSource
+          ) {
             next.model = 'index-tts2';
           }
           return { ...node, data: next };
-        })
-      );
+        });
+        if (updates.mediaDurationSec !== undefined) {
+          const patches = buildCoverTargetPatchesAfterSourceDurationChange(
+            nodeId,
+            nextNodes,
+            latestEdgesRef.current as Edge[],
+          );
+          if (patches.length > 0) {
+            const patchByTarget = new Map(patches.map((p) => [p.targetId, p.patch]));
+            nextNodes = nextNodes.map((node) => {
+              const patch = patchByTarget.get(node.id);
+              if (!patch) return node;
+              return { ...node, data: { ...node.data, ...patch } };
+            });
+            queueMicrotask(() => {
+              setAudioInputPanelData((prev) => {
+                if (!prev) return prev;
+                const hit = patches.find((p) => p.targetId === prev.nodeId);
+                return hit ? { ...prev, ...hit.patch } : prev;
+              });
+            });
+          }
+        }
+        return nextNodes;
+      });
     };
     if (updates.referenceAudioUrl !== undefined || updates.outputAudio !== undefined) {
       flushSync(applyUpdate);
@@ -4430,6 +4568,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       setTimeout(() => saveHistory('general'), 0);
     },
     [setNodes, saveHistory],
+  );
+
+  /** 多段音频一键分离：新节点 + 连线写入 Workspace（与拆帧/拼图导出同一持久化路径） */
+  const handleSeparateAllAudios = useCallback(
+    (payload: AudioSeparateAllPayload) => {
+      setNodes((nds) => {
+        const updated = nds.map((n) => {
+          if (n.id !== payload.sourceNodeId) return { ...n, selected: false };
+          return {
+            ...n,
+            data: { ...n.data, ...payload.clearSourceData },
+            selected: false,
+          };
+        });
+        return [...updated, ...payload.newNodes];
+      });
+      setEdges((eds) => {
+        let next = eds;
+        for (const edge of payload.newEdges) {
+          next = addEdge(edge, next);
+        }
+        return next;
+      });
+      setTimeout(() => saveHistory('general'), 0);
+    },
+    [setNodes, setEdges, saveHistory],
   );
 
   /** 拼图导出为图片节点：放在拼图节点右侧（画布坐标） */
@@ -4583,6 +4747,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         throw new Error(res.error || '导出失败');
       }
 
+      const hasTimelineAudio = payload.audioTracks.some((t) => t.length > 0);
+      let exportedAudioUrl: string | undefined;
+      if ((res.hasAudio || hasTimelineAudio) && window.electronAPI?.extractAudioFromVideo) {
+        try {
+          const audioRes = await window.electronAPI.extractAudioFromVideo(projectId, res.originalUrl);
+          exportedAudioUrl = audioRes?.audioUrl?.trim() || undefined;
+        } catch (err) {
+          console.warn('[VideoSpliceExport] 导出后提取音频失败:', err);
+        }
+      }
+
       const GAP = 48;
       const aspectRatioStr = exportDims.aspectRatio;
       const exportPixelW = exportDims.width;
@@ -4591,25 +4766,36 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         computeNodeSizeFromMedia(
           exportPixelW,
           exportPixelH,
-          VIDEO_NODE_MIN_W,
-          VIDEO_NODE_MIN_H,
-          VIDEO_NODE_MAX_W,
-          VIDEO_NODE_MAX_H,
+          IMAGE_NODE_MIN_W,
+          IMAGE_NODE_MIN_H,
+          IMAGE_NODE_MAX_W,
+          IMAGE_NODE_MAX_H,
         ) ??
-        videoNodeSizeForAspectRatio(aspectRatioStr) ?? {
-          w: res.width ?? VIDEO_NODE_MIN_W,
-          h: res.height ?? VIDEO_NODE_MIN_H,
+        imageNodeSizeForAspectRatio(aspectRatioStr) ?? {
+          w: IMAGE_NODE_MIN_W,
+          h: IMAGE_NODE_MIN_H,
         };
       const nodeW = exportNodeSize.w;
       const nodeH = exportNodeSize.h;
       const videoUrl = res.originalUrl;
       const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const audioNodeId = exportedAudioUrl
+        ? `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        : '';
       const spliceOuterW = Number(spliceNode.data?.width) || 800;
       const spliceOuterH = Number(spliceNode.data?.height) || 600;
       const newPosition = {
         x: spliceNode.position.x + spliceOuterW + GAP,
         y: spliceNode.position.y + Math.max(0, (spliceOuterH - nodeH) / 2),
       };
+      const audioNodeW = 280;
+      const audioNodeH = 160;
+      const audioPosition = exportedAudioUrl
+        ? {
+            x: newPosition.x,
+            y: newPosition.y + nodeH + GAP,
+          }
+        : null;
 
       setNodes((nds) => {
         const newNode: Node = {
@@ -4637,14 +4823,40 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ...(res.ghostBase64 ? { ghostBase64: res.ghostBase64 } : {}),
           },
           style: nodeStyleDimensions(nodeW, nodeH),
-          selected: true,
+          selected: !exportedAudioUrl,
           selectable: true,
         };
-        return nds.map((n) => ({ ...n, selected: false })).concat(newNode);
+        const nodesToAdd: Node[] = [newNode];
+        if (exportedAudioUrl && audioNodeId && audioPosition) {
+          nodesToAdd.push({
+            id: audioNodeId,
+            type: 'audio',
+            position: audioPosition,
+            data: {
+              label: 'audio',
+              outputAudio: exportedAudioUrl,
+              originalAudioUrl: exportedAudioUrl,
+              title: '剪辑导出音频',
+              width: audioNodeW,
+              height: audioNodeH,
+              text: '',
+              voiceId: 'Wise_Woman',
+              speed: 1,
+              volume: 1,
+              pitch: 0,
+              referenceAudioUrl: '',
+              aiStatus: 'SUCCESS' as const,
+            },
+            style: nodeStyleDimensions(audioNodeW, audioNodeH),
+            selected: true,
+            selectable: true,
+          });
+        }
+        return nds.map((n) => ({ ...n, selected: false })).concat(nodesToAdd);
       });
 
-      setEdges((eds) =>
-        addEdge(
+      setEdges((eds) => {
+        let next = addEdge(
           {
             id: `edge-${spliceNodeId}-${newNodeId}`,
             source: spliceNodeId,
@@ -4655,10 +4867,25 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             data: { videoSrc: videoUrl },
           },
           eds,
-        ),
-      );
+        );
+        if (exportedAudioUrl && audioNodeId) {
+          next = addEdge(
+            {
+              id: `edge-${spliceNodeId}-${audioNodeId}`,
+              source: spliceNodeId,
+              target: audioNodeId,
+              sourceHandle: 'output',
+              targetHandle: 'input',
+              animated: false,
+            },
+            next,
+          );
+        }
+        return next;
+      });
 
       setTimeout(() => saveHistory('general'), 0);
+      return { createdAudioNode: !!exportedAudioUrl };
     },
     [projectId, setNodes, setEdges, saveHistory],
   );
@@ -4673,6 +4900,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handleImageNodeDataChangeRef = useRef<typeof handleImageNodeDataChange | null>(null);
   const handleVideoNodeDataChangeRef = useRef<typeof handleVideoNodeDataChange | null>(null);
   const handleAudioNodeDataChangeRef = useRef<typeof handleAudioNodeDataChange | null>(null);
+  const persistRvcVoiceToLibraryRef = useRef<
+    ((params: {
+      modelPackageUrl: string;
+      modelPackageRemoteUrl?: string;
+      outputModelLocalPath?: string;
+      rvcTrainModelName?: string;
+      trainAudioUrl?: string;
+      avatarUrl?: string;
+      nodeId?: string;
+    }) => Promise<RvcVoiceLibraryItem | null>) | null
+  >(null);
+  /** 防止同一节点 SUCCESS 被面板回调与全局监听重复入库 */
+  const rvcLibraryPersistedRef = useRef(new Set<string>());
   const handleVideoSpliceNodeDataChangeRef = useRef<typeof handleVideoSpliceNodeDataChange | null>(null);
   const handleVideoSpliceExportToCanvasRef = useRef<typeof handleVideoSpliceExportToCanvas | null>(null);
   const handlePhotoCollageNodeDataChangeRef = useRef<typeof handlePhotoCollageNodeDataChange | null>(null);
@@ -5118,6 +5358,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const invokeAudioNodeDataChange = useCallback((nodeId: string, updates: any) => {
     handleAudioNodeDataChangeRef.current?.(nodeId, updates);
   }, []);
+  const invokeSeparateAllAudios = useCallback((payload: AudioSeparateAllPayload) => {
+    handleSeparateAllAudios(payload);
+  }, [handleSeparateAllAudios]);
   const invokeCharacterNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handleCharacterNodeDataChange(nodeId, updates);
   }, [handleCharacterNodeDataChange]);
@@ -5138,6 +5381,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n)),
     );
   }, []);
+
+  const invokeRvcTrainNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n)),
+    );
+    setRvcTrainInputPanelData((prev) => (prev?.nodeId === nodeId ? { ...prev, ...updates } : prev));
+  }, []);
+
+  const handleRvcTrainNodeDataChangeRef = useRef<typeof invokeRvcTrainNodeDataChange | null>(null);
+  handleRvcTrainNodeDataChangeRef.current = invokeRvcTrainNodeDataChange;
 
   const invokePhotoCollageNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handlePhotoCollageNodeDataChangeRef.current?.(nodeId, updates);
@@ -5680,6 +5933,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           isDarkMode={isDarkMode}
           performanceMode={isPerformanceMode}
           onDataChange={invokeAudioNodeDataChange}
+          onSeparateAllAudios={invokeSeparateAllAudios}
           syncAudioPanelReferenceUrl={(url) => {
             setAudioInputPanelData((prev) =>
               prev && prev.nodeId === props.id ? { ...prev, referenceAudioUrl: url } : prev,
@@ -5785,6 +6039,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const pa = prev.data || {};
       const na = next.data || {};
       if (pa.inputImageUrl !== na.inputImageUrl) return false;
+      if (pa.model !== na.model) return false;
       if (pa.resultTextureUrl !== na.resultTextureUrl) return false;
       if (pa.localTexturePath !== na.localTexturePath) return false;
       if (pa.resultTextureRemoteUrl !== na.resultTextureRemoteUrl) return false;
@@ -5816,6 +6071,33 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
     (ImageTo3dNodeWrapper as any).displayName = 'ImageTo3dNodeWrapper';
 
+    const rvcTrainAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.referenceAudioUrl !== na.referenceAudioUrl) return false;
+      if (pa.rvcTrainModelName !== na.rvcTrainModelName) return false;
+      if (pa.rvcTrainNameFontPx !== na.rvcTrainNameFontPx) return false;
+      if (pa.outputModelUrl !== na.outputModelUrl) return false;
+      if (pa.libraryRvcVoiceId !== na.libraryRvcVoiceId) return false;
+      if (pa.libraryAvatarUrl !== na.libraryAvatarUrl) return false;
+      if (pa.aiStatus !== na.aiStatus) return false;
+      if (pa.progress !== na.progress || pa.errorMessage !== na.errorMessage) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const RvcTrainNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => {
+          const { isDarkMode } = useCanvasTheme();
+          return <RvcTrainNode {...props} isDarkMode={isDarkMode} onDataChange={invokeRvcTrainNodeDataChange} />;
+        },
+        rvcTrainAreEqual,
+      ),
+      rvcTrainAreEqual,
+    );
+    (RvcTrainNodeWrapper as any).displayName = 'RvcTrainNodeWrapper';
+
     return {
       custom: CustomNodeWithTinyZoom,
       textNode: TextNodeWithTinyZoom,
@@ -5828,6 +6110,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       videoSplice: VideoSpliceNodeWrapper,
       photoCollage: PhotoCollageNodeWrapper,
       imageTo3d: ImageTo3dNodeWrapper,
+      rvcTrain: RvcTrainNodeWrapper,
       character: CharacterNodeWrapper,
       digitalHuman: DigitalHumanNodeWrapper,
       audio: AudioNodeWrapper,
@@ -5835,7 +6118,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       textSplit: TextSplitNodeWrapper,
       cameraControl: CameraControlNodeWrapper,
     };
-  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeImageTo3dNodeDataChange, handlePhotoCollageExportToCanvas, handleAddCanvasImageNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, handleOpenPanoramaPlacement, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual]);
+  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeSeparateAllAudios, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeImageTo3dNodeDataChange, invokeRvcTrainNodeDataChange, handlePhotoCollageExportToCanvas, handleAddCanvasImageNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, handleOpenPanoramaPlacement, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual]);
 
   // 连接节点（拖拽中的临时线为虚线，连接完成后的线为实线）
   const onConnect = useCallback(
@@ -5869,6 +6152,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         } else if (targetNode && targetNode.type === 'photoCollage') {
           targetHandle = 'input';
         } else if (targetNode && targetNode.type === 'imageTo3d') {
+          targetHandle = 'input';
+        } else if (targetNode && targetNode.type === 'rvcTrain') {
           targetHandle = 'input';
         } else if (targetNode && targetNode.type === 'audio') {
           // Audio 节点：text/llm -> audio 使用 'audio-input'
@@ -5992,6 +6277,62 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     ? { ...node, data: { ...node.data, inputImageUrl: url } }
                     : node,
                 );
+              }
+            }
+
+            if (targetNode && targetNode.type === 'rvcTrain' && sourceNode?.type === 'audio') {
+              const trainUrl = pickBestAudioUrlForRhTrainFromNodeData(sourceNode.data as Record<string, unknown>);
+              if (trainUrl) {
+                const isLocalTrain =
+                  trainUrl.startsWith('local-resource://') || trainUrl.startsWith('file://');
+                if (isLocalTrain && window.electronAPI?.uploadLocalAudioToOSS) {
+                  void ensureOssAudioUrlForRhTrain(trainUrl)
+                    .then((ossUrl) => {
+                      setNodes((n) =>
+                        n.map((node) =>
+                          node.id === params.target
+                            ? { ...node, data: { ...node.data, referenceAudioUrl: ossUrl } }
+                            : node,
+                        ),
+                      );
+                      if (rvcTrainInputPanelDataRef.current?.nodeId === params.target) {
+                        setRvcTrainInputPanelData((prev) =>
+                          prev && prev.nodeId === params.target ? { ...prev, referenceAudioUrl: ossUrl } : prev,
+                        );
+                      }
+                    })
+                    .catch((e) => console.warn('[Workspace] RVC 训练音频上传 OSS 失败', e));
+                }
+                if (rvcTrainInputPanelDataRef.current?.nodeId === params.target) {
+                  setRvcTrainInputPanelData((prev) =>
+                    prev && prev.nodeId === params.target ? { ...prev, referenceAudioUrl: trainUrl } : prev,
+                  );
+                }
+                return nds.map((node) =>
+                  node.id === params.target
+                    ? { ...node, data: { ...node.data, referenceAudioUrl: trainUrl } }
+                    : node,
+                );
+              }
+            }
+
+            if (sourceNode?.type === 'rvcTrain' && targetNode?.type === 'audio') {
+              const patch = buildAudioIncomingPatchFromEdges(
+                params.target!,
+                nds,
+                updatedEdges,
+                targetNode.data as Record<string, unknown>,
+              );
+              if (patch) {
+                const updatedNodes = nds.map((node) =>
+                  node.id === params.target ? { ...node, data: { ...node.data, ...patch } } : node,
+                );
+                if (selectedNode && selectedNode.id === params.target) {
+                  setAudioInputPanelData((prev) =>
+                    prev && prev.nodeId === params.target ? { ...prev, ...patch } : prev,
+                  );
+                }
+                return updatedNodes;
               }
             }
 
@@ -6687,53 +7028,58 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 }
                 return nds;
               }
-              // audio -> audio：将源音频作为目标节点的参考音；若为本地路径则先上传 OSS，再回传 URL 到参考音
+              // audio -> audio：按全部 audio 入边重建参考音 / 翻唱双路输入
               if (sourceNode && sourceNode.type === 'audio') {
-                const srcData = sourceNode.data as Record<string, unknown>;
-                const httpOrig =
-                  typeof srcData.originalAudioUrl === 'string' && srcData.originalAudioUrl.startsWith('http')
-                    ? srcData.originalAudioUrl
-                    : '';
-                const refUrl = httpOrig || pickAudioOutputUrlFromAudioNodeData(srcData) || '';
-                if (refUrl) {
-                  const isLocalRef = refUrl.startsWith('local-resource://') || refUrl.startsWith('file://');
-                  const updatedNodes = nds.map((node) => {
-                    if (node.id === params.target) {
-                      const d = { ...node.data, referenceAudioUrl: refUrl } as Record<string, unknown>;
-                      if (!isAudioSongModel(d.model as string | undefined)) d.model = 'index-tts2';
-                      return { ...node, data: d };
-                    }
-                    return node;
-                  });
+                const patch = buildAudioIncomingPatchFromEdges(
+                  params.target!,
+                  nds,
+                  updatedEdges,
+                  targetNode.data as Record<string, unknown>,
+                );
+                if (patch) {
+                  const updatedNodes = nds.map((node) =>
+                    node.id === params.target ? { ...node, data: { ...node.data, ...patch } } : node,
+                  );
                   if (selectedNode && selectedNode.id === params.target) {
-                    setAudioInputPanelData((prev) => {
-                      if (prev && prev.nodeId === params.target) {
-                        return isAudioSongModel(prev.model)
-                          ? { ...prev, referenceAudioUrl: refUrl }
-                          : { ...prev, referenceAudioUrl: refUrl, model: 'index-tts2' };
-                      }
-                      return prev;
-                    });
+                    setAudioInputPanelData((prev) =>
+                      prev && prev.nodeId === params.target ? { ...prev, ...patch } : prev,
+                    );
                   }
-                  if (isLocalRef && window.electronAPI?.uploadLocalAudioToOSS) {
-                    window.electronAPI.uploadLocalAudioToOSS(refUrl).then((res) => {
-                      if (res.success && res.url) {
-                        setNodes((n) =>
-                          n.map((node) => {
-                            if (node.id !== params.target) return node;
-                            const d = { ...node.data, referenceAudioUrl: res.url } as Record<string, unknown>;
-                            if (!isAudioSongModel(d.model as string | undefined)) d.model = 'index-tts2';
-                            return { ...node, data: d };
-                          })
-                        );
-                        setAudioInputPanelData((prev) =>
-                          prev && prev.nodeId === params.target
-                            ? isAudioSongModel(prev.model)
-                              ? { ...prev, referenceAudioUrl: res.url }
-                              : { ...prev, referenceAudioUrl: res.url, model: 'index-tts2' }
-                            : prev
-                        );
-                      }
+                  const urlsToUpload = [patch.sourceSongAudioUrl, patch.referenceAudioUrl].filter(
+                    (u): u is string => !!u && (u.startsWith('local-resource://') || u.startsWith('file://')),
+                  );
+                  if (urlsToUpload.length > 0 && window.electronAPI?.uploadLocalAudioToOSS) {
+                    Promise.all(urlsToUpload.map((u) => window.electronAPI!.uploadLocalAudioToOSS!(u))).then((results) => {
+                      const urlMap = new Map<string, string>();
+                      urlsToUpload.forEach((local, i) => {
+                        const res = results[i];
+                        if (res?.success && res.url) urlMap.set(local, res.url);
+                      });
+                      if (urlMap.size === 0) return;
+                      setNodes((n) =>
+                        n.map((node) => {
+                          if (node.id !== params.target) return node;
+                          const d = { ...node.data } as Record<string, unknown>;
+                          if (typeof d.sourceSongAudioUrl === 'string' && urlMap.has(d.sourceSongAudioUrl)) {
+                            d.sourceSongAudioUrl = urlMap.get(d.sourceSongAudioUrl);
+                          }
+                          if (typeof d.referenceAudioUrl === 'string' && urlMap.has(d.referenceAudioUrl)) {
+                            d.referenceAudioUrl = urlMap.get(d.referenceAudioUrl);
+                          }
+                          return { ...node, data: d };
+                        }),
+                      );
+                      setAudioInputPanelData((prev) => {
+                        if (!prev || prev.nodeId !== params.target) return prev;
+                        const next = { ...prev };
+                        if (next.sourceSongAudioUrl && urlMap.has(next.sourceSongAudioUrl)) {
+                          next.sourceSongAudioUrl = urlMap.get(next.sourceSongAudioUrl)!;
+                        }
+                        if (next.referenceAudioUrl && urlMap.has(next.referenceAudioUrl)) {
+                          next.referenceAudioUrl = urlMap.get(next.referenceAudioUrl)!;
+                        }
+                        return next;
+                      });
                     });
                   }
                   return updatedNodes;
@@ -7332,9 +7678,31 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           nodeId: node.id,
           inputImageUrl: inputUrl,
           resultTextureUrl,
+          model: (node.data?.model as string) || DEFAULT_IMAGE_TO_3D_MODEL,
         });
         setLlmInputPanelData(null);
         setImageInputPanelData(null);
+        setVideoInputPanelData(null);
+        setCharacterInputPanelData(null);
+        setAudioInputPanelData(null);
+      } else if (nodeType === 'rvcTrain') {
+        const trainUrl = resolveRvcTrainAudioFromEdges(node.id, edges, nodes) || (node.data?.referenceAudioUrl as string) || '';
+        if (trainUrl && trainUrl !== (node.data?.referenceAudioUrl as string)) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, referenceAudioUrl: trainUrl } } : n,
+            ),
+          );
+        }
+        setRvcTrainInputPanelData({
+          nodeId: node.id,
+          rvcTrainModelName: resolveRvcTrainNickname(node.data as { rvcTrainModelName?: string; title?: string }),
+          referenceAudioUrl: trainUrl,
+          libraryAvatarUrl: (node.data?.libraryAvatarUrl as string) ?? '',
+        });
+        setLlmInputPanelData(null);
+        setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
         setVideoInputPanelData(null);
         setCharacterInputPanelData(null);
         setAudioInputPanelData(null);
@@ -7802,6 +8170,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         let isConnected = false;
 
         let resolvedReferenceAudioUrl = node.data?.referenceAudioUrl || '';
+        let resolvedSourceSongAudioUrl = (node.data?.sourceSongAudioUrl as string | undefined) ?? '';
+        const edgePatch = buildAudioIncomingPatchFromEdges(
+          node.id,
+          nodes,
+          edges,
+          node.data as Record<string, unknown>,
+        );
+        if (edgePatch?.referenceAudioUrl) resolvedReferenceAudioUrl = edgePatch.referenceAudioUrl;
+        if (edgePatch?.sourceSongAudioUrl) resolvedSourceSongAudioUrl = edgePatch.sourceSongAudioUrl;
+
+        if (edgePatch?.model && edgePatch.model !== node.data?.model) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, ...edgePatch } } : n,
+            ),
+          );
+        }
+        let audioModel = edgePatch?.model || node.data?.model || 'speech-2.8-hd';
         incomingEdges.forEach((edge) => {
           const sourceNode = nodes.find((n) => n.id === edge.source);
           if (sourceNode) {
@@ -7811,19 +8197,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             } else if (sourceNode.type === 'llm') {
               resolvedText = sourceNode.data?.outputText || resolvedText;
               isConnected = true;
-            } else if (sourceNode.type === 'audio') {
-              const d = sourceNode.data as Record<string, unknown>;
-              const httpOrig =
-                typeof d.originalAudioUrl === 'string' && d.originalAudioUrl.startsWith('http')
-                  ? d.originalAudioUrl
-                  : '';
-              const ref = httpOrig || pickAudioOutputUrlFromAudioNodeData(d) || '';
-              if (ref) resolvedReferenceAudioUrl = ref;
             }
           }
         });
 
-        let audioModel = node.data?.model || 'speech-2.8-hd';
         if (isRetiredAudioModel(audioModel)) {
           audioModel = normalizeAudioModelIfRetired(audioModel);
           setNodes((nds) =>
@@ -7850,7 +8227,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           volume: node.data?.volume ?? 1,
           pitch: node.data?.pitch ?? 0,
           emotion: node.data?.emotion,
-          referenceAudioUrl: resolvedReferenceAudioUrl,
+          referenceAudioUrl: edgePatch?.referenceAudioUrl ?? resolvedReferenceAudioUrl,
+          sourceSongAudioUrl: edgePatch?.sourceSongAudioUrl ?? resolvedSourceSongAudioUrl,
+          coverPitch: clampCoverPitch(node.data?.coverPitch ?? 0),
+          coverIndexRate: clampCoverIndexRate(node.data?.coverIndexRate),
+          coverVocalMixPct: clampCoverVocalMixPct(node.data?.coverVocalMixPct),
+          coverAccompanimentMixPct: resolveCoverAccompanimentMixPct(
+            node.data?.coverAccompanimentMixPct,
+            node.data?.coverOutputMode,
+          ),
+          coverRhVolume: (node.data?.coverRhVolume as number | undefined) ?? 5,
+          rvcTrainModelName:
+            edgePatch?.rvcTrainModelName ??
+            (node.data?.rvcTrainModelName as string) ??
+            (node.data?.title as string) ??
+            '',
+          rvcCoverModelName:
+            edgePatch?.rvcCoverModelName ??
+            (node.data?.rvcCoverModelName as string) ??
+            resolveRvcCoverModelPath(node.data as Record<string, unknown>),
+          outputModelUrl: (edgePatch?.outputModelUrl ?? node.data?.outputModelUrl) as string | undefined,
+          outputModelRemoteUrl: (edgePatch?.outputModelRemoteUrl ??
+            node.data?.outputModelRemoteUrl) as string | undefined,
+          coverReferenceAudioUrl: (edgePatch?.coverReferenceAudioUrl ??
+            node.data?.coverReferenceAudioUrl) as string | undefined,
+          libraryRvcVoiceId: (edgePatch?.libraryRvcVoiceId ??
+            node.data?.libraryRvcVoiceId) as string | undefined,
           songName: node.data?.songName ?? '',
           styleDesc: node.data?.styleDesc ?? '',
           lyrics: resolvedLyrics,
@@ -9001,16 +9403,69 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
         const nodeTitle = node.data?.title || 'llm';
         payload.nodeTitle = nodeTitle;
+      } else if (node.type === 'rvcTrain') {
+        modelId = 'audio';
+        const nodeData = node.data || {};
+        let referenceAudioUrl =
+          resolveRvcTrainAudioFromEdges(nodeId, nodes, edges) || String(nodeData.referenceAudioUrl ?? '').trim();
+        const modelName = String(nodeData.rvcTrainModelName ?? nodeData.title ?? '').trim();
+        if (!referenceAudioUrl || !modelName) {
+          console.warn(`[Workspace] RVC 训练节点 ${nodeId} 缺少训练音频或模型名，跳过`);
+          continue;
+        }
+        const normalizeLocalAudioUrl = (u: string) =>
+          u.startsWith('local-resource://') || u.startsWith('file://')
+            ? u.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://')
+            : u;
+        referenceAudioUrl = normalizeLocalAudioUrl(referenceAudioUrl);
+        payload = {
+          model: RVC_VOICE_TRAIN_MODEL_ID,
+          text: '',
+          referenceAudioUrl,
+          rvcTrainModelName: modelName,
+          enable_base64_output: false,
+          english_normalization: false,
+        };
+        if (projectId) payload.projectId = projectId;
+        payload.nodeTitle = nodeData.title || 'rvcTrain';
       } else if (node.type === 'audio') {
         modelId = 'audio';
         const nodeData = node.data || {};
+        const edgePatch = buildAudioIncomingPatchFromEdges(
+          nodeId,
+          nodes,
+          edges,
+          nodeData as Record<string, unknown>,
+        );
         const audioModel = nodeData.model || 'speech-2.8-hd';
         const isIndexTts2 = audioModel === 'index-tts2';
+        const isAudioCover = isAudioCoverModel(audioModel);
+        const isRvcTrain = isRvcTrainModel(audioModel);
         const isRhartSong = isAudioSongModel(audioModel);
 
         if (isRhartSong) {
           if (!(nodeData.songName ?? '').trim() || !(nodeData.styleDesc ?? '').trim() || !(nodeData.lyrics ?? '').trim()) {
             console.warn(`[Workspace] 音频节点 ${nodeId} 全能写歌 缺少歌曲名/风格描述/歌词，跳过`);
+            continue;
+          }
+        } else if (isAudioCover) {
+          const pathHint = resolveRvcCoverModelPath({
+            ...(nodeData as Record<string, unknown>),
+            rvcCoverModelName: edgePatch?.rvcCoverModelName ?? nodeData.rvcCoverModelName,
+            rvcTrainModelName: edgePatch?.rvcTrainModelName ?? nodeData.rvcTrainModelName,
+          });
+          const coverSource = (nodeData.sourceSongAudioUrl ?? edgePatch?.sourceSongAudioUrl ?? '').trim();
+          if (!coverSource) {
+            console.warn(`[Workspace] 音频节点 ${nodeId} RVC 翻唱 缺少原曲，跳过`);
+            continue;
+          }
+          if (!pathHint && !(nodeData.outputModelUrl || nodeData.outputModelRemoteUrl || edgePatch?.outputModelUrl)) {
+            console.warn(`[Workspace] 音频节点 ${nodeId} RVC 翻唱 缺少 RVC 模型（请连接已训练 rvcTrain），跳过`);
+            continue;
+          }
+        } else if (isRvcTrain) {
+          if (!(nodeData.referenceAudioUrl ?? '').trim() || !(nodeData.rvcTrainModelName ?? nodeData.title ?? '').trim()) {
+            console.warn(`[Workspace] 音频节点 ${nodeId} RVC 训练 缺少训练音频或模型名，跳过`);
             continue;
           }
         } else {
@@ -9023,19 +9478,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             continue;
           }
         }
-        // 参考音：优先来自连接的声音节点，否则用节点自身的 referenceAudioUrl
+        // 参考音 / 翻唱：优先从入边解析
         let referenceAudioUrl = (nodeData.referenceAudioUrl || '').trim();
+        let sourceSongAudioUrl = (nodeData.sourceSongAudioUrl || '').trim();
         const audioIncomingEdges = edges.filter((e) => e.target === nodeId);
-        for (const e of audioIncomingEdges) {
-          const srcNode = nodes.find((n) => n.id === e.source);
-          if (srcNode?.type === 'audio') {
-            const d = srcNode.data as Record<string, unknown>;
-            const httpOrig =
-              typeof d.originalAudioUrl === 'string' && d.originalAudioUrl.startsWith('http') ? d.originalAudioUrl : '';
-            const ref = httpOrig || pickAudioOutputUrlFromAudioNodeData(d) || '';
-            if (ref) {
-              referenceAudioUrl = ref;
-              break;
+        if (edgePatch?.referenceAudioUrl) referenceAudioUrl = edgePatch.referenceAudioUrl;
+        if (edgePatch?.sourceSongAudioUrl) sourceSongAudioUrl = edgePatch.sourceSongAudioUrl;
+        if (!isAudioCover) {
+          for (const e of audioIncomingEdges) {
+            const srcNode = nodes.find((n) => n.id === e.source);
+            if (srcNode?.type === 'audio') {
+              const d = srcNode.data as Record<string, unknown>;
+              const httpOrig =
+                typeof d.originalAudioUrl === 'string' && d.originalAudioUrl.startsWith('http') ? d.originalAudioUrl : '';
+              const ref = httpOrig || pickAudioOutputUrlFromAudioNodeData(d) || '';
+              if (ref) {
+                referenceAudioUrl = ref;
+                break;
+              }
             }
           }
         }
@@ -9043,9 +9503,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           console.warn(`[Workspace] 音频节点 ${nodeId} Index-TTS2.0 缺少参考音，跳过`);
           continue;
         }
-        if (referenceAudioUrl.startsWith('local-resource://') || referenceAudioUrl.startsWith('file://')) {
-          referenceAudioUrl = referenceAudioUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
+        if (isAudioCover && (!sourceSongAudioUrl || (!resolveRvcCoverModelPath({
+          ...(nodeData as Record<string, unknown>),
+          rvcCoverModelName: edgePatch?.rvcCoverModelName ?? nodeData.rvcCoverModelName,
+          rvcTrainModelName: edgePatch?.rvcTrainModelName ?? nodeData.rvcTrainModelName,
+        }) && !(nodeData.outputModelUrl || nodeData.outputModelRemoteUrl || edgePatch?.outputModelUrl)))) {
+          console.warn(`[Workspace] 音频节点 ${nodeId} RVC 翻唱 缺少原曲或 RVC 模型，跳过`);
+          continue;
         }
+        if (isRvcTrain && !referenceAudioUrl) {
+          console.warn(`[Workspace] 音频节点 ${nodeId} RVC 训练 缺少训练音频，跳过`);
+          continue;
+        }
+        const normalizeLocalAudioUrl = (u: string) =>
+          u.startsWith('local-resource://') || u.startsWith('file://')
+            ? u.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://')
+            : u;
+        if (referenceAudioUrl) referenceAudioUrl = normalizeLocalAudioUrl(referenceAudioUrl);
+        if (sourceSongAudioUrl) sourceSongAudioUrl = normalizeLocalAudioUrl(sourceSongAudioUrl);
 
         payload = {
           model: audioModel,
@@ -9057,6 +9532,34 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           payload.songName = (nodeData.songName ?? '').trim();
           payload.styleDesc = (nodeData.styleDesc ?? '').trim();
           payload.lyrics = (nodeData.lyrics ?? '').trim();
+        } else if (isAudioCover) {
+          payload.sourceSongAudioUrl = sourceSongAudioUrl;
+          payload.rvcCoverModelName = resolveRvcCoverModelPath({
+            ...(nodeData as Record<string, unknown>),
+            rvcCoverModelName: edgePatch?.rvcCoverModelName ?? nodeData.rvcCoverModelName,
+            rvcTrainModelName: edgePatch?.rvcTrainModelName ?? nodeData.rvcTrainModelName,
+          });
+          payload.rvcTrainModelName = String(
+            edgePatch?.rvcTrainModelName ?? nodeData.rvcTrainModelName ?? '',
+          ).trim() || undefined;
+          payload.libraryRvcVoiceId = (edgePatch?.libraryRvcVoiceId ?? nodeData.libraryRvcVoiceId) as
+            | string
+            | undefined;
+          payload.outputModelUrl = (edgePatch?.outputModelUrl ?? nodeData.outputModelUrl) as string | undefined;
+          payload.outputModelRemoteUrl = (edgePatch?.outputModelRemoteUrl ??
+            nodeData.outputModelRemoteUrl) as string | undefined;
+          payload.coverReferenceAudioUrl = (edgePatch?.coverReferenceAudioUrl ??
+            nodeData.coverReferenceAudioUrl) as string | undefined;
+          payload.coverPitch = clampCoverPitch(nodeData.coverPitch);
+          payload.coverIndexRate = clampCoverIndexRate(nodeData.coverIndexRate);
+          payload.coverVocalMixPct = clampCoverVocalMixPct(nodeData.coverVocalMixPct);
+          payload.coverAccompanimentMixPct = resolveCoverAccompanimentMixPct(
+            nodeData.coverAccompanimentMixPct,
+            nodeData.coverOutputMode,
+          );
+        } else if (isRvcTrain) {
+          payload.referenceAudioUrl = referenceAudioUrl;
+          payload.rvcTrainModelName = String(nodeData.rvcTrainModelName ?? nodeData.title ?? '').trim();
         } else if (isIndexTts2) {
           payload.referenceAudioUrl = referenceAudioUrl;
         } else {
@@ -9784,6 +10287,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     setVideoInputPanelData(null); // 点击画布时关闭 Video 输入面板
     setCharacterInputPanelData(null); // 点击画布时关闭 Character 输入面板
     setAudioInputPanelData(null); // 点击画布时关闭 Audio 输入面板
+    setRvcTrainInputPanelData(null);
     window.dispatchEvent(new CustomEvent('nexflow-close-3d-popover')); // 点击画布时关闭 3D 视角弹窗
   }, [cancelCharacterCanvasPick]);
 
@@ -9814,10 +10318,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     // 根据节点类型确定默认尺寸（LLM 与 Text 模块相同）
     const isImageType =
       type === 'image' || type === 'image-first-frame' || type === 'image-current-frame' || type === 'image-last-frame';
-    const isAudioType = type === 'audio' || type === 'audio-extract-from-video' || type === 'audio-extract-vocals' || type === 'audio-extract-background';
+    const isAudioType =
+      type === 'audio' ||
+      type === 'audio-voice-cover' ||
+      type === 'audio-extract-from-video' ||
+      type === 'audio-extract-vocals' ||
+      type === 'audio-extract-background';
     const isVideoSpliceType = type === 'videoSplice';
     const isPhotoCollageType = type === 'photoCollage';
     const isImageTo3dType = type === 'imageTo3d';
+    const isRvcTrainType = type === 'rvcTrain';
     const isWanAnimateType = type === 'wanAnimate';
     const isHeyGemType = type === 'heyGem';
     const isVideoLikeType = type === 'video' || isWanAnimateType || isHeyGemType;
@@ -9842,6 +10352,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         ? 560
                         : isImageTo3dType
                           ? 480
+                          : isRvcTrainType
+                            ? RVC_TRAIN_WIDTH
                           : 200;
     let defaultHeight =
       type === 'text'
@@ -9864,6 +10376,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         ? 480
                         : isImageTo3dType
                           ? 270
+                          : isRvcTrainType
+                            ? RVC_TRAIN_HEIGHT
                           : 200;
 
     if (isImageType) {
@@ -9919,6 +10433,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                             ? 'photoCollage'
                             : isImageTo3dType
                               ? 'imageTo3d'
+                              : isRvcTrainType
+                                ? 'rvcTrain'
                               : 'custom',
       position: adjustedPosition,
       data: {
@@ -9947,6 +10463,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                               ? '拼图'
                               : isImageTo3dType
                                 ? '图片转 3D'
+                                : isRvcTrainType
+                                  ? 'RVC 音色训练'
                                 : '节点',
         text: type === 'text' ? '' : isAudioType ? '' : undefined,
         width: defaultWidth,
@@ -9954,6 +10472,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         isUserResized: false, // 新创建的节点，用户尚未手动调整尺寸
         prompt: type === 'llm' || isImageType || isVideoLikeType ? '' : undefined,
         ...(isImageTo3dType ? { inputImageUrl: '', progress: 0 } : {}),
+        ...(isRvcTrainType
+          ? {
+              model: RVC_VOICE_TRAIN_MODEL_ID,
+              rvcTrainModelName: '',
+              referenceAudioUrl: '',
+              aiStatus: 'idle',
+              progress: 0,
+            }
+          : {}),
         title:
           type === 'llm'
             ? 'llm'
@@ -9967,14 +10494,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     ? 'heyGem'
                   : type === 'character'
                     ? 'character'
-                    : isAudioType
-                      ? 'audio'
+                    : type === 'audio-voice-cover'
+                      ? '翻唱'
+                      : isAudioType
+                        ? 'audio'
                       : type === 'textSplit'
                         ? 'textSplit'
                         : isVideoSpliceType
                           ? 'videoSplice'
                           : isPhotoCollageType
                             ? 'photoCollage'
+                            : isRvcTrainType
+                              ? ''
                             : undefined,
         inputText: type === 'textSplit' ? '' : undefined,
         separator: type === 'textSplit' ? '&&&' : undefined,
@@ -9984,7 +10515,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         aspectRatio: isImageType ? DEFAULT_IMAGE_ASPECT_RATIO : isVideoLikeType ? DEFAULT_VIDEO_ASPECT_RATIO : undefined,
         seedreamWidth: isImageType ? 2048 : undefined,
         seedreamHeight: isImageType ? 2048 : undefined,
-        model: isImageType ? 'banana-2.0' : type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : isWanAnimateType ? 'wan-animate' : isHeyGemType ? 'hey-gem' : isAudioType ? 'speech-2.8-hd' : undefined, // 兜底为 undefined，避免非法值
+        model: isImageType
+          ? 'banana-2.0'
+          : type === 'video'
+            ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2')
+            : isWanAnimateType
+              ? 'wan-animate'
+              : isHeyGemType
+                ? 'hey-gem'
+                : type === 'audio-voice-cover'
+                  ? AI_VOICE_COVER_MODEL_ID
+                  : isAudioType
+                    ? 'speech-2.8-hd'
+                    : isImageTo3dType
+                      ? DEFAULT_IMAGE_TO_3D_MODEL
+                    : undefined,
         hd: isVideoLikeType ? false : undefined,
         duration: isVideoLikeType ? '10' : undefined,
         resolutionSeedance: isVideoLikeType ? '720p' : undefined,
@@ -10002,6 +10547,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         volume: isAudioType ? 1 : undefined,
         pitch: isAudioType ? 0 : undefined,
         referenceAudioUrl: type === 'character' || isAudioType ? '' : undefined,
+        sourceSongAudioUrl: type === 'audio-voice-cover' ? '' : undefined,
+        coverPitch: type === 'audio-voice-cover' ? 0 : undefined,
+        coverIndexRate: type === 'audio-voice-cover' ? 0.75 : undefined,
+        coverVocalMixPct: type === 'audio-voice-cover' ? 100 : undefined,
+        coverAccompanimentMixPct: type === 'audio-voice-cover' ? 100 : undefined,
+        coverRhVolume: type === 'audio-voice-cover' ? 5 : undefined,
+        coverOutputMode: type === 'audio-voice-cover' ? 'with_accompaniment' : undefined,
         aiStatus: isAudioType ? 'idle' : undefined,
         videoClips: isVideoSpliceType ? [] : undefined,
         audioTracks: isVideoSpliceType ? [[]] : undefined,
@@ -10142,21 +10694,51 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             });
         }
       }
-    } else if (type === 'audio' && connectFrom?.sourceNodeId) {
+    } else if ((type === 'audio' || type === 'audio-voice-cover') && connectFrom?.sourceNodeId) {
       const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
-      if (sourceNode?.type === 'audio') {
-        const audioUrl = (sourceNode.data?.outputAudio || sourceNode.data?.originalAudioUrl) as string | undefined;
-        if (audioUrl) {
+      if (sourceNode?.type === 'rvcTrain' && (type === 'audio-voice-cover' || type === 'audio')) {
+        const src = sourceNode.data as Record<string, unknown>;
+        const voiceName = resolveRvcTrainNickname(src as { rvcTrainModelName?: string; title?: string });
+        const hasModel = !!(src.outputModelUrl || src.libraryRvcVoiceId);
+        if (hasModel || type === 'audio-voice-cover') {
           nodeToAdd = {
             ...nodeToAdd,
             data: {
               ...nodeToAdd.data,
-              model: 'index-tts2',
-              outputAudio: audioUrl,
-              originalAudioUrl: audioUrl,
-              referenceAudioUrl: audioUrl,
+              model: AI_VOICE_COVER_MODEL_ID,
+              rvcTrainModelName: voiceName,
+              rvcCoverModelName: deriveRvcCoverModelPath(voiceName),
+              libraryRvcVoiceId: src.libraryRvcVoiceId,
+              outputModelUrl: src.outputModelUrl,
+              outputModelRemoteUrl: src.outputModelRemoteUrl,
             },
           };
+        }
+      } else if (sourceNode?.type === 'audio') {
+        const audioUrl = (sourceNode.data?.outputAudio || sourceNode.data?.originalAudioUrl) as string | undefined;
+        if (audioUrl) {
+          if (type === 'audio-voice-cover') {
+            nodeToAdd = {
+              ...nodeToAdd,
+              data: {
+                ...nodeToAdd.data,
+                model: AI_VOICE_COVER_MODEL_ID,
+                sourceSongAudioUrl: audioUrl,
+                rvcCoverModelName: '',
+              },
+            };
+          } else {
+            nodeToAdd = {
+              ...nodeToAdd,
+              data: {
+                ...nodeToAdd.data,
+                model: 'index-tts2',
+                outputAudio: audioUrl,
+                originalAudioUrl: audioUrl,
+                referenceAudioUrl: audioUrl,
+              },
+            };
+          }
         }
       } else if (sourceNode?.type === 'character') {
         const refUrl = String(sourceNode.data?.voiceClip || sourceNode.data?.referenceAudioUrl || '').trim();
@@ -10215,6 +10797,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (textToSplit) {
         nodeToAdd = { ...newNode, data: { ...newNode.data, inputText: textToSplit } };
       }
+    } else if (isRvcTrainType && connectFrom?.sourceNodeId) {
+      const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
+      if (sourceNode?.type === 'audio') {
+        const trainUrl = pickBestAudioUrlForRhTrainFromNodeData(sourceNode.data as Record<string, unknown>);
+        if (trainUrl) {
+          nodeToAdd = {
+            ...nodeToAdd,
+            data: {
+              ...nodeToAdd.data,
+              referenceAudioUrl: trainUrl,
+            },
+          };
+        }
+      }
     } else if (isImageTo3dType && connectFrom?.sourceNodeId) {
       const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
       if (sourceNode?.type === 'image') {
@@ -10232,8 +10828,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           const { clipType, url } = resolved;
           const sourceDur = resolveSourceMediaDurationSec(sourceNode);
           const duration = clipType === 'image' ? 3 : sourceDur > 0 ? sourceDur : 0;
-          const videoClips: TimelineClip[] = [];
-          const audioTracks: TimelineClip[][] = [[]];
           const newClip: TimelineClip = {
             id: `${clipType}-${Date.now()}-${connectFrom.sourceNodeId}`,
             type: clipType,
@@ -10244,21 +10838,27 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             sourceNodeId: connectFrom.sourceNodeId,
           };
           if (clipType === 'audio') {
-            audioTracks[0].push(newClip);
             nodeToAdd = {
               ...newNode,
               data: {
                 ...newNode.data,
-                ...applyBuiltClipsToSpliceData(undefined, { videoClips: [], audioTracks }),
+                ...applyBuiltClipsToSpliceData(undefined, {
+                  videoTracks: [[]],
+                  videoClips: [],
+                  audioTracks: [[newClip]],
+                }),
               },
             };
           } else {
-            videoClips.push(newClip);
             nodeToAdd = {
               ...newNode,
               data: {
                 ...newNode.data,
-                ...applyBuiltClipsToSpliceData(undefined, { videoClips, audioTracks: [[]] }),
+                ...applyBuiltClipsToSpliceData(undefined, {
+                  videoTracks: [[newClip]],
+                  videoClips: [newClip],
+                  audioTracks: [[]],
+                }),
               },
             };
           }
@@ -10289,36 +10889,50 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 if (n.id !== newNodeId || n.type !== 'videoSplice') return n;
                 const sourceNode = nds.find((sn) => sn.id === connectFrom.sourceNodeId);
                 const sourceHint = sourceNode ? resolveSourceMediaDurationSec(sourceNode) : 0;
-                const track0 = normalizeVideoTracks(
+                const videoTracks = normalizeVideoTracks(
                   n.data as { videoTracks?: TimelineClip[][]; videoClips?: TimelineClip[] },
-                )[0] as TimelineClip[];
+                ) as TimelineClip[][];
                 const audioTracks = (n.data?.audioTracks as TimelineClip[][] | undefined) ?? [[]];
-                if (isVideo && track0.length) {
-                  const updated = track0.map((c) =>
-                    c.sourceNodeId === connectFrom.sourceNodeId
-                      ? mergeProbedTimelineClipDuration(c, dur, sourceHint)
-                      : c,
+                if (isVideo) {
+                  let touched = false;
+                  const nextVideoTracks = videoTracks.map((track) =>
+                    track.map((c) => {
+                      if (c.sourceNodeId !== connectFrom.sourceNodeId) return c;
+                      touched = true;
+                      return mergeProbedTimelineClipDuration(c, dur, sourceHint);
+                    }),
                   );
-                  return {
-                    ...n,
-                    data: { ...n.data, ...applyBuiltClipsToSpliceData(n.data, { videoClips: updated, audioTracks }) },
-                  };
-                }
-                if (!isVideo && audioTracks[0]?.length) {
-                  const first = audioTracks[0].find((c) => c.sourceNodeId === connectFrom.sourceNodeId);
-                  if (first) {
-                    const updatedAudio0 = audioTracks[0].map((c) =>
-                      c.sourceNodeId === connectFrom.sourceNodeId
-                        ? mergeProbedTimelineClipDuration(c, dur, sourceHint)
-                        : c,
-                    );
+                  if (touched) {
                     return {
                       ...n,
                       data: {
                         ...n.data,
                         ...applyBuiltClipsToSpliceData(n.data, {
-                          videoClips: track0,
-                          audioTracks: [updatedAudio0, ...audioTracks.slice(1)],
+                          videoTracks: nextVideoTracks,
+                          videoClips: nextVideoTracks[0] ?? [],
+                          audioTracks,
+                        }),
+                      },
+                    };
+                  }
+                } else {
+                  let touched = false;
+                  const nextAudioTracks = audioTracks.map((track) =>
+                    track.map((c) => {
+                      if (c.sourceNodeId !== connectFrom.sourceNodeId) return c;
+                      touched = true;
+                      return mergeProbedTimelineClipDuration(c, dur, sourceHint);
+                    }),
+                  );
+                  if (touched) {
+                    return {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        ...applyBuiltClipsToSpliceData(n.data, {
+                          videoTracks,
+                          videoClips: videoTracks[0] ?? [],
+                          audioTracks: nextAudioTracks,
                         }),
                       },
                     };
@@ -10422,6 +11036,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const targetHandle =
         isImageType ? 'image-input'
         : (type === 'video' || isWanAnimateType) ? 'input'  // Video 节点 Handle id 为 'input'
+        : isRvcTrainType ? 'input'
         : isAudioType ? 'audio-input'
         : 'input';
       setEdges((eds) =>
@@ -10926,6 +11541,191 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [placeDigitalHumanLibraryOnCanvas],
   );
 
+  const placeRvcVoiceLibraryOnCanvas = useCallback(
+    (item: RvcVoiceLibraryItem, anchorFlowPosition: { x: number; y: number }) => {
+      const newNode = buildRvcTrainNodeFromLibraryItem(item, anchorFlowPosition);
+      setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNode));
+      setSelectedNode(newNode);
+      setRvcTrainInputPanelData({
+        nodeId: newNode.id,
+        rvcTrainModelName: (newNode.data?.rvcTrainModelName as string) ?? '',
+        referenceAudioUrl: (newNode.data?.referenceAudioUrl as string) ?? '',
+        libraryAvatarUrl: (newNode.data?.libraryAvatarUrl as string) ?? '',
+      });
+      setAudioInputPanelData(null);
+      setCharacterInputPanelData(null);
+      setImageInputPanelData(null);
+      setImageTo3dInputPanelData(null);
+      setLlmInputPanelData(null);
+      setVideoInputPanelData(null);
+    },
+    [
+      setNodes,
+      setSelectedNode,
+      setAudioInputPanelData,
+      setCharacterInputPanelData,
+      setImageInputPanelData,
+      setImageTo3dInputPanelData,
+      setLlmInputPanelData,
+      setVideoInputPanelData,
+    ],
+  );
+
+  const handleRvcVoicePlaceToCanvas = useCallback(
+    (item: RvcVoiceLibraryItem, anchorScreen: { x: number; y: number }) => {
+      const api = flowContentApiRef.current;
+      if (!api?.screenToFlowPosition) {
+        placeRvcVoiceLibraryOnCanvas(item, { x: 400, y: 300 });
+        return;
+      }
+      const flowPos = api.screenToFlowPosition(anchorScreen);
+      placeRvcVoiceLibraryOnCanvas(item, flowPos);
+    },
+    [placeRvcVoiceLibraryOnCanvas],
+  );
+
+  const persistRvcVoiceToLibrary = useCallback(
+    async (params: {
+      modelPackageUrl: string;
+      modelPackageRemoteUrl?: string;
+      outputModelLocalPath?: string;
+      rvcTrainModelName?: string;
+      trainAudioUrl?: string;
+      avatarUrl?: string;
+      nodeId?: string;
+    }) => {
+      if (!window.electronAPI?.registerRvcVoice) return null;
+      const dedupeKey = params.nodeId || params.modelPackageUrl;
+      if (rvcLibraryPersistedRef.current.has(dedupeKey)) return null;
+      rvcLibraryPersistedRef.current.add(dedupeKey);
+      try {
+        const sourceNode = params.nodeId
+          ? latestNodesRef.current.find((n) => n.id === params.nodeId)
+          : undefined;
+        const trainAudioUrl = (
+          params.trainAudioUrl || String(sourceNode?.data?.referenceAudioUrl ?? '')
+        ).trim();
+        const avatarUrl = (params.avatarUrl || String(sourceNode?.data?.libraryAvatarUrl ?? '')).trim();
+        const defaultName = deriveRvcPackageDisplayName(params.modelPackageUrl, params.outputModelLocalPath);
+        const item = (await window.electronAPI.registerRvcVoice({
+          modelPackageUrl: params.modelPackageUrl,
+          modelPackageRemoteUrl: params.modelPackageRemoteUrl,
+          rvcTrainModelName: params.rvcTrainModelName,
+          nickname: params.rvcTrainModelName,
+          trainAudioUrl: trainAudioUrl || undefined,
+          trainAudioRemoteUrl: trainAudioUrl.startsWith('http') ? trainAudioUrl : undefined,
+          avatarUrl: avatarUrl || undefined,
+        })) as RvcVoiceLibraryItem;
+        const savedTrainUrl = rvcVoiceTrainAudioUrl(item);
+        const savedAvatar = rvcVoiceAvatarUrl(item);
+        setRvcVoiceListRefreshTrigger((n) => n + 1);
+        if (params.nodeId && item?.id) {
+          setNodes((nds) =>
+            nds.map((node) =>
+              node.id === params.nodeId
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      libraryRvcVoiceId: item.id,
+                      rvcTrainModelName: params.rvcTrainModelName,
+                      referenceAudioUrl: savedTrainUrl || node.data?.referenceAudioUrl,
+                      libraryAvatarUrl: savedAvatar || node.data?.libraryAvatarUrl,
+                      aiStatus: 'SUCCESS',
+                      progress: 0,
+                      errorMessage: undefined,
+                    },
+                  }
+                : node,
+            ),
+          );
+          const target = latestNodesRef.current.find((n) => n.id === params.nodeId);
+          const nodePatch = {
+            libraryRvcVoiceId: item.id,
+            rvcTrainModelName: params.rvcTrainModelName,
+            referenceAudioUrl: savedTrainUrl || undefined,
+            libraryAvatarUrl: savedAvatar || undefined,
+            aiStatus: 'SUCCESS' as const,
+            errorMessage: undefined,
+          };
+          if (target?.type === 'rvcTrain') {
+            handleRvcTrainNodeDataChangeRef.current?.(params.nodeId, {
+              ...nodePatch,
+              outputModelUrl: params.modelPackageUrl,
+              outputModelRemoteUrl: params.modelPackageRemoteUrl,
+            });
+          } else if (target?.type === 'audio') {
+            handleAudioNodeDataChange(params.nodeId, nodePatch);
+          }
+        }
+        showAlert(`${assetLibraryT(locale).rvcVoiceSavedFromTrain}\n${defaultName || item.nickname || ''}`);
+        return item;
+      } catch (e) {
+        rvcLibraryPersistedRef.current.delete(dedupeKey);
+        console.error('[Workspace] RVC 音色入库失败', e);
+        return null;
+      }
+    },
+    [handleAudioNodeDataChange, setNodes, showAlert, locale],
+  );
+
+  const handleRvcVoiceLibraryUpdated = useCallback(
+    (item: RvcVoiceLibraryItem) => {
+      const displayName = rvcVoiceDisplayName(item, '');
+      const trainUrl = rvcVoiceTrainAudioUrl(item);
+      const avatar = rvcVoiceAvatarUrl(item);
+      const pkgUrl = rvcVoiceModelPackageUrl(item);
+      setNodes((nds) =>
+        nds.map((node) => {
+          if (node.data?.libraryRvcVoiceId !== item.id) return node;
+          if (node.type === 'rvcTrain') {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                rvcTrainModelName: displayName,
+                title: displayName,
+                label: displayName,
+                referenceAudioUrl: trainUrl,
+                libraryAvatarUrl: avatar || undefined,
+                outputModelUrl: pkgUrl || node.data?.outputModelUrl,
+                outputModelRemoteUrl: item.originalModelUrl || node.data?.outputModelRemoteUrl,
+              },
+            };
+          }
+          if (node.type === 'audio') {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                rvcTrainModelName: displayName,
+                title: displayName,
+                libraryRvcVoiceId: item.id,
+                outputModelUrl: pkgUrl || node.data?.outputModelUrl,
+                outputModelRemoteUrl: item.originalModelUrl || node.data?.outputModelRemoteUrl,
+              },
+            };
+          }
+          return node;
+        }),
+      );
+      setRvcTrainInputPanelData((prev) => {
+        if (!prev?.nodeId) return prev;
+        const linked = latestNodesRef.current.find((n) => n.id === prev.nodeId);
+        if (linked?.data?.libraryRvcVoiceId !== item.id) return prev;
+        return {
+          ...prev,
+          rvcTrainModelName: displayName,
+          title: displayName,
+          referenceAudioUrl: trainUrl,
+          libraryAvatarUrl: avatar || undefined,
+          outputModelUrl: pkgUrl || prev.outputModelUrl,
+        };
+      });
+    },
+    [setNodes],
+  );
+
   // 在画布上放置节点（支持从左侧拖拽节点 或 从系统拖入文件，flowPosition 由 FlowContent 传入）
   // 本地拖入的图片/视频/音频会先复制到项目 assets，画布从项目路径读取，避免 OSS 次日删除或原路径失效导致“图片加载失败”
   const onDrop = useCallback(
@@ -10961,6 +11761,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           return;
         }
         placeDigitalHumanLibraryOnCanvas(item, position);
+        return;
+      }
+
+      const rvcVoicePayload = event.dataTransfer.getData(NEXFLOW_RVC_VOICE_DRAG_MIME);
+      if (rvcVoicePayload?.trim()) {
+        let item: RvcVoiceLibraryItem;
+        try {
+          item = JSON.parse(rvcVoicePayload) as RvcVoiceLibraryItem;
+        } catch {
+          return;
+        }
+        placeRvcVoiceLibraryOnCanvas(item, position);
         return;
       }
 
@@ -11351,6 +12163,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             pitch: (audioNodes[0].data?.pitch as number) ?? 0,
             emotion: audioNodes[0].data?.emotion,
             referenceAudioUrl: (audioNodes[0].data?.referenceAudioUrl as string) ?? '',
+            sourceSongAudioUrl: (audioNodes[0].data?.sourceSongAudioUrl as string) ?? '',
+            coverPitch: clampCoverPitch(audioNodes[0].data?.coverPitch ?? 0),
+            coverIndexRate: clampCoverIndexRate(audioNodes[0].data?.coverIndexRate),
+            coverVocalMixPct: clampCoverVocalMixPct(audioNodes[0].data?.coverVocalMixPct),
+            coverAccompanimentMixPct: resolveCoverAccompanimentMixPct(
+              audioNodes[0].data?.coverAccompanimentMixPct,
+              audioNodes[0].data?.coverOutputMode,
+            ),
+            coverRhVolume: (audioNodes[0].data?.coverRhVolume as number | undefined) ?? 5,
+            rvcTrainModelName: (audioNodes[0].data?.rvcTrainModelName as string) ?? '',
             songName: (audioNodes[0].data?.songName as string) ?? '',
             styleDesc: (audioNodes[0].data?.styleDesc as string) ?? '',
             lyrics: (audioNodes[0].data?.lyrics as string) ?? '',
@@ -11632,6 +12454,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         id: `${data.type}-${Date.now()}`,
         type: nodeType,
         position,
+        style:
+          data.type === 'audio'
+            ? nodeStyleDimensions(AUDIO_NODE_WIDTH, AUDIO_NODE_HEIGHT)
+            : undefined,
+        width: data.type === 'audio' ? AUDIO_NODE_WIDTH : undefined,
+        height: data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
         data: {
           label: data.label,
           width: data.type === 'text' ? 369.46 : data.type === 'llm' ? 280 : data.type === 'textSplit' ? 240 : data.type === 'image' ? 369.46 : (data.type === 'video' || data.type === 'wanAnimate') ? 738.91 : data.type === 'character' ? 624 : data.type === 'audio' ? 280 : undefined,
@@ -11754,7 +12582,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       types.includes('application/nexflow-task') ||
       types.includes(NEXFLOW_CHARACTER_DRAG_MIME) ||
       types.includes(NEXFLOW_SCENE_DRAG_MIME) ||
-      types.includes(NEXFLOW_DIGITAL_HUMAN_DRAG_MIME);
+      types.includes(NEXFLOW_DIGITAL_HUMAN_DRAG_MIME) ||
+      types.includes(NEXFLOW_RVC_VOICE_DRAG_MIME);
     event.dataTransfer.dropEffect = useCopy ? 'copy' : 'move';
   }, []);
 
@@ -11777,6 +12606,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   useEffect(() => {
     handleAIStatusUpdateRef.current = (packet: { nodeId: string; status: string; payload?: any }) => {
       if (!packet || !packet.nodeId) return;
+
+      if (packet.status === 'ERROR' && packet.payload?.nxAuthRequired === true) {
+        promptNxSaasLoginIfNeeded(packet.payload?.error, true);
+      }
+
       // 当 AI 调用开始时（START 状态），触发余额查询
       // 注意：实际的余额刷新在主进程的 AICore 中完成，这里只是作为备用
       if (packet.status === 'START') {
@@ -11813,7 +12647,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             );
           }
           // 初始化 Audio 节点的状态
-          if (targetNode && targetNode.type === 'audio') {
+          if (targetNode && (targetNode.type === 'audio' || targetNode.type === 'rvcTrain')) {
             return nds.map((node) =>
               node.id === packet.nodeId
                 ? {
@@ -11910,8 +12744,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 : node
             );
           }
-          // 更新 Audio 节点的状态为 PROCESSING
-          if (targetNode && targetNode.type === 'audio') {
+          // 更新 Audio / RVC 训练节点的状态为 PROCESSING
+          if (targetNode && (targetNode.type === 'audio' || targetNode.type === 'rvcTrain')) {
             return nds.map((node) =>
               node.id === packet.nodeId
                 ? {
@@ -12003,46 +12837,72 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
       }
       
-      // 处理音频节点的 ERROR 状态（API 返回失败时，显示错误信息）
+      // 处理音频 / RVC 训练节点的 ERROR 状态（API 返回失败时，停止进度条并显示错误信息）
       if (packet.status === 'ERROR' && packet.payload?.error) {
         const nodeId = packet.nodeId;
         const errorMessage = packet.payload.error;
-        
-        // 使用函数式更新，确保基于最新状态
+        const isTimeout = /timeout|超时/i.test(String(errorMessage || ''));
+        const errNode = latestNodesRef.current.find((n) => n.id === nodeId);
+        if (errNode && (errNode.type === 'audio' || errNode.type === 'rvcTrain')) {
+          upsertRuntimeTask(nodeId, {
+            status: isTimeout ? 'timeout' : 'failed',
+            errorMessage: String(errorMessage || '任务失败'),
+            taskType: 'audio',
+          });
+        }
+
+        setRvcTrainInputPanelData((prev) => {
+          if (prev && prev.nodeId === nodeId) {
+            return { ...prev, progress: 0, progressMessage: undefined };
+          }
+          return prev;
+        });
+
         setNodes((nds) => {
           const targetNode = nds.find((n) => n.id === nodeId);
-          if (!targetNode || targetNode.type !== 'audio') {
-            return nds; // 不是音频节点，不处理
+          if (!targetNode || (targetNode.type !== 'audio' && targetNode.type !== 'rvcTrain')) {
+            return nds;
           }
-          
-          console.log(`[Workspace] 音频节点 ${nodeId} 生成失败，停止动画并显示错误:`, errorMessage);
-          
-          // 更新节点数据：停止动画并设置错误信息
-          const updatedNodes = nds.map((node) =>
+
+          console.log(
+            `[Workspace] ${targetNode.type === 'rvcTrain' ? 'RVC 训练' : '音频'}节点 ${nodeId} 生成失败，停止进度条并显示错误:`,
+            errorMessage,
+          );
+
+          return nds.map((node) =>
             node.id === nodeId
               ? {
                   ...node,
                   data: {
                     ...node.data,
-                    aiStatus: 'ERROR', // 更新状态为错误，停止加载动画
-                    errorMessage: errorMessage, // 显示错误信息
+                    aiStatus: 'ERROR',
+                    progress: 0,
+                    progressMessage: undefined,
+                    errorMessage: errorMessage,
                   },
                 }
-              : node
+              : node,
           );
-          
-          // 触发 handleAudioNodeDataChange 以同步状态（使用 ref 避免闭包问题）
-          setTimeout(() => {
-            if (handleAudioNodeDataChangeRef.current) {
-              handleAudioNodeDataChangeRef.current(nodeId, { 
-                aiStatus: 'ERROR',
-                errorMessage: errorMessage 
-              });
-            }
-          }, 0);
-          
-          return updatedNodes;
         });
+
+        setTimeout(() => {
+          const target = latestNodesRef.current.find((n) => n.id === nodeId);
+          if (target?.type === 'rvcTrain') {
+            handleRvcTrainNodeDataChangeRef.current?.(nodeId, {
+              aiStatus: 'ERROR',
+              progress: 0,
+              progressMessage: undefined,
+              errorMessage: errorMessage,
+            });
+          } else if (target?.type === 'audio' && handleAudioNodeDataChangeRef.current) {
+            handleAudioNodeDataChangeRef.current(nodeId, {
+              aiStatus: 'ERROR',
+              progress: 0,
+              progressMessage: undefined,
+              errorMessage: errorMessage,
+            });
+          }
+        }, 0);
       }
       
       // 处理图片节点的 ERROR 状态（API 返回失败时，停止进度条并显示错误信息）
@@ -12520,12 +13380,64 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         })();
       }
       
+      // RVC 训练完成（模型 zip，非可播放音频）
+      const rvcPackageUrl =
+        packet.payload?.outputModelUrl ||
+        (isRvcModelPackageUrl(String(packet.payload?.audioUrl ?? '')) ? packet.payload?.audioUrl : undefined) ||
+        (isRvcModelPackageUrl(String(packet.payload?.url ?? '')) ? packet.payload?.url : undefined);
+      if (
+        packet.status === 'SUCCESS' &&
+        rvcPackageUrl &&
+        !packet.payload?.imageUrl &&
+        !packet.payload?.videoUrl
+      ) {
+        const nodeId = packet.nodeId;
+        const outputModelUrl = String(rvcPackageUrl);
+        const outputModelRemoteUrl = (packet.payload.outputModelRemoteUrl as string | undefined) || outputModelUrl;
+        const outputModelLocalPath = packet.payload.outputModelLocalPath as string | undefined;
+        const trainedName = packet.payload.rvcTrainModelName as string | undefined;
+        upsertRuntimeTask(nodeId, { status: 'success' });
+        void persistRvcVoiceToLibraryRef.current?.({
+          modelPackageUrl: outputModelUrl,
+          modelPackageRemoteUrl: outputModelRemoteUrl,
+          outputModelLocalPath,
+          rvcTrainModelName: trainedName,
+          nodeId,
+        });
+      }
+
       // 处理音频节点的 SUCCESS 状态（批量运行时，未选中的节点没有 AudioInputPanel，需要在这里更新）
-      if (packet.status === 'SUCCESS' && (packet.payload?.audioUrl || packet.payload?.url) && !packet.payload?.imageUrl && !packet.payload?.videoUrl) {
+      if (
+        packet.status === 'SUCCESS' &&
+        (packet.payload?.audioUrl || packet.payload?.url || (Array.isArray(packet.payload?.outputAudios) && packet.payload.outputAudios.length > 0)) &&
+        !packet.payload?.imageUrl &&
+        !packet.payload?.videoUrl &&
+        !packet.payload?.outputModelUrl &&
+        !isRvcModelPackageUrl(String(packet.payload?.audioUrl ?? '')) &&
+        !isRvcModelPackageUrl(String(packet.payload?.url ?? ''))
+      ) {
         const nodeId = packet.nodeId;
         const audioUrl = packet.payload.audioUrl || packet.payload.url;
         const localPath = packet.payload.localPath;
         const originalAudioUrl = packet.payload.originalAudioUrl;
+        const outputAudiosRaw = Array.isArray(packet.payload?.outputAudios)
+          ? packet.payload.outputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : [];
+        const originalOutputAudiosRaw = Array.isArray(packet.payload?.originalOutputAudios)
+          ? packet.payload.originalOutputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : [];
+        const formatAudioUrlForNode = (url: string, itemLocalPath?: string): string => {
+          if (itemLocalPath) {
+            let filePath = itemLocalPath.replace(/\\/g, '/');
+            if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+            return `local-resource://${filePath}`;
+          }
+          if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
+          const cleanPath = url.replace(/^(file:\/\/|local-resource:\/\/)/, '');
+          let filePath = cleanPath.replace(/\\/g, '/');
+          if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+          return `local-resource://${filePath}`;
+        };
         const nAud = latestNodesRef.current.find((x) => x.id === nodeId);
         const ybAud = estimateYuanbaoForTaskNodeStatic(nAud, cloudMapRef.current);
         upsertRuntimeTask(nodeId, {
@@ -12542,31 +13454,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
           
           // 格式化音频路径
-          let formattedAudioUrl = audioUrl;
-          if (localPath) {
-            // 如果有本地路径，使用本地路径
-            let filePath = localPath.replace(/\\/g, '/');
-            // 确保 Windows 路径格式正确（C:/Users 而不是 /C:/Users）
-            if (filePath.match(/^\/[a-zA-Z]:/)) {
-              filePath = filePath.substring(1); // 移除开头的 /
-            }
-            formattedAudioUrl = `local-resource://${filePath}`;
-          } else {
-            // 格式化远程 URL
-            if (audioUrl.startsWith('http://') || audioUrl.startsWith('https://')) {
-              formattedAudioUrl = audioUrl;
-            } else if (audioUrl.startsWith('data:')) {
-              formattedAudioUrl = audioUrl;
-            } else {
-              const cleanPath = audioUrl.replace(/^(file:\/\/|local-resource:\/\/)/, '');
-              let filePath = cleanPath.replace(/\\/g, '/');
-              // 确保 Windows 路径格式正确
-              if (filePath.match(/^\/[a-zA-Z]:/)) {
-                filePath = filePath.substring(1); // 移除开头的 /
-              }
-              formattedAudioUrl = `local-resource://${filePath}`;
-            }
-          }
+          let formattedAudioUrl = formatAudioUrlForNode(String(audioUrl || ''), localPath);
+          const formattedOutputAudios =
+            outputAudiosRaw.length > 0
+              ? outputAudiosRaw.map((u: string, i: number) => {
+                  const orig = originalOutputAudiosRaw[i];
+                  const network = orig && (orig.startsWith('http://') || orig.startsWith('https://')) ? orig : undefined;
+                  const formatted = formatAudioUrlForNode(u, i === 0 ? localPath : undefined);
+                  return network || formatted;
+                })
+              : [];
           
           // 确定网络 URL：优先使用 originalAudioUrl，如果没有则检查 formattedAudioUrl 是否是网络 URL
           let networkUrl = originalAudioUrl;
@@ -12575,6 +13472,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
           // 有远程 URL 时，节点播放与任务列表一致：直接使用远程 URL 作为 outputAudio，避免 local-resource 在中文路径下无法播放
           const outputAudioForNode = networkUrl || formattedAudioUrl;
+          const outputAudiosForNode =
+            formattedOutputAudios.length > 1 ? formattedOutputAudios : undefined;
           
           // 更新节点数据
           const updatedNodes = nds.map((node) =>
@@ -12584,6 +13483,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   data: {
                     ...node.data,
                     outputAudio: outputAudioForNode,
+                    ...(outputAudiosForNode ? { outputAudios: outputAudiosForNode } : {}),
+                    ...(originalOutputAudiosRaw.length > 0 ? { originalOutputAudios: originalOutputAudiosRaw } : {}),
                     originalAudioUrl: networkUrl || undefined,
                     aiStatus: 'SUCCESS', // 更新状态为成功
                     progress: 0, // 清除进度条
@@ -12600,6 +13501,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (handleAudioNodeDataChangeRef.current) {
               handleAudioNodeDataChangeRef.current(nodeId, { 
                 outputAudio: outputAudioForNode,
+                ...(outputAudiosForNode ? { outputAudios: outputAudiosForNode } : {}),
+                ...(originalOutputAudiosRaw.length > 0 ? { originalOutputAudios: originalOutputAudiosRaw } : {}),
                 originalAudioUrl: networkUrl || undefined,
                 aiStatus: 'SUCCESS',
                 errorMessage: undefined
@@ -12657,6 +13560,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (!String(t.id).startsWith('runtime-')) continue;
       const node = latestNodesRef.current.find((n) => n.id === t.nodeId);
       if (!node || node.type !== t.taskType) continue;
+      if (t.taskType === 'audio' && (isRvcTrainModel(String(node.data?.model ?? '')) || node.type === 'rvcTrain')) continue;
 
       const key = `${projectId}:${t.taskType}:${t.nodeId}:${rhId}`;
       if (runningHubVideoResumeStartedRef.current.has(key)) continue;
@@ -12695,13 +13599,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     handleImageNodeDataChangeRef.current = handleImageNodeDataChange;
     handleVideoNodeDataChangeRef.current = handleVideoNodeDataChange;
     handleAudioNodeDataChangeRef.current = handleAudioNodeDataChange;
+    persistRvcVoiceToLibraryRef.current = persistRvcVoiceToLibrary;
     handleVideoSpliceNodeDataChangeRef.current = handleVideoSpliceNodeDataChange;
     handleVideoSpliceExportToCanvasRef.current = handleVideoSpliceExportToCanvas;
     handlePhotoCollageNodeDataChangeRef.current = handlePhotoCollageNodeDataChange;
     handleAddTaskRef.current = handleAddTask;
     handleCleanupSplitEdgesRef.current = handleCleanupSplitEdges;
     handleAuxImageTaskCompleteRef.current = handleAuxImageTaskComplete;
-  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
+  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, persistRvcVoiceToLibrary, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
 
   // 采集当前画布缩略图（仅负责生成，不负责落盘）
   const captureProjectCardThumbnail = useCallback(async () => {
@@ -13205,6 +14110,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           characterListRefreshTrigger={characterListRefreshTrigger}
           sceneListRefreshTrigger={sceneListRefreshTrigger}
           digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
+          rvcVoiceListRefreshTrigger={rvcVoiceListRefreshTrigger}
           onSelectCharacter={handleSelectCharacter}
           requestVoicePickFromCanvas={requestVoicePickFromCanvas}
           requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
@@ -13228,6 +14134,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           onTaskPlaceToCanvas={handleTaskPlaceToCanvas}
           onPlaceSceneToCanvas={handleScenePlaceToCanvas}
           onPlaceDigitalHumanToCanvas={handleDigitalHumanPlaceToCanvas}
+          onPlaceRvcVoiceToCanvas={handleRvcVoicePlaceToCanvas}
+          onRvcVoiceUpdated={handleRvcVoiceLibraryUpdated}
         />
         
         {/* 中间画布区域 - 覆盖整个区域，左侧边栏覆盖在上面 */}
@@ -13240,6 +14148,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             overflow: 'hidden',
           }}
         >
+          <OptionalEngineDownloadBar isDarkMode={isDarkMode} />
           {characterAvatarPickOverlay && (
             <>
               <div
@@ -13814,6 +14723,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 nodeId={imageTo3dInputPanelData.nodeId}
                 isDarkMode={isDarkMode}
                 inputImageUrl={imageTo3dInputPanelData.inputImageUrl}
+                model={imageTo3dInputPanelData.model || DEFAULT_IMAGE_TO_3D_MODEL}
                 resultTextureUrl={imageTo3dInputPanelData.resultTextureUrl || ''}
                 projectId={projectId}
                 errorMessage={selectedNode.data?.errorMessage as string | undefined}
@@ -13861,6 +14771,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   });
                   setImageTo3dInputPanelData((prev) =>
                     prev && prev.nodeId === nid ? { ...prev, inputImageUrl: url } : prev,
+                  );
+                }}
+                onModelChange={(model) => {
+                  const nid = imageTo3dInputPanelData.nodeId;
+                  invokeImageTo3dNodeDataChange(nid, { model });
+                  setImageTo3dInputPanelData((prev) =>
+                    prev && prev.nodeId === nid ? { ...prev, model } : prev,
                   );
                 }}
                 onComplete={(payload) => {
@@ -14881,6 +15798,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               pitch={audioInputPanelData.pitch}
               emotion={audioInputPanelData.emotion}
               referenceAudioUrl={audioInputPanelData.referenceAudioUrl || ''}
+              sourceSongAudioUrl={audioInputPanelData.sourceSongAudioUrl || ''}
+              coverRhVolume={audioInputPanelData.coverRhVolume ?? 5}
+              coverPitch={clampCoverPitch(audioInputPanelData.coverPitch ?? 0)}
+              coverIndexRate={clampCoverIndexRate(audioInputPanelData.coverIndexRate)}
+              coverVocalMixPct={clampCoverVocalMixPct(audioInputPanelData.coverVocalMixPct)}
+              coverAccompanimentMixPct={resolveCoverAccompanimentMixPct(
+                audioInputPanelData.coverAccompanimentMixPct,
+                audioInputPanelData.coverOutputMode,
+              )}
+              rvcTrainModelName={audioInputPanelData.rvcTrainModelName ?? ''}
+              rvcCoverModelName={audioInputPanelData.rvcCoverModelName ?? ''}
+              outputModelUrl={(audioInputPanelData as { outputModelUrl?: string }).outputModelUrl ?? ''}
+              outputModelRemoteUrl={(audioInputPanelData as { outputModelRemoteUrl?: string }).outputModelRemoteUrl ?? ''}
+              coverReferenceAudioUrl={(audioInputPanelData as { coverReferenceAudioUrl?: string }).coverReferenceAudioUrl ?? ''}
+              libraryRvcVoiceId={(audioInputPanelData as { libraryRvcVoiceId?: string }).libraryRvcVoiceId ?? ''}
               songName={audioInputPanelData.songName ?? ''}
               styleDesc={audioInputPanelData.styleDesc ?? ''}
               lyrics={audioInputPanelData.lyrics ?? ''}
@@ -14964,6 +15896,64 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   });
                 }
               }}
+              onCoverRhVolumeChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverRhVolume: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverRhVolume: value });
+              }}
+              onCoverPitchChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverPitch: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverPitch: value });
+              }}
+              onCoverIndexRateChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverIndexRate: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverIndexRate: value });
+              }}
+              onCoverVocalMixPctChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverVocalMixPct: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverVocalMixPct: value });
+              }}
+              onCoverAccompanimentMixPctChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, coverAccompanimentMixPct: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverAccompanimentMixPct: value });
+              }}
+              onRvcTrainModelNameChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcTrainModelName: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, rvcTrainModelName: value });
+              }}
+              onRvcCoverModelNameChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcCoverModelName: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, rvcCoverModelName: value });
+              }}
               onTextChange={(value) => {
                 setNodes((nds) =>
                   nds.map((node) =>
@@ -15024,30 +16014,57 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 );
                 setAudioInputPanelData({ ...audioInputPanelData, emotion: value });
               }}
-              onOutputAudioChange={(audioUrl, originalUrl) => {
+              onOutputAudioChange={(audioUrl, originalUrl, outputAudiosFromPayload, originalOutputAudiosFromPayload) => {
                 if (!audioUrl) return;
                 
                 const targetNodeId = audioInputPanelData.nodeId;
-                // 格式化本地路径为 local-resource
-                let formattedAudioUrl = audioUrl;
-                if (!audioUrl.startsWith('http://') && !audioUrl.startsWith('https://') && !audioUrl.startsWith('data:')) {
-                  const cleanPath = audioUrl.replace(/^(file:\/\/|local-resource:\/\/)/, '');
+                const formatOne = (u: string): string => {
+                  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:')) return u;
+                  const cleanPath = u.replace(/^(file:\/\/|local-resource:\/\/)/, '');
                   let filePath = cleanPath.replace(/\\/g, '/');
                   if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
-                  formattedAudioUrl = `local-resource://${filePath}`;
-                }
-                // 有远程 URL 时优先用于播放（与任务列表一致，避免节点内无法播放）
+                  return `local-resource://${filePath}`;
+                };
+                let formattedAudioUrl = formatOne(audioUrl);
                 const networkUrl = (originalUrl && (originalUrl.startsWith('http://') || originalUrl.startsWith('https://'))) ? originalUrl : (formattedAudioUrl.startsWith('http') ? formattedAudioUrl : undefined);
                 const outputAudioForNode = networkUrl || formattedAudioUrl;
+                const formattedOutputAudios =
+                  Array.isArray(outputAudiosFromPayload) && outputAudiosFromPayload.length > 1
+                    ? outputAudiosFromPayload.map((u, i) => {
+                        const orig = originalOutputAudiosFromPayload?.[i];
+                        const net = orig && (orig.startsWith('http://') || orig.startsWith('https://')) ? orig : undefined;
+                        return net || formatOne(String(u || ''));
+                      })
+                    : undefined;
                 
                 setNodes((nds) =>
                   nds.map((node) =>
                     node.id === targetNodeId
-                      ? { ...node, data: { ...node.data, outputAudio: outputAudioForNode, originalAudioUrl: networkUrl, errorMessage: undefined } }
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            outputAudio: outputAudioForNode,
+                            ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
+                            ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
+                              ? { originalOutputAudios: originalOutputAudiosFromPayload }
+                              : {}),
+                            originalAudioUrl: networkUrl,
+                            errorMessage: undefined,
+                          },
+                        }
                       : node
                   )
                 );
-                handleAudioNodeDataChange(targetNodeId, { outputAudio: outputAudioForNode, originalAudioUrl: networkUrl, errorMessage: undefined });
+                handleAudioNodeDataChange(targetNodeId, {
+                  outputAudio: outputAudioForNode,
+                  ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
+                  ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
+                    ? { originalOutputAudios: originalOutputAudiosFromPayload }
+                    : {}),
+                  originalAudioUrl: networkUrl,
+                  errorMessage: undefined,
+                });
               }}
               onErrorTask={(message) => {
                 // 创建失败任务记录并更新 AudioNode
@@ -15074,6 +16091,46 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   )
                 );
                 handleAudioNodeDataChange(audioInputPanelData.nodeId, { errorMessage: message || '音频生成失败' });
+              }}
+            />
+          </div>
+        )}
+
+        {!previewImage && !previewAudio && !characterAvatarPickOverlay && rvcTrainInputPanelData && selectedNode && selectedNode.type === 'rvcTrain' && (
+          <div className="nodrag nopan absolute z-50 animate-slide-up" style={{ width: '840px', height: '242px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>
+            <RvcTrainInputPanel
+              nodeId={rvcTrainInputPanelData.nodeId}
+              isDarkMode={isDarkMode}
+              projectId={projectId}
+              rvcTrainModelName={rvcTrainInputPanelData.rvcTrainModelName ?? ''}
+              referenceAudioUrl={rvcTrainInputPanelData.referenceAudioUrl ?? ''}
+              libraryAvatarUrl={rvcTrainInputPanelData.libraryAvatarUrl ?? ''}
+              onStart={() =>
+                invokeRvcTrainNodeDataChange(rvcTrainInputPanelData.nodeId, {
+                  aiStatus: 'START',
+                  progress: 1,
+                  errorMessage: undefined,
+                })
+              }
+              onRvcTrainModelNameChange={(value) => {
+                invokeRvcTrainNodeDataChange(rvcTrainInputPanelData.nodeId, { rvcTrainModelName: value });
+              }}
+              onReferenceAudioUrlChange={(url) => {
+                invokeRvcTrainNodeDataChange(rvcTrainInputPanelData.nodeId, { referenceAudioUrl: url });
+              }}
+              onLibraryAvatarUrlChange={(url) => {
+                invokeRvcTrainNodeDataChange(rvcTrainInputPanelData.nodeId, { libraryAvatarUrl: url || undefined });
+              }}
+              requestAvatarPickFromCanvas={
+                requestViewSlotPickFromCanvas ? () => requestViewSlotPickFromCanvas(0) : undefined
+              }
+              onError={(message) => {
+                invokeRvcTrainNodeDataChange(rvcTrainInputPanelData.nodeId, {
+                  aiStatus: 'ERROR',
+                  errorMessage: message,
+                  progress: 0,
+                  progressMessage: undefined,
+                });
               }}
             />
           </div>

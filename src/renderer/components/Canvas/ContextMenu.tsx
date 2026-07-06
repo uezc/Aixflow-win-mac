@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box } from 'lucide-react';
+import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box, Music2, Mic2 } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { contextMenuLabelForType } from '../../i18n/contextMenuI18n';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../../config/sora2UiPolicy';
@@ -24,6 +24,7 @@ const baseMenuItems = [
   { type: 'videoSplice', icon: Film },
   { type: 'photoCollage', icon: Layers },
   { type: 'imageTo3d', icon: Box },
+  { type: 'rvcTrain', icon: Mic2 },
   { type: 'character', icon: User },
   { type: 'audio', icon: Volume2 },
 ];
@@ -41,6 +42,7 @@ const videoToImageItems = [
 const videoToAudioItems = [{ type: 'audio-extract-from-video', icon: Volume2 }];
 
 const audioToAudioItems = [
+  { type: 'audio-voice-cover', icon: Music2 },
   { type: 'audio-extract-vocals', icon: Volume2 },
   { type: 'audio-extract-background', icon: Volume2 },
 ];
@@ -64,7 +66,10 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, onClose, onSelect, allo
         allowedTypes.includes('image-current-frame') ||
         allowedTypes.includes('image-last-frame');
       const hasVideoToAudio = allowedTypes.includes('audio-extract-from-video');
-      const hasAudioToAudio = allowedTypes.includes('audio-extract-vocals') || allowedTypes.includes('audio-extract-background');
+      const hasAudioToAudio =
+        allowedTypes.includes('audio-voice-cover') ||
+        allowedTypes.includes('audio-extract-vocals') ||
+        allowedTypes.includes('audio-extract-background');
       const base = visibleBaseMenuItems.filter(
         (item) =>
           allowedTypes!.includes(item.type) &&

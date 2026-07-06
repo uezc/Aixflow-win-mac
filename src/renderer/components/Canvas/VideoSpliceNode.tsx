@@ -52,6 +52,9 @@ import {
   isVideoTrackRef,
   normalizeVideoTracks,
   videoTrackIndexFromRef,
+  clampSpliceAudioVolume,
+  SPLICE_AUDIO_VOLUME_MAX,
+  SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX,
   type TimelineTrackRef,
 } from '../../utils/videoSpliceTracks';
 
@@ -161,7 +164,7 @@ interface VideoSpliceNodeProps extends NodeProps<VideoSpliceNodeData> {
   projectId?: string;
   isDarkMode?: boolean;
   onDataChange?: (nodeId: string, updates: Partial<VideoSpliceNodeData>) => void;
-  onExportToCanvas?: (nodeId: string, payload: VideoSpliceExportPayload) => Promise<void>;
+  onExportToCanvas?: (nodeId: string, payload: VideoSpliceExportPayload) => Promise<{ createdAudioNode?: boolean } | void>;
 }
 
 const PIXELS_PER_SECOND_DEFAULT = 60;
@@ -498,7 +501,7 @@ const VolumeFader: React.FC<{
   );
 };
 
-/** 横向音量推子：0-100，左右拖拽调节，靠左对齐 */
+/** 横向音量推子：0–maxValue（默认 100），左右拖拽调节 */
 const VolumeFaderHorizontal: React.FC<{
   value: number;
   onChange: (v: number) => void;
@@ -506,17 +509,19 @@ const VolumeFaderHorizontal: React.FC<{
   width?: number;
   className?: string;
   sliderTitle: string;
-}> = ({ value, onChange, height = 6, width = 48, className = '', sliderTitle }) => {
+  maxValue?: number;
+}> = ({ value, onChange, height = 6, width = 48, className = '', sliderTitle, maxValue = 100 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const clamp = (v: number) => Math.max(0, Math.min(100, v));
+  const clamp = (v: number) => Math.max(0, Math.min(maxValue, v));
+  const fillPct = maxValue > 0 ? (clamp(value) / maxValue) * 100 : 0;
   const xToValue = (clientX: number) => {
     const el = trackRef.current;
     if (!el) return value;
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left;
-    return clamp((x / rect.width) * 100);
+    return clamp((x / rect.width) * maxValue);
   };
 
   useEffect(() => {
@@ -526,7 +531,7 @@ const VolumeFaderHorizontal: React.FC<{
       if (!el) return;
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      onChange(clamp((x / rect.width) * 100));
+      onChange(clamp((x / rect.width) * maxValue));
     };
     const onUp = () => setIsDragging(false);
     document.addEventListener('pointermove', onMove);
@@ -535,7 +540,7 @@ const VolumeFaderHorizontal: React.FC<{
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
     };
-  }, [isDragging, onChange]);
+  }, [isDragging, onChange, maxValue]);
 
   return (
     <div
@@ -543,7 +548,7 @@ const VolumeFaderHorizontal: React.FC<{
       role="slider"
       aria-valuenow={Math.round(value)}
       aria-valuemin="0"
-      aria-valuemax={100}
+      aria-valuemax={maxValue}
       tabIndex={0}
       onPointerDown={(e) => {
         e.preventDefault();
@@ -563,7 +568,7 @@ const VolumeFaderHorizontal: React.FC<{
       <div className="w-full h-full rounded-full bg-black/60 border border-white/10 overflow-hidden flex justify-start shadow-inner">
         <div
           className={`h-full rounded-full ${SPLICE_UI_VOLUME_FILL} transition-colors`}
-          style={{ width: `${value}%`, minWidth: value > 0 ? 2 : 0 }}
+          style={{ width: `${fillPct}%`, minWidth: value > 0 ? 2 : 0 }}
         />
       </div>
     </div>
@@ -581,6 +586,10 @@ const TrackHeaderVolumeSlider: React.FC<{
   muteBtnClass: string;
   onToggleMute: () => void;
   onVolumeChange: (volume01: number) => void;
+  /** 音量倍数上限，默认 1（100%） */
+  volumeMax?: number;
+  /** 滑条显示上限百分比，默认 100 */
+  sliderMaxPct?: number;
 }> = ({
   md,
   muted,
@@ -591,6 +600,8 @@ const TrackHeaderVolumeSlider: React.FC<{
   muteBtnClass,
   onToggleMute,
   onVolumeChange,
+  volumeMax = 1,
+  sliderMaxPct = 100,
 }) => (
   <>
     <button
@@ -609,11 +620,12 @@ const TrackHeaderVolumeSlider: React.FC<{
       )}
     </button>
     <VolumeFaderHorizontal
-      value={Math.round(volume01 * 100)}
-      onChange={(v) => onVolumeChange(v / 100)}
+      value={Math.round((volume01 / volumeMax) * sliderMaxPct)}
+      onChange={(v) => onVolumeChange((v / sliderMaxPct) * volumeMax)}
       width={md ? 40 : 32}
       height={md ? 7 : 5}
       sliderTitle={sliderTitle}
+      maxValue={sliderMaxPct}
     />
   </>
 );
@@ -1436,7 +1448,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     const legacy = Math.max(0, Math.min(1, data?.videoTrackVolume ?? 1));
     return videoTracks.map(() => legacy);
   }, [data?.videoTrackVolumeList, data?.videoTrackVolume, videoTracks.length]);
-  const audioTrackVolume = (data?.audioTrackVolume ?? []).map((v) => Math.max(0, Math.min(1, v ?? 1)));
+  const audioTrackVolume = (data?.audioTrackVolume ?? []).map((v) => clampSpliceAudioVolume(v));
 
   const videoTrackMuted = videoTrackMutedList[0] ?? false;
   const videoTrackVolume = videoTrackVolumeList[0] ?? 1;
@@ -1631,7 +1643,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     setNodes((nds) => {
       const node = nds.find((n) => n.id === id);
       if (!node) return nds;
-      const existingVideo = normalizeVideoTracks(node.data as VideoSpliceNodeData)[0] || [];
+      const existingVideoTracks = normalizeVideoTracks(node.data as VideoSpliceNodeData);
       const existingAudio = (node.data?.audioTracks || [[]]) as TimelineClip[][];
       const built = buildVideoSpliceClipsFromEdges(
         id,
@@ -1642,18 +1654,18 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       );
       const incomingSources = safeEdges.filter((e) => e.target === id).map((e) => e.source);
       const builtSourceIds = new Set(
-        [...built.videoClips, ...built.audioTracks.flat()]
+        [...built.videoTracks.flat(), ...built.audioTracks.flat()]
           .map((c) => c.sourceNodeId)
           .filter(Boolean) as string[],
       );
       const wouldDropConnected = incomingSources.some((sid) => {
-        const had = [...existingVideo, ...existingAudio.flat()].some((c) => c.sourceNodeId === sid);
+        const had = [...existingVideoTracks.flat(), ...existingAudio.flat()].some((c) => c.sourceNodeId === sid);
         return had && !builtSourceIds.has(sid);
       });
       if (wouldDropConnected) return nds;
 
-      const prevFp = timelineClipsFingerprint(existingVideo, existingAudio);
-      const nextFp = timelineClipsFingerprint(built.videoClips, built.audioTracks);
+      const prevFp = timelineClipsFingerprint(existingVideoTracks, existingAudio);
+      const nextFp = timelineClipsFingerprint(built.videoTracks, built.audioTracks);
       if (prevFp === nextFp) return nds;
       const merged = applyBuiltClipsToSpliceData(node.data as VideoSpliceNodeData, built);
       return nds.map((n) =>
@@ -2703,7 +2715,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       }) ?? null;
       const clipVol = clip?.volume ?? 1;
       const vol = audioTrackMuted[trackIdx] ? 0 : (audioTrackVolume[trackIdx] ?? 1) * clipVol;
-      el.volume = vol;
+      el.volume = Math.min(1, vol);
       if (!clip || !isPlaying) {
         if (!el.paused) el.pause();
         if (lastAudioClipIdsRef.current[trackIdx]) lastAudioClipIdsRef.current[trackIdx] = '';
@@ -3903,12 +3915,13 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const handleAudioTrackVolumeChange = useCallback((trackIdx: number, v: number) => {
     const next = [...audioTrackVolume];
     while (next.length <= trackIdx) next.push(1);
-    next[trackIdx] = Math.max(0, Math.min(1, v));
+    next[trackIdx] = clampSpliceAudioVolume(v);
     updateData({ audioTrackVolume: next });
   }, [audioTrackVolume, updateData]);
 
   const handleClipVolumeChange = useCallback((clipId: string, track: TimelineTrackRef, v: number) => {
-    const vol = Math.max(0, Math.min(1, v));
+    const isAudioClip = !isVideoTrackRef(track);
+    const vol = isAudioClip ? clampSpliceAudioVolume(v) : Math.max(0, Math.min(1, v));
     if (isVideoTrackRef(track)) {
       const trackIdx = videoTrackIndexFromRef(track);
       const updated = videoTracks.map((t, i) =>
@@ -4209,7 +4222,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       options: {
         videoTrackVolume: videoTrackVolumeList.map((v) => Math.min(2, (v ?? 1) * 2)),
         videoTrackMuted: videoTrackMutedList,
-        audioTrackVolume: audioTrackVolume.map((v) => Math.min(2, (v ?? 1) * 2)),
+        audioTrackVolume: audioTrackVolume.map((v) => clampSpliceAudioVolume(v)),
         audioTrackMuted,
         outputWidth: exportDims.width,
         outputHeight: exportDims.height,
@@ -4307,8 +4320,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     }
     setExportBusy('canvas');
     try {
-      await onExportToCanvas(id, payload);
-      showAlert(vs.exportToCanvasDone);
+      const result = await onExportToCanvas(id, payload);
+      showAlert(result?.createdAudioNode ? vs.exportToCanvasDoneWithAudio : vs.exportToCanvasDone);
     } catch (e: any) {
       showAlert(vs.exportToCanvasFailed(e?.message || ''));
     } finally {
@@ -5080,10 +5093,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                   volume01={audioTrackVolume[trackIdx] ?? 1}
                   muteTitle={vs.mute}
                   unmuteTitle={vs.unmute}
-                  sliderTitle={vs.volumeSliderTitle}
+                  sliderTitle={vs.audioVolumeSliderTitle}
                   muteBtnClass={spliceMuteToggleBtn(!!audioTrackMuted[trackIdx])}
                   onToggleMute={() => handleToggleAudioTrackMute(trackIdx)}
                   onVolumeChange={(v) => handleAudioTrackVolumeChange(trackIdx, v)}
+                  volumeMax={SPLICE_AUDIO_VOLUME_MAX}
+                  sliderMaxPct={SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
                 />
                 {renderTrackLeftSnapButton(false, trackIdx)}
               </div>
@@ -5130,11 +5145,14 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                       </span>
                       <div className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
                         <VolumeFaderHorizontal
-                          value={(clip.volume ?? 1) * 100}
-                          onChange={(v) => handleClipVolumeChange(clip.id, trackIdx, v / 100)}
+                          value={((clip.volume ?? 1) / SPLICE_AUDIO_VOLUME_MAX) * SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
+                          onChange={(v) =>
+                            handleClipVolumeChange(clip.id, trackIdx, (v / SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX) * SPLICE_AUDIO_VOLUME_MAX)
+                          }
                           width={48}
                           height={10}
-                          sliderTitle={vs.volumeSliderTitle}
+                          sliderTitle={vs.audioVolumeSliderTitle}
+                          maxValue={SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
                         />
                       </div>
                     </div>
@@ -5548,10 +5566,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                             volume01={audioTrackVolume[trackIdx] ?? 1}
                             muteTitle={vs.mute}
                             unmuteTitle={vs.unmute}
-                            sliderTitle={vs.volumeSliderTitle}
+                            sliderTitle={vs.audioVolumeSliderTitle}
                             muteBtnClass={spliceMuteToggleBtn(!!audioTrackMuted[trackIdx], true)}
                             onToggleMute={() => handleToggleAudioTrackMute(trackIdx)}
                             onVolumeChange={(v) => handleAudioTrackVolumeChange(trackIdx, v)}
+                            volumeMax={SPLICE_AUDIO_VOLUME_MAX}
+                            sliderMaxPct={SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
                           />
                           {renderTrackLeftSnapButton(true, trackIdx)}
                         </div>
@@ -5596,11 +5616,18 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                                 </span>
                                 <div className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
                                   <VolumeFaderHorizontal
-                                    value={(clip.volume ?? 1) * 100}
-                                    onChange={(v) => handleClipVolumeChange(clip.id, trackIdx, v / 100)}
+                                    value={((clip.volume ?? 1) / SPLICE_AUDIO_VOLUME_MAX) * SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
+                                    onChange={(v) =>
+                                      handleClipVolumeChange(
+                                        clip.id,
+                                        trackIdx,
+                                        (v / SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX) * SPLICE_AUDIO_VOLUME_MAX,
+                                      )
+                                    }
                                     width={48}
                                     height={10}
-                                    sliderTitle={vs.volumeSliderTitle}
+                                    sliderTitle={vs.audioVolumeSliderTitle}
+                                    maxValue={SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX}
                                   />
                                 </div>
                               </div>

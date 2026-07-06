@@ -1,0 +1,7 @@
+{
+  "version": "1.0.0",
+  "bundleUrl": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/aixflow%20uploads/optional-bundles/rvc-engine-win-x64-1.0.0.zip",
+  "sha256": "5019351cb0e1e9b6c43279e937fc0ac2034d91f5bb16a86825f3d87427a8d2b6",
+  "sizeBytes": 3225310166,
+  "note": "首次 RVC 翻唱时下载；可通过 NEXFLOW_RVC_ENGINE_BUNDLE_URL 覆盖。打包 zip：npm run pack:optional-bundles"
+}

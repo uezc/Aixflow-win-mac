@@ -13,6 +13,7 @@ import { recordTaskHistory, TaskType } from '../services/taskHistory.js';
 import { pollRunningHubVideoUntilTerminal } from '../utils/runningHubVideoQueryResume.js';
 import { pollRunningHubImageUntilTerminal } from '../utils/runningHubImageQueryResume.js';
 import { pollRunningHubAudioUntilTerminal } from '../utils/runningHubAudioQueryResume.js';
+import { isRvcModelPackageUrl } from '../../shared/rvcVoiceTrainUtils.js';
 
 /** 熔断器：连续超时阈值 */
 const CIRCUIT_BREAKER_TIMEOUT_THRESHOLD = 3;
@@ -328,6 +329,27 @@ export class AICore {
     }
   }
 
+  /** 将误标为 audioUrl 的 RVC zip 纠正为 outputModelUrl */
+  private normalizeRvcModelPayload(payload: Record<string, unknown> | undefined): void {
+    if (!payload) return;
+    if (!payload.outputModelUrl) {
+      const mistaken = payload.audioUrl ?? payload.url;
+      if (isRvcModelPackageUrl(String(mistaken ?? ''))) {
+        payload.outputModelUrl = mistaken;
+        delete payload.audioUrl;
+        delete payload.url;
+        delete payload.outputAudios;
+        delete payload.originalOutputAudios;
+        if (!payload.text) payload.text = 'RVC 训练完成';
+      }
+    } else if (isRvcModelPackageUrl(String(payload.outputModelUrl ?? ''))) {
+      delete payload.audioUrl;
+      delete payload.url;
+      delete payload.outputAudios;
+      delete payload.originalOutputAudios;
+    }
+  }
+
   /**
    * 发送状态更新到渲染进程
    * 在发送 SUCCESS 状态时，先自动下载资源到本地，再发送状态更新（确保持久化）
@@ -342,6 +364,9 @@ export class AICore {
       ...packet,
       nodeId: packet.nodeId != null ? String(packet.nodeId).trim() : '',
     };
+    if (normalizedPacket.status === 'SUCCESS' && normalizedPacket.payload) {
+      this.normalizeRvcModelPayload(normalizedPacket.payload as Record<string, unknown>);
+    }
 
     // 先立即发送状态更新（不等待资源下载），确保 UI 及时响应
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -381,7 +406,10 @@ export class AICore {
 
     // 如果是 SUCCESS 状态且包含图片 / 视频 / 音频 URL，在后台下载资源
     if (normalizedPacket.status === 'SUCCESS' && normalizedPacket.payload) {
-      const { imageUrl, videoUrl, audioUrl, text } = normalizedPacket.payload as {
+      const payload = normalizedPacket.payload as Record<string, unknown>;
+      this.normalizeRvcModelPayload(payload);
+
+      const { imageUrl, videoUrl, audioUrl, text } = payload as {
         imageUrl?: string;
         videoUrl?: string;
         audioUrl?: string;
@@ -502,6 +530,8 @@ export class AICore {
       // 下载音频（与 AudioProvider.handleAudioResult 对齐，供恢复轮询等路径复用）
       if (
         audioUrl &&
+        !isRvcModelPackageUrl(audioUrl) &&
+        !payload.outputModelUrl &&
         !audioUrl.startsWith('local-resource://') &&
         !audioUrl.startsWith('file://') &&
         (audioUrl.startsWith('http://') || audioUrl.startsWith('https://'))
@@ -818,6 +848,26 @@ export class AICore {
       if (!result.ok) {
         await this.sendStatusUpdate(
           { nodeId, status: 'ERROR', payload: { error: result.error, taskId: rhTaskId } },
+          input,
+        );
+        return;
+      }
+
+      if (result.kind === 'rvc-model') {
+        await this.sendStatusUpdate(
+          {
+            nodeId,
+            status: 'SUCCESS',
+            payload: {
+              outputModelUrl: result.modelUrl,
+              outputModelRemoteUrl: result.modelUrl,
+              prompt,
+              projectId,
+              nodeTitle,
+              taskId: rhTaskId,
+              text: 'RVC 训练完成',
+            },
+          },
           input,
         );
         return;

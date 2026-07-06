@@ -1,10 +1,11 @@
 // @ts-nocheck
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, User, Box, Mountain, LayoutGrid, List, ScanFace } from 'lucide-react';
+import { ChevronLeft, ChevronRight, User, Box, Mountain, LayoutGrid, List, ScanFace, Mic2 } from 'lucide-react';
 import CharacterList from './CharacterList';
 import SceneLibraryList from './SceneLibraryList';
 import DigitalHumanLibraryList from './DigitalHumanLibraryList';
-import type { Character, SceneLibraryItem, DigitalHumanLibraryItem } from './characterListShared';
+import RvcVoiceLibraryList from './RvcVoiceLibraryList';
+import type { Character, SceneLibraryItem, DigitalHumanLibraryItem, RvcVoiceLibraryItem } from './characterListShared';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { assetLibraryT } from '../i18n/assetLibraryI18n';
 import {
@@ -15,7 +16,7 @@ import {
   assetLibTabInactive,
 } from '../utils/assetLibraryChrome';
 
-export type AssetLibraryTab = 'role' | 'model3d' | 'scene' | 'digitalHuman';
+export type AssetLibraryTab = 'role' | 'model3d' | 'scene' | 'digitalHuman' | 'rvcVoice';
 
 export type AssetLibraryViewMode = 'list' | 'gallery';
 
@@ -28,6 +29,7 @@ export interface AssetLibrarySidebarProps {
   characterListRefreshTrigger: number;
   sceneListRefreshTrigger: number;
   digitalHumanListRefreshTrigger: number;
+  rvcVoiceListRefreshTrigger: number;
   onSelectCharacter?: (character: Character) => void;
   requestVoicePickFromCanvas?: () => Promise<{ url: string; label: string } | null>;
   requestViewSlotPickFromCanvas?: (slotIndex: number) => Promise<string | null>;
@@ -35,6 +37,8 @@ export interface AssetLibrarySidebarProps {
   requestDigitalHumanVideoPickFromCanvas?: () => Promise<string | null>;
   onPlaceSceneToCanvas?: (scene: SceneLibraryItem) => void;
   onPlaceDigitalHumanToCanvas?: (item: DigitalHumanLibraryItem) => void;
+  onPlaceRvcVoiceToCanvas?: (item: RvcVoiceLibraryItem) => void;
+  onRvcVoiceUpdated?: (item: RvcVoiceLibraryItem) => void;
 }
 
 const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
@@ -45,6 +49,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   characterListRefreshTrigger,
   sceneListRefreshTrigger,
   digitalHumanListRefreshTrigger,
+  rvcVoiceListRefreshTrigger,
   onSelectCharacter,
   requestVoicePickFromCanvas,
   requestViewSlotPickFromCanvas,
@@ -52,6 +57,8 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   requestDigitalHumanVideoPickFromCanvas,
   onPlaceSceneToCanvas,
   onPlaceDigitalHumanToCanvas,
+  onPlaceRvcVoiceToCanvas,
+  onRvcVoiceUpdated,
 }) => {
   const { locale } = useAppLocale();
   const t = assetLibraryT(locale);
@@ -97,6 +104,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           onToggleCollapse={onToggleCollapse}
           refreshTrigger={characterListRefreshTrigger}
           onSelectCharacter={onSelectCharacter}
+          requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
         />
       )}
       {tab === 'scene' && (
@@ -117,6 +125,17 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           refreshTrigger={digitalHumanListRefreshTrigger}
           requestVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
           onPlaceToCanvas={onPlaceDigitalHumanToCanvas}
+        />
+      )}
+      {tab === 'rvcVoice' && (
+        <RvcVoiceLibraryList
+          viewMode={mode}
+          isDarkMode={isDarkMode}
+          listActive={!isCollapsed && tab === 'rvcVoice'}
+          refreshTrigger={rvcVoiceListRefreshTrigger}
+          onPlaceToCanvas={onPlaceRvcVoiceToCanvas}
+          onRvcVoiceUpdated={onRvcVoiceUpdated}
+          requestVoicePickFromCanvas={requestVoicePickFromCanvas}
         />
       )}
     </>
@@ -168,6 +187,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           <ChevronRight className="w-5 h-5" />
         </button>
         {iconBtn('role', User, t.tabRole)}
+        {iconBtn('rvcVoice', Mic2, t.tabRvcVoice)}
         {iconBtn('digitalHuman', ScanFace, t.tabDigitalHuman)}
         {iconBtn('scene', Mountain, t.tabScene)}
         {iconBtn('model3d', Box, t.tabModel3d)}
@@ -181,8 +201,9 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
         isDarkMode ? 'border-white/10' : 'border-gray-300/30'
       }`}
     >
-      <div className="grid grid-cols-4 gap-1 flex-1 min-w-0">
+      <div className="grid grid-cols-5 gap-1 flex-1 min-w-0">
         {tabBtn('role', t.tabRole, User)}
+        {tabBtn('rvcVoice', t.tabRvcVoice, Mic2)}
         {tabBtn('digitalHuman', t.tabDigitalHuman, ScanFace)}
         {tabBtn('scene', t.tabScene, Mountain)}
         {tabBtn('model3d', t.tabModel3d, Box)}
@@ -227,6 +248,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
 
   return (
     <div
+      data-asset-library-sidebar
       className={`h-full flex flex-col border-r ${
         isDarkMode ? 'apple-panel border-white/10' : 'apple-panel-light border-gray-300/30'
       }`}

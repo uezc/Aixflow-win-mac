@@ -1,7 +1,7 @@
 // @ts-nocheck
-import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useStoreApi, useViewport } from 'reactflow';
+import { Handle, Position, NodeProps, addEdge, useReactFlow, useUpdateNodeInternals, useViewport, type Edge, type Node } from 'reactflow';
 import { Loader2, Mic, Play, Pause, Volume2, Upload, AudioLines, Scissors, Download } from 'lucide-react';
 import { normalizeVideoUrl } from '../../utils/normalizeVideoUrl';
 import { probeAudioMediaDurationSec } from '../../utils/timelineSourceMedia';
@@ -22,13 +22,29 @@ import {
   useReferenceMicRecording,
 } from '../../hooks/useReferenceMicRecording';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../../utils/audioSongModels';
+import { isAudioCoverModel } from '../../utils/audioCoverModel';
 import { setAudioNodePlaying } from '../../utils/audioNodePlaybackStore';
 import { dispatchCanvasPickNode, isCanvasPickVoiceTarget } from '../../utils/canvasPickStore';
+import { AudioWaveformVisualizer } from './AudioWaveformVisualizer';
+import { nodeStyleDimensions } from '../../utils/nodeSizeFromAspectRatio';
+
+/** 声音模块固定尺寸（不可拖拽缩放） */
+export const AUDIO_NODE_WIDTH = 280;
+export const AUDIO_NODE_HEIGHT = 160;
+
+export type AudioSeparateAllPayload = {
+  sourceNodeId: string;
+  newNodes: Node[];
+  newEdges: Edge[];
+  clearSourceData: Partial<AudioNodeData>;
+};
 
 interface AudioNodeData {
   width?: number;
   height?: number;
   outputAudio?: string;
+  outputAudios?: string[];
+  originalOutputAudios?: string[];
   originalAudioUrl?: string; // 原始远程 URL（备用）
   title?: string;
   errorMessage?: string;
@@ -50,6 +66,8 @@ interface AudioNodeProps extends NodeProps<AudioNodeData> {
   isDarkMode?: boolean;
   performanceMode?: boolean;
   onDataChange?: (nodeId: string, updates: Partial<AudioNodeData>) => void;
+  /** 多段音频一键分离：须写入 Workspace 画布状态（勿仅用 useReactFlow().setNodes） */
+  onSeparateAllAudios?: (payload: AudioSeparateAllPayload) => void;
   /** 底部 Audio 面板打开时，同步参考音输入框 */
   syncAudioPanelReferenceUrl?: (url: string) => void;
 }
@@ -157,9 +175,9 @@ const TrimRangeBar: React.FC<{
     draggingRef.current = null;
   }, []);
 
-  const trackBg = isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
-  const selectedColor = isDarkMode ? '#22c55e' : '#16a34a';
-  const playedColor = isDarkMode ? 'rgba(34,197,94,0.45)' : 'rgba(22,163,74,0.45)';
+  const trackBg = isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)';
+  const selectedColor = isDarkMode ? '#a78bfa' : '#7c3aed';
+  const playedColor = isDarkMode ? 'rgba(167,139,250,0.42)' : 'rgba(124,58,237,0.38)';
 
   const trimThumbClass =
     'absolute top-1/2 -translate-y-1/2 z-10 nodrag nopan flex h-4 w-4 cursor-ew-resize items-center justify-center rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.25)]';
@@ -291,10 +309,38 @@ const AudioTrimModal: React.FC<{
       className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-xl"
       onClick={(e) => { if (e.target === e.currentTarget && !trimming) onCancel(); }}
     >
+      <style>{`
+        .nexflow-audio-trim-mini-range {
+          -webkit-appearance: none;
+          appearance: none;
+          height: 3px;
+          border-radius: 999px;
+          background: ${isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)'};
+          outline: none;
+        }
+        .nexflow-audio-trim-mini-range::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          background: #a78bfa;
+          border: none;
+          box-shadow: 0 0 0 2px ${isDarkMode ? 'rgba(10,10,12,0.9)' : 'rgba(255,255,255,0.95)'};
+          cursor: pointer;
+        }
+        .nexflow-audio-trim-mini-range::-moz-range-thumb {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+          background: #a78bfa;
+          border: none;
+          cursor: pointer;
+        }
+      `}</style>
       <div
         className={`w-full max-w-lg mx-4 overflow-hidden shadow-2xl shadow-black/40 ${
           isDarkMode
-            ? 'rounded-[20px] border border-white/[0.08] bg-[#141418]'
+            ? 'nexflow-glass-panel rounded-[20px] border border-white/[0.08]'
             : 'rounded-[20px] border border-gray-200 bg-white'
         }`}
         onClick={(e) => e.stopPropagation()}
@@ -304,7 +350,7 @@ const AudioTrimModal: React.FC<{
             <div className="flex items-center gap-2.5">
               <span
                 className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-                  isDarkMode ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-100 text-emerald-600'
+                  isDarkMode ? 'bg-violet-500/15 text-violet-300' : 'bg-violet-100 text-violet-600'
                 }`}
               >
                 <AudioLines className="h-5 w-5" strokeWidth={2.25} />
@@ -351,17 +397,21 @@ const AudioTrimModal: React.FC<{
               setCurrentTime(trimEnd > trimStart ? trimEnd : 0);
             }}
           />
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={togglePlay}
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-white shadow-lg shadow-emerald-500/25 transition-colors hover:bg-emerald-400"
+              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
+                isDarkMode
+                  ? 'bg-violet-500/15 text-violet-300 hover:bg-violet-500/25'
+                  : 'bg-violet-100 text-violet-600 hover:bg-violet-200'
+              }`}
               title={isPlaying ? '暂停' : '播放'}
               aria-label={isPlaying ? '暂停' : '播放'}
             >
-              {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="ml-0.5 h-5 w-5" />}
+              {isPlaying ? <Pause className="h-4 w-4" strokeWidth={2.25} /> : <Play className="ml-0.5 h-4 w-4" strokeWidth={2.25} />}
             </button>
-            <div className="min-w-0 flex-1 pt-1">
+            <div className="min-w-0 flex-1 pt-0.5">
               <TrimRangeBar
                 duration={duration}
                 currentTime={currentTime}
@@ -374,20 +424,20 @@ const AudioTrimModal: React.FC<{
               />
             </div>
           </div>
-          <div className="mt-4 flex items-end justify-between gap-4">
-            <div className={`text-sm font-mono leading-snug ${isDarkMode ? 'text-white/90' : 'text-gray-800'}`}>
+          <div className="mt-3 flex items-end justify-between gap-4 pl-[52px]">
+            <div className={`text-[10px] font-mono tabular-nums leading-snug ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
               <span>{formatAudioClock(currentTime)}</span>
               {duration > 0 ? (
                 <span className={isDarkMode ? 'text-white/35' : 'text-gray-400'}>
                   {` / ${formatAudioClock(duration)}`}
                 </span>
               ) : null}
-              <span className={`ml-2 ${isDarkMode ? 'text-white/50' : 'text-gray-500'}`}>
+              <span className={`ml-2 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
                 {c.trimRangeLabel(formatAudioClock(trimStart), formatAudioClock(trimEnd))}
               </span>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Volume2 className={`h-4 w-4 ${isDarkMode ? 'text-white/40' : 'text-gray-400'}`} />
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Volume2 className={`h-3 w-3 ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`} />
               <input
                 type="range"
                 min="0"
@@ -399,9 +449,7 @@ const AudioTrimModal: React.FC<{
                   setVolume(v);
                   if (modalAudioRef.current) modalAudioRef.current.volume = v;
                 }}
-                className={`h-1.5 w-20 cursor-pointer appearance-none rounded-full ${
-                  isDarkMode ? 'bg-white/15 accent-emerald-500' : 'bg-gray-200 accent-emerald-600'
-                }`}
+                className="nexflow-audio-trim-mini-range w-14 cursor-pointer"
                 title="音量"
                 aria-label="音量"
               />
@@ -427,7 +475,11 @@ const AudioTrimModal: React.FC<{
             type="button"
             onClick={handleConfirm}
             disabled={trimming || trimEnd <= trimStart}
-            className="flex min-w-[88px] items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className={`flex min-w-[88px] items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+              isDarkMode
+                ? 'bg-violet-600 hover:bg-violet-500'
+                : 'bg-violet-600 hover:bg-violet-700'
+            }`}
           >
             {trimming ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {trimming ? c.trimming : c.confirm}
@@ -447,11 +499,269 @@ const normalizeAudioUrl = (url: string): string => {
   return normalizeVideoUrl(url);
 };
 
+/** 波形播放器极简控制条（主模块下方独立区块，无边框） */
+const AudioWaveformControlsBar: React.FC<{
+  isDarkMode: boolean;
+  isPlaying: boolean;
+  sourceLoadFailed: boolean;
+  currentTime: number;
+  displayDuration: number;
+  volume: number;
+  audioRef: React.RefObject<HTMLAudioElement>;
+  setCurrentTime: (t: number) => void;
+  onTogglePlay: () => void;
+  onVolumeChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  className?: string;
+}> = ({
+  isDarkMode,
+  isPlaying,
+  sourceLoadFailed,
+  currentTime,
+  displayDuration,
+  volume,
+  audioRef,
+  setCurrentTime,
+  onTogglePlay,
+  onVolumeChange,
+  className = '',
+}) => (
+  <>
+    <style>{`
+      .nexflow-audio-mini-range {
+        -webkit-appearance: none;
+        appearance: none;
+        height: 3px;
+        border-radius: 999px;
+        background: ${isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)'};
+        outline: none;
+      }
+      .nexflow-audio-mini-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #a78bfa;
+        border: none;
+        box-shadow: 0 0 0 2px ${isDarkMode ? 'rgba(10,10,12,0.9)' : 'rgba(255,255,255,0.95)'};
+        cursor: pointer;
+      }
+      .nexflow-audio-mini-range::-moz-range-thumb {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #a78bfa;
+        border: none;
+        cursor: pointer;
+      }
+      .nexflow-audio-mini-range:disabled {
+        opacity: 0.45;
+      }
+    `}</style>
+    <div
+      className={`nodrag nopan flex w-full flex-col gap-1 ${className}`}
+      style={{ pointerEvents: 'all' }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onTogglePlay();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          disabled={sourceLoadFailed}
+          className={`nodrag shrink-0 bg-transparent p-0 transition-opacity ${
+            sourceLoadFailed
+              ? 'cursor-not-allowed opacity-35'
+              : isDarkMode
+                ? 'text-violet-300/90 hover:text-violet-200'
+                : 'text-violet-600 hover:text-violet-700'
+          }`}
+          title={sourceLoadFailed ? '音源不可用' : isPlaying ? '暂停' : '播放'}
+          aria-label={sourceLoadFailed ? '音源不可用' : isPlaying ? '暂停' : '播放'}
+        >
+          {isPlaying ? (
+            <Pause className="h-3.5 w-3.5" strokeWidth={2.25} />
+          ) : (
+            <Play className="ml-px h-3.5 w-3.5" strokeWidth={2.25} />
+          )}
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(displayDuration, 0.01)}
+          step={0.01}
+          value={currentTime}
+          disabled={displayDuration <= 0}
+          onChange={(e) => {
+            e.stopPropagation();
+            const newTime = parseFloat(e.target.value);
+            if (audioRef.current) {
+              audioRef.current.currentTime = newTime;
+              setCurrentTime(newTime);
+            }
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className={`nexflow-audio-mini-range nodrag min-w-0 flex-1 ${displayDuration > 0 ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+          aria-label="播放进度"
+          title="点击或拖拽选择播放位置"
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2 pl-5">
+        <span className={`text-[10px] font-mono tabular-nums ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
+          {formatAudioClock(currentTime)}
+          {displayDuration > 0 ? ` / ${formatAudioClock(displayDuration)}` : ''}
+        </span>
+        <div
+          className="nodrag flex shrink-0 items-center gap-1"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Volume2 className={`h-3 w-3 ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`} />
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={volume}
+            onChange={onVolumeChange}
+            className="nexflow-audio-mini-range w-14 cursor-pointer"
+            aria-label="音量"
+            title="音量"
+          />
+        </div>
+      </div>
+    </div>
+  </>
+);
+
+/** 多段翻唱结果：每段独立完整播放器（进度条 / 时长 / 音量 / 播放） */
+const AudioMultiOutputMainPlayer: React.FC<{
+  urls: string[];
+  originalUrls?: string[];
+  isDarkMode: boolean;
+  nodeId: string;
+  data?: AudioNodeData;
+  projectId?: string;
+  chrome: AudioNodeChromeStrings;
+  setOutputAudio: (url: string) => void;
+  updateNodeData: (updates: Partial<AudioNodeData>) => void;
+  onPlayingChange?: (playing: boolean) => void;
+  controlsPortalEl?: HTMLElement | null;
+  spaceKeyboardActive?: boolean;
+}> = ({
+  urls,
+  originalUrls,
+  isDarkMode,
+  nodeId,
+  data,
+  projectId,
+  chrome,
+  setOutputAudio,
+  updateNodeData,
+  onPlayingChange,
+  controlsPortalEl,
+  spaceKeyboardActive = false,
+}) => {
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    if (selectedIdx >= urls.length) {
+      setSelectedIdx(0);
+    }
+  }, [urls.length, selectedIdx]);
+
+  const selectTrack = useCallback((idx: number) => {
+    audioRef.current?.pause();
+    setSelectedIdx(idx);
+  }, []);
+
+  const selectedUrl = urls[selectedIdx] ?? urls[0] ?? '';
+  const selectedOriginal = originalUrls?.[selectedIdx];
+
+  return (
+    <div className="flex w-full flex-1 min-h-0 flex-col gap-1.5">
+      {urls.length > 1 ? (
+        <div className="shrink-0 space-y-1">
+          <p className={`text-[10px] px-0.5 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
+            {chrome.selectTrackHint}
+          </p>
+          <div className="flex gap-1.5">
+            {urls.map((url, idx) => {
+              const selected = idx === selectedIdx;
+              return (
+                <button
+                  key={`${url}-${idx}`}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    selectTrack(idx);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className={`nodrag flex-1 min-w-0 rounded-lg transition-all ${
+                    selected
+                      ? isDarkMode
+                        ? 'ring-2 ring-violet-400/80 ring-offset-1 ring-offset-transparent'
+                        : ''
+                      : 'opacity-65 hover:opacity-90'
+                  }`}
+                  title={chrome.trackLabel(idx + 1)}
+                  aria-label={chrome.trackLabel(idx + 1)}
+                  aria-pressed={selected}
+                >
+                  <AudioWaveformVisualizer
+                    isPlaying={false}
+                    isDarkMode={isDarkMode}
+                    variant="compact"
+                    seed={url}
+                  />
+                  <span
+                    className={`block text-center text-[10px] font-semibold tabular-nums py-0.5 ${
+                      isDarkMode ? 'text-violet-200/80' : 'text-violet-800'
+                    }`}
+                  >
+                    {chrome.trackLabel(idx + 1)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      <AudioPlayerComponent
+        key={`track-${selectedIdx}-${selectedUrl}`}
+        nodeId={nodeId}
+        audioRef={audioRef}
+        outputAudio={selectedUrl}
+        originalAudioUrl={selectedOriginal}
+        data={data}
+        isDarkMode={isDarkMode}
+        projectId={projectId}
+        setOutputAudio={setOutputAudio}
+        updateNodeData={updateNodeData}
+        onPlayingChange={onPlayingChange}
+        layoutVariant="waveform"
+        controlsPortalEl={controlsPortalEl}
+        syncDurationToNode={selectedIdx === 0}
+        spaceKeyboardActive={spaceKeyboardActive}
+      />
+    </div>
+  );
+};
+
 // 音频播放器组件（用于 AudioNode，暗黑模式使用图二样式）
 const AudioPlayerComponent: React.FC<{
   nodeId: string;
   audioRef: React.RefObject<HTMLAudioElement>;
   outputAudio: string;
+  originalAudioUrl?: string;
   data?: AudioNodeData;
   isDarkMode: boolean;
   projectId?: string;
@@ -463,23 +773,62 @@ const AudioPlayerComponent: React.FC<{
   trimEnd?: number;
   onTrimRangeChange?: (start: number, end: number) => void;
   onPlayingChange?: (playing: boolean) => void;
-}> = ({ nodeId, audioRef, outputAudio, data, isDarkMode, projectId, setOutputAudio, updateNodeData, showTrimRange, trimStart = 0, trimEnd = 0, onTrimRangeChange, onPlayingChange }) => {
+  /** 多段结果：开始播放前先暂停其它段 */
+  onBeforePlay?: () => void;
+  /** 宫格内紧凑布局（裁剪弹窗等） */
+  compact?: boolean;
+  /** 主模块波形 + 控件外置 */
+  layoutVariant?: 'waveform' | 'classic';
+  /** 波形控件 Portal 挂载点（主模块下方悬浮区） */
+  controlsPortalEl?: HTMLElement | null;
+  controlsFooter?: React.ReactNode;
+  slotLabel?: string;
+  syncDurationToNode?: boolean;
+  /** 节点选中时响应空格键播放/暂停 */
+  spaceKeyboardActive?: boolean;
+}> = ({
+  nodeId,
+  audioRef,
+  outputAudio,
+  originalAudioUrl,
+  data,
+  isDarkMode,
+  projectId,
+  setOutputAudio,
+  updateNodeData,
+  showTrimRange,
+  trimStart = 0,
+  trimEnd = 0,
+  onTrimRangeChange,
+  onPlayingChange,
+  onBeforePlay,
+  compact = false,
+  layoutVariant,
+  controlsPortalEl,
+  controlsFooter,
+  slotLabel,
+  syncDurationToNode = true,
+  spaceKeyboardActive = false,
+}) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [sourceLoadFailed, setSourceLoadFailed] = useState(false);
+  const resolvedLayout = layoutVariant ?? (compact ? 'classic' : 'waveform');
+  const useWaveformMain = resolvedLayout === 'waveform' && !showTrimRange;
   const [activeSrc, setActiveSrc] = useState('');
   const lastDurationPollRef = useRef(0);
 
   const syncMediaDurationSec = useCallback(
     (sec: number) => {
+      if (!syncDurationToNode) return;
       if (!Number.isFinite(sec) || sec <= 0) return;
       const stored = Number(data?.mediaDurationSec);
       if (Number.isFinite(stored) && stored >= sec - 0.05) return;
       updateNodeData({ mediaDurationSec: sec });
     },
-    [data?.mediaDurationSec, updateNodeData],
+    [data?.mediaDurationSec, updateNodeData, syncDurationToNode],
   );
 
   const syncPlayingState = useCallback(
@@ -510,7 +859,7 @@ const AudioPlayerComponent: React.FC<{
     return '';
   }, [normalizedUrl]);
   const preferredRemoteUrl = useMemo(() => {
-    const remote = data?.originalAudioUrl?.trim();
+    const remote = (originalAudioUrl || data?.originalAudioUrl)?.trim();
     if (remote && (remote.startsWith('http://') || remote.startsWith('https://'))) {
       return remote;
     }
@@ -521,7 +870,7 @@ const AudioPlayerComponent: React.FC<{
       return normalizedUrl;
     }
     return '';
-  }, [normalizedUrl, data?.originalAudioUrl]);
+  }, [normalizedUrl, originalAudioUrl, data?.originalAudioUrl]);
   // 播放首选：本地 local-resource/file://，远程 originalAudioUrl 仅作回退
   const playbackUrl = useMemo(() => {
     if (preferredLocalUrl) return preferredLocalUrl;
@@ -648,6 +997,7 @@ const AudioPlayerComponent: React.FC<{
       console.warn('[AudioPlayerComponent] 播放跳过：音源地址为空');
       return;
     }
+    onBeforePlay?.();
     const el = audioRef.current;
     if (el.readyState === 0) {
       if (!el.currentSrc && !el.src && activeSrc) {
@@ -687,9 +1037,27 @@ const AudioPlayerComponent: React.FC<{
         console.error('[AudioPlayerComponent] 播放失败:', error?.name, error?.message);
       }
     }
-  }, [isPlaying, audioRef, activeSrc, checkAudioCompatibility, tryPlaybackFallback, showTrimRange, trimStart, trimEnd, duration, syncPlayingState, nodeId]);
+  }, [isPlaying, audioRef, activeSrc, checkAudioCompatibility, tryPlaybackFallback, showTrimRange, trimStart, trimEnd, duration, syncPlayingState, nodeId, onBeforePlay]);
 
-  // 注意：所有事件处理都在 audio 元素的 onXxx 属性中处理，不需要额外的 useEffect
+  useEffect(() => {
+    if (!spaceKeyboardActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== ' ' && e.code !== 'Space') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      if ((window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!sourceLoadFailed) void togglePlay();
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.getAttribute?.('role') === 'button' && active.tabIndex === -1) {
+        active.blur();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [spaceKeyboardActive, togglePlay, sourceLoadFailed]);
 
   // 音量控制
   const handleVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -730,8 +1098,23 @@ const AudioPlayerComponent: React.FC<{
     });
   }, [preferredLocalUrl]);
 
+  const waveformControlsBar = useWaveformMain ? (
+    <AudioWaveformControlsBar
+      isDarkMode={isDarkMode}
+      isPlaying={isPlaying}
+      sourceLoadFailed={sourceLoadFailed}
+      currentTime={currentTime}
+      displayDuration={displayDuration}
+      volume={volume}
+      audioRef={audioRef}
+      setCurrentTime={setCurrentTime}
+      onTogglePlay={togglePlay}
+      onVolumeChange={handleVolumeChange}
+    />
+  ) : null;
+
   return (
-    <div className="w-full flex flex-col items-center gap-2">
+    <div className={`w-full flex flex-col ${useWaveformMain ? 'relative h-full min-h-0 flex-1' : `items-center ${compact ? 'gap-1' : 'gap-2'}`}`}>
       {/* 隐藏的 audio 元素，用于所有模式 */}
       <audio
         key={activeSrc}
@@ -818,14 +1201,84 @@ const AudioPlayerComponent: React.FC<{
         }}
       />
       
-      {/* 自定义播放器：卡片区域可拖节点；进度条/音量等子控件单独 nodrag */}
+      {useWaveformMain ? (
+        <div className="relative min-h-0 w-full flex-1 overflow-hidden">
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-disabled={sourceLoadFailed}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!sourceLoadFailed) void togglePlay();
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            className={`nodrag nopan absolute inset-0 z-[1] outline-none ${
+              sourceLoadFailed ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+            }`}
+            title={
+              sourceLoadFailed
+                ? '音源不可用'
+                : isPlaying
+                  ? '点击暂停'
+                  : '点击播放'
+            }
+            aria-label={
+              sourceLoadFailed
+                ? '音源不可用'
+                : isPlaying
+                  ? '点击暂停'
+                  : '点击播放'
+            }
+          >
+            <AudioWaveformVisualizer
+              isPlaying={isPlaying}
+              isDarkMode={isDarkMode}
+              variant="main"
+              fillContainer
+              seed={playbackUrl || outputAudio}
+              className="pointer-events-none nexflow-audio-waveform-fill"
+            />
+          </div>
+          {controlsPortalEl && waveformControlsBar
+            ? createPortal(
+                <div
+                  className="nodrag nopan w-full min-w-0"
+                  style={{ pointerEvents: 'all' }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onWheel={(e) => e.stopPropagation()}
+                >
+                  {waveformControlsBar}
+                  {controlsFooter}
+                </div>,
+                controlsPortalEl,
+              )
+            : controlsPortalEl === undefined && waveformControlsBar
+              ? (
+                <>
+                  {waveformControlsBar}
+                  {controlsFooter}
+                </>
+              )
+              : null}
+        </div>
+      ) : (
+      /* 自定义播放器：卡片区域可拖节点；进度条/音量等子控件单独 nodrag */
       <div
-        className={`w-full rounded-xl p-3 select-none ${
-          isDarkMode ? 'bg-white/5' : 'bg-gray-100/80'
-        }`}
+        className={`relative w-full rounded-xl select-none ${
+          compact ? 'p-2' : 'p-3'
+        } ${isDarkMode ? 'bg-white/5' : 'bg-gray-100/80'}`}
       >
-        <div className="flex items-center gap-3">
-          {/* 大号播放/暂停按钮 - 音源不可用时仅提示，不重复触发 play 报错 */}
+        {slotLabel ? (
+          <span
+            className={`absolute top-1.5 left-1.5 z-[1] rounded px-1 py-0.5 text-[10px] font-semibold tabular-nums ${
+              isDarkMode ? 'bg-black/40 text-white/70' : 'bg-white/80 text-gray-600'
+            }`}
+          >
+            {slotLabel}
+          </span>
+        ) : null}
+        <div className={`flex items-center gap-2 ${slotLabel ? 'pt-3' : ''}`}>
           <button
             type="button"
             onClick={(e) => {
@@ -834,7 +1287,9 @@ const AudioPlayerComponent: React.FC<{
               togglePlay();
             }}
             onPointerDown={(e) => e.stopPropagation()}
-            className={`nodrag flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center shadow-lg transition-all duration-150 active:scale-95 ${
+            className={`nodrag flex-shrink-0 flex items-center justify-center shadow-lg transition-all duration-150 active:scale-95 ${
+              compact ? 'w-9 h-9 rounded-lg' : 'w-12 h-12 rounded-xl'
+            } ${
               sourceLoadFailed ? (isDarkMode ? 'bg-white/10 text-white/50 cursor-not-allowed' : 'bg-gray-300 text-gray-500 cursor-not-allowed') : isPlaying
                 ? isDarkMode ? 'bg-emerald-500/90 text-white hover:bg-emerald-500' : 'bg-emerald-500 text-white hover:bg-emerald-600'
                 : isDarkMode ? 'bg-emerald-600/80 text-white hover:bg-emerald-500 border border-emerald-400/30' : 'bg-emerald-500 text-white hover:bg-emerald-600 border border-emerald-600/30'
@@ -843,14 +1298,13 @@ const AudioPlayerComponent: React.FC<{
             aria-label={sourceLoadFailed ? '音源不可用' : (isPlaying ? '暂停' : '播放')}
           >
             {isPlaying ? (
-              <Pause className="w-6 h-6 flex-shrink-0" strokeWidth={2.5} />
+              <Pause className={`${compact ? 'w-4 h-4' : 'w-6 h-6'} flex-shrink-0`} strokeWidth={2.5} />
             ) : (
-              <Play className="w-6 h-6 ml-0.5 flex-shrink-0" strokeWidth={2.5} />
+              <Play className={`${compact ? 'w-4 h-4 ml-0.5' : 'w-6 h-6 ml-0.5'} flex-shrink-0`} strokeWidth={2.5} />
             )}
           </button>
 
-          {/* 进度与时间：裁剪模式下显示双指针选择区间，否则为单进度条 */}
-          <div className="flex-1 min-w-0 flex flex-col gap-1">
+          <div className="flex-1 min-w-0 flex flex-col gap-0.5">
             {showTrimRange && displayDuration > 0 ? (
               <TrimRangeBar
                 duration={displayDuration}
@@ -880,14 +1334,14 @@ const AudioPlayerComponent: React.FC<{
                 }}
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
-                className={`nodrag h-2 w-full ${displayDuration > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                className={`nodrag ${compact ? 'h-1.5' : 'h-2'} w-full ${displayDuration > 0 ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
                 style={{ accentColor: isDarkMode ? '#22c55e' : '#16a34a' }}
                 aria-label="播放进度"
                 title="点击或拖拽选择播放位置"
               />
             )}
             <div className="flex items-center justify-between">
-              <span className={`text-xs font-mono tabular-nums ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`}>
+              <span className={`${compact ? 'text-[10px]' : 'text-xs'} font-mono tabular-nums ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`}>
                 {formatAudioClock(currentTime)}
                 {displayDuration > 0 ? ` / ${formatAudioClock(displayDuration)}` : ''}
                 {showTrimRange && displayDuration > 0 && (
@@ -901,7 +1355,7 @@ const AudioPlayerComponent: React.FC<{
                 onClick={(e) => e.stopPropagation()}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                <Volume2 className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/50' : 'text-gray-500'}`} />
+                <Volume2 className={`${compact ? 'w-3 h-3' : 'w-3.5 h-3.5'} ${isDarkMode ? 'text-white/50' : 'text-gray-500'}`} />
                 <input
                   type="range"
                   min="0"
@@ -909,7 +1363,7 @@ const AudioPlayerComponent: React.FC<{
                   step="0.01"
                   value={volume}
                   onChange={handleVolumeChange}
-                  className="w-14 h-1 cursor-pointer"
+                  className={`${compact ? 'w-10' : 'w-14'} h-1 cursor-pointer`}
                   aria-label="音量"
                   title="音量"
                   style={{ accentColor: isDarkMode ? '#22c55e' : '#16a34a' }}
@@ -919,6 +1373,7 @@ const AudioPlayerComponent: React.FC<{
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };
@@ -934,6 +1389,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     performanceMode = false,
     onDataChange,
     syncAudioPanelReferenceUrl,
+    onSeparateAllAudios,
     // React Flow 专有属性，不应传递给 DOM（显式解构以过滤）
     xPos = 0,
     yPos = 0,
@@ -945,26 +1401,21 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     targetPosition: _targetPosition,
     sourcePosition: _sourcePosition,
     position: _position,
+    style: nodeStyleProp,
     // 确保不会透传任何其他 React Flow 内部属性
   } = props as any;
   console.log('[AudioNode Debug] Render with data:', data);
-  const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
-  const store = useStoreApi();
+  const { setNodes, getNode, setEdges } = useReactFlow();
   
-  // 最小尺寸约束（与 Text 模块相同）
-  const MIN_WIDTH = 280;
-  const MIN_HEIGHT = 160;
-  
-  const [size, setSize] = useState({
-    w: Math.max(MIN_WIDTH, data?.width || MIN_WIDTH),
-    h: Math.max(MIN_HEIGHT, data?.height || MIN_HEIGHT),
-  });
-  const [isResizing, setIsResizing] = useState(false);
   const [outputAudio, setOutputAudio] = useState(data?.outputAudio || '');
+  const [outputAudios, setOutputAudios] = useState<string[]>(
+    Array.isArray(data?.outputAudios) && data.outputAudios.length > 0
+      ? data.outputAudios.map((u) => normalizeAudioUrl(String(u || ''))).filter(Boolean)
+      : [],
+  );
   const [title, setTitle] = useState(data?.title || 'audio');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
   const [errorMessage, setErrorMessage] = useState(data?.errorMessage || '');
   // 初始化状态：优先使用 data.aiStatus，否则根据 outputAudio 和 errorMessage 判断
   const getInitialStatus = (): 'idle' | 'START' | 'PROCESSING' | 'SUCCESS' | 'ERROR' => {
@@ -996,7 +1447,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
   }, [id, aiStatus, outputAudio, errorMessage, inputText, data?.aiStatus]);
   
   const nodeRef = useRef<HTMLDivElement>(null);
-  const resizeHandleRef = useRef<HTMLDivElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const prevOutputAudioRef = useRef<string>(''); // 用于跟踪音频 URL 变化
@@ -1030,30 +1481,6 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
 
   // 同步外部数据变化
   useEffect(() => {
-    if (data?.width !== undefined && data.width > 0) {
-      setSize((prev) => {
-        if (prev.w !== data.width) {
-          return { ...prev, w: data.width };
-        }
-        return prev;
-      });
-      // 强制应用尺寸到 DOM
-      if (nodeRef.current) {
-        nodeRef.current.style.width = `${data.width}px`;
-      }
-    }
-    if (data?.height !== undefined && data.height > 0) {
-      setSize((prev) => {
-        if (prev.h !== data.height) {
-          return { ...prev, h: data.height };
-        }
-        return prev;
-      });
-      // 强制应用尺寸到 DOM
-      if (nodeRef.current) {
-        nodeRef.current.style.height = `${data.height}px`;
-      }
-    }
     if (data?.outputAudio !== undefined) {
       // 格式化音频路径
       const formattedPath = normalizeAudioUrl(data.outputAudio);
@@ -1061,6 +1488,12 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
       if (outputAudio !== formattedPath) {
         setOutputAudio(formattedPath);
       }
+    }
+    if (data?.outputAudios !== undefined) {
+      const list = Array.isArray(data.outputAudios)
+        ? data.outputAudios.map((u) => normalizeAudioUrl(String(u || ''))).filter(Boolean)
+        : [];
+      setOutputAudios((prev) => (JSON.stringify(prev) === JSON.stringify(list) ? prev : list));
     }
     if (data?.title !== undefined) {
       setTitle(data.title);
@@ -1081,17 +1514,17 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     if (data?.text !== undefined) {
       setInputText(data.text);
     }
-  }, [data?.width, data?.height, data?.outputAudio, data?.title, data?.errorMessage, data?.aiStatus, data?.text, outputAudio]);
+  }, [data?.outputAudio, data?.outputAudios, data?.title, data?.errorMessage, data?.aiStatus, data?.text, outputAudio]);
 
   // 双击标题进入编辑模式
   const handleTitleDoubleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     const songLabel =
       isAudioSongModel(data?.model) ? String(data?.songName ?? '').trim() : '';
-    setTitle(songLabel || title || '未命名音频');
+    setTitle(songLabel || title || anc.unnamedAudio);
     setIsEditingTitle(true);
     setTimeout(() => titleInputRef.current?.focus(), 0);
-  }, [data?.model, data?.songName, title]);
+  }, [data?.model, data?.songName, title, anc.unnamedAudio]);
 
   // 更新节点数据
   const updateNodeData = useCallback((updates: Partial<AudioNodeData>) => {
@@ -1108,6 +1541,149 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
       onDataChange(id, updates as any);
     }
   }, [id, setNodes, onDataChange]);
+
+  useEffect(() => {
+    const styleW = parseFloat(String(nodeStyleProp?.width || '').replace('px', ''));
+    const styleH = parseFloat(String(nodeStyleProp?.height || '').replace('px', ''));
+    const rfW = typeof _width === 'number' && _width > 0 ? _width : styleW;
+    const rfH = typeof _height === 'number' && _height > 0 ? _height : styleH;
+    const needFix =
+      data?.width !== AUDIO_NODE_WIDTH ||
+      data?.height !== AUDIO_NODE_HEIGHT ||
+      rfW !== AUDIO_NODE_WIDTH ||
+      rfH !== AUDIO_NODE_HEIGHT;
+    if (!needFix) return;
+    setNodes((nds) =>
+      nds.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              width: AUDIO_NODE_WIDTH,
+              height: AUDIO_NODE_HEIGHT,
+              style: {
+                ...(node.style as object),
+                ...nodeStyleDimensions(AUDIO_NODE_WIDTH, AUDIO_NODE_HEIGHT),
+              },
+              data: {
+                ...node.data,
+                width: AUDIO_NODE_WIDTH,
+                height: AUDIO_NODE_HEIGHT,
+              },
+            }
+          : node,
+      ),
+    );
+    updateNodeInternals(id);
+  }, [data?.width, data?.height, _width, _height, nodeStyleProp?.width, nodeStyleProp?.height, id, setNodes, updateNodeInternals]);
+
+  const handleSeparateAllOutputAudios = useCallback(() => {
+    const fromState = outputAudios.filter(Boolean);
+    const fromData = Array.isArray(data?.outputAudios)
+      ? data.outputAudios.map((u) => normalizeAudioUrl(String(u || ''))).filter(Boolean)
+      : [];
+    const urls = fromState.length > 1 ? fromState : fromData;
+    if (urls.length <= 1) return;
+
+    const originals = Array.isArray(data?.originalOutputAudios)
+      ? [...data.originalOutputAudios]
+      : undefined;
+    const sourceNode = getNode(id);
+    if (!sourceNode) return;
+
+    const nodeW = AUDIO_NODE_WIDTH;
+    const nodeH = AUDIO_NODE_HEIGHT;
+    const GAP = 48;
+    /** 右侧独立模块纵向排列：完整节点高度 + 间距，避免重叠 */
+    const rowStep = nodeH + 24;
+    const batchTs = Date.now();
+
+    const newNodes: Node[] = [];
+    const newEdges: Edge[] = [];
+
+    for (let i = 0; i < urls.length; i += 1) {
+      const url = urls[i];
+      if (!url?.trim()) continue;
+      const origUrl = originals?.[i];
+      const newNodeId = `audio-${batchTs}-${i}-${Math.random().toString(36).slice(2, 8)}`;
+      newNodes.push({
+        id: newNodeId,
+        type: 'audio',
+        position: {
+          x: sourceNode.position.x + nodeW + GAP,
+          y: sourceNode.position.y + i * rowStep,
+        },
+        selected: i === 0,
+        width: nodeW,
+        height: nodeH,
+        data: {
+          label: 'audio',
+          outputAudio: url,
+          originalAudioUrl: origUrl || url,
+          title: `${title || anc.unnamedAudio} · ${anc.trackLabel(i + 1)}`,
+          width: nodeW,
+          height: nodeH,
+          aiStatus: 'SUCCESS',
+          audioSourceType: data?.audioSourceType,
+          model: data?.model,
+        },
+        style: nodeStyleDimensions(nodeW, nodeH),
+      });
+      newEdges.push({
+        id: `edge-${id}-${newNodeId}`,
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'audio-input',
+        animated: false,
+      });
+    }
+
+    if (newNodes.length === 0) return;
+
+    const clearSourceData: Partial<AudioNodeData> = {
+      outputAudio: '',
+      originalAudioUrl: undefined,
+      outputAudios: undefined,
+      originalOutputAudios: undefined,
+      aiStatus: 'idle',
+      mediaDurationSec: undefined,
+    };
+
+    setOutputAudios([]);
+    setOutputAudio('');
+
+    const payload: AudioSeparateAllPayload = {
+      sourceNodeId: id,
+      newNodes,
+      newEdges,
+      clearSourceData,
+    };
+
+    if (onSeparateAllAudios) {
+      onSeparateAllAudios(payload);
+      return;
+    }
+
+    setNodes((nds) => {
+      const updated = nds.map((n) => {
+        if (n.id !== id) return { ...n, selected: false };
+        return { ...n, data: { ...n.data, ...clearSourceData }, selected: false };
+      });
+      return [...updated, ...newNodes];
+    });
+
+    setEdges((eds) => {
+      let next = eds;
+      for (const edge of newEdges) {
+        next = addEdge(edge, next);
+      }
+      return next;
+    });
+
+    if (onDataChange) {
+      onDataChange(id, clearSourceData);
+    }
+  }, [outputAudios, data, id, getNode, setNodes, setEdges, onDataChange, onSeparateAllAudios, title, anc]);
 
   /** 主进程 ffmpeg 探测完整时长，写入 mediaDurationSec 供剪辑轨道同步 */
   useEffect(() => {
@@ -1208,6 +1784,11 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     };
   }, [isRecordingRefMic, refMicSaving]);
 
+  const floatTopPillBtn = (extra = '') =>
+    isDarkMode
+      ? `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 hover:bg-white/25 text-white transition-colors ${extra}`
+      : `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/90 hover:bg-white text-gray-800 border border-gray-200/80 shadow-sm transition-colors ${extra}`;
+
   const floatIconBtn = (extra = '') =>
     `p-1.5 rounded-lg transition-all disabled:opacity-30 ${
       isDarkMode
@@ -1302,12 +1883,6 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     }
   }, [outputAudio, data?.outputAudio, data?.originalAudioUrl, data?.songName, title, projectId]);
 
-  // 处理尺寸变化
-  const handleSizeChange = useCallback((newSize: { w: number; h: number }) => {
-    setSize(newSize);
-    updateNodeData({ width: newSize.w, height: newSize.h });
-  }, [updateNodeData]);
-
   const zoom = viewport.zoom ?? 1;
   const vx = viewport.x ?? 0;
   const vy = viewport.y ?? 0;
@@ -1317,58 +1892,98 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     return 'near';
   }, [zoom]);
   const showDetailedUi = lodLevel === 'near';
-  const hasPlayableAudio = !!(data?.outputAudio || outputAudio || data?.referenceAudioUrl);
+  const hasMultiOutputAudios = outputAudios.length > 1;
+  const hasPlayableAudio = !!(data?.outputAudio || outputAudio || data?.referenceAudioUrl || hasMultiOutputAudios);
   const isHardFrozen = useMemo(() => {
-    if (!performanceMode || selected || dragging || isResizing) return false;
+    if (!performanceMode || selected || dragging) return false;
     const viewportLeft = -vx / zoom;
     const viewportTop = -vy / zoom;
     const viewportWidth = (typeof window !== 'undefined' ? window.innerWidth : 1920) / zoom;
     const viewportHeight = (typeof window !== 'undefined' ? window.innerHeight : 1080) / zoom;
     const viewportRight = viewportLeft + viewportWidth;
     const viewportBottom = viewportTop + viewportHeight;
-    const nodeRight = xPos + size.w;
-    const nodeBottom = yPos + size.h;
+    const nodeRight = xPos + AUDIO_NODE_WIDTH;
+    const nodeBottom = yPos + AUDIO_NODE_HEIGHT;
     const intersects = !(nodeRight < viewportLeft || xPos > viewportRight || nodeBottom < viewportTop || yPos > viewportBottom);
     if (intersects) return false;
     const distX = nodeRight < viewportLeft ? (viewportLeft - nodeRight) : (xPos > viewportRight ? xPos - viewportRight : 0);
     const distY = nodeBottom < viewportTop ? (viewportTop - nodeBottom) : (yPos > viewportBottom ? yPos - viewportBottom : 0);
     return distX > viewportWidth * 2 || distY > viewportHeight * 2;
-  }, [performanceMode, selected, dragging, isResizing, vx, vy, zoom, xPos, yPos, size.w, size.h]);
+  }, [performanceMode, selected, dragging, vx, vy, zoom, xPos, yPos]);
   /** 选中或拖动中始终显示完整内容（避免远缩放/冻结 LOD 在移动画布时把节点变成空白，与图二一致） */
   const showSelectedChrome = selected || dragging;
   /** 有可播放音频时不切占位，避免平移/缩放画布时卸载 <audio> 打断播放 */
   const showPlaceholder =
     !hasPlayableAudio &&
-    (isResizing || ((isHardFrozen || lodLevel === 'far') && !showSelectedChrome));
-  const showMicChrome = (showSelectedChrome || isHovered) && !showPlaceholder;
+    ((isHardFrozen || lodLevel === 'far') && !showSelectedChrome);
   const hasDownloadableAudio = !!(outputAudio || data?.outputAudio || data?.originalAudioUrl);
-  const hasTrimmableAudio = !!(data?.outputAudio || outputAudio || data?.referenceAudioUrl);
+  const hasTrimmableAudio = !hasMultiOutputAudios && !!(data?.outputAudio || outputAudio || data?.referenceAudioUrl);
   const musicSongName =
     isAudioSongModel(data?.model) ? String(data?.songName ?? '').trim() : '';
-  const nodeHeaderLabel = musicSongName || title || '未命名音频';
+  const isCoverModule = isAudioCoverModel(data?.model);
+  const genericAudioTitle =
+    !title || title === 'audio' || title === '声音节点' || title === '翻唱' || title === 'AI Cover';
+  const nodeHeaderLabel =
+    musicSongName ||
+    (isCoverModule && genericAudioTitle ? anc.coverModuleLabel : title) ||
+    anc.unnamedAudio;
+
+  const [playerControlsHost, setPlayerControlsHost] = useState<HTMLElement | null>(null);
+  /** 选中、拖动或播放中：显示上下外挂控件 */
+  const showNodeChrome = showSelectedChrome || isMediaPlaying;
+  const showExternalPlayerControls = hasPlayableAudio && !showPlaceholder && showNodeChrome;
+  const spaceKeyboardActive =
+    selected &&
+    hasPlayableAudio &&
+    !showPlaceholder &&
+    !showTrimModal &&
+    !isRecordingRefMic &&
+    !refMicSaving;
+  const showFloatingTopActions = !showPlaceholder && showNodeChrome;
+
+  useEffect(() => {
+    if (!showExternalPlayerControls) {
+      setPlayerControlsHost(null);
+    }
+  }, [showExternalPlayerControls]);
+
+  useLayoutEffect(() => {
+    const rfNode = shellRef.current?.closest('.react-flow__node') as HTMLElement | null;
+    if (!rfNode) return;
+    rfNode.style.width = `${AUDIO_NODE_WIDTH}px`;
+    rfNode.style.height = `${AUDIO_NODE_HEIGHT}px`;
+    rfNode.style.maxWidth = `${AUDIO_NODE_WIDTH}px`;
+    rfNode.style.maxHeight = `${AUDIO_NODE_HEIGHT}px`;
+    updateNodeInternals(id);
+  }, [id, updateNodeInternals, showNodeChrome, showExternalPlayerControls, showPlaceholder, isMediaPlaying]);
 
   return (
     <>
       <div
+        ref={shellRef}
+        className="nexflow-audio-node-shell relative"
+        style={{
+          width: AUDIO_NODE_WIDTH,
+          height: AUDIO_NODE_HEIGHT,
+          maxWidth: AUDIO_NODE_WIDTH,
+          maxHeight: AUDIO_NODE_HEIGHT,
+        }}
+      >
+      <div
         ref={nodeRef}
         data-id={id}
-        className={`custom-node-container group relative rounded-2xl overflow-visible flex flex-col ${
+        className={`custom-node-container group absolute inset-0 flex h-full w-full min-h-0 flex-col overflow-visible rounded-2xl ${
           isDarkMode
             ? 'nexflow-glass-panel'
             : 'apple-panel-light' /* 使用磨砂材质浅灰半透明背板 */
-        } ${isMediaPlaying && !isResizing ? 'nexflow-media-playing-glow' : ''} ${showSelectedChrome && !isMediaPlaying && isDarkMode && !isResizing ? 'ring-2 ring-green-400/80' : ''} ${showSelectedChrome && !isMediaPlaying && !isDarkMode && !isResizing ? 'ring-2 ring-green-500' : ''} ${isResizing ? '!shadow-none !ring-0' : ''}`}
+        } ${showSelectedChrome && !isMediaPlaying && isDarkMode ? 'ring-2 ring-green-400/80' : ''} ${showSelectedChrome && !isMediaPlaying && !isDarkMode ? 'ring-2 ring-green-500' : ''}`}
         style={{
-          width: size.w,
-          height: size.h,
-          minWidth: `${MIN_WIDTH}px`,
-          minHeight: `${MIN_HEIGHT}px`,
-          userSelect: isResizing ? 'none' : 'auto',
-          willChange: isResizing ? 'transform, width, height' : dragging ? 'transform' : 'auto',
-          backfaceVisibility: isResizing ? 'hidden' : 'visible',
-          transition: isResizing ? 'none' : 'all 0.2s ease',
+          width: AUDIO_NODE_WIDTH,
+          height: AUDIO_NODE_HEIGHT,
+          userSelect: 'auto',
+          willChange: dragging ? 'transform' : 'auto',
+          transition: 'all 0.2s ease',
         }}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
         onClickCapture={() => {
           if (!isCanvasPickVoiceTarget()) return;
           const pickable =
@@ -1379,6 +1994,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
       >
         <Handle type="target" position={Position.Left} id="audio-input" className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
         <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
+
         {showPlaceholder ? (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="flex flex-col items-center justify-center gap-1">
@@ -1390,140 +2006,13 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           </div>
         ) : (
         <>
-        {/* 左上角标题区域（在模块外部、上方，与 ImageNode 一致） */}
-        {showDetailedUi && <div className="title-area absolute -top-7 left-0 z-10">
-          {isEditingTitle ? (
-            <input
-              ref={titleInputRef}
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => {
-                setIsEditingTitle(false);
-                const trimmed = title.trim();
-                if (isAudioSongModel(data?.model)) {
-                  if ((data?.songName ?? '') !== trimmed || (data?.title ?? '') !== trimmed) {
-                    updateNodeData({ songName: trimmed, title: trimmed });
-                  }
-                } else if (data?.title !== trimmed) {
-                  updateNodeData({ title: trimmed });
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  setIsEditingTitle(false);
-                  const trimmed = title.trim();
-                  if (isAudioSongModel(data?.model)) {
-                    if ((data?.songName ?? '') !== trimmed || (data?.title ?? '') !== trimmed) {
-                      updateNodeData({ songName: trimmed, title: trimmed });
-                    }
-                  } else if (data?.title !== trimmed) {
-                    updateNodeData({ title: trimmed });
-                  }
-                }
-                if (e.key === 'Escape') {
-                  setIsEditingTitle(false);
-                  const songLabel =
-                    isAudioSongModel(data?.model) ? String(data?.songName ?? '').trim() : '';
-                  setTitle(songLabel || data?.title || 'audio');
-                }
-              }}
-              className={`bg-transparent outline-none font-bold text-xs ${
-                isDarkMode ? 'text-white/80' : 'text-gray-900'
-              }`}
-              style={{ 
-                caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
-                minWidth: '40px',
-                maxWidth: '120px',
-              }}
-              title="编辑标题"
-              autoFocus
-            />
-          ) : (
-            <span
-              onClick={handleTitleDoubleClick}
-              className={`font-bold text-xs cursor-pointer select-none ${
-                isDarkMode ? 'text-white/80' : 'text-gray-900'
-              } hover:opacity-70 transition-opacity`}
-            >
-              {nodeHeaderLabel}
-            </span>
-          )}
-        </div>}
-
-        {/* 左上角：录音（参考音）+ 下载 */}
-        {showMicChrome && (
-          <button
-            type="button"
-            onClick={handleReferenceMicInput}
-            disabled={refMicSaving}
-            onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-            className={`nodrag absolute top-2 left-2 z-[100] flex h-7 w-7 shrink-0 items-center justify-center rounded border transition-colors ${
-              refMicSaving
-                ? isDarkMode
-                  ? 'cursor-wait border-violet-400/50 bg-violet-500/20 text-violet-200'
-                  : 'cursor-wait border-violet-400/60 bg-violet-100 text-violet-700'
-                : isRecordingRefMic
-                  ? 'border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
-                  : isDarkMode
-                    ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                    : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
-            }`}
-            title={
-              refMicSaving
-                ? refMicAt.recordModalStop
-                : isRecordingRefMic
-                  ? refMicAt.stopRecordingButton
-                  : refMicAt.recordReferenceTitle
-            }
-            aria-label={refMicAt.recordReferenceAria}
-            style={{ pointerEvents: 'all' }}
-          >
-            {refMicSaving || isRecordingRefMic ? (
-              <Loader2
-                className={`relative h-3.5 w-3.5 animate-spin ${isRecordingRefMic && !refMicSaving ? 'text-orange-200' : ''}`}
-                strokeWidth={2.25}
-              />
-            ) : (
-              <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
-            )}
-          </button>
-        )}
-        {hasDownloadableAudio && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleDownloadAudio(); }}
-            onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-            className={`nodrag absolute top-2 p-1.5 rounded-lg transition-all z-[100] ${
-              showMicChrome ? 'left-11' : 'left-2'
-            } ${
-              isDarkMode ? 'apple-panel hover:bg-white/20' : 'apple-panel-light hover:bg-gray-200/30'
-            }`}
-            title="下载"
-            aria-label="下载"
-            style={{ pointerEvents: 'all' }}
-          >
-            <Download className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-          </button>
-        )}
-        {/* 右上角上传参考音按钮（Index-TTS2 等） */}
-        {showDetailedUi && showSelectedChrome && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); e.preventDefault(); handleUploadReferenceAudio(); }}
-            onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-            className={`nodrag absolute top-2 right-2 p-1.5 rounded-lg transition-all z-[100] ${
-              isDarkMode ? 'apple-panel hover:bg-white/20' : 'apple-panel-light hover:bg-gray-200/30'
-            }`}
-            title="上传参考音（用于 Index-TTS2 配音）"
-            aria-label="上传参考音"
-            style={{ pointerEvents: 'all' }}
-          >
-            <Upload className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-          </button>
-        )}
-
+        <div className="absolute inset-0 overflow-hidden rounded-2xl">
+        {isMediaPlaying ? (
+          <div
+            className="nexflow-media-playing-glow pointer-events-none absolute inset-0 z-0 rounded-2xl"
+            aria-hidden
+          />
+        ) : null}
         {/* 全模块覆盖进度条（音频合成/生成中时纯色遮罩，不显示其他内容） */}
         <ModuleProgressBar
           visible={aiStatus === 'START' || aiStatus === 'PROCESSING' || (typeof data?.progress === 'number' && data.progress > 0)}
@@ -1535,31 +2024,26 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
         />
 
         {/* 音频内容显示区域 - 有生成结果或上传的参考音时显示播放器，支持试听 */}
-        <div key={data?.updatedAt || 'initial'} className="w-full flex-1 flex flex-col items-stretch justify-center overflow-hidden p-2 pt-3" style={{ minHeight: '80px' }}>
-          {/* 数据校验：优先 data.outputAudio（video->audio 注入），再 outputAudio/referenceAudioUrl */}
-          {(data?.outputAudio || outputAudio || data?.referenceAudioUrl) && (
-            <div className="flex-shrink-0 mb-1.5 flex flex-col gap-1">
-              {/* 全能写歌：歌曲名已在节点顶部显示，卡片内不重复标题 */}
-              <span
-                className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium self-start ${
-                  (data?.outputAudio || outputAudio)
-                    ? isDarkMode
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-emerald-100 text-emerald-700'
-                    : isDarkMode
-                      ? 'bg-blue-500/20 text-blue-400'
-                      : 'bg-blue-100 text-blue-700'
-                }`}
-                title={(data?.outputAudio || outputAudio) ? (data?.audioSourceType === 'vocals' ? '人声分离结果' : data?.audioSourceType === 'accompaniment' ? '背景音分离结果' : '当前为 TTS 生成的声音') : '当前为参考音（上传或从上一节点传入）'}
-              >
-                {(data?.outputAudio || outputAudio)
-                  ? (data?.audioSourceType === 'vocals' ? '人声' : data?.audioSourceType === 'accompaniment' ? '背景音' : '生成的声音')
-                  : '参考音'}
-              </span>
-            </div>
-          )}
-          {/* 有可播放音频时始终显示完整播放器（画布平移/缩放时也不替换为占位，与静止态一致） */}
-          {(data?.outputAudio || outputAudio || data?.referenceAudioUrl) ? (
+        <div
+          key={data?.updatedAt || 'initial'}
+          className="nexflow-audio-node-body absolute inset-0 z-[1] flex min-h-0 w-full flex-col items-stretch overflow-hidden p-0"
+        >
+          {hasMultiOutputAudios ? (
+            <AudioMultiOutputMainPlayer
+              urls={outputAudios}
+              originalUrls={Array.isArray(data?.originalOutputAudios) ? data.originalOutputAudios : undefined}
+              isDarkMode={isDarkMode}
+              nodeId={id}
+              data={data}
+              projectId={projectId}
+              chrome={anc}
+              setOutputAudio={setOutputAudio}
+              updateNodeData={updateNodeData}
+              onPlayingChange={setIsMediaPlaying}
+              controlsPortalEl={playerControlsHost}
+              spaceKeyboardActive={spaceKeyboardActive}
+            />
+          ) : (data?.outputAudio || outputAudio || data?.referenceAudioUrl) ? (
             <AudioPlayerComponent
               nodeId={id}
               audioRef={audioRef}
@@ -1570,6 +2054,9 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
               setOutputAudio={setOutputAudio}
               updateNodeData={updateNodeData}
               onPlayingChange={setIsMediaPlaying}
+              layoutVariant="waveform"
+              controlsPortalEl={playerControlsHost}
+              spaceKeyboardActive={spaceKeyboardActive}
               showTrimRange={false}
               trimStart={parseFloat(trimStartSec) || 0}
               trimEnd={parseFloat(trimEndSec) || 0}
@@ -1591,7 +2078,8 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
                 {userFacingErrorMessage(errorMessage, locale) ||
                   (locale === 'en' ? 'Audio generation failed. Try again.' : '音频生成失败，请稍后重试')}
               </p>
-              {!messageContainsRefundHint(
+              {!isCoverModule &&
+              !messageContainsRefundHint(
                 userFacingErrorMessage(errorMessage, locale) ||
                   (locale === 'en' ? 'Audio generation failed. Try again.' : '音频生成失败，请稍后重试'),
               ) ? (
@@ -1622,11 +2110,156 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           )}
         </div>
 
-        {/* 模块外下方：裁剪（拼图模块同款悬浮工具栏） */}
-        {showSelectedChrome && hasTrimmableAudio && (
+        </div>
+
+        </>
+        )}
+      </div>
+
+        {showDetailedUi && showNodeChrome ? (
+          <div className="title-area pointer-events-auto absolute -top-7 left-0 z-10 max-w-full overflow-hidden">
+            {isEditingTitle ? (
+              <input
+                ref={titleInputRef}
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onBlur={() => {
+                  setIsEditingTitle(false);
+                  const trimmed = title.trim();
+                  if (isAudioSongModel(data?.model)) {
+                    if ((data?.songName ?? '') !== trimmed || (data?.title ?? '') !== trimmed) {
+                      updateNodeData({ songName: trimmed, title: trimmed });
+                    }
+                  } else if (data?.title !== trimmed) {
+                    updateNodeData({ title: trimmed });
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    setIsEditingTitle(false);
+                    const trimmed = title.trim();
+                    if (isAudioSongModel(data?.model)) {
+                      if ((data?.songName ?? '') !== trimmed || (data?.title ?? '') !== trimmed) {
+                        updateNodeData({ songName: trimmed, title: trimmed });
+                      }
+                    } else if (data?.title !== trimmed) {
+                      updateNodeData({ title: trimmed });
+                    }
+                  }
+                  if (e.key === 'Escape') {
+                    setIsEditingTitle(false);
+                    const songLabel =
+                      isAudioSongModel(data?.model) ? String(data?.songName ?? '').trim() : '';
+                    setTitle(songLabel || data?.title || anc.unnamedAudio);
+                  }
+                }}
+                className={`bg-transparent outline-none font-bold text-xs ${
+                  isDarkMode ? 'text-white/80' : 'text-gray-900'
+                }`}
+                style={{
+                  caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
+                  minWidth: '40px',
+                  maxWidth: '120px',
+                }}
+                title="编辑标题"
+                autoFocus
+              />
+            ) : (
+              <span
+                onClick={handleTitleDoubleClick}
+                className={`block max-w-[280px] truncate font-bold text-xs cursor-pointer select-none ${
+                  isDarkMode ? 'text-white/80' : 'text-gray-900'
+                } hover:opacity-70 transition-opacity`}
+                title={nodeHeaderLabel}
+              >
+                {nodeHeaderLabel}
+              </span>
+            )}
+          </div>
+        ) : null}
+
+        {showFloatingTopActions ? (
           <div
-            className="node-floating-toolbar nodrag nopan absolute top-full left-1/2 z-20 mt-1.5 flex w-max max-w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 px-1 overflow-visible"
-            style={{ pointerEvents: 'all' }}
+            className="nodrag nopan pointer-events-auto absolute -top-14 left-0 right-0 z-10 flex justify-center gap-2"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            {showNodeChrome ? (
+              <button
+                type="button"
+                onClick={handleReferenceMicInput}
+                disabled={refMicSaving}
+                className={floatTopPillBtn(
+                  refMicSaving
+                    ? 'cursor-wait opacity-70'
+                    : isRecordingRefMic
+                      ? 'bg-orange-500/35 hover:bg-orange-500/45'
+                      : '',
+                )}
+                title={
+                  refMicSaving
+                    ? refMicAt.recordModalStop
+                    : isRecordingRefMic
+                      ? refMicAt.stopRecordingButton
+                      : refMicAt.recordReferenceTitle
+                }
+                aria-label={refMicAt.recordReferenceAria}
+              >
+                {refMicSaving || isRecordingRefMic ? (
+                  <Loader2 className={`h-4 w-4 animate-spin ${isRecordingRefMic && !refMicSaving ? 'text-orange-100' : ''}`} />
+                ) : (
+                  <Mic className="h-4 w-4" strokeWidth={2.25} />
+                )}
+              </button>
+            ) : null}
+            {hasDownloadableAudio ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleDownloadAudio();
+                }}
+                className={floatTopPillBtn()}
+                title="下载"
+                aria-label="下载"
+              >
+                <Download className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              </button>
+            ) : null}
+            {showDetailedUi && showNodeChrome ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleUploadReferenceAudio();
+                }}
+                className={floatTopPillBtn()}
+                title="上传参考音（用于 Index-TTS2 配音）"
+                aria-label="上传参考音"
+              >
+                <Upload className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {showExternalPlayerControls ? (
+          <div
+            ref={setPlayerControlsHost}
+            className="nodrag nopan node-floating-toolbar pointer-events-none absolute top-full left-0 right-0 z-10 mt-[calc(0.25rem+3mm)] flex justify-center overflow-visible px-1"
+          />
+        ) : null}
+
+        {showSelectedChrome && hasTrimmableAudio ? (
+          <div
+            className={`node-floating-toolbar nodrag nopan pointer-events-auto absolute top-full left-0 right-0 z-20 flex items-center justify-center gap-1.5 px-1 overflow-visible ${
+              showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
+            }`}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             onWheel={(e) => e.stopPropagation()}
@@ -1658,147 +2291,58 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
               )}
             </button>
           </div>
-        )}
+        ) : null}
 
-        {/* 全屏背景虚化的音频裁剪弹窗 */}
-        {showTrimModal && (
-          <AudioTrimModal
-            audioUrl={data?.outputAudio || outputAudio || data?.referenceAudioUrl || ''}
-            isDarkMode={isDarkMode}
-            initialTrimStart={parseFloat(trimStartSec) || 0}
-            initialTrimEnd={parseFloat(trimEndSec) || 0}
-            trimming={trimming}
-            c={anc}
-            onConfirm={(start, end) => handleTrimConfirm(start, end)}
-            onCancel={() => !trimming && setShowTrimModal(false)}
-          />
-        )}
+        {showNodeChrome && hasMultiOutputAudios ? (
+          <div
+            className={`nodrag nopan pointer-events-auto absolute top-full left-0 right-0 z-20 flex justify-center px-1 ${
+              showExternalPlayerControls
+                ? showSelectedChrome && hasTrimmableAudio
+                  ? 'mt-[calc(4.15rem+3mm)]'
+                  : 'mt-[calc(2.85rem+3mm)]'
+                : 'mt-1.5'
+            }`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleSeparateAllOutputAudios();
+              }}
+              className={`nodrag bg-transparent py-0.5 text-center text-[10px] font-medium transition-opacity hover:opacity-90 ${
+                isDarkMode ? 'text-violet-300/85 hover:text-violet-200' : 'text-violet-700 hover:text-violet-900'
+              }`}
+              title={anc.separateAllToNodes}
+            >
+              {anc.separateAllToNodes}
+            </button>
+          </div>
+        ) : null}
 
-        {/* 右下角框外圆弧角缩放手柄 */}
-        <div
-          ref={resizeHandleRef}
-          className="nodrag absolute -bottom-2 -right-2 w-6 h-6 cursor-nwse-resize flex items-center justify-center opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity z-[9999]"
-          style={{ pointerEvents: 'all' }}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.nativeEvent.stopImmediatePropagation();
-            
-            setIsResizing(true);
-            
-            // 标记节点正在调整大小，阻止拖动
-            updateNodeData({ _isResizing: true } as any);
-            
-            // 在 body 上设置 cursor 样式
-            const originalCursor = document.body.style.cursor;
-            document.body.style.setProperty('cursor', 'nwse-resize', 'important');
-            
-            const startX = e.clientX;
-            const startY = e.clientY;
-            const startW = size.w;
-            const startH = size.h;
-            
-            // 使用 requestAnimationFrame 优化 updateNodeInternals 调用
-            let rafId: number | null = null;
-            const scheduleUpdate = () => {
-              if (rafId === null) {
-                rafId = requestAnimationFrame(() => {
-                  updateNodeInternals(id);
-                  rafId = null;
-                });
-              }
-            };
-
-            const onMouseMove = (moveEvent: MouseEvent) => {
-              moveEvent.preventDefault();
-              moveEvent.stopPropagation();
-              
-              // 获取当前缩放比例
-              const currentZoom = store.getState().transform[2] || 1;
-              
-              // 将鼠标移动距离除以缩放比例，转换为画布坐标
-              const deltaX = (moveEvent.clientX - startX) / currentZoom;
-              const deltaY = (moveEvent.clientY - startY) / currentZoom;
-              
-              // 计算新尺寸（最小尺寸约束）
-              const newW = Math.max(MIN_WIDTH, startW + deltaX);
-              const newH = Math.max(MIN_HEIGHT, startH + deltaY);
-              
-              // 直接操作 DOM，不触发 React 状态更新
-              if (nodeRef.current) {
-                nodeRef.current.style.transition = 'none';
-                nodeRef.current.style.width = `${newW}px`;
-                nodeRef.current.style.height = `${newH}px`;
-              }
-              
-              scheduleUpdate();
-            };
-            
-            const onMouseUp = (upEvent: MouseEvent) => {
-              setIsResizing(false);
-              
-              // 恢复 body cursor
-              document.body.style.cursor = originalCursor;
-              
-              // 恢复 transition
-              if (nodeRef.current) {
-                nodeRef.current.style.transition = '';
-              }
-              
-              // 取消待处理的 requestAnimationFrame
-              if (rafId !== null) {
-                cancelAnimationFrame(rafId);
-                rafId = null;
-              }
-              
-              // 获取最终尺寸（从 DOM 读取）
-              const finalSize = {
-                w: nodeRef.current ? parseFloat(nodeRef.current.style.width) || size.w : size.w,
-                h: nodeRef.current ? parseFloat(nodeRef.current.style.height) || size.h : size.h,
-              };
-              
-              // 仅在 onMouseUp 时更新 React 状态（数据持久化）
-              handleSizeChange(finalSize);
-              
-              // 清除调整大小标记
-              updateNodeData({ _isResizing: false } as any);
-              
-              // 强制刷新节点连接线位置（最终更新）
-              updateNodeInternals(id);
-              
-              document.removeEventListener('mousemove', onMouseMove);
-              document.removeEventListener('mouseup', onMouseUp);
-              upEvent.preventDefault();
-              upEvent.stopPropagation();
-            };
-            
-            document.addEventListener('mousemove', onMouseMove, { passive: false });
-            document.addEventListener('mouseup', onMouseUp, { passive: false });
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            e.nativeEvent.stopImmediatePropagation();
-          }}
-          onDragStart={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-        >
-          <div className={`w-4 h-4 rounded-br-2xl border-r-2 border-b-2 ${
-            isDarkMode ? 'border-white/40' : 'border-gray-400/60'
-          }`} />
-        </div>
-        </>
-        )}
+        {trimError && showSelectedChrome ? (
+          <div className="nodrag nopan pointer-events-auto absolute -bottom-20 left-0 right-0 z-10 flex justify-center">
+            <div className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs">
+              {trimError}
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      {/* 裁剪错误提示：无弹窗时在节点内显示 */}
-      {trimError && showSelectedChrome && (
-        <div className="nodrag nopan absolute -bottom-20 left-0 right-0 flex justify-center z-10">
-          <div className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs">
-            {trimError}
-          </div>
-        </div>
+      {showTrimModal && (
+        <AudioTrimModal
+          audioUrl={data?.outputAudio || outputAudio || data?.referenceAudioUrl || ''}
+          isDarkMode={isDarkMode}
+          initialTrimStart={parseFloat(trimStartSec) || 0}
+          initialTrimEnd={parseFloat(trimEndSec) || 0}
+          trimming={trimming}
+          c={anc}
+          onConfirm={(start, end) => handleTrimConfirm(start, end)}
+          onCancel={() => !trimming && setShowTrimModal(false)}
+        />
       )}
     </>
   );

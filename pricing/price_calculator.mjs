@@ -378,6 +378,9 @@ const RH_IMAGE_SLUG_TO_BILLING_MODEL = {
   'flux2-klein-1080p': 'flux2-klein-1080p',
   '2059618241806430209': '2059618241806430209',
   'image-to-3d': 'image-to-3d',
+  '2072903678922674177': '2072903678922674177',
+  trellis2: 'trellis2',
+  'image-to-3d-trellis2': 'image-to-3d-trellis2',
 };
 
 /**

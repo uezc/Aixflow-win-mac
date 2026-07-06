@@ -732,6 +732,58 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ) => ipcRenderer.invoke('update-digital-human', itemId, updates),
   deleteDigitalHumans: (itemIds: string[]) => ipcRenderer.invoke('delete-digital-humans', itemIds),
 
+  getRvcVoices: () => ipcRenderer.invoke('get-rvc-voices'),
+  registerRvcVoice: (payload: {
+    nickname?: string;
+    modelPackageUrl?: string;
+    modelPackageRemoteUrl?: string;
+    rvcTrainModelName?: string;
+    avatarUrl?: string;
+    trainAudioUrl?: string;
+    trainAudioRemoteUrl?: string;
+  }) => ipcRenderer.invoke('register-rvc-voice', payload),
+  updateRvcVoice: (
+    itemId: string,
+    updates: {
+      nickname?: string;
+      modelPackageUrl?: string;
+      rvcTrainModelName?: string;
+      avatarUrl?: string;
+      trainAudioUrl?: string;
+    },
+  ) => ipcRenderer.invoke('update-rvc-voice', itemId, updates),
+  deleteRvcVoices: (itemIds: string[]) => ipcRenderer.invoke('delete-rvc-voices', itemIds),
+  getRvcEngineStatus: () => ipcRenderer.invoke('get-rvc-engine-status'),
+  downloadRvcEngine: () => ipcRenderer.invoke('download-rvc-engine'),
+  getWhisperEngineStatus: () => ipcRenderer.invoke('get-whisper-engine-status'),
+  downloadWhisperEngine: () => ipcRenderer.invoke('download-whisper-engine'),
+  onOptionalEngineDownloadProgress: (
+    callback: (payload: {
+      kind: 'rvc' | 'whisper';
+      phase: 'downloading' | 'extracting' | 'done' | 'error';
+      percent: number;
+      message: string;
+    }) => void,
+  ) => {
+    const handler = (
+      _: Electron.IpcRendererEvent,
+      payload: {
+        kind: 'rvc' | 'whisper';
+        phase: 'downloading' | 'extracting' | 'done' | 'error';
+        percent: number;
+        message: string;
+      },
+    ) => callback(payload);
+    ipcRenderer.on('optional-engine:download-progress', handler);
+    return () => ipcRenderer.removeListener('optional-engine:download-progress', handler);
+  },
+  pickRvcVoicePackage: () =>
+    ipcRenderer.invoke('pick-rvc-voice-package') as Promise<{ canceled: boolean; filePath?: string }>,
+  pickRvcVoiceAvatar: () =>
+    ipcRenderer.invoke('pick-rvc-voice-avatar') as Promise<{ canceled: boolean; filePath?: string }>,
+  pickRvcVoiceTrainAudio: () =>
+    ipcRenderer.invoke('pick-rvc-voice-train-audio') as Promise<{ canceled: boolean; filePath?: string }>,
+
   // 上传视频到 OSS
   uploadVideoToOSS: (videoUrl: string) => ipcRenderer.invoke('upload-video-to-oss', videoUrl),
   
@@ -748,8 +800,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('video-watermark-removal', videoUrl, strength) as Promise<{ success: boolean; videoUrl: string }>,
   imageCharacterMultiAngle: (imageUrl: string) =>
     ipcRenderer.invoke('image-character-multi-angle', imageUrl) as Promise<{ success: boolean; imageUrl: string; imageUrls?: string[] }>,
-  imageTo3d: (imageUrl: string, projectId?: string, nodeId?: string) =>
-    ipcRenderer.invoke('image-to-3d', imageUrl, projectId, nodeId) as Promise<{
+  imageTo3d: (imageUrl: string, projectId?: string, nodeId?: string, modelId?: string) =>
+    ipcRenderer.invoke('image-to-3d', imageUrl, projectId, nodeId, modelId) as Promise<{
       success: boolean;
       glbUrl: string;
       remoteGlbUrl: string;
@@ -758,6 +810,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       /** 云端同任务输出的贴图（用于画布预览） */
       resultTextureRemoteUrl?: string;
       resultTextureLocalUrl?: string;
+    }>,
+  ensureImageTo3dLocalTexture: (opts: { glbLocalPath?: string; glbResourceUrl?: string }) =>
+    ipcRenderer.invoke('image-to-3d-ensure-local-texture', opts) as Promise<{
+      textureLocalPath: string;
+      textureLocalUrl: string;
     }>,
   saveGlbFile: (opts: { localPath?: string; remoteUrl?: string; defaultName?: string }) =>
     ipcRenderer.invoke('save-glb-file', opts) as Promise<{ canceled: boolean; filePath?: string }>,
@@ -779,6 +836,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }>,
   pickImageTo3dUpload: () =>
     ipcRenderer.invoke('pick-image-to-3d-upload') as Promise<{ canceled: boolean; filePath?: string }>,
+  pickImageTo3dAvatar: () =>
+    ipcRenderer.invoke('pick-image-to-3d-avatar') as Promise<{ canceled: boolean; filePath?: string }>,
   exportImageTo3dModels: (characterIds: string[]) =>
     ipcRenderer.invoke('export-image-to-3d-models', characterIds) as Promise<{
       success: boolean;

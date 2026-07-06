@@ -14,6 +14,7 @@ export type ContextMenuStrings = {
   imageTo3d: string;
   character: string;
   audio: string;
+  rvcTrain: string;
   audioTranscribe: string;
   imageFirstFrame: string;
   imageCurrentFrame: string;
@@ -21,6 +22,7 @@ export type ContextMenuStrings = {
   audioFromVideo: string;
   extractVocals: string;
   extractBackground: string;
+  aiVoiceCover: string;
 };
 
 const zh: ContextMenuStrings = {
@@ -37,6 +39,7 @@ const zh: ContextMenuStrings = {
   imageTo3d: '图片转 3D',
   character: '角色',
   audio: '声音',
+  rvcTrain: 'RVC 音色训练',
   audioTranscribe: '语音转文字',
   imageFirstFrame: '图片（第一帧）',
   imageCurrentFrame: '图片(当前帧)',
@@ -44,6 +47,7 @@ const zh: ContextMenuStrings = {
   audioFromVideo: '声音（从视频提取）',
   extractVocals: '提取人声',
   extractBackground: '提取背景音',
+  aiVoiceCover: 'RVC 翻唱',
 };
 
 const en: ContextMenuStrings = {
@@ -60,6 +64,7 @@ const en: ContextMenuStrings = {
   imageTo3d: 'Image to 3D',
   character: 'Character',
   audio: 'Audio',
+  rvcTrain: 'RVC voice train',
   audioTranscribe: 'Speech to text',
   imageFirstFrame: 'Image (first frame)',
   imageCurrentFrame: 'Image (current frame)',
@@ -67,6 +72,7 @@ const en: ContextMenuStrings = {
   audioFromVideo: 'Audio (from video)',
   extractVocals: 'Extract vocals',
   extractBackground: 'Extract music bed',
+  aiVoiceCover: 'AI cover',
 };
 
 export function contextMenuT(locale: AppLocale): ContextMenuStrings {
@@ -89,6 +95,7 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     imageTo3d: 'imageTo3d',
     character: 'character',
     audio: 'audio',
+    rvcTrain: 'rvcTrain',
     audioTranscribe: 'audioTranscribe',
     'image-first-frame': 'imageFirstFrame',
     'image-current-frame': 'imageCurrentFrame',
@@ -96,6 +103,7 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     'audio-extract-from-video': 'audioFromVideo',
     'audio-extract-vocals': 'extractVocals',
     'audio-extract-background': 'extractBackground',
+    'audio-voice-cover': 'aiVoiceCover',
   };
   const key = map[type];
   return key ? t[key] : type;

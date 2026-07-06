@@ -722,6 +722,93 @@ interface Window {
     ) => Promise<Record<string, unknown>>;
     deleteDigitalHumans: (itemIds: string[]) => Promise<{ success: boolean }>;
 
+    getRvcVoices: () => Promise<
+      Array<{
+        id: string;
+        nickname: string;
+        name: string;
+        createdAt: number;
+        avatar?: string;
+        localAvatarPath?: string;
+        rvcTrainModelName?: string;
+        packageFileName?: string;
+        modelPackageUrl?: string;
+        localModelPath?: string;
+        originalModelUrl?: string;
+        trainAudioUrl?: string;
+        localTrainAudioPath?: string;
+        originalTrainAudioUrl?: string;
+      }>
+    >;
+    registerRvcVoice: (payload: {
+      nickname?: string;
+      modelPackageUrl?: string;
+      modelPackageRemoteUrl?: string;
+      rvcTrainModelName?: string;
+      trainAudioUrl?: string;
+      trainAudioRemoteUrl?: string;
+    }) => Promise<Record<string, unknown>>;
+    updateRvcVoice: (
+      itemId: string,
+      updates: {
+        nickname?: string;
+        modelPackageUrl?: string;
+        rvcTrainModelName?: string;
+        avatarUrl?: string;
+        trainAudioUrl?: string;
+      },
+    ) => Promise<Record<string, unknown>>;
+    deleteRvcVoices: (itemIds: string[]) => Promise<{ success: boolean }>;
+    getRvcEngineStatus: () => Promise<{
+      ready: boolean;
+      engineDir: string;
+      cliPath: string | null;
+      hubertPath: string | null;
+      rmvpePath: string | null;
+      missing: string[];
+      version?: string;
+      downloadUrlConfigured: boolean;
+    }>;
+    downloadRvcEngine: () => Promise<{
+      ready: boolean;
+      engineDir: string;
+      cliPath: string | null;
+      hubertPath: string | null;
+      rmvpePath: string | null;
+      missing: string[];
+      version?: string;
+      downloadUrlConfigured: boolean;
+    }>;
+    getWhisperEngineStatus: () => Promise<{
+      ready: boolean;
+      engineDir: string;
+      binaryPath: string | null;
+      modelPath: string | null;
+      missing: string[];
+      version?: string;
+      downloadUrlConfigured: boolean;
+    }>;
+    downloadWhisperEngine: () => Promise<{
+      ready: boolean;
+      engineDir: string;
+      binaryPath: string | null;
+      modelPath: string | null;
+      missing: string[];
+      version?: string;
+      downloadUrlConfigured: boolean;
+    }>;
+    onOptionalEngineDownloadProgress: (
+      callback: (payload: {
+        kind: 'rvc' | 'whisper';
+        phase: 'downloading' | 'extracting' | 'done' | 'error';
+        percent: number;
+        message: string;
+      }) => void,
+    ) => () => void;
+    pickRvcVoicePackage: () => Promise<{ canceled: boolean; filePath?: string }>;
+    pickRvcVoiceAvatar: () => Promise<{ canceled: boolean; filePath?: string }>;
+    pickRvcVoiceTrainAudio: () => Promise<{ canceled: boolean; filePath?: string }>;
+
     // 上传图片到 runninghub（用于 sora-2 图生视频）
     uploadImageToRunningHub: (imageUrl: string) => Promise<{ success: boolean; url: string }>;
     imageMatting: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string }>;
@@ -732,6 +819,7 @@ interface Window {
       imageUrl: string,
       projectId?: string,
       nodeId?: string,
+      modelId?: string,
     ) => Promise<{
       success: boolean;
       glbUrl: string;
@@ -742,6 +830,10 @@ interface Window {
       resultTextureLocalUrl?: string;
       resultTextureLocalPath?: string;
     }>;
+    ensureImageTo3dLocalTexture: (opts: {
+      glbLocalPath?: string;
+      glbResourceUrl?: string;
+    }) => Promise<{ textureLocalPath: string; textureLocalUrl: string }>;
     saveImageTo3dAixflow: (opts: {
       defaultName?: string;
       glbLocalPath?: string;
@@ -753,6 +845,7 @@ interface Window {
       referenceRemoteUrl?: string;
     }) => Promise<{ canceled: boolean; filePath?: string; hasTexture?: boolean; hasReference?: boolean }>;
     pickImageTo3dUpload: () => Promise<{ canceled: boolean; filePath?: string }>;
+    pickImageTo3dAvatar: () => Promise<{ canceled: boolean; filePath?: string }>;
     exportImageTo3dModels: (characterIds: string[]) => Promise<{
       success: boolean;
       filePath?: string;

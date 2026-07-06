@@ -2,8 +2,20 @@
 export type TimelineTrackRef = 'video' | string | number;
 
 export const DEFAULT_VIDEO_TRACK_COUNT = 1;
+/** 剪辑模块默认音频轨数量 */
+export const DEFAULT_AUDIO_TRACK_COUNT = 1;
 /** 图片片段默认显示时长（秒） */
 export const DEFAULT_IMAGE_CLIP_DURATION_SEC = 3;
+
+/** 剪辑时间轴：音频轨/音频片段音量倍数上限（3 = 300%） */
+export const SPLICE_AUDIO_VOLUME_MAX = 3;
+export const SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX = 300;
+
+export function clampSpliceAudioVolume(value: unknown, fallback = 1): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(SPLICE_AUDIO_VOLUME_MAX, n));
+}
 
 export function isVideoTrackRef(track: TimelineTrackRef): boolean {
   return track === 'video' || (typeof track === 'string' && track.startsWith('video-'));
@@ -56,18 +68,125 @@ export function normalizeVideoTracks<T extends TimelineClipLike>(
   return [data?.videoClips?.length ? [...data.videoClips] : []];
 }
 
-/** 将 buildVideoSpliceClipsFromEdges 结果写入节点：track0 + 保留额外视频轨 */
+export function normalizeAudioTracks<T extends TimelineClipLike>(
+  tracks: T[][] | undefined,
+): T[][] {
+  const base = (tracks?.length ? tracks.map((t) => [...t]) : [[]]) as T[][];
+  while (base.length < DEFAULT_AUDIO_TRACK_COUNT) base.push([]);
+  return base;
+}
+
+function findClipBySourceId<T extends TimelineClipLike>(
+  tracks: T[][],
+  sourceId: string,
+): { trackIdx: number; clipIdx: number } | null {
+  for (let trackIdx = 0; trackIdx < tracks.length; trackIdx++) {
+    const clipIdx = tracks[trackIdx].findIndex((c) => c.sourceNodeId === sourceId);
+    if (clipIdx >= 0) return { trackIdx, clipIdx };
+  }
+  return null;
+}
+
+function spliceHasPersistedTimelineLayout<T extends TimelineClipLike>(
+  existingVideo: T[][],
+  existingAudio: T[][],
+): boolean {
+  if (existingVideo.some((t) => t.length > 0) || existingAudio.some((t) => t.length > 0)) return true;
+  return (
+    existingVideo.length > DEFAULT_VIDEO_TRACK_COUNT ||
+    existingAudio.length > DEFAULT_AUDIO_TRACK_COUNT
+  );
+}
+
+function mergeBuiltClipsIntoTracks<T extends TimelineClipLike>(
+  existingTracks: T[][],
+  builtTracks: T[][],
+  incomingSourceIds: Set<string>,
+): T[][] {
+  let result = existingTracks.map((track) =>
+    track
+      .filter((c) => !c.sourceNodeId || incomingSourceIds.has(c.sourceNodeId))
+      .map((c) => ({ ...c })),
+  );
+
+  for (const builtClip of builtTracks.flat()) {
+    if (!builtClip.sourceNodeId) continue;
+    const loc = findClipBySourceId(result, builtClip.sourceNodeId);
+    if (loc) {
+      const prev = result[loc.trackIdx][loc.clipIdx];
+      result[loc.trackIdx][loc.clipIdx] = {
+        ...prev,
+        src: builtClip.src,
+        duration: builtClip.duration,
+        type: builtClip.type,
+        name: prev.name || builtClip.name,
+        startTime: prev.startTime,
+        id: prev.id,
+        sourceNodeId: prev.sourceNodeId,
+        trimStart: builtClip.trimStart ?? prev.trimStart,
+        trimEnd: builtClip.trimEnd ?? prev.trimEnd,
+        volume: prev.volume ?? builtClip.volume,
+      };
+      continue;
+    }
+    const clip = { ...builtClip };
+    const emptyIdx = result.findIndex((t) => t.length === 0);
+    if (emptyIdx >= 0) {
+      result[emptyIdx] = [clip];
+    } else {
+      result = [...result, [clip]];
+    }
+  }
+
+  while (result.length < existingTracks.length) {
+    result.push([]);
+  }
+  return result;
+}
+
+/** 将 buildVideoSpliceClipsFromEdges 结果写入节点 */
 export function applyBuiltClipsToSpliceData<T extends TimelineClipLike>(
   existing: { videoTracks?: T[][]; videoClips?: T[]; audioTracks?: T[][] } | undefined,
-  built: { videoClips: T[]; audioTracks: T[][] },
+  built: { videoClips?: T[]; videoTracks?: T[][]; audioTracks: T[][] },
 ): { videoTracks: T[][]; videoClips: T[]; audioTracks: T[][] } {
-  const prevTracks = normalizeVideoTracks(existing);
-  const track0 = built.videoClips.map((c) => ({ ...c })) as T[];
-  const extraTracks = prevTracks.slice(1).map((t) => t.map((c) => ({ ...c })));
+  const builtVideo =
+    built.videoTracks?.length
+      ? built.videoTracks.map((t) => t.map((c) => ({ ...c })) as T[])
+      : [((built.videoClips || []) as T[]).map((c) => ({ ...c }))];
+  const builtAudio = built.audioTracks.map((row) => row.map((c) => ({ ...c })));
+
+  const existingVideo = normalizeVideoTracks(existing);
+  const existingAudio = normalizeAudioTracks(existing?.audioTracks);
+
+  const incomingSourceIds = new Set<string>();
+  for (const c of [...builtVideo.flat(), ...builtAudio.flat()]) {
+    if (c.sourceNodeId) incomingSourceIds.add(c.sourceNodeId);
+  }
+
+  if (!spliceHasPersistedTimelineLayout(existingVideo, existingAudio)) {
+    const videoTracks = builtVideo.length ? builtVideo : [[]];
+    while (videoTracks.length < DEFAULT_VIDEO_TRACK_COUNT) videoTracks.push([]);
+    const audioTracks = builtAudio.length ? builtAudio : [[]];
+    while (audioTracks.length < DEFAULT_AUDIO_TRACK_COUNT) audioTracks.push([]);
+    const track0 = videoTracks[0] ?? [];
+    return {
+      videoTracks,
+      videoClips: track0,
+      audioTracks,
+    };
+  }
+
+  let videoTracks = mergeBuiltClipsIntoTracks(existingVideo, builtVideo, incomingSourceIds);
+  let audioTracks = mergeBuiltClipsIntoTracks(existingAudio, builtAudio, incomingSourceIds);
+
+  while (videoTracks.length < DEFAULT_VIDEO_TRACK_COUNT) videoTracks.push([]);
+  while (audioTracks.length < DEFAULT_AUDIO_TRACK_COUNT) audioTracks.push([]);
+
+  const track0 = videoTracks[0] ?? [];
   return {
-    videoTracks: [track0, ...extraTracks],
+    videoTracks,
     videoClips: track0,
-    audioTracks: built.audioTracks.map((row) => row.map((c) => ({ ...c }))),
+    audioTracks,
   };
 }
 

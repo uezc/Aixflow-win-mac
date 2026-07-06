@@ -7,6 +7,7 @@ import axios from 'axios';
 import * as OpenCC from 'opencc-js';
 import { getProjectFolderPath, isLocalResourcePathAllowed } from '../utils/projectFolderHelper.js';
 import { buildYoutubeYtDlpClientArgs, buildYoutubeYtDlpSpeedArgs, runYoutubeYtDlpAdaptive } from './videoScraper.js';
+import { listWhisperSearchRoots, ensureWhisperReady } from './localWhisperEngine.js';
 
 // 打包时使用 ffmpeg-static 内置的二进制（安装包无需用户单独安装 ffmpeg）
 let bundledFfmpegPath: string | null = null;
@@ -454,19 +455,7 @@ function whisperCppExecutableBasenames(): string[] {
 
 function collectWhisperBinaryCandidates(): string[] {
   const names = whisperCppExecutableBasenames();
-  const dirs: string[] = [];
-  try {
-    const rp = process.resourcesPath;
-    if (rp) dirs.push(path.join(rp, 'whisper'));
-  } catch {
-    /* ignore */
-  }
-  // 开发模式：process.resourcesPath 指向 Electron 自带目录；从仓库根 resources/whisper 读取
-  try {
-    dirs.push(path.join(process.cwd(), 'resources', 'whisper'));
-  } catch {
-    /* ignore */
-  }
+  const dirs = listWhisperSearchRoots();
   const out: string[] = [];
   for (const dir of dirs) {
     for (const name of names) {
@@ -487,7 +476,7 @@ function resolveWhisperCppBinaryPath(): string {
       ? 'whisper-cli.exe（及同目录 whisper.dll）或 main.exe'
       : 'whisper-cli 或 main';
   throw new Error(
-    `未找到 whisper.cpp 可执行文件（${hint}）。请任选其一：① 设置 WHISPER_CPP_BIN；② 将官方 zip 中 whisper-cli.exe 与 whisper.dll 放到本仓库「项目根/resources/whisper/」；③ 安装包 resources/whisper/。预编译：https://github.com/ggerganov/whisper.cpp/releases（Windows 选 whisper-bin-x64.zip）`,
+    `未找到 whisper.cpp 可执行文件（${hint}）。首次使用「转文字」时会自动下载引擎，请保持联网。`,
   );
 }
 
@@ -503,18 +492,7 @@ const WHISPER_MODEL_CANDIDATE_NAMES = [
 ];
 
 function collectWhisperModelCandidates(): string[] {
-  const dirs: string[] = [];
-  try {
-    const rp = process.resourcesPath;
-    if (rp) dirs.push(path.join(rp, 'whisper'));
-  } catch {
-    /* ignore */
-  }
-  try {
-    dirs.push(path.join(process.cwd(), 'resources', 'whisper'));
-  } catch {
-    /* ignore */
-  }
+  const dirs = listWhisperSearchRoots();
   const out: string[] = [];
   for (const dir of dirs) {
     for (const name of WHISPER_MODEL_CANDIDATE_NAMES) {
@@ -531,7 +509,7 @@ function resolveWhisperModelPath(): string {
     if (p && fs.existsSync(p)) return p;
   }
   throw new Error(
-    '未找到 Whisper 模型文件（如 ggml-tiny.bin / ggml-base.bin）。请任选其一：① 设置 WHISPER_MODEL_PATH；② 放到本仓库 resources/whisper/ 下上述文件名之一；③ 安装包 resources/whisper/。模型见 https://huggingface.co/ggerganov/whisper.cpp/tree/main',
+    '未找到 Whisper 模型文件。首次使用「转文字」时会自动下载引擎（含模型），请保持联网。',
   );
 }
 
@@ -1584,7 +1562,7 @@ export class LocalResourceManager {
       const videoTrackMuted = options?.videoTrackMuted ?? false;
       const videoTrackVolume = Math.max(0, Math.min(2, options?.videoTrackVolume ?? 1));
       const audioTrackMuted = options?.audioTrackMuted ?? [];
-      const audioTrackVolume = (options?.audioTrackVolume ?? []).map((v) => Math.max(0, Math.min(2, v ?? 1)));
+      const audioTrackVolume = (options?.audioTrackVolume ?? []).map((v) => Math.max(0, Math.min(3, v ?? 1)));
       const segmentPaths: string[] = [];
       for (let i = 0; i < sortedClips.length; i++) {
         const clip = sortedClips[i];
@@ -1805,7 +1783,9 @@ export class LocalResourceManager {
           if (trimEnd <= trimStart) continue;
           try {
             const inputPath = await resolveUrlToPath(clip.src, 'audio', audioSources.length);
-            const extracted = await extractAudioToTemp(inputPath, trimStart, trimEnd, vol);
+            const clipVol = Math.max(0, Math.min(3, Number((clip as { volume?: number }).volume) || 1));
+            const effectiveVol = Math.min(3, vol * clipVol);
+            const extracted = await extractAudioToTemp(inputPath, trimStart, trimEnd, effectiveVol);
             if (extracted) {
               audioSources.push({
                 inputPath: extracted,
@@ -1976,6 +1956,7 @@ export class LocalResourceManager {
     if (!hasFfmpeg) {
       throw new Error('未检测到 ffmpeg，无法预处理音频。');
     }
+    await ensureWhisperReady();
     const url = (audioUrl || '').trim();
     if (!url) throw new Error('音频 URL 为空');
 

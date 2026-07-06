@@ -5,6 +5,7 @@ export type AssetLibraryStrings = {
   tabModel3d: string;
   tabScene: string;
   tabDigitalHuman: string;
+  tabRvcVoice: string;
   expandLibrary: string;
   collapseLibrary: string;
   galleryMode: string;
@@ -53,6 +54,8 @@ export type AssetLibraryStrings = {
   roleAdd: string;
   roleAddTitle: string;
   roleEditMaterials: string;
+  model3dEditTitle: string;
+  model3dUploadAvatarLocal: string;
   roleDeleteSelected: string;
   roleExportTitle: string;
   roleImportTitle: string;
@@ -128,6 +131,39 @@ export type AssetLibraryStrings = {
   dhHoverVideoPreview: string;
   dhUntitled: string;
   dhSaveNotReady: string;
+  rvcVoiceAdd: string;
+  rvcVoiceAddTitle: string;
+  rvcVoiceEditTitle: string;
+  rvcVoiceEmpty: string;
+  rvcVoiceDragHint: string;
+  rvcVoiceDeleteSelected: string;
+  rvcVoiceImported: string;
+  rvcVoiceImportFailed: string;
+  rvcVoiceSaved: string;
+  rvcVoiceSaveFailed: string;
+  rvcVoiceDeleted: string;
+  rvcVoiceImportTitle: string;
+  rvcVoiceNickname: string;
+  rvcVoiceNicknamePlaceholder: string;
+  rvcVoiceModelName: string;
+  rvcVoiceModelNamePlaceholder: string;
+  rvcVoicePackagePath: string;
+  rvcVoicePackagePlaceholder: string;
+  rvcVoiceNeedPackage: string;
+  rvcVoiceCancel: string;
+  rvcVoiceSave: string;
+  rvcVoiceSaving: string;
+  rvcVoicePlaceToCanvas: string;
+  rvcVoiceUntitled: string;
+  rvcVoiceSavedFromTrain: string;
+  rvcVoiceUploadAvatar: string;
+  rvcVoiceClearAvatar: string;
+  rvcVoiceRenameLabel: string;
+  rvcVoiceTrainAudioLabel: string;
+  rvcVoiceUploadTrainAudio: string;
+  rvcVoicePickTrainAudioFromCanvas: string;
+  rvcVoiceClearTrainAudio: string;
+  rvcVoiceLibraryHint: string;
 };
 
 const zh: AssetLibraryStrings = {
@@ -135,6 +171,7 @@ const zh: AssetLibraryStrings = {
   tabModel3d: '模型',
   tabScene: '场景',
   tabDigitalHuman: '数字人',
+  tabRvcVoice: '音色',
   expandLibrary: '展开资产库',
   collapseLibrary: '收起资产库',
   galleryMode: '大窗口',
@@ -183,6 +220,8 @@ const zh: AssetLibraryStrings = {
   roleAdd: '添加角色',
   roleAddTitle: '添加角色',
   roleEditMaterials: '修改角色素材',
+  model3dEditTitle: '模型信息',
+  model3dUploadAvatarLocal: '本地上传',
   roleDeleteSelected: '删除勾选的角色',
   roleExportTitle: '导出勾选的角色',
   roleImportTitle: '导入角色',
@@ -258,6 +297,39 @@ const zh: AssetLibraryStrings = {
   dhHoverVideoPreview: '悬停预览参考视频',
   dhUntitled: '未命名数字人',
   dhSaveNotReady: '保存功能未就绪，请重新编译主进程并重启应用',
+  rvcVoiceAdd: '添加',
+  rvcVoiceAddTitle: '添加 RVC 模型包',
+  rvcVoiceEditTitle: '编辑音色（改名 / 头像 / 训练音频）',
+  rvcVoiceEmpty: '训练完成的 zip 模型包会自动出现在这里；不需要的可勾选删除',
+  rvcVoiceDragHint: '模型包为 zip，仅在素材库管理',
+  rvcVoiceDeleteSelected: '删除勾选的 RVC 音色',
+  rvcVoiceImported: 'RVC 模型包已加入资产库',
+  rvcVoiceImportFailed: '导入失败',
+  rvcVoiceSaved: '已保存',
+  rvcVoiceSaveFailed: '保存失败',
+  rvcVoiceDeleted: '已删除',
+  rvcVoiceImportTitle: '导入本地 zip 模型包',
+  rvcVoiceNickname: '显示名称',
+  rvcVoiceNicknamePlaceholder: '如：周美丽声音',
+  rvcVoiceModelName: '模型名称',
+  rvcVoiceModelNamePlaceholder: '训练时填写的名称',
+  rvcVoicePackagePath: '模型包',
+  rvcVoicePackagePlaceholder: 'local-resource:// 或选择 zip 文件',
+  rvcVoiceNeedPackage: '请选择模型包文件',
+  rvcVoiceCancel: '取消',
+  rvcVoiceSave: '保存',
+  rvcVoiceSaving: '保存中…',
+  rvcVoicePlaceToCanvas: '导入到画布（声音节点）',
+  rvcVoiceUntitled: '未命名音色',
+  rvcVoiceSavedFromTrain: 'RVC 训练完成，模型包已写入音色库',
+  rvcVoiceUploadAvatar: '设置头像',
+  rvcVoiceClearAvatar: '清除头像',
+  rvcVoiceRenameLabel: '显示名称（可改名）',
+  rvcVoiceTrainAudioLabel: '训练音频片段',
+  rvcVoiceUploadTrainAudio: '电脑上传',
+  rvcVoicePickTrainAudioFromCanvas: '画布选择',
+  rvcVoiceClearTrainAudio: '清除训练音频',
+  rvcVoiceLibraryHint: 'zip 压缩包不能作为声音播放；请在音色库中管理、改名或删除',
 };
 
 const en: AssetLibraryStrings = {
@@ -265,6 +337,7 @@ const en: AssetLibraryStrings = {
   tabModel3d: 'Models',
   tabScene: 'Scenes',
   tabDigitalHuman: 'Digital human',
+  tabRvcVoice: 'Voices',
   expandLibrary: 'Expand asset library',
   collapseLibrary: 'Collapse asset library',
   galleryMode: 'Gallery',
@@ -313,6 +386,8 @@ const en: AssetLibraryStrings = {
   roleAdd: 'Add character',
   roleAddTitle: 'Add character',
   roleEditMaterials: 'Edit character assets',
+  model3dEditTitle: 'Model info',
+  model3dUploadAvatarLocal: 'Upload from computer',
   roleDeleteSelected: 'Delete selected characters',
   roleExportTitle: 'Export selected characters',
   roleImportTitle: 'Import characters',
@@ -390,6 +465,39 @@ const en: AssetLibraryStrings = {
   dhHoverVideoPreview: 'Hover to preview reference video',
   dhUntitled: 'Untitled',
   dhSaveNotReady: 'Save not ready — rebuild the main process and restart the app',
+  rvcVoiceAdd: 'Add',
+  rvcVoiceAddTitle: 'Add RVC model package',
+  rvcVoiceEditTitle: 'Edit voice (rename / avatar / train audio)',
+  rvcVoiceEmpty: 'Trained zip packages appear here automatically; delete any you do not need',
+  rvcVoiceDragHint: 'Zip packages are managed in the library only',
+  rvcVoiceDeleteSelected: 'Delete selected RVC voices',
+  rvcVoiceImported: 'RVC package added to library',
+  rvcVoiceImportFailed: 'Import failed',
+  rvcVoiceSaved: 'Saved',
+  rvcVoiceSaveFailed: 'Save failed',
+  rvcVoiceDeleted: 'Deleted',
+  rvcVoiceImportTitle: 'Import local zip package',
+  rvcVoiceNickname: 'Display name',
+  rvcVoiceNicknamePlaceholder: 'e.g. My Voice',
+  rvcVoiceModelName: 'Model name',
+  rvcVoiceModelNamePlaceholder: 'Name used during training',
+  rvcVoicePackagePath: 'Model package',
+  rvcVoicePackagePlaceholder: 'local-resource:// or pick a zip file',
+  rvcVoiceNeedPackage: 'Select a model package file',
+  rvcVoiceCancel: 'Cancel',
+  rvcVoiceSave: 'Save',
+  rvcVoiceSaving: 'Saving…',
+  rvcVoicePlaceToCanvas: 'Place on canvas (audio node)',
+  rvcVoiceUntitled: 'Untitled voice',
+  rvcVoiceSavedFromTrain: 'RVC training done — package saved to voice library',
+  rvcVoiceUploadAvatar: 'Set avatar',
+  rvcVoiceClearAvatar: 'Clear avatar',
+  rvcVoiceRenameLabel: 'Display name (rename)',
+  rvcVoiceTrainAudioLabel: 'Training audio clip',
+  rvcVoiceUploadTrainAudio: 'Upload from computer',
+  rvcVoicePickTrainAudioFromCanvas: 'Pick from canvas',
+  rvcVoiceClearTrainAudio: 'Clear training audio',
+  rvcVoiceLibraryHint: 'Zip packages cannot be played as audio — manage them here',
 };
 
 export function assetLibraryT(locale: AppLocale): AssetLibraryStrings {

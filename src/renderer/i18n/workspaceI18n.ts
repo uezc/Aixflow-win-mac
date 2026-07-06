@@ -1,5 +1,13 @@
 import type { AppLocale } from './settingsI18n';
 
+/** 任务列表计时：总秒数 → 分:秒（如 13:23） */
+export function formatTaskMmSs(totalSec: number): string {
+  const sec = Math.max(0, Math.floor(totalSec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 export type WorkspaceChromeStrings = {
   statusCloudCredits: string;
   statusNotConnected: string;
@@ -214,11 +222,11 @@ const zh: WorkspaceChromeStrings = {
   completed: '已完成',
   completedStatus: (o) => {
     let s = '已完成';
-    if (typeof o.durationSec === 'number') s += ` · ${o.durationSec}s`;
+    if (typeof o.durationSec === 'number') s += ` · ${formatTaskMmSs(o.durationSec)}`;
     if (typeof o.yuanbaoConsumed === 'number') s += ` · ${o.yuanbaoConsumed}元宝`;
     return s;
   },
-  running: (sec) => `运行中 ${sec}s`,
+  running: (sec) => `运行中 ${formatTaskMmSs(sec)}`,
   timeout: '超时',
   failed: '失败',
   viewFailureDetails: '查看失败详情',
@@ -337,11 +345,11 @@ const en: WorkspaceChromeStrings = {
   completed: 'Done',
   completedStatus: (o) => {
     let s = 'Done';
-    if (typeof o.durationSec === 'number') s += ` · ${o.durationSec}s`;
+    if (typeof o.durationSec === 'number') s += ` · ${formatTaskMmSs(o.durationSec)}`;
     if (typeof o.yuanbaoConsumed === 'number') s += ` · ${o.yuanbaoConsumed} credits`;
     return s;
   },
-  running: (sec) => `Running ${sec}s`,
+  running: (sec) => `Running ${formatTaskMmSs(sec)}`,
   timeout: 'Timeout',
   failed: 'Failed',
   viewFailureDetails: 'View error details',

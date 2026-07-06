@@ -13,6 +13,17 @@ export type AudioNodeChromeStrings = {
   cancel: string;
   confirm: string;
   trimming: string;
+  /** RVC 翻唱模块左上角标题 */
+  coverModuleLabel: string;
+  unnamedAudio: string;
+  /** 多段结果：选择片段提示 */
+  selectTrackHint: string;
+  /** 多段结果：片段标签 */
+  trackLabel: (index: number) => string;
+  /** 将选中片段分离为独立音频节点 */
+  separateToNode: string;
+  /** 多段结果：一键全部分离为独立模块 */
+  separateAllToNodes: string;
 };
 
 const zh: AudioNodeChromeStrings = {
@@ -28,6 +39,12 @@ const zh: AudioNodeChromeStrings = {
   cancel: '取消',
   confirm: '确认',
   trimming: '裁剪中...',
+  coverModuleLabel: 'RVC 翻唱',
+  unnamedAudio: '未命名音频',
+  selectTrackHint: '点击选择要播放的片段',
+  trackLabel: (index) => `片段 ${index}`,
+  separateToNode: '分离为独立模块',
+  separateAllToNodes: '一键分离全部片段',
 };
 
 const en: AudioNodeChromeStrings = {
@@ -43,6 +60,12 @@ const en: AudioNodeChromeStrings = {
   cancel: 'Cancel',
   confirm: 'Apply',
   trimming: 'Trimming…',
+  coverModuleLabel: 'AI Cover',
+  unnamedAudio: 'Untitled audio',
+  selectTrackHint: 'Click a track to preview',
+  trackLabel: (index) => `Track ${index}`,
+  separateToNode: 'Separate to module',
+  separateAllToNodes: 'Separate all tracks',
 };
 
 export function audioNodeChromeT(locale: AppLocale): AudioNodeChromeStrings {

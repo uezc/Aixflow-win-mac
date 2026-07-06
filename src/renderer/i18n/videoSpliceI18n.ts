@@ -8,6 +8,7 @@ export type VideoSpliceStrings = {
   exportToCanvas: string;
   exportToCanvasTitle: string;
   exportToCanvasDone: string;
+  exportToCanvasDoneWithAudio: string;
   exportToCanvasFailed: (msg?: string) => string;
   outputHandleTitle: string;
   fullscreenTitle: string;
@@ -36,6 +37,7 @@ export type VideoSpliceStrings = {
   mute: string;
   unmute: string;
   volumeSliderTitle: string;
+  audioVolumeSliderTitle: string;
   /** 轨道旁数字音量框 */
   volumeNumericInputTitle: string;
   audioTrackLabel: (idx: number) => string;
@@ -73,8 +75,9 @@ const zh: VideoSpliceStrings = {
   saveToComputer: '保存到电脑',
   saveToComputerTitle: '导出并保存到电脑',
   exportToCanvas: '导出到画布',
-  exportToCanvasTitle: '导出视频并在右侧新建视频模块（自动连线）',
+  exportToCanvasTitle: '导出并在右侧新建视频模块；含音轨时同时新建声音模块',
   exportToCanvasDone: '已导出到画布',
+  exportToCanvasDoneWithAudio: '已导出视频与声音模块到画布',
   exportToCanvasFailed: (msg) => msg || '导出到画布失败，请稍后重试',
   outputHandleTitle: '导出成片可连到视频模块',
   fullscreenTitle: '全屏',
@@ -103,6 +106,7 @@ const zh: VideoSpliceStrings = {
   mute: '静音',
   unmute: '取消静音',
   volumeSliderTitle: '拖拽调节音量 0-100',
+  audioVolumeSliderTitle: '拖拽调节音量 0-300%',
   volumeNumericInputTitle: '音量 0-100',
   audioTrackLabel: (i) => `音频${i + 1}`,
   addAudioTrackHint: '点击添加音频轨道，或从上方按钮添加素材',
@@ -140,8 +144,9 @@ const en: VideoSpliceStrings = {
   saveToComputer: 'Save to computer',
   saveToComputerTitle: 'Export and save to your computer',
   exportToCanvas: 'To canvas',
-  exportToCanvasTitle: 'Export and add a video node to the right (auto-connect)',
+  exportToCanvasTitle: 'Export video to the right; adds an audio node when the timeline has audio',
   exportToCanvasDone: 'Exported to canvas',
+  exportToCanvasDoneWithAudio: 'Exported video and audio nodes to canvas',
   exportToCanvasFailed: (msg) => msg || 'Export to canvas failed. Please try again.',
   outputHandleTitle: 'Connect exported video to a video node',
   fullscreenTitle: 'Fullscreen',
@@ -170,6 +175,7 @@ const en: VideoSpliceStrings = {
   mute: 'Mute',
   unmute: 'Unmute',
   volumeSliderTitle: 'Drag to adjust volume (0–100)',
+  audioVolumeSliderTitle: 'Drag to adjust volume (0–300%)',
   volumeNumericInputTitle: 'Volume 0–100',
   audioTrackLabel: (i) => `Audio ${i + 1}`,
   addAudioTrackHint: 'Add an audio track here, or use Add media above',

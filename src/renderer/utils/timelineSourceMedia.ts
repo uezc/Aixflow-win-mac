@@ -68,10 +68,6 @@ export function effectiveTimelineClipDurationSec(c: TimelineClipRecord): number 
   return Math.max(0.1, (c.trimEnd ?? c.duration) - (c.trimStart ?? 0));
 }
 
-function clipDurationSec(c: TimelineClipRecord): number {
-  return effectiveTimelineClipDurationSec(c);
-}
-
 function isUntrustedTimelineDuration(duration: number): boolean {
   if (!Number.isFinite(duration) || duration <= 0) return true;
   if (duration <= TIMELINE_MIN_TRUSTED_SEC) return true;
@@ -300,14 +296,6 @@ export async function probeAudioMediaDurationSec(
   });
 }
 
-function trackMaxEnd(clips: TimelineClipRecord[]): number {
-  let max = 0;
-  for (const c of clips) {
-    max = Math.max(max, c.startTime + clipDurationSec(c));
-  }
-  return max;
-}
-
 /**
  * 从连线源节点（及边上的 imageAsset 缓存）解析剪辑轨道素材 URL。
  */
@@ -356,8 +344,14 @@ export function resolveTimelineMediaFromSource(
   }
 
   if (t === 'audio') {
+    const multi = Array.isArray(d.outputAudios)
+      ? (d.outputAudios as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
+      : [];
+    const multiOrig = Array.isArray(d.originalOutputAudios)
+      ? (d.originalOutputAudios as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
+      : [];
     const url = normalizeVideoUrl(
-      String(d.outputAudio || d.originalAudioUrl || d.referenceAudioUrl || '').trim(),
+      String(d.outputAudio || multi[0] || multiOrig[0] || d.originalAudioUrl || d.referenceAudioUrl || '').trim(),
     );
     return url ? { clipType: 'audio', url } : null;
   }
@@ -367,11 +361,11 @@ export function resolveTimelineMediaFromSource(
 
 /**
  * 根据指向剪辑节点的全部入边，重建轨道片段（保留无 sourceNodeId 的手动导入素材）。
- * 连线顺序与 edges 数组一致，便于批量超级连线按序排列。
+ * 每个连线源各占一条独立轨道（视频/图片 → 独立视频轨，音频 → 独立音频轨）。
  */
 export function buildVideoSpliceClipsFromEdges(
   spliceNodeId: string,
-  edges: Array<{ source: string; target: string; data?: unknown }>,
+  edges: Array<{ source: string; target: string; data?: unknown; sourceHandle?: string | null }>,
   nodes: Array<{ id: string; type?: string; data?: Record<string, unknown> }>,
   existing?: {
     videoTracks?: TimelineClipRecord[][];
@@ -379,14 +373,15 @@ export function buildVideoSpliceClipsFromEdges(
     audioTracks?: TimelineClipRecord[][];
   },
   labels: VideoSpliceClipLabels = { video: '视频', image: '图片', audio: '音频' },
-): { videoClips: TimelineClipRecord[]; audioTracks: TimelineClipRecord[][] } {
+): { videoClips: TimelineClipRecord[]; videoTracks: TimelineClipRecord[][]; audioTracks: TimelineClipRecord[][] } {
   const incoming = sortIncomingEdgesBySourceLayout(
     edges.filter((e) => e.target === spliceNodeId),
     nodes,
   );
-  const existingVideo = normalizeVideoTracks(existing)[0] as TimelineClipRecord[];
-  const existingAudioFlat = ((existing?.audioTracks || [[]])[0] || []) as TimelineClipRecord[];
   const allVideoTracks = normalizeVideoTracks(existing);
+  const existingAudioTracks = (existing?.audioTracks?.length ? existing.audioTracks : [[]]).map((t) =>
+    [...(t as TimelineClipRecord[])],
+  );
 
   const existingBySource = new Map<string, TimelineClipRecord>();
   for (const track of allVideoTracks) {
@@ -394,22 +389,31 @@ export function buildVideoSpliceClipsFromEdges(
       if (c.sourceNodeId) existingBySource.set(c.sourceNodeId, c);
     }
   }
-  for (const c of existingAudioFlat) {
-    if (c.sourceNodeId) existingBySource.set(c.sourceNodeId, c);
+  for (const track of existingAudioTracks) {
+    for (const c of track) {
+      if (c.sourceNodeId) existingBySource.set(c.sourceNodeId, c);
+    }
   }
 
-  const manualVideo = existingVideo.filter((c) => !c.sourceNodeId).map((c) => ({ ...c }));
-  const manualAudio = existingAudioFlat.filter((c) => !c.sourceNodeId).map((c) => ({ ...c }));
+  const manualVideo = allVideoTracks.flat().filter((c) => !c.sourceNodeId).map((c) => ({ ...c }));
+  const manualAudio = existingAudioTracks.flat().filter((c) => !c.sourceNodeId).map((c) => ({ ...c }));
 
-  const videoClips: TimelineClipRecord[] = [...manualVideo];
-  const audioTrack0: TimelineClipRecord[] = [...manualAudio];
+  const videoTracks: TimelineClipRecord[][] = manualVideo.length > 0 ? [manualVideo] : [];
+  const audioTracks: TimelineClipRecord[][] = manualAudio.length > 0 ? [manualAudio] : [];
 
-  let nextVideoStart = trackMaxEnd(videoClips);
-  let nextAudioStart = trackMaxEnd(audioTrack0);
+  const findTrackIndexBySource = (tracks: TimelineClipRecord[][], sourceId: string) =>
+    tracks.findIndex((t) => t.some((c) => c.sourceNodeId === sourceId));
 
-  const bumpNextStart = (isAudio: boolean, start: number, dur: number) => {
-    if (isAudio) nextAudioStart = Math.max(nextAudioStart, start + dur);
-    else nextVideoStart = Math.max(nextVideoStart, start + dur);
+  const upsertClipOnDedicatedTrack = (
+    tracks: TimelineClipRecord[][],
+    clip: TimelineClipRecord,
+    sourceId: string,
+  ): TimelineClipRecord[][] => {
+    const idx = findTrackIndexBySource(tracks, sourceId);
+    if (idx >= 0) {
+      return tracks.map((t, i) => (i === idx ? [clip] : t));
+    }
+    return [...tracks, [clip]];
   };
 
   for (const edge of incoming) {
@@ -418,35 +422,22 @@ export function buildVideoSpliceClipsFromEdges(
     const resolved = resolveTimelineMediaFromSource(sourceNode, edge);
     const prev = existingBySource.get(edge.source);
     if (!resolved) {
-      // 入边已连但源节点 URL 尚未写入 data（或短暂不同步）时保留已有片段，避免「闪一下又没了」
       if (prev) {
         const kept = { ...prev, startTime: prev.startTime };
-        const keptDur = clipDurationSec(kept);
         if (prev.type === 'audio') {
-          audioTrack0.push(kept);
-          bumpNextStart(true, kept.startTime, keptDur);
+          audioTracks.splice(0, audioTracks.length, ...upsertClipOnDedicatedTrack(audioTracks, kept, edge.source));
         } else {
-          videoClips.push(kept);
-          bumpNextStart(false, kept.startTime, keptDur);
+          videoTracks.splice(0, videoTracks.length, ...upsertClipOnDedicatedTrack(videoTracks, kept, edge.source));
         }
       }
       continue;
     }
 
     const sourceHint = resolveSourceMediaDurationSec(sourceNode);
-    const duration = resolveConnectedClipDuration(
-      resolved.clipType,
-      resolved.url,
-      sourceNode,
-      prev,
-    );
+    const duration = resolveConnectedClipDuration(resolved.clipType, resolved.url, sourceNode, prev);
     const keepTrim = shouldPreserveClipTrim(prev, resolved.url, duration, sourceHint);
     const placedStart =
-      prev != null && Number.isFinite(prev.startTime)
-        ? prev.startTime
-        : resolved.clipType === 'audio'
-          ? nextAudioStart
-          : nextVideoStart;
+      prev != null && Number.isFinite(prev.startTime) ? prev.startTime : 0;
 
     const clip: TimelineClipRecord = sanitizeTimelineClipTrim(
       {
@@ -464,35 +455,42 @@ export function buildVideoSpliceClipsFromEdges(
       sourceHint,
     );
 
-    const effDur = clipDurationSec(clip);
     if (resolved.clipType === 'audio') {
-      audioTrack0.push(clip);
-      bumpNextStart(true, placedStart, effDur);
+      const next = upsertClipOnDedicatedTrack(audioTracks, clip, edge.source);
+      audioTracks.splice(0, audioTracks.length, ...next);
     } else {
-      videoClips.push(clip);
-      bumpNextStart(false, placedStart, effDur);
+      const next = upsertClipOnDedicatedTrack(videoTracks, clip, edge.source);
+      videoTracks.splice(0, videoTracks.length, ...next);
     }
   }
 
+  if (videoTracks.length === 0) videoTracks.push([]);
+
+  const hasIncomingAudio = incoming.some((e) => {
+    const n = nodes.find((x) => x.id === e.source);
+    const m = n ? resolveTimelineMediaFromSource(n, e) : null;
+    return m?.clipType === 'audio';
+  });
+  if (audioTracks.length === 0 && hasIncomingAudio) audioTracks.push([]);
+
+  const track0 = videoTracks[0] ?? [];
   return {
-    videoClips,
-    audioTracks: audioTrack0.length > 0 || incoming.some((e) => {
-      const n = nodes.find((x) => x.id === e.source);
-      const m = n ? resolveTimelineMediaFromSource(n, e) : null;
-      return m?.clipType === 'audio';
-    })
-      ? [audioTrack0]
-      : [[]],
+    videoClips: track0,
+    videoTracks,
+    audioTracks: audioTracks.length > 0 || hasIncomingAudio ? audioTracks : [[]],
   };
 }
 
 export function timelineClipsFingerprint(
-  videoClips: TimelineClipRecord[],
+  videoClipsOrTracks: TimelineClipRecord[] | TimelineClipRecord[][],
   audioTracks: TimelineClipRecord[][],
 ): string {
   const seg = (c: TimelineClipRecord) =>
     `${c.id}|${c.sourceNodeId || ''}|${c.src}|${c.startTime}|${c.duration}|${c.trimStart ?? ''}|${c.trimEnd ?? ''}`;
-  const v = videoClips.map(seg);
-  const a = audioTracks.flat().map(seg);
+  const videoTracks = Array.isArray(videoClipsOrTracks[0])
+    ? (videoClipsOrTracks as TimelineClipRecord[][])
+    : [videoClipsOrTracks as TimelineClipRecord[]];
+  const v = videoTracks.flatMap((track, ti) => track.map((c) => `v${ti}:${seg(c)}`));
+  const a = audioTracks.flatMap((track, ti) => track.map((c) => `a${ti}:${seg(c)}`));
   return `${v.join(';')}::${a.join(';')}`;
 }

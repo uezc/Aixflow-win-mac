@@ -24,6 +24,13 @@ export interface FcForwardPayload {
   body?: Record<string, unknown> | unknown;
   /** 与 body 二选一：multipart 上传（当前 FC 实现仅对 RunningHub 转发） */
   uploadMultipart?: FcForwardMultipartPayload;
+  /** FC 从公网 URL 拉取文件再 multipart 上传 RunningHub（避免 invoke payload 32MB 限制） */
+  uploadFromUrl?: {
+    url: string;
+    filename?: string;
+    contentType?: string;
+    fieldName?: string;
+  };
 }
 
 function rhTaskIdFromForwardData(d: Record<string, unknown>): string | undefined {

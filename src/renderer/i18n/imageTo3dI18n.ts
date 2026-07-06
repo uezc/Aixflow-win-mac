@@ -30,6 +30,9 @@ export type ImageTo3dStrings = {
   close: string;
   rotateHint: string;
   rotateHintHover: string;
+  fullscreenBgGrid: string;
+  fullscreenBgBlack: string;
+  fullscreenBgWhite: string;
   downloadSuccess: string;
   downloadFailed: string;
   noModelToDownload: string;
@@ -44,6 +47,10 @@ export type ImageTo3dStrings = {
   saveToLibrarySuccess: string;
   saveToLibraryAlready: string;
   saveToLibraryFailed: string;
+  modelPlusBadge: string;
+  modelHy3d: string;
+  modelTrellis2: string;
+  modelLabel: string;
 };
 
 const zh: ImageTo3dStrings = {
@@ -76,6 +83,9 @@ const zh: ImageTo3dStrings = {
   close: '关闭',
   rotateHint: '拖拽旋转 · 滚轮缩放',
   rotateHintHover: '悬停自动旋转 · 全屏可自由旋转',
+  fullscreenBgGrid: '网格',
+  fullscreenBgBlack: '纯黑',
+  fullscreenBgWhite: '纯白',
   downloadSuccess: '已保存 .aixflow',
   downloadFailed: '下载失败，请重试',
   noModelToDownload: '暂无 3D 模型可下载',
@@ -90,6 +100,10 @@ const zh: ImageTo3dStrings = {
   saveToLibrarySuccess: '已保存到 3D 模型库',
   saveToLibraryAlready: '已在 3D 模型库中',
   saveToLibraryFailed: '保存到资产库失败',
+  modelLabel: '模型',
+  modelHy3d: 'Hy3D',
+  modelTrellis2: 'Trellis2',
+  modelPlusBadge: 'PLUS',
 };
 
 const en: ImageTo3dStrings = {
@@ -122,6 +136,9 @@ const en: ImageTo3dStrings = {
   close: 'Close',
   rotateHint: 'Drag to rotate · Scroll to zoom',
   rotateHintHover: 'Hover to auto-rotate · Fullscreen for free orbit',
+  fullscreenBgGrid: 'Grid',
+  fullscreenBgBlack: 'Black',
+  fullscreenBgWhite: 'White',
   downloadSuccess: 'Saved .aixflow',
   downloadFailed: 'Download failed. Please try again.',
   noModelToDownload: 'No 3D model available to download',
@@ -136,6 +153,10 @@ const en: ImageTo3dStrings = {
   saveToLibrarySuccess: 'Saved to 3D model library',
   saveToLibraryAlready: 'Already in 3D model library',
   saveToLibraryFailed: 'Failed to save to library',
+  modelLabel: 'Model',
+  modelHy3d: 'Hy3D',
+  modelTrellis2: 'Trellis2',
+  modelPlusBadge: 'PLUS',
 };
 
 export function imageTo3dT(locale: AppLocale): ImageTo3dStrings {

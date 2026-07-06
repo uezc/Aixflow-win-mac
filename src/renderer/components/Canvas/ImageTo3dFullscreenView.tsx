@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Download, Save, Check } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
@@ -36,6 +36,13 @@ const ImageTo3dFullscreenView: React.FC<ImageTo3dFullscreenViewProps> = ({
   const { locale } = useAppLocale();
   const t = imageTo3dT(locale);
   const previewAreaRef = useRef<HTMLDivElement>(null);
+  type FullscreenBgMode = 'grid' | 'black' | 'white';
+  const [bgMode, setBgMode] = useState<FullscreenBgMode>('grid');
+  const showGrid = bgMode === 'grid';
+  const usePureBlackBackground = bgMode === 'black';
+  const usePureWhiteBackground = bgMode === 'white';
+  const shellBgClass =
+    bgMode === 'white' ? 'bg-white' : bgMode === 'black' ? 'bg-black' : 'bg-[#0a0a0c]';
 
   useEffect(() => {
     if (glbUrl) preloadGlbPreviewUrl(glbUrl);
@@ -54,7 +61,7 @@ const ImageTo3dFullscreenView: React.FC<ImageTo3dFullscreenViewProps> = ({
 
   return createPortal(
     <div
-      className="fixed left-0 right-0 bottom-0 z-[920] flex flex-col bg-[#0a0a0c]"
+      className={`fixed left-0 right-0 bottom-0 z-[920] flex flex-col ${shellBgClass}`}
       style={{ top: topOffset }}
     >
       <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-white/10 bg-black/50 flex-shrink-0">
@@ -62,7 +69,32 @@ const ImageTo3dFullscreenView: React.FC<ImageTo3dFullscreenViewProps> = ({
           <h2 className="text-sm font-medium text-white">{t.fullscreenTitle}</h2>
           <p className="text-xs text-white/50">{t.rotateHint}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {/* 网格 / 纯黑 / 纯白 背景切换 */}
+          <div className="flex items-center rounded-lg border border-white/15 bg-white/5 p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => setBgMode('grid')}
+              className={`rounded-md px-2.5 py-1 transition-colors ${bgMode === 'grid' ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white/80'}`}
+            >
+              {t.fullscreenBgGrid}
+            </button>
+            <button
+              type="button"
+              onClick={() => setBgMode('black')}
+              className={`rounded-md px-2.5 py-1 transition-colors ${bgMode === 'black' ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white/80'}`}
+            >
+              {t.fullscreenBgBlack}
+            </button>
+            <button
+              type="button"
+              onClick={() => setBgMode('white')}
+              className={`rounded-md px-2.5 py-1 transition-colors ${bgMode === 'white' ? 'bg-white/20 text-white' : 'text-white/60 hover:text-white/80'}`}
+            >
+              {t.fullscreenBgWhite}
+            </button>
+          </div>
+
           {onSaveToLibrary ? (
             <button
               type="button"
@@ -112,7 +144,9 @@ const ImageTo3dFullscreenView: React.FC<ImageTo3dFullscreenViewProps> = ({
           turntableRotate={false}
           useStudioEnvironment={false}
           showFog={false}
-          showGrid
+          showGrid={showGrid}
+          usePureBlackBackground={usePureBlackBackground}
+          usePureWhiteBackground={usePureWhiteBackground}
           showGizmo
           enabled
           renderActive

@@ -5,9 +5,16 @@ import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { imageTo3dT } from '../../i18n/imageTo3dI18n';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { getImageTo3dDisplayPrice } from '../../utils/cloudModelPricing';
+import {
+  DEFAULT_IMAGE_TO_3D_MODEL,
+  getVisibleImageTo3dModelOptions,
+  resolveImageTo3dModelId,
+  type ImageTo3dModelId,
+} from '../../../shared/imageTo3dModels';
 import { importImageTo3dAssetsToCharacters } from '../../utils/importImageTo3dAsset';
 import { preloadGlbPreviewUrl } from '../../utils/glbPreviewPreload';
 import type { Character } from '../characterListShared';
+import { promptNxSaasLoginIfNeeded } from '../../utils/cloudAiGateMessage';
 import { canvasBottomInputPanelShell } from '../../theme/canvasBottomInputPanel';
 
 const UPLOAD_ACCEPT = 'image/*,.aixflow,.glb,model/gltf-binary,application/octet-stream';
@@ -40,6 +47,7 @@ export interface ImageTo3dInputPanelProps {
   nodeId: string;
   isDarkMode: boolean;
   inputImageUrl: string;
+  model?: string;
   resultTextureUrl?: string;
   projectId?: string;
   errorMessage?: string;
@@ -61,6 +69,7 @@ export interface ImageTo3dInputPanelProps {
   onError?: (message: string) => void;
   onProgressChange?: (progress: number, message?: string) => void;
   onInputImageChange?: (url: string) => void;
+  onModelChange?: (model: ImageTo3dModelId) => void;
 }
 
 const REF_PANEL_W = 120;
@@ -88,6 +97,7 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
   nodeId,
   isDarkMode,
   inputImageUrl,
+  model: modelProp,
   resultTextureUrl = '',
   projectId,
   errorMessage,
@@ -99,13 +109,26 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
   onError,
   onProgressChange,
   onInputImageChange,
+  onModelChange,
 }) => {
   const { locale } = useAppLocale();
   const t = imageTo3dT(locale);
   const { cloudMap } = useNxModelPricing();
+  const model = resolveImageTo3dModelId(modelProp || DEFAULT_IMAGE_TO_3D_MODEL);
   const [processing, setProcessing] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
-  const priceYuanbao = useMemo(() => getImageTo3dDisplayPrice(cloudMap), [cloudMap]);
+  const priceYuanbao = useMemo(() => getImageTo3dDisplayPrice(cloudMap, 1, model), [cloudMap, model]);
+  const modelOptions = useMemo(
+    () =>
+      getVisibleImageTo3dModelOptions().map((opt) => ({
+        value: opt.value,
+        label: locale === 'en' ? opt.labelEn : opt.labelZh,
+        plus: opt.plus,
+      })),
+    [locale],
+  );
+  const showModelSelect = modelOptions.length > 1;
+  const selectedModelMeta = modelOptions.find((o) => o.value === model) ?? modelOptions[0];
 
   const hasRef = !!inputImageUrl?.trim();
   const hasResultTexture = !!resultTextureUrl?.trim();
@@ -233,7 +256,7 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
     onStart?.();
     onProgressChange?.(5, t.generating);
     try {
-      const res = await window.electronAPI.imageTo3d(src, projectId, nodeId);
+      const res = await window.electronAPI.imageTo3d(src, projectId, nodeId, model);
       const glb =
         res.localGlbUrl ||
         (res.localGlbPath ? formatImagePath(res.localGlbPath) : '') ||
@@ -257,12 +280,14 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
       });
       onProgressChange?.(0, '');
     } catch (e: any) {
-      onError?.(e?.message || t.failedDefault);
+      const msg = e?.message || t.failedDefault;
+      onError?.(msg);
       onProgressChange?.(0, '');
+      promptNxSaasLoginIfNeeded(msg);
     } finally {
       setProcessing(false);
     }
-  }, [inputImageUrl, projectId, nodeId, onStart, onComplete, onError, onProgressChange, t]);
+  }, [inputImageUrl, projectId, nodeId, model, onStart, onComplete, onError, onProgressChange, t]);
 
   return (
     <div className={canvasBottomInputPanelShell(isDarkMode)}>
@@ -271,7 +296,34 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
           isDarkMode ? 'border-gray-700/50' : 'border-gray-300/50'
         }`}
       >
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+          {showModelSelect ? (
+            <>
+              <label
+                className={`text-[10px] font-medium shrink-0 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}
+              >
+                {t.modelLabel}
+              </label>
+              <select
+                value={model}
+                disabled={isBusy}
+                onChange={(e) => onModelChange?.(resolveImageTo3dModelId(e.target.value))}
+                className={`nodrag nopan max-w-[140px] rounded-lg border px-2 py-1 text-xs font-medium outline-none ${
+                  isDarkMode
+                    ? 'border-white/15 bg-white/10 text-white/85'
+                    : 'border-gray-300 bg-white text-gray-800'
+                } disabled:opacity-50`}
+                title={selectedModelMeta?.plus ? '48G PLUS 实例' : '24G 默认实例'}
+              >
+                {modelOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                    {opt.plus ? ` (${t.modelPlusBadge})` : ''}
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : null}
           {hasRef ? (
             <span
               className={`text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${

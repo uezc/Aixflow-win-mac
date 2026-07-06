@@ -21,6 +21,16 @@ import {
   assetLibListCard,
   assetLibListCardSelected,
   assetLibMsgSuccess,
+  assetLibEditModalBackdrop,
+  assetLibEditModalPanel,
+  assetLibEditModalTitle,
+  assetLibEditModalLabel,
+  assetLibEditModalInput,
+  assetLibEditModalCloseScratch,
+  assetLibEditModalCancelScratch,
+  assetLibEditModalSaveScratch,
+  assetLibEditModalSecondaryActionScratch,
+  assetLibEditModalCanvasPickScratch,
 } from '../utils/assetLibraryChrome';
 import { useIdlePoll } from '../hooks/useIdlePoll';
 
@@ -292,19 +302,31 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
 
   const slotBlock = (role: 'normal' | 'display3d', preview: string, label: string) => (
     <div className="flex min-w-0 flex-1 flex-col gap-2">
-      <span className={`text-xs font-medium leading-tight ${isDarkMode ? 'text-white/75' : 'text-gray-600'}`}>
+      <span
+        className={`text-xs font-semibold leading-tight ${
+          isDarkMode ? 'text-white/75' : role === 'normal' ? 'text-[var(--scratch-looks)]' : 'text-[var(--scratch-sound)]'
+        }`}
+      >
         {label}
       </span>
       <div
-        className={`relative h-[7.5rem] w-full rounded-lg overflow-hidden border shrink-0 ${
-          isDarkMode ? 'border-white/15 bg-black/40' : 'border-gray-200 bg-gray-50'
+        className={`relative h-[7.5rem] w-full rounded-xl overflow-hidden border shrink-0 ${
+          isDarkMode
+            ? 'border-white/15 bg-black/40'
+            : role === 'normal'
+              ? 'ring-1 ring-[var(--scratch-looks)]/35 shadow-sm shadow-violet-200/50 border-violet-200/60 bg-violet-50/30'
+              : 'ring-1 ring-[var(--scratch-sound)]/35 shadow-sm shadow-fuchsia-200/50 border-fuchsia-200/60 bg-fuchsia-50/40'
         }`}
       >
         {preview ? (
           <img src={preview} alt="" className="absolute inset-0 h-full w-full object-contain" draggable={false} />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
-            <Mountain className={`w-7 h-7 ${isDarkMode ? 'text-white/25' : 'text-gray-300'}`} />
+            <Mountain
+              className={`w-7 h-7 ${
+                isDarkMode ? 'text-white/25' : role === 'normal' ? 'text-[var(--scratch-looks)]/45' : 'text-[var(--scratch-sound)]/45'
+              }`}
+            />
           </div>
         )}
       </div>
@@ -313,7 +335,11 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
           type="button"
           disabled={submitting}
           onClick={() => void pickLocalImage(role)}
-          className={`w-full py-1.5 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnSecondary(isDarkMode, '!w-full')}`}
+          className={`w-full py-1.5 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(
+            isDarkMode,
+            '!w-full !py-1.5',
+            assetLibEditModalSecondaryActionScratch(isDarkMode),
+          )}`}
         >
           {role === 'normal' ? t.sceneUploadNormal : t.sceneUploadDisplay3d}
         </button>
@@ -322,7 +348,11 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
             type="button"
             disabled={submitting}
             onClick={() => void pickFromCanvas(role)}
-            className={`w-full py-1.5 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(isDarkMode, '!w-full', 'events')}`}
+            className={`w-full py-1.5 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(
+              isDarkMode,
+              '!w-full !py-1.5',
+              assetLibEditModalCanvasPickScratch(isDarkMode, role === 'normal' ? 1 : 2),
+            )}`}
           >
             {t.scenePickFromCanvas}
           </button>
@@ -558,7 +588,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                     type="button"
                     draggable={false}
                     onClick={(e) => openEditModal(scene, e)}
-                    className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity ${assetLibBtnIcon(isDarkMode)} !p-1.5`}
+                    className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity ${assetLibBtnIcon(isDarkMode, 'control')} !p-1.5`}
                     title={t.sceneEditTitle}
                   >
                     <Pencil className="w-3.5 h-3.5" />
@@ -571,7 +601,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                         e.stopPropagation();
                         onPlaceSceneToCanvas(scene);
                       }}
-                      className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity ${assetLibBtnPrimary(isDarkMode, '!p-1.5', 'motion')}`}
+                      className={`${assetLibBtnPrimary(isDarkMode, '!p-1.5', 'operators')} opacity-0 group-hover:opacity-100 transition-opacity`}
                       title={t.sceneImportToCanvasTitle}
                     >
                       <LayoutGrid className="w-3.5 h-3.5" />
@@ -596,7 +626,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
       {showModal && !modalHiddenForCanvasPick &&
         createPortal(
           <div
-            className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-4"
+            className={`fixed inset-0 z-[10000] flex items-center justify-center p-4 ${assetLibEditModalBackdrop(isDarkMode)}`}
             onClick={() => {
               if (submitting) return;
               setShowModal(false);
@@ -604,17 +634,21 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
             }}
           >
             <div
-              className={`w-full max-w-3xl rounded-xl shadow-xl overflow-hidden ${
-                isDarkMode ? 'bg-zinc-900 border border-white/10' : 'bg-white border border-gray-200'
-              }`}
+              className={`relative w-full max-w-3xl rounded-2xl border p-4 shadow-xl overflow-hidden ${assetLibEditModalPanel(isDarkMode)}`}
               onClick={(e) => e.stopPropagation()}
             >
-              <div
-                className={`px-4 py-3 border-b flex items-center justify-between ${
-                  isDarkMode ? 'border-white/10' : 'border-gray-200'
-                }`}
-              >
-                <span className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+              {!isDarkMode ? (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-0 h-1.5 rounded-t-2xl bg-gradient-to-r from-[var(--scratch-looks)] via-[var(--scratch-sound)] to-[var(--scratch-myBlocks)]"
+                    aria-hidden
+                  />
+                  <div className="pointer-events-none absolute -top-10 -right-10 h-36 w-36 rounded-full bg-fuchsia-300/35 blur-2xl" aria-hidden />
+                  <div className="pointer-events-none absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-violet-400/30 blur-2xl" aria-hidden />
+                </>
+              ) : null}
+              <div className="relative flex items-center justify-between mb-3">
+                <span className={`text-sm font-semibold ${assetLibEditModalTitle(isDarkMode)}`}>
                   {editingSceneId ? t.sceneEditTitle : t.sceneAddTitle}
                 </span>
                 <button
@@ -624,14 +658,14 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                     setShowModal(false);
                     resetModal();
                   }}
-                  className={`p-1 rounded ${isDarkMode ? 'hover:bg-white/10 text-white/60' : 'hover:bg-gray-100 text-gray-500'}`}
+                  className={assetLibBtnIcon(isDarkMode, assetLibEditModalCloseScratch(isDarkMode))}
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-              <div className="p-4 space-y-3 overflow-hidden">
+              <div className="relative space-y-3 overflow-hidden">
                 <div>
-                  <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
+                  <label className={`block text-xs font-medium mb-1 ${assetLibEditModalLabel(isDarkMode)}`}>
                     {t.sceneNickname}
                   </label>
                   <input
@@ -639,11 +673,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                     value={nickname}
                     onChange={(e) => setNickname(e.target.value)}
                     disabled={submitting}
-                    className={`w-full px-3 py-2 rounded-lg text-sm outline-none border ${
-                      isDarkMode
-                        ? 'bg-zinc-800 border-white/15 text-white'
-                        : 'bg-white border-gray-300 text-gray-900'
-                    }`}
+                    className={`w-full px-2 py-1.5 rounded-lg text-sm outline-none border transition-shadow disabled:opacity-50 ${assetLibEditModalInput(isDarkMode)}`}
                     placeholder={t.sceneNickname}
                   />
                 </div>
@@ -652,11 +682,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                   {slotBlock('display3d', display3dPreview, t.sceneDisplay3dImage)}
                 </div>
               </div>
-              <div
-                className={`px-4 py-3 border-t flex justify-end gap-2 ${
-                  isDarkMode ? 'border-white/10' : 'border-gray-200'
-                }`}
-              >
+              <div className="relative flex justify-end gap-2 mt-4">
                 <button
                   type="button"
                   disabled={submitting}
@@ -664,15 +690,23 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                     setShowModal(false);
                     resetModal();
                   }}
-                  className={assetLibBtnSecondary(isDarkMode, '!px-4 !py-2')}
-                  >
+                  className={assetLibBtnSecondary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalCancelScratch(isDarkMode),
+                  )}
+                >
                   {t.sceneCancel}
                 </button>
                 <button
                   type="button"
                   disabled={submitting}
                   onClick={() => void handleSaveScene()}
-                  className={`${assetLibBtnPrimary(isDarkMode, '!px-4 !py-2', 'events')} disabled:opacity-50`}
+                  className={assetLibBtnPrimary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalSaveScratch(isDarkMode),
+                  )}
                 >
                   {t.sceneSave}
                 </button>

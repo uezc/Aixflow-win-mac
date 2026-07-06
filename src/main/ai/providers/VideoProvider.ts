@@ -552,6 +552,53 @@ export class VideoProvider extends BaseProvider {
   }
 
   /**
+   * 上传 RVC 模型包（zip/pth 等）到 OSS，供 RH ai-app 以 URL 引用
+   */
+  async uploadModelPackageToOSS(buffer: Buffer, fileExt = 'zip'): Promise<string> {
+    try {
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).slice(-5);
+      const ext = (fileExt || 'zip').replace(/^\./, '').toLowerCase();
+      let mimeType = 'application/zip';
+      if (ext === 'pth' || ext === 'pt' || ext === 'ckpt') mimeType = 'application/octet-stream';
+      else if (ext === 'index') mimeType = 'application/octet-stream';
+
+      console.log(`[OSS上传] 开始上传 RVC 模型包… 大小: ${buffer.length} bytes, ext=${ext}`);
+      const publicUrl = await this.uploadBufferViaOssOrFcProxy(
+        buffer,
+        mimeType,
+        () => `${timestamp}-${randomStr}.${ext}`,
+      );
+      console.log(`[OSS上传] RVC 模型包上传成功，公网 URL: ${publicUrl}`);
+      return publicUrl;
+    } catch (error: any) {
+      console.error('[OSS上传] RVC 模型包上传失败:', error);
+      throw this.formatOSSError(error);
+    }
+  }
+
+  /** 本地 RVC 模型包 → OSS 公网 URL */
+  async uploadLocalModelPackageToOSS(localPathOrUrl: string): Promise<string> {
+    let filePath = (localPathOrUrl || '').trim();
+    if (filePath.startsWith('local-resource://')) {
+      filePath = filePath.replace(/^local-resource:\/\/+/, '');
+    } else if (filePath.startsWith('file://')) {
+      filePath = filePath.replace(/^file:\/\/+/, '');
+    }
+    filePath = filePath.replace(/%5C/gi, '/');
+    if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
+    filePath = decodeURIComponent(filePath);
+    if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+    const normalizedFilePath = path.normalize(filePath);
+    if (!fs.existsSync(normalizedFilePath)) {
+      throw new Error(`RVC 模型包文件不存在: ${normalizedFilePath}`);
+    }
+    const buffer = await fs.promises.readFile(normalizedFilePath);
+    const ext = path.extname(normalizedFilePath).toLowerCase().replace(/^\./, '') || 'zip';
+    return this.uploadModelPackageToOSS(buffer, ext);
+  }
+
+  /**
    * 上传本地视频文件到 OSS（用于角色创建模块）
    * @param localVideoPath 本地视频路径（如 C:/Users/... 或 local-resource://...）
    * @returns OSS 公网 URL

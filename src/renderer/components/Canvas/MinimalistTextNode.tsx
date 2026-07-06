@@ -1038,107 +1038,6 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
           : ''
       } ${isResizing ? '!shadow-none !ring-0' : ''}`}
     >
-      {/* 音/视频接入时：与 Image 节点「抠图/去水印」同款小按钮，贴主卡片上方 */}
-      {showTranscribeBar && (
-        <div className="nodrag absolute left-0 right-0 z-30 flex flex-col gap-1 pointer-events-auto overflow-visible" style={{ top: '-3.75rem' }}>
-          <div className="flex flex-wrap justify-center items-center gap-x-2 gap-y-1">
-            <button
-              type="button"
-              disabled={transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                void runLocalTranscribe();
-              }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())
-                  ? 'bg-emerald-500/70 cursor-not-allowed opacity-80'
-                  : 'bg-emerald-500 hover:bg-emerald-600'
-              }`}
-              title="本地 Whisper 转写为简体中文并填入正文（语言选「简体中文」时）"
-            >
-              {transcribeBusy ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Mic2 className="w-3.5 h-3.5" />
-              )}
-              转文字
-            </button>
-            <div ref={langMenuRef} className="relative inline-flex flex-col items-center">
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  setLangMenuOpen((o) => !o);
-                }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all nodrag ${
-                  isDarkMode
-                    ? 'border border-white/15 bg-black/30 text-white/90 hover:bg-white/10'
-                    : 'border border-gray-200 bg-gray-50 text-gray-800 hover:bg-gray-100'
-                }`}
-                title="转写语言（中文为简体中文输出）"
-                aria-expanded={langMenuOpen}
-                aria-haspopup="menu"
-              >
-                <Globe className="w-3.5 h-3.5 shrink-0" />
-                <span>
-                  {transcribeLang === 'en'
-                    ? 'English'
-                    : transcribeLang === 'auto'
-                      ? locale === 'en'
-                        ? 'Auto'
-                        : '自动'
-                      : locale === 'en'
-                        ? 'Simplified Chinese'
-                        : '简体中文'}
-                </span>
-                <ChevronDown className={`w-3 h-3 shrink-0 opacity-70 transition-transform ${langMenuOpen ? 'rotate-180' : ''}`} />
-              </button>
-              {langMenuOpen && (
-                <div
-                  role="menu"
-                  className={`absolute left-1/2 top-full z-40 mt-1 min-w-[96px] -translate-x-1/2 rounded-lg border py-1 shadow-lg ${
-                    isDarkMode ? 'bg-[#2a2d33] border-white/12' : 'bg-white border-gray-200'
-                  }`}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {(
-                    [
-                      { v: 'zh', label: locale === 'en' ? 'Simplified Chinese' : '简体中文' },
-                      { v: 'en', label: 'English' },
-                      { v: 'auto', label: locale === 'en' ? 'Auto' : '自动' },
-                    ] as const
-                  ).map(({ v, label }) => (
-                    <button
-                      key={v}
-                      type="button"
-                      role="menuitem"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setTranscribeLang(v);
-                        updateNodeData({ transcribeLanguage: v });
-                        setLangMenuOpen(false);
-                      }}
-                      className={`w-full text-left px-3 py-1.5 text-xs nodrag ${
-                        transcribeLang === v
-                          ? isDarkMode
-                            ? 'bg-emerald-600/35 text-emerald-100'
-                            : 'bg-emerald-50 text-emerald-800'
-                          : isDarkMode
-                            ? 'text-white/85 hover:bg-white/10'
-                            : 'text-gray-800 hover:bg-gray-50'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
       <Handle type="target" position={Position.Left} id="input" className="nexflow-plus-handle nexflow-plus-handle-left" />
       <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
       {/* 与 Image 等模块一致：进度条覆盖主卡片区域，不浮在模块外 */}
@@ -1486,8 +1385,8 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       </>
       )}
 
-      {/* 模块外下方：对齐、字号等悬浮工具栏（拼图节点同款，缩放时选中节点仍可见） */}
-      {showFloatingToolbar && (
+      {/* 模块外下方：转写 / 对齐字号等悬浮工具栏 */}
+      {(showTranscribeBar || showFloatingToolbar) && (
         <div
           className="node-floating-toolbar nodrag nopan absolute top-full left-1/2 z-20 mt-1.5 flex w-max max-w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 flex-col items-center gap-1.5 overflow-visible"
           style={{ pointerEvents: 'all' }}
@@ -1495,6 +1394,105 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
           onMouseDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
+          {showTranscribeBar && (
+            <div className="flex flex-wrap justify-center items-center gap-x-2 gap-y-1">
+              <button
+                type="button"
+                disabled={transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  void runLocalTranscribe();
+                }}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                  transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())
+                    ? 'bg-emerald-500/70 cursor-not-allowed opacity-80'
+                    : 'bg-emerald-500 hover:bg-emerald-600'
+                }`}
+                title="本地 Whisper 转写为简体中文并填入正文（语言选「简体中文」时）"
+              >
+                {transcribeBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Mic2 className="w-3.5 h-3.5" />
+                )}
+                转文字
+              </button>
+              <div ref={langMenuRef} className="relative inline-flex flex-col items-center">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    setLangMenuOpen((o) => !o);
+                  }}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all nodrag ${
+                    isDarkMode
+                      ? 'border border-white/15 bg-black/30 text-white/90 hover:bg-white/10'
+                      : 'border border-gray-200 bg-gray-50 text-gray-800 hover:bg-gray-100'
+                  }`}
+                  title="转写语言（中文为简体中文输出）"
+                  aria-expanded={langMenuOpen}
+                  aria-haspopup="menu"
+                >
+                  <Globe className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {transcribeLang === 'en'
+                      ? 'English'
+                      : transcribeLang === 'auto'
+                        ? locale === 'en'
+                          ? 'Auto'
+                          : '自动'
+                        : locale === 'en'
+                          ? 'Simplified Chinese'
+                          : '简体中文'}
+                  </span>
+                  <ChevronDown className={`w-3 h-3 shrink-0 opacity-70 transition-transform -rotate-90 ${langMenuOpen ? 'rotate-90' : ''}`} />
+                </button>
+                {langMenuOpen && (
+                  <div
+                    role="menu"
+                    className={`absolute left-full top-0 z-40 ml-1 min-w-[96px] rounded-lg border py-1 shadow-lg ${
+                      isDarkMode ? 'bg-[#2a2d33] border-white/12' : 'bg-white border-gray-200'
+                    }`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {(
+                      [
+                        { v: 'zh', label: locale === 'en' ? 'Simplified Chinese' : '简体中文' },
+                        { v: 'en', label: 'English' },
+                        { v: 'auto', label: locale === 'en' ? 'Auto' : '自动' },
+                      ] as const
+                    ).map(({ v, label }) => (
+                      <button
+                        key={v}
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setTranscribeLang(v);
+                          updateNodeData({ transcribeLanguage: v });
+                          setLangMenuOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-1.5 text-xs nodrag ${
+                          transcribeLang === v
+                            ? isDarkMode
+                              ? 'bg-emerald-600/35 text-emerald-100'
+                              : 'bg-emerald-50 text-emerald-800'
+                            : isDarkMode
+                              ? 'text-white/85 hover:bg-white/10'
+                              : 'text-gray-800 hover:bg-gray-50'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {showFloatingToolbar && (
           <div className="flex flex-wrap items-center justify-center gap-1.5">
             <button
               type="button"
@@ -1555,6 +1553,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
               <ZoomIn className="w-3.5 h-3.5" />
             </button>
           </div>
+          )}
         </div>
       )}
     </div>

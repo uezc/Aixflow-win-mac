@@ -10,11 +10,10 @@ import {
   useGLTF,
   useTexture,
 } from '@react-three/drei';
-import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import * as THREE from 'three';
 import {
   captureWebGLCanvasToDataUrl,
-  countGltfBaseColorMaps,
+  installGltfDisplayRefresh,
   prepareGltfSceneForDisplay,
 } from '../../utils/glbViewerUtils';
 
@@ -22,9 +21,8 @@ useGLTF.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/'
 import { canCreateWebGLContext } from '../../utils/webglSupport';
 import GlbViewerPlaceholder from './GlbViewerPlaceholder';
 
-const MAX_DPR = 1.5;
+const MAX_DPR = 1.25;
 
-/** 将 2D 贴图套到已加载 GLB 所有材质（画布预览用，不修改文件） */
 function GlbTextureOverride({
   textureUrl,
   target,
@@ -40,13 +38,18 @@ function GlbTextureOverride({
       const mesh = obj as THREE.Mesh;
       if (!mesh.isMesh) return;
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      for (const m of materials) {
-        if (!m) continue;
+      materials.forEach((m) => {
+        if (!m) return;
         const std = m as THREE.MeshStandardMaterial;
         std.map = tex;
         std.vertexColors = false;
+        /** 强制低金属度，保留 PBR 光照计算 */
+        std.metalnessMap = null;
+        std.roughnessMap = null;
+        std.metalness = 0;
+        std.roughness = 0.68;
         std.needsUpdate = true;
-      }
+      });
     });
   }, [tex, textureUrl, target]);
   return null;
@@ -144,23 +147,39 @@ function GlbMesh({
   cameraFraming?: GlbCameraFramingMode;
   onModelReady?: () => void;
 }) {
-  const { scene } = useGLTF(url);
-  const displayScene = React.useMemo(() => {
-    const cloned = cloneSkeleton(scene) as THREE.Object3D;
-    prepareGltfSceneForDisplay(cloned);
-    const mapCount = countGltfBaseColorMaps(cloned);
-    if (import.meta.env.DEV) {
-      console.log(`[GlbModelViewer] ${url.slice(-48)} baseColor贴图数=${mapCount}`);
-    }
-    return cloned;
-  }, [scene, url]);
+  const { scene, textures } = useGLTF(url);
+  const displayScene = React.useMemo(() => scene.clone() as THREE.Object3D, [scene, url]);
   const readyKeyRef = useRef('');
+  const reportedReadyRef = useRef(false);
+
+  useLayoutEffect(() => {
+    for (const tex of textures || []) {
+      if (!tex) continue;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+    }
+  }, [textures, url]);
+
+  useLayoutEffect(() => {
+    reportedReadyRef.current = false;
+    return installGltfDisplayRefresh(displayScene, (mapCount) => {
+      if (import.meta.env.DEV) {
+        console.log(`[GlbModelViewer] ${url.slice(-48)} baseColor贴图数=${mapCount}`);
+      }
+      if (!reportedReadyRef.current && mapCount > 0) {
+        reportedReadyRef.current = true;
+        onModelReady?.();
+      }
+    });
+  }, [displayScene, url, onModelReady]);
+
   useLayoutEffect(() => {
     const key = `${url}|${displayScene.uuid}`;
     if (readyKeyRef.current === key) return;
     readyKeyRef.current = key;
     onModelReady?.();
   }, [url, displayScene, onModelReady]);
+
   const overlay = overrideTextureUrl?.trim();
   const framingKey = `${url}|${overlay}|${cameraFraming}`;
   return (
@@ -189,6 +208,8 @@ function GlbScene({
   turntableRotate = false,
   turntableSpeed = Math.PI / 12,
   useStudioEnvironment = true,
+  usePureBlackBackground = false,
+  usePureWhiteBackground = false,
   onModelReady,
 }: {
   url: string;
@@ -209,6 +230,10 @@ function GlbScene({
   turntableSpeed?: number;
   /** false：资产库悬停等轻量预览，跳过 HDR 环境贴图以加快首帧 */
   useStudioEnvironment?: boolean;
+  /** 全屏纯黑背景 */
+  usePureBlackBackground?: boolean;
+  /** 全屏纯白背景 */
+  usePureWhiteBackground?: boolean;
   onModelReady?: () => void;
 }) {
   const hasModel = !!url?.trim();
@@ -230,14 +255,22 @@ function GlbScene({
           fadeDistance: 22,
           fadeStrength: 1.2,
         };
+  const bgColor = usePureWhiteBackground ? '#ffffff' : usePureBlackBackground ? '#000000' : '#1a1a1e';
+  const ambientIntensity = usePureWhiteBackground ? 0.92 : useStudioEnvironment ? 0.55 : 0.72;
+  const hemiIntensity = usePureWhiteBackground ? 1.05 : useStudioEnvironment ? 0.65 : 0.85;
+  const keyLightIntensity = usePureWhiteBackground ? 1.55 : useStudioEnvironment ? 1.15 : 1.35;
+  const fillLightIntensity = usePureWhiteBackground ? 0.75 : useStudioEnvironment ? 0.35 : 0.5;
   return (
     <>
-      <color attach="background" args={['#1a1a1e']} />
-      {showFog ? <fog attach="fog" args={['#1a1a1e', 14, 32]} /> : null}
-      <ambientLight intensity={useStudioEnvironment ? 0.55 : 0.72} />
-      <hemisphereLight args={['#ffffff', '#444455', useStudioEnvironment ? 0.65 : 0.85]} />
-      <directionalLight position={[6, 10, 4]} intensity={useStudioEnvironment ? 1.15 : 1.35} />
-      <directionalLight position={[-4, 6, -3]} intensity={useStudioEnvironment ? 0.35 : 0.5} />
+      <color attach="background" args={[bgColor]} />
+      {showFog && !usePureWhiteBackground ? <fog attach="fog" args={[bgColor, 14, 32]} /> : null}
+      <ambientLight intensity={ambientIntensity} />
+      <hemisphereLight args={['#ffffff', usePureWhiteBackground ? '#cccccc' : '#444455', hemiIntensity]} />
+      <directionalLight position={[6, 10, 4]} intensity={keyLightIntensity} />
+      <directionalLight position={[-4, 6, -3]} intensity={fillLightIntensity} />
+      {usePureWhiteBackground ? (
+        <directionalLight position={[0, 4, 8]} intensity={0.85} />
+      ) : null}
       {useStudioEnvironment ? <Environment preset="studio" environmentIntensity={0.85} /> : null}
       {turntableRotate ? (
         <GlbTurntable speed={turntableSpeed}>
@@ -353,6 +386,10 @@ export interface GlbModelViewerProps {
   showFog?: boolean;
   /** 资产库悬停等场景：不加载 studio HDR，加快首帧 */
   useStudioEnvironment?: boolean;
+  /** 全屏纯黑背景 */
+  usePureBlackBackground?: boolean;
+  /** 全屏纯白背景 */
+  usePureWhiteBackground?: boolean;
   onModelReady?: () => void;
 }
 
@@ -380,6 +417,8 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
   turntableRotate = false,
   turntableSpeed = Math.PI / 12,
   useStudioEnvironment = true,
+  usePureBlackBackground = false,
+  usePureWhiteBackground = false,
   onModelReady,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -387,6 +426,10 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
   const [sizeReady, setSizeReady] = useState(false);
   const [contextFailed, setContextFailed] = useState(false);
   const [webglCapable, setWebglCapable] = useState(true);
+
+  useEffect(() => {
+    setContextFailed(false);
+  }, [usePureWhiteBackground, usePureBlackBackground, showGrid]);
 
   useEffect(() => {
     if (!captureRef) return;
@@ -423,6 +466,8 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
 
   const dpr =
     typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, MAX_DPR) : 1;
+  /** 全屏预览（非 embeddedInFlow）时进一步降低 DPR，减少 GPU 压力 */
+  const effectiveDpr = embeddedInFlow ? dpr : Math.min(dpr, 1.0);
 
   const placeholder = (
     <GlbViewerPlaceholder
@@ -468,7 +513,9 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
   return (
     <div
       ref={containerRef}
-      className={`${flowGuard} relative overflow-hidden bg-[#1a1a1e] ${className}`}
+      className={`${flowGuard} relative overflow-hidden ${
+        usePureWhiteBackground ? 'bg-white' : usePureBlackBackground ? 'bg-black' : 'bg-[#1a1a1e]'
+      } ${className}`}
       style={interactionStyle}
     >
       <GlbCanvasErrorBoundary
@@ -477,7 +524,7 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
       >
         <Canvas
           frameloop={renderActive ? 'always' : 'never'}
-          dpr={dpr}
+          dpr={effectiveDpr}
           gl={{
             antialias: true,
             alpha: false,
@@ -509,6 +556,8 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
             turntableRotate={turntableRotate}
             turntableSpeed={turntableSpeed}
             useStudioEnvironment={useStudioEnvironment}
+            usePureBlackBackground={usePureBlackBackground}
+            usePureWhiteBackground={usePureWhiteBackground}
             onModelReady={onModelReady}
           />
         </Canvas>
@@ -542,6 +591,8 @@ export default memo(GlbModelViewer, (prev, next) => {
     prev.turntableRotate === next.turntableRotate &&
     prev.turntableSpeed === next.turntableSpeed &&
     prev.useStudioEnvironment === next.useStudioEnvironment &&
+    prev.usePureBlackBackground === next.usePureBlackBackground &&
+    prev.usePureWhiteBackground === next.usePureWhiteBackground &&
     prev.onModelReady === next.onModelReady
   );
 });

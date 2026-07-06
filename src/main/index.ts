@@ -1,6 +1,24 @@
 // 必须在所有其他导入之前加载环境变量（含安装包 resources/.env；勿改用仅 cwd 的 dotenv/config）
 import './envLoader.js';
 
+/** GUI 启动无终端时 stdout 管道关闭，console.log 会 EPIPE 崩溃 */
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') return;
+    throw err;
+  });
+}
+for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+  const original = console[method].bind(console);
+  console[method] = (...args: unknown[]) => {
+    try {
+      original(...args);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EPIPE') throw err;
+    }
+  };
+}
+
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, clipboard, nativeImage } from 'electron';
 
 import path from 'path';
@@ -43,7 +61,11 @@ import { getBLTCYBalance, getRHBalance } from './services/balance.js';
 import { activateLicense, checkLicenseStatus, generateActivationCode } from './services/licenseManager.js';
 import { runMattingViaFc } from './services/matting.js';
 import { runWatermarkRemovalViaFc } from './services/watermarkRemoval.js';
-import { runCharacterMultiAngleViaFc, runImageTo3dViaFc } from './services/runningHubAiAppFc.js';
+import {
+  runCharacterMultiAngleViaFc,
+  runImageTo3dModelViaFc,
+} from './services/runningHubAiAppFc.js';
+import { resolveImageTo3dModelId } from '../shared/imageTo3dModels.js';
 import {
   clearNxAuth,
   getCloudUserState,
@@ -1294,6 +1316,10 @@ function safeSendToRenderer(channel: string, ...args: any[]) {
     // 忽略 Render frame was disposed、Message rejected by WidgetHost 等
   }
 }
+
+import('./utils/optionalEngineDownloadProgress.js').then(({ setOptionalEngineDownloadSender }) => {
+  setOptionalEngineDownloadSender((channel, payload) => safeSendToRenderer(channel, payload));
+});
 
 // API Key 管理
 ipcMain.handle('save-bltcy-api-key', async (_, apiKey: string) => {
@@ -3157,6 +3183,44 @@ ipcMain.handle(
   return newCharacter;
 });
 
+async function persistImageTo3dCharacterReferenceImage(
+  characterId: string,
+  raw: string,
+): Promise<{ url: string; localPath?: string } | null> {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith('data:image/')) {
+    const one = await persistCharacterViewImageSlot(`${characterId}-ref`, 0, trimmed);
+    if (!one?.url) return null;
+    return { url: one.url, localPath: one.fsPath };
+  }
+
+  const localRef = resolveFsPathFromUrlish(trimmed);
+  if (localRef) {
+    const ext = path.extname(localRef) || '.png';
+    const copied = copyFileIntoCharacter3dDir(localRef, `${characterId}-ref${ext}`);
+    if (!copied) return null;
+    return { url: fsPathToLocalResourceUrl(copied), localPath: copied };
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const userDataPath = app.getPath('userData');
+      const dir = path.join(userDataPath, 'character-3d');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const saved = await downloadRemoteAssetToDir(trimmed, dir, `${characterId}-ref.png`);
+      if (!saved) return null;
+      return { url: fsPathToLocalResourceUrl(saved), localPath: saved };
+    } catch (e) {
+      console.error('[图片转3D] 下载参考图缩略图失败:', e);
+      return null;
+    }
+  }
+
+  return { url: trimmed };
+}
+
 ipcMain.handle('update-character', async (_, characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; voiceClip?: string; viewImages?: string[] }) => {
   const characters = (store.get('characters') || []) as Array<{
     id: string;
@@ -3165,6 +3229,8 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
     avatar: string;
     roleId?: string;
     createdAt: number;
+    assetKind?: 'role' | 'imageTo3d';
+    inputImageUrl?: string;
     localAvatarPath?: string; // 本地头像路径
     voiceClip?: string;
     localVoicePath?: string;
@@ -3175,11 +3241,13 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
   const index = characters.findIndex((c) => c.id === characterId);
   if (index !== -1) {
     const character = characters[index];
+    const isImageTo3d = character.assetKind === 'imageTo3d';
     let finalUpdates: {
       nickname?: string;
       name?: string;
       avatar?: string;
       roleId?: string;
+      inputImageUrl?: string;
       localAvatarPath?: string;
       voiceClip?: string;
       localVoicePath?: string;
@@ -3187,8 +3255,24 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
       localViewPaths?: string[];
     } = { ...updates };
     
+    if (updates.avatar !== undefined && isImageTo3d) {
+      const raw = (updates.avatar || '').trim();
+      if (!raw) {
+        finalUpdates.avatar = '';
+        finalUpdates.inputImageUrl = '';
+        finalUpdates.localAvatarPath = undefined;
+      } else {
+        const one = await persistImageTo3dCharacterReferenceImage(characterId, raw);
+        if (one?.url) {
+          finalUpdates.avatar = one.url;
+          finalUpdates.inputImageUrl = one.url;
+          finalUpdates.localAvatarPath = one.localPath;
+        } else {
+          delete finalUpdates.avatar;
+        }
+      }
+    } else if (updates.avatar && !updates.avatar.startsWith('local-resource://') && !updates.avatar.startsWith('data:') && !updates.avatar.startsWith('file://')) {
     // 如果更新了头像 URL 且是远程 URL，自动下载到本地
-    if (updates.avatar && !updates.avatar.startsWith('local-resource://') && !updates.avatar.startsWith('data:') && !updates.avatar.startsWith('file://')) {
       try {
         const { autoDownloadResource } = await import('./utils/resourceDownloader.js');
         const userDataPath = app.getPath('userData');
@@ -4102,12 +4186,109 @@ async function downloadRemoteAssetToDir(remoteUrl: string, saveDir: string, fall
   return filePath;
 }
 
+/** 下载 GLB；若为 zip 则解压出首个 .glb */
+async function downloadGlbAssetToDir(
+  remoteUrl: string,
+  saveDir: string,
+  fallbackName: string,
+): Promise<string | null> {
+  const saved = await downloadRemoteAssetToDir(remoteUrl, saveDir, fallbackName);
+  if (!saved) return null;
+  if (!saved.toLowerCase().endsWith('.zip')) return saved;
+  try {
+    const zip = new AdmZip(saved);
+    const glbEntry = zip
+      .getEntries()
+      .find((e) => !e.isDirectory && /\.glb$/i.test(e.entryName));
+    if (!glbEntry) {
+      console.warn('[图片转3D] zip 内未找到 .glb:', saved);
+      return null;
+    }
+    const base = path.basename(glbEntry.entryName) || 'model.glb';
+    const glbDest = path.join(saveDir, base);
+    fs.writeFileSync(glbDest, glbEntry.getData());
+    console.log(`[图片转3D] 已从 zip 解压 GLB: ${glbDest}`);
+    return glbDest;
+  } catch (e) {
+    console.error('[图片转3D] 解压 zip 失败', e);
+    return null;
+  }
+}
+
+/** 解析 GLB 内 JSON 块引用的外部贴图文件名（Hy3D 等 workflow 常用相对路径） */
+function parseGlbExternalImageUris(glbPath: string): string[] {
+  try {
+    const buf = fs.readFileSync(glbPath);
+    if (buf.length < 20 || buf.readUInt32LE(0) !== 0x46546c67) return [];
+    const jsonLen = buf.readUInt32LE(12);
+    const jsonStart = 20;
+    if (jsonStart + jsonLen > buf.length) return [];
+    const json = JSON.parse(buf.toString('utf8', jsonStart, jsonStart + jsonLen)) as {
+      images?: Array<{ uri?: string }>;
+    };
+    const uris: string[] = [];
+    for (const img of json.images || []) {
+      const uri = typeof img.uri === 'string' ? img.uri.trim() : '';
+      if (!uri || uri.startsWith('data:')) continue;
+      uris.push(uri.replace(/^\.\//, ''));
+    }
+    return uris;
+  } catch (e) {
+    console.warn('[图片转3D] 解析 GLB 外部贴图引用失败', e);
+    return [];
+  }
+}
+
+/** 从 Trellis2 等内嵌 baseColor 的 GLB 提取首张 PNG，供面板缩略图与预览兜底 */
+function extractEmbeddedGlbBaseColorToPng(glbPath: string, destPath: string): boolean {
+  try {
+    const buf = fs.readFileSync(glbPath);
+    if (buf.length < 20 || buf.readUInt32LE(0) !== 0x46546c67) return false;
+    const jsonLen = buf.readUInt32LE(12);
+    const jsonStart = 20;
+    const binStart = jsonStart + jsonLen;
+    if (jsonStart + jsonLen > buf.length || binStart + 8 > buf.length) return false;
+    const binLen = buf.readUInt32LE(binStart + 4);
+    const binDataStart = binStart + 8;
+    if (binDataStart + binLen > buf.length) return false;
+
+    const root = JSON.parse(buf.toString('utf8', jsonStart, jsonStart + jsonLen)) as {
+      materials?: Array<{ pbrMetallicRoughness?: { baseColorTexture?: { index?: number } } }>;
+      textures?: Array<{ source?: number }>;
+      images?: Array<{ bufferView?: number; mimeType?: string }>;
+      bufferViews?: Array<{ byteOffset?: number; byteLength?: number }>;
+    };
+    const mat0 = root.materials?.[0]?.pbrMetallicRoughness;
+    const texIndex = mat0?.baseColorTexture?.index;
+    const sourceIndex =
+      texIndex != null && root.textures?.[texIndex]?.source != null
+        ? root.textures[texIndex].source
+        : 0;
+    const image = root.images?.[sourceIndex ?? 0];
+    if (!image || image.bufferView == null) return false;
+    const view = root.bufferViews?.[image.bufferView];
+    if (!view || view.byteLength == null) return false;
+    const offset = binDataStart + (view.byteOffset ?? 0);
+    const length = view.byteLength;
+    if (offset + length > buf.length) return false;
+    const pngBytes = buf.subarray(offset, offset + length);
+    if (pngBytes.length < 8) return false;
+    fs.writeFileSync(destPath, pngBytes);
+    console.log(`[图片转3D] 已从 GLB 内嵌提取 baseColor: ${destPath}`);
+    return true;
+  } catch (e) {
+    console.warn('[图片转3D] 提取 GLB 内嵌 baseColor 失败', e);
+    return false;
+  }
+}
+
 /** 下载 GLB 及同任务贴图到同一目录（Hy3D 等 workflow 可能用外部贴图相对路径） */
 async function downloadImageTo3dAssetsToProject(
   remoteGlbUrl: string,
   companionUrls: string[] | undefined,
   projectId?: string,
   nodeId?: string,
+  preferredTextureUrl?: string,
 ): Promise<{ glbPath: string; resultTexturePath: string | null; resultTextureRemoteUrl: string | null } | null> {
   const glbUrl = remoteGlbUrl?.trim();
   if (!glbUrl) return null;
@@ -4127,11 +4308,17 @@ async function downloadImageTo3dAssetsToProject(
     if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
 
     const urlHash = crypto.createHash('md5').update(glbUrl).digest('hex').slice(0, 12);
-    const glbPath = await downloadRemoteAssetToDir(glbUrl, saveDir, `3d-${urlHash}.glb`);
+    const glbPath = await downloadGlbAssetToDir(glbUrl, saveDir, `3d-${urlHash}.glb`);
     if (!glbPath) return null;
 
     const extras = (companionUrls || []).filter((u) => u?.trim() && u.trim() !== glbUrl);
-    const textureRemote = pickBestTextureCompanionUrl(extras);
+    const pref = preferredTextureUrl?.trim();
+    let textureRemote =
+      pref && extras.includes(pref) ? pref : pickBestTextureCompanionUrl(extras);
+    if (!textureRemote && pref && /^https?:\/\//i.test(pref)) {
+      textureRemote = pref;
+      if (!extras.includes(pref)) extras.unshift(pref);
+    }
     let resultTexturePath: string | null = null;
     for (let i = 0; i < extras.length; i++) {
       const u = extras[i].trim();
@@ -4144,6 +4331,39 @@ async function downloadImageTo3dAssetsToProject(
         saveDir,
         `3d-tex-${urlHash}-main.png`,
       );
+    }
+
+    /** GLB 引用外部贴图时，确保同目录存在对应文件（按 basename 匹配 companion） */
+    const externalUris = parseGlbExternalImageUris(glbPath);
+    for (const relUri of externalUris) {
+      const base = path.basename(relUri.replace(/^\.\//, ''));
+      const dest = path.join(saveDir, base);
+      if (fs.existsSync(dest)) {
+        if (!resultTexturePath) resultTexturePath = dest;
+        continue;
+      }
+      const matchUrl = extras.find((u) => {
+        try {
+          return fileNameFromRemoteAssetUrl(u, '') === base;
+        } catch {
+          return u.toLowerCase().includes(base.toLowerCase());
+        }
+      });
+      if (matchUrl) {
+        const saved = await downloadRemoteAssetToDir(matchUrl, saveDir, base);
+        if (saved) {
+          if (!resultTexturePath) resultTexturePath = saved;
+          if (!textureRemote) textureRemote = matchUrl;
+        }
+      }
+    }
+
+    if (!resultTexturePath) {
+      const stem = path.basename(glbPath, path.extname(glbPath));
+      const embeddedDest = path.join(saveDir, `${stem}-basecolor.png`);
+      if (extractEmbeddedGlbBaseColorToPng(glbPath, embeddedDest)) {
+        resultTexturePath = embeddedDest;
+      }
     }
 
     return {
@@ -5088,7 +5308,473 @@ ipcMain.handle('delete-digital-humans', async (_, itemIds: string[]) => {
   return { success: true };
 });
 
-ipcMain.handle('image-to-3d', async (_, imageUrl: string, projectId?: string, nodeId?: string) => {
+// —— RVC 音色模型资产库（训练 zip 包） ——
+function copyFileIntoRvcVoiceLibraryDir(srcFsPath: string, destFileName: string): string | null {
+  if (!srcFsPath || !fs.existsSync(srcFsPath)) return null;
+  const userDataPath = app.getPath('userData');
+  const dir = path.join(userDataPath, 'rvc-voice-library');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, destFileName);
+  try {
+    if (!fs.existsSync(dest)) {
+      fs.copyFileSync(srcFsPath, dest);
+    }
+    return dest;
+  } catch (e) {
+    console.error('[RVC音色库] 复制文件失败:', e);
+    return null;
+  }
+}
+
+function inferRvcModelPackageExt(rawUrl: string): string {
+  const u = (rawUrl || '').trim().toLowerCase();
+  if (/\.zip(\?|$)/.test(u)) return '.zip';
+  if (/\.pth(\?|$)/.test(u)) return '.pth';
+  if (/\.index(\?|$)/.test(u)) return '.index';
+  if (/\.tar\.gz(\?|$)/.test(u)) return '.tar.gz';
+  if (/\.tgz(\?|$)/.test(u)) return '.tgz';
+  return '.zip';
+}
+
+async function persistRvcVoiceLibraryPackage(
+  itemId: string,
+  raw: string,
+): Promise<{ url: string; localPath?: string; originalUrl?: string } | null> {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  let localRef = resolveFsPathFromUrlish(trimmed);
+  if (!localRef && trimmed.startsWith('local-resource://')) {
+    try {
+      const body = trimmed.slice('local-resource://'.length);
+      const decoded = localResourceUrlBodyToFsPath(body, false);
+      if (decoded && fs.existsSync(decoded)) localRef = decoded;
+    } catch {
+      /* fallback below */
+    }
+  }
+  if (localRef) {
+    const ext = path.extname(localRef) || inferRvcModelPackageExt(trimmed);
+    const copied = copyFileIntoRvcVoiceLibraryDir(localRef, `${itemId}${ext}`);
+    if (copied) {
+      return { url: fsPathToLocalResourceUrl(copied), localPath: copied };
+    }
+    const fallbackUrl = trimmed.startsWith('local-resource://')
+      ? trimmed
+      : fsPathToLocalResourceUrl(localRef);
+    return { url: fallbackUrl, localPath: localRef };
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const userDataPath = app.getPath('userData');
+      const dir = path.join(userDataPath, 'rvc-voice-library');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const ext = inferRvcModelPackageExt(trimmed);
+      const saved = await downloadRemoteAssetToDir(trimmed, dir, `${itemId}${ext}`);
+      if (!saved) return null;
+      return { url: fsPathToLocalResourceUrl(saved), localPath: saved, originalUrl: trimmed };
+    } catch (e) {
+      console.error('[RVC音色库] 下载远程模型包失败:', e);
+      return { url: trimmed, originalUrl: trimmed };
+    }
+  }
+
+  return { url: trimmed };
+}
+
+function deriveRvcPackageFileBaseName(localPath?: string, rawUrl?: string): string {
+  if (localPath) {
+    const base = path.basename(localPath, path.extname(localPath));
+    if (base.trim()) return base.trim();
+  }
+  const raw = (rawUrl || '').trim();
+  if (!raw) return 'RVC';
+  const seg = raw.split('?')[0].split(/[/\\]/).pop() || 'RVC';
+  return seg.replace(/\.(zip|pth|index|tar\.gz|tgz)$/i, '').trim() || 'RVC';
+}
+
+async function persistRvcVoiceLibraryAvatar(
+  itemId: string,
+  raw: string,
+): Promise<{ url: string; localPath?: string } | null> {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith('data:image/')) {
+    const one = await persistCharacterViewImageSlot(`${itemId}-avatar`, 0, trimmed);
+    if (!one?.url) return null;
+    return { url: one.url, localPath: one.fsPath };
+  }
+
+  const localRef = resolveFsPathFromUrlish(trimmed);
+  if (localRef) {
+    const ext = path.extname(localRef) || '.png';
+    const copied = copyFileIntoRvcVoiceLibraryDir(localRef, `${itemId}-avatar${ext}`);
+    if (!copied) return null;
+    return { url: fsPathToLocalResourceUrl(copied), localPath: copied };
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const userDataPath = app.getPath('userData');
+      const dir = path.join(userDataPath, 'rvc-voice-library');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const saved = await downloadRemoteAssetToDir(trimmed, dir, `${itemId}-avatar.png`);
+      if (!saved) return null;
+      return { url: fsPathToLocalResourceUrl(saved), localPath: saved };
+    } catch (e) {
+      console.error('[RVC音色库] 下载头像失败:', e);
+      return null;
+    }
+  }
+
+  return { url: trimmed };
+}
+
+function inferRvcTrainAudioExt(raw: string): string {
+  const u = (raw || '').toLowerCase();
+  if (/\.wav(\?|$)/.test(u)) return '.wav';
+  if (/\.ogg(\?|$)/.test(u)) return '.ogg';
+  if (/\.m4a(\?|$)/.test(u)) return '.m4a';
+  if (/\.flac(\?|$)/.test(u)) return '.flac';
+  if (/\.aac(\?|$)/.test(u)) return '.aac';
+  return '.mp3';
+}
+
+async function persistRvcVoiceLibraryTrainAudio(
+  itemId: string,
+  raw: string,
+): Promise<{ url: string; localPath?: string; originalUrl?: string } | null> {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  let localRef = resolveFsPathFromUrlish(trimmed);
+  if (!localRef && trimmed.startsWith('local-resource://')) {
+    try {
+      const body = trimmed.slice('local-resource://'.length);
+      const decoded = localResourceUrlBodyToFsPath(body, false);
+      if (decoded && fs.existsSync(decoded)) localRef = decoded;
+    } catch {
+      /* fallback below */
+    }
+  }
+  if (localRef) {
+    const ext = path.extname(localRef) || inferRvcTrainAudioExt(trimmed);
+    const copied = copyFileIntoRvcVoiceLibraryDir(localRef, `${itemId}-train${ext}`);
+    if (copied) {
+      return { url: fsPathToLocalResourceUrl(copied), localPath: copied };
+    }
+    const fallbackUrl = trimmed.startsWith('local-resource://')
+      ? trimmed
+      : fsPathToLocalResourceUrl(localRef);
+    return { url: fallbackUrl, localPath: localRef };
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const userDataPath = app.getPath('userData');
+      const dir = path.join(userDataPath, 'rvc-voice-library');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const ext = inferRvcTrainAudioExt(trimmed);
+      const saved = await downloadRemoteAssetToDir(trimmed, dir, `${itemId}-train${ext}`);
+      if (!saved) return null;
+      return { url: fsPathToLocalResourceUrl(saved), localPath: saved, originalUrl: trimmed };
+    } catch (e) {
+      console.error('[RVC音色库] 下载训练音频失败:', e);
+      return { url: trimmed, originalUrl: trimmed };
+    }
+  }
+
+  return { url: trimmed };
+}
+
+ipcMain.handle('get-rvc-voices', () => store.get('rvcVoiceLibrary') || []);
+
+ipcMain.handle('get-rvc-engine-status', async () => {
+  const { getRvcEngineStatus } = await import('./services/localRvcEngine.js');
+  return getRvcEngineStatus();
+});
+
+ipcMain.handle('download-rvc-engine', async () => {
+  const { downloadRvcEngineBundle, getRvcEngineStatus } = await import('./services/localRvcEngine.js');
+  await downloadRvcEngineBundle();
+  return getRvcEngineStatus();
+});
+
+ipcMain.handle('get-whisper-engine-status', async () => {
+  const { getWhisperEngineStatus } = await import('./services/localWhisperEngine.js');
+  return getWhisperEngineStatus();
+});
+
+ipcMain.handle('download-whisper-engine', async () => {
+  const { downloadWhisperEngineBundle, getWhisperEngineStatus } = await import('./services/localWhisperEngine.js');
+  await downloadWhisperEngineBundle();
+  return getWhisperEngineStatus();
+});
+
+ipcMain.handle(
+  'register-rvc-voice',
+  async (
+    _,
+    payload: {
+      nickname?: string;
+      modelPackageUrl?: string;
+      modelPackageRemoteUrl?: string;
+      rvcTrainModelName?: string;
+      avatarUrl?: string;
+      trainAudioUrl?: string;
+      trainAudioRemoteUrl?: string;
+    },
+  ) => {
+    const items = (store.get('rvcVoiceLibrary') || []) as Array<Record<string, unknown>>;
+    const itemId = `rvc-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    const packageRaw = (payload.modelPackageUrl || payload.modelPackageRemoteUrl || '').trim();
+    if (!packageRaw) {
+      throw new Error('请提供 RVC 模型包');
+    }
+
+    const pkg = await persistRvcVoiceLibraryPackage(itemId, packageRaw);
+    if (!pkg?.url) {
+      throw new Error('RVC 模型包保存失败');
+    }
+
+    const packageFileName = deriveRvcPackageFileBaseName(pkg.localPath, packageRaw);
+    const modelName = (payload.rvcTrainModelName || '').trim();
+    const displayName = (payload.nickname || modelName || '').trim() || packageFileName;
+
+    let avatarUrl = '';
+    let localAvatarPath: string | undefined;
+    const avatarRaw = (payload.avatarUrl || '').trim();
+    if (avatarRaw) {
+      const av = await persistRvcVoiceLibraryAvatar(itemId, avatarRaw);
+      if (av?.url) {
+        avatarUrl = av.url;
+        localAvatarPath = av.localPath;
+      }
+    }
+
+    let trainAudioUrl = '';
+    let localTrainAudioPath: string | undefined;
+    let originalTrainAudioUrl: string | undefined;
+    const trainRaw = (payload.trainAudioUrl || payload.trainAudioRemoteUrl || '').trim();
+    if (trainRaw) {
+      const ta = await persistRvcVoiceLibraryTrainAudio(itemId, trainRaw);
+      if (ta?.url) {
+        trainAudioUrl = ta.url;
+        localTrainAudioPath = ta.localPath;
+        originalTrainAudioUrl = ta.originalUrl || (trainRaw.startsWith('http') ? trainRaw : undefined);
+      }
+    }
+
+    const newItem = {
+      id: itemId,
+      nickname: displayName,
+      name: displayName,
+      avatar: avatarUrl || undefined,
+      localAvatarPath,
+      packageFileName,
+      rvcTrainModelName: modelName || undefined,
+      modelPackageUrl: pkg.url,
+      localModelPath: pkg.localPath,
+      originalModelUrl:
+        pkg.originalUrl ||
+        (payload.modelPackageRemoteUrl?.startsWith('http') ? payload.modelPackageRemoteUrl : undefined),
+      trainAudioUrl: trainAudioUrl || undefined,
+      localTrainAudioPath,
+      originalTrainAudioUrl,
+      createdAt: Date.now(),
+    };
+
+    items.push(newItem);
+    store.set('rvcVoiceLibrary', items);
+    return newItem;
+  },
+);
+
+ipcMain.handle(
+  'update-rvc-voice',
+  async (
+    _,
+    itemId: string,
+    updates: {
+      nickname?: string;
+      modelPackageUrl?: string;
+      rvcTrainModelName?: string;
+      avatarUrl?: string;
+      trainAudioUrl?: string;
+    },
+  ) => {
+    const items = (store.get('rvcVoiceLibrary') || []) as Array<Record<string, unknown>>;
+    const idx = items.findIndex((s) => s.id === itemId);
+    if (idx < 0) throw new Error('RVC 音色条目不存在');
+
+    const item = { ...items[idx] } as Record<string, unknown>;
+
+    if (updates.nickname !== undefined) {
+      const n = updates.nickname.trim();
+      item.nickname = n;
+      item.name = n;
+    }
+    if (updates.rvcTrainModelName !== undefined) {
+      item.rvcTrainModelName = updates.rvcTrainModelName.trim();
+    }
+    if (updates.avatarUrl !== undefined) {
+      const raw = updates.avatarUrl.trim();
+      if (!raw) {
+        item.avatar = '';
+        item.localAvatarPath = undefined;
+      } else {
+        const one = await persistRvcVoiceLibraryAvatar(itemId, raw);
+        if (one?.url) {
+          item.avatar = one.url;
+          item.localAvatarPath = one.localPath;
+        }
+      }
+    }
+    if (updates.modelPackageUrl !== undefined) {
+      const raw = updates.modelPackageUrl.trim();
+      if (!raw) {
+        item.modelPackageUrl = '';
+        item.localModelPath = undefined;
+        item.originalModelUrl = undefined;
+      } else {
+        const one = await persistRvcVoiceLibraryPackage(itemId, raw);
+        if (!one?.url) throw new Error('RVC 模型包保存失败');
+        item.modelPackageUrl = one.url;
+        item.localModelPath = one.localPath;
+        item.originalModelUrl = one.originalUrl || (raw.startsWith('http') ? raw : item.originalModelUrl);
+      }
+    }
+    if (updates.trainAudioUrl !== undefined) {
+      const raw = updates.trainAudioUrl.trim();
+      if (!raw) {
+        const oldPath = item.localTrainAudioPath as string | undefined;
+        if (oldPath && fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch {
+            /* ignore */
+          }
+        }
+        item.trainAudioUrl = '';
+        item.localTrainAudioPath = undefined;
+        item.originalTrainAudioUrl = undefined;
+      } else {
+        const one = await persistRvcVoiceLibraryTrainAudio(itemId, raw);
+        if (one?.url) {
+          item.trainAudioUrl = one.url;
+          item.localTrainAudioPath = one.localPath;
+          item.originalTrainAudioUrl = one.originalUrl || (raw.startsWith('http') ? raw : item.originalTrainAudioUrl);
+        }
+      }
+    }
+
+    items[idx] = item;
+    store.set('rvcVoiceLibrary', items);
+    return item;
+  },
+);
+
+ipcMain.handle('delete-rvc-voices', async (_, itemIds: string[]) => {
+  const ids = Array.isArray(itemIds) ? itemIds.filter(Boolean) : [];
+  if (!ids.length) return { success: true };
+  const remove = new Set(ids);
+  const items = (store.get('rvcVoiceLibrary') || []) as Array<{
+    id: string;
+    localModelPath?: string;
+    localAvatarPath?: string;
+    localTrainAudioPath?: string;
+  }>;
+
+  for (const s of items) {
+    if (!remove.has(s.id)) continue;
+    for (const p of [s.localModelPath, s.localAvatarPath, s.localTrainAudioPath]) {
+      if (p && fs.existsSync(p)) {
+        try {
+          fs.unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  store.set(
+    'rvcVoiceLibrary',
+    items.filter((s) => !remove.has(s.id)),
+  );
+  return { success: true };
+});
+
+ipcMain.handle('pick-rvc-voice-package', async () => {
+  const { filePaths, canceled } = await dialog.showOpenDialog({
+    title: '导入 RVC 模型包',
+    properties: ['openFile'],
+    filters: [
+      { name: 'RVC 模型包', extensions: ['zip', 'pth', 'index', 'tar', 'gz', 'tgz'] },
+      { name: '全部', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePaths?.[0]) return { canceled: true };
+  return { canceled: false, filePath: filePaths[0] };
+});
+
+ipcMain.handle('pick-rvc-voice-avatar', async () => {
+  const { filePaths, canceled } = await dialog.showOpenDialog({
+    title: '上传 RVC 音色头像',
+    properties: ['openFile'],
+    filters: [
+      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+      { name: '全部', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePaths?.[0]) return { canceled: true };
+  return { canceled: false, filePath: filePaths[0] };
+});
+
+ipcMain.handle('pick-rvc-voice-train-audio', async () => {
+  const { filePaths, canceled } = await dialog.showOpenDialog({
+    title: '选择训练音频片段',
+    properties: ['openFile'],
+    filters: [
+      { name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'] },
+      { name: '全部', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePaths?.[0]) return { canceled: true };
+  return { canceled: false, filePath: filePaths[0] };
+});
+
+ipcMain.handle(
+  'image-to-3d-ensure-local-texture',
+  async (
+    _,
+    opts: { glbLocalPath?: string; glbResourceUrl?: string },
+  ): Promise<{ textureLocalPath: string; textureLocalUrl: string }> => {
+    const glbPath =
+      resolveFsPathFromUrlish(opts.glbLocalPath) ||
+      resolveFsPathFromUrlish(opts.glbResourceUrl);
+    if (!glbPath || !fs.existsSync(glbPath)) {
+      return { textureLocalPath: '', textureLocalUrl: '' };
+    }
+    const dir = path.dirname(glbPath);
+    const stem = path.basename(glbPath, path.extname(glbPath));
+    const texPath = path.join(dir, `${stem}-basecolor.png`);
+    if (!fs.existsSync(texPath)) {
+      if (!extractEmbeddedGlbBaseColorToPng(glbPath, texPath)) {
+        return { textureLocalPath: '', textureLocalUrl: '' };
+      }
+    }
+    return {
+      textureLocalPath: texPath,
+      textureLocalUrl: fsPathToLocalResourceUrl(texPath),
+    };
+  },
+);
+
+ipcMain.handle('image-to-3d', async (_, imageUrl: string, projectId?: string, nodeId?: string, modelId?: string) => {
   const check = checkLicenseStatus(getUserDataPath());
   if (check.status !== 'VALID') {
     throw new Error('图片转 3D 需要有效授权，请先激活');
@@ -5097,10 +5783,15 @@ ipcMain.handle('image-to-3d', async (_, imageUrl: string, projectId?: string, no
     throw new Error('请先登录云端账号');
   }
   try {
-    const { buffer, mimeType } = await resolveImageToBufferForOSS(imageUrl);
     const videoProvider = new VideoProvider();
-    const publicImageUrl = await videoProvider.uploadImageToOSS(buffer, mimeType);
-    const result = await runImageTo3dViaFc(publicImageUrl);
+    const publicImageUrl = await videoProvider.processImageToOssUrl(imageUrl);
+    const resolvedModel = resolveImageTo3dModelId(modelId);
+    console.log('[图片转3D] 开始', {
+      modelId: resolvedModel,
+      nodeId,
+      imageOssUrl: publicImageUrl.length > 96 ? `${publicImageUrl.slice(0, 96)}…` : publicImageUrl,
+    });
+    const result = await runImageTo3dModelViaFc(resolvedModel, publicImageUrl);
     if (!result.success) {
       throw new Error(result.message);
     }
@@ -5109,6 +5800,7 @@ ipcMain.handle('image-to-3d', async (_, imageUrl: string, projectId?: string, no
       result.companionUrls,
       projectId,
       nodeId,
+      result.resultTextureUrl,
     );
     const toLocalResourceUrl = (filePath: string | null | undefined): string => {
       if (!filePath) return '';
@@ -5409,6 +6101,20 @@ ipcMain.handle(
     return { canceled: false, item };
   },
 );
+
+/** 3D 模型库卡片编辑：仅选择参考图/头像 */
+ipcMain.handle('pick-image-to-3d-avatar', async () => {
+  const { filePaths, canceled } = await dialog.showOpenDialog({
+    title: '选择 3D 模型参考图',
+    properties: ['openFile'],
+    filters: [
+      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] },
+      { name: '全部', extensions: ['*'] },
+    ],
+  });
+  if (canceled || !filePaths?.[0]) return { canceled: true };
+  return { canceled: false, filePath: filePaths[0] };
+});
 
 /** 图片转 3D 底栏「上传」：原生文件选择（含 .aixflow / GLB / 参考图） */
 ipcMain.handle('pick-image-to-3d-upload', async () => {

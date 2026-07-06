@@ -75,6 +75,10 @@ export const IMAGE_MODEL_CNY = {
   /** 图片转 3D 模型 GLB（RunningHub AI App 2059618241806430209） */
   '2059618241806430209': 0.5,
   'image-to-3d': 0.5,
+  /** Trellis2 图生 3D（RunningHub AI App 2072903678922674177，default 24G） */
+  '2072903678922674177': 1.0,
+  trellis2: 1.0,
+  'image-to-3d-trellis2': 1.0,
 };
 
 /** 图像反推（CNY/次）：canonical 与云端复合 Key 同价 */
@@ -94,6 +98,11 @@ export const AUDIO_MODEL_CNY = {
   'speech-2.8-hd': 0.15,
   /** Index-TTS 2.0（路径为 run/ai-app/…，须显式 billingModelId） */
   'index-tts2': 0.2,
+  /** RVC 翻唱：RVC 模型 + 原曲（run/ai-app/2073040724471406593） */
+  'ai-voice-cover': 0.3,
+  /** RVC 音色模型训练（run/ai-app/2072990640429953025） */
+  'rvc-voice-train': 0.5,
+  '2072990640429953025': 0.5,
 };
 
 /**

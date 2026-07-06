@@ -40,6 +40,10 @@ export interface ImageTo3dInlineGlbPreviewProps {
   embeddedInFlow?: boolean;
   controlMinDistance?: number;
   controlMaxDistance?: number;
+  /** 全屏纯黑背景模式 */
+  usePureBlackBackground?: boolean;
+  /** 全屏纯白背景模式 */
+  usePureWhiteBackground?: boolean;
 }
 
 /** 资产库 / 画布节点 / 全屏预览共用的 3D 展示（支持参考图秒出 + 轻量光照） */
@@ -70,6 +74,8 @@ const ImageTo3dInlineGlbPreview: React.FC<ImageTo3dInlineGlbPreviewProps> = ({
   embeddedInFlow = true,
   controlMinDistance,
   controlMaxDistance,
+  usePureBlackBackground = false,
+  usePureWhiteBackground = false,
 }) => {
   const glbUrl =
     (glbUrlProp || '').trim() || (character ? resolveCharacterGlbUrlForPreview(character) : '');
@@ -94,9 +100,12 @@ const ImageTo3dInlineGlbPreview: React.FC<ImageTo3dInlineGlbPreviewProps> = ({
 
   if (!glbUrl && !showGridWhenEmpty) return null;
 
+  /** 全屏模式（embeddedInFlow=false）不显示参考图占位，只显示 3D 画布 */
+  const shouldShowThumb = thumbUrl && embeddedInFlow;
+
   return (
     <div className={wrapperClassName}>
-      {thumbUrl ? (
+      {shouldShowThumb ? (
         <img
           src={thumbUrl}
           alt=""
@@ -129,6 +138,8 @@ const ImageTo3dInlineGlbPreview: React.FC<ImageTo3dInlineGlbPreviewProps> = ({
         controlMinDistance={controlMinDistance}
         controlMaxDistance={controlMaxDistance}
         useStudioEnvironment={useStudioEnvironment}
+        usePureBlackBackground={usePureBlackBackground}
+        usePureWhiteBackground={usePureWhiteBackground}
         onModelReady={handleModelReady}
         placeholderMessage={placeholderMessage}
         placeholderSubMessage={placeholderSubMessage}

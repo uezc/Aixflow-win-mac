@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 打包 aixflow.com.cn 官网静态资源（落地页 + 依赖 JS/CSS）。
- * 部署后「开始使用」会从 OSS 拉 latest.yml 并下载 Aixflow-Windows-Offline-{version}.zip。
+ * 部署后「开始使用」会从 OSS 拉 latest.yml，优先下载 Aixflow-Windows-Setup-{version}.exe（在线安装，无需解压）。
  *
  * 用法: node scripts/pack-aixflow-website-zip.mjs
  * 产物: release/Aixflow-Website-{version}.zip
@@ -95,15 +95,18 @@ function main() {
 验证:
   1. 浏览器打开 https://aixflow.com.cn/ 强制刷新 Ctrl+F5
   2. 首屏按钮应先显示「准备下载…」再变为「开始使用」
-  3. 点击应下载 Aixflow-Windows-Offline-${version}.zip
+  3. 点击应下载 Aixflow-Windows-Setup-${version}.exe（约 1MB 在线安装器，无需解压；安装时会自动下载完整包）
 
-OSS 安装包无需在服务器配置；须已 upload:release 且 OSS CORS 含 aixflow.com.cn。
+OSS 安装包须已 upload:release（含 latest.yml + stub exe + .nsis.7z）；离线 zip 仅作备用，官网不会优先使用。
 `;
   zip.addFile('DEPLOY.txt', Buffer.from(readme, 'utf8'));
   zip.writeZip(zipPath);
 
   const jsText = fs.readFileSync(path.join(dist, 'assets', a.landingJs), 'utf8');
-  const hasDownload = jsText.includes('latest.yml') && jsText.includes('Offline');
+  const hasDownload =
+    jsText.includes('latest.yml') &&
+    jsText.includes('method:"HEAD"') &&
+    jsText.includes('Aixflow-Windows-Offline');
   console.log(`[pack-website] 已生成 ${zipPath}`);
   console.log(`[pack-website] landing js: ${a.landingJs} | 含 OSS 下载逻辑: ${hasDownload ? '是' : '否'}`);
 }

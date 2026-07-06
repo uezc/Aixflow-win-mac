@@ -72,6 +72,8 @@ export type AudioInputPanelStrings = {
   recordModalStop: string;
   priceTitle: string;
   creditsSuffix: string;
+  localCoverFree: string;
+  localCoverFreeTitle: string;
   noPricingTitle: string;
   noPricingYet: string;
   generateAudioTitle: string;
@@ -94,6 +96,36 @@ export type AudioInputPanelStrings = {
   pitchLabel: (v: string) => string;
   pitchAria: string;
   emotionNone: string;
+  coverSourceSongLabel: string;
+  coverReferenceLabel: string;
+  coverRvcModelLabel: string;
+  coverRvcModelPlaceholder: string;
+  coverOutputModeLabel: string;
+  coverOutputWithAccomp: string;
+  coverOutputVocalsOnly: string;
+  coverOutputModeTitle: string;
+  coverPitchLabel: (v: string) => string;
+  coverPitchTitle: string;
+  coverIndexRateLabel: (pct: string) => string;
+  coverIndexRateTitle: string;
+  coverVocalMixLabel: (pct: string) => string;
+  coverVocalMixTitle: string;
+  coverAccompanimentMixLabel: (pct: string) => string;
+  coverAccompanimentMixTitle: string;
+  coverPitchRhLabel: (v: string) => string;
+  coverRhVolumeLabel: (v: string) => string;
+  coverHint: string;
+  coverSlotConnected: string;
+  coverSlotPending: string;
+  coverMissingRefTitle: string;
+  coverMissingSource: string;
+  coverMissingModel: string;
+  rvcTrainModelLabel: string;
+  rvcTrainModelPlaceholder: string;
+  rvcTrainAudioLabel: string;
+  rvcTrainHint: string;
+  generateRvcTrain: string;
+  generatingRvcTrain: string;
 };
 
 const zh: AudioInputPanelStrings = {
@@ -123,6 +155,8 @@ const zh: AudioInputPanelStrings = {
   recordModalStop: '停止并保存',
   priceTitle: '单次生成预估消耗元宝（优先 nx_model_config 云端表）',
   creditsSuffix: '元宝',
+  localCoverFree: '本地免费',
+  localCoverFreeTitle: 'RVC 翻唱在本机运行，不消耗云端元宝',
   noPricingTitle: '该模型暂无定价表',
   noPricingYet: '暂未定价',
   generateAudioTitle: '生成音频',
@@ -145,6 +179,36 @@ const zh: AudioInputPanelStrings = {
   pitchLabel: (v) => `音调: ${v}`,
   pitchAria: '音调',
   emotionNone: '无',
+  coverSourceSongLabel: '原曲',
+  coverReferenceLabel: '参考音色',
+  coverRvcModelLabel: 'RVC 模型',
+  coverRvcModelPlaceholder: '如 my-voice/my-voice.pth',
+  coverOutputModeLabel: '输出:',
+  coverOutputWithAccomp: '带伴奏',
+  coverOutputVocalsOnly: '纯人声',
+  coverOutputModeTitle: '带伴奏=人声与伴奏混音；纯人声=不混回伴奏（Demucs 分离可能仍有少量残留，已尽量抑制）',
+  coverPitchLabel: (v) => `音调: ${v}`,
+  coverPitchTitle: '整体升/降调（半音），如男转女可试 +3~+5',
+  coverIndexRateLabel: (pct) => `音色相似: ${pct}%`,
+  coverIndexRateTitle: '越高越接近训练音色；过高可能发糊、抖动',
+  coverVocalMixLabel: (pct) => `人声: ${pct}%`,
+  coverVocalMixTitle: '混音时人声音量（0=无人声）',
+  coverAccompanimentMixLabel: (pct) => `伴奏: ${pct}%`,
+  coverAccompanimentMixTitle: '混音时伴奏音量（0=纯人声）',
+  coverPitchRhLabel: (v) => `翻唱音调: ${v}`,
+  coverRhVolumeLabel: (v) => `翻唱音量: ${v}`,
+  coverHint: '本地 RVC 翻唱：从音色库选择 zip/pth 模型 + 原曲，输出含伴奏；首次使用需下载本地引擎（约 1.2GB）',
+  coverSlotConnected: '已接入',
+  coverSlotPending: '待接入',
+  coverMissingRefTitle: '自训练翻唱需要训练参考音：音色库点铅笔编辑 → 上传「训练音频片段」（与训练 RVC 时用的干声相同）',
+  coverMissingSource: 'RVC 翻唱需要原曲：请连接 audio 节点到本节点',
+  coverMissingModel: 'RVC 翻唱需要模型：请连接 rvcTrain 节点或从音色库拖入音色',
+  rvcTrainModelLabel: '模型名称',
+  rvcTrainModelPlaceholder: '例如：周美丽声音',
+  rvcTrainAudioLabel: '训练音频',
+  rvcTrainHint: '从上游声音节点连入训练素材；填写模型名称后点击开始训练（无需台词，结果写入音色库）',
+  generateRvcTrain: '开始训练',
+  generatingRvcTrain: '训练中',
 };
 
 const en: AudioInputPanelStrings = {
@@ -174,6 +238,8 @@ const en: AudioInputPanelStrings = {
   recordModalStop: 'Stop & save',
   priceTitle: 'Estimated credits per generation (nx_model_config)',
   creditsSuffix: 'credits',
+  localCoverFree: 'Local free',
+  localCoverFreeTitle: 'RVC cover runs locally; no cloud credits charged',
   noPricingTitle: 'No pricing for this model',
   noPricingYet: 'Not priced',
   generateAudioTitle: 'Generate audio',
@@ -196,6 +262,36 @@ const en: AudioInputPanelStrings = {
   pitchLabel: (v) => `Pitch: ${v}`,
   pitchAria: 'Pitch',
   emotionNone: 'None',
+  coverSourceSongLabel: 'Source song',
+  coverReferenceLabel: 'Reference voice',
+  coverRvcModelLabel: 'RVC model',
+  coverRvcModelPlaceholder: 'e.g. my-voice/my-voice.pth',
+  coverOutputModeLabel: 'Output:',
+  coverOutputWithAccomp: 'With backing',
+  coverOutputVocalsOnly: 'Vocals only',
+  coverOutputModeTitle: 'With backing = mixed with instrumental; Vocals only = no mix-back (may retain slight separation bleed, suppressed when possible)',
+  coverPitchLabel: (v) => `Pitch: ${v}`,
+  coverPitchTitle: 'Semitone shift; try +3~+5 for male model on female vocals',
+  coverIndexRateLabel: (pct) => `Likeness: ${pct}%`,
+  coverIndexRateTitle: 'How close to the trained voice; too high may sound muddy',
+  coverVocalMixLabel: (pct) => `Vocal: ${pct}%`,
+  coverVocalMixTitle: 'Vocal level in final mix (0 = mute vocal)',
+  coverAccompanimentMixLabel: (pct) => `Backing: ${pct}%`,
+  coverAccompanimentMixTitle: 'Instrumental level in final mix (0 = vocals only)',
+  coverPitchRhLabel: (v) => `Cover pitch: ${v}`,
+  coverRhVolumeLabel: (v) => `Cover volume: ${v}`,
+  coverHint: 'Local RVC cover: pick zip/pth from voice library + source song; output includes accompaniment. First run downloads ~1.2GB engine.',
+  coverSlotConnected: 'Connected',
+  coverSlotPending: 'Not connected',
+  coverMissingRefTitle: 'Custom cover needs training reference audio — upload it in the voice library',
+  coverMissingSource: 'RVC cover needs a source song — connect an audio node',
+  coverMissingModel: 'RVC cover needs a model — connect rvcTrain or drag from voice library',
+  rvcTrainModelLabel: 'Model name',
+  rvcTrainModelPlaceholder: 'e.g. My Voice',
+  rvcTrainAudioLabel: 'Training audio',
+  rvcTrainHint: 'Connect training audio from an upstream node; set a model name and start (no script; saves to voice library)',
+  generateRvcTrain: 'Train model',
+  generatingRvcTrain: 'Training',
 };
 
 export function audioInputPanelT(locale: AppLocale): AudioInputPanelStrings {

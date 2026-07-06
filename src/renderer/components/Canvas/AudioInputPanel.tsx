@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Play, Mic, Loader2 } from 'lucide-react';
+import { Play, Mic, Loader2, Check, Music2, Package } from 'lucide-react';
 import { useReferenceMicRecording, localResourceUrlFromSavedPath } from '../../hooks/useReferenceMicRecording';
 import { useAI } from '../../hooks/useAI';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
@@ -10,6 +10,10 @@ import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { isAudioSongModel } from '../../utils/audioSongModels';
+import { isAudioCoverModel, AI_VOICE_COVER_MODEL_ID, resolveRvcCoverModelPath, clampCoverPitch, clampCoverIndexRate, clampCoverVocalMixPct, clampCoverAccompanimentMixPct } from '../../utils/audioCoverModel';
+import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from '../../utils/audioRvcTrainModel';
+import { isRvcModelPackageUrl } from '../../../shared/rvcVoiceTrainUtils';
+import { rvcVoiceModelPackageUrl } from '../characterListShared';
 import {
   filterActiveAudioModelOptions,
   isRetiredAudioModel,
@@ -22,10 +26,11 @@ import {
 } from '../../i18n/audioInputPanelI18n';
 import { canvasBottomInputPanelShell } from '../../theme/canvasBottomInputPanel';
 
-const audioModelOptions = filterActiveAudioModelOptions([
+const baseAudioModelOptions = filterActiveAudioModelOptions([
   { value: 'speech-2.8-hd', label: 'MiniMax 2.8 HD' },
   { value: 'index-tts2', label: 'Index-TTS 2.0' },
   { value: 'rhart-song-v5.5', label: 'SUNO v5.5' },
+  { value: AI_VOICE_COVER_MODEL_ID, label: 'RVC 翻唱' },
 ]);
 
 interface AudioInputPanelProps {
@@ -39,7 +44,18 @@ interface AudioInputPanelProps {
   pitch: number;
   emotion?: 'happy' | 'sad' | 'angry' | 'fearful' | 'disgusted' | 'surprised' | 'neutral';
   referenceAudioUrl?: string;
-  /** 全能写歌：歌曲名 / 风格描述 / 歌词 */
+  sourceSongAudioUrl?: string;
+  coverRhVolume?: number;
+  coverPitch?: number;
+  coverIndexRate?: number;
+  coverVocalMixPct?: number;
+  coverAccompanimentMixPct?: number;
+  rvcTrainModelName?: string;
+  rvcCoverModelName?: string;
+  outputModelUrl?: string;
+  outputModelRemoteUrl?: string;
+  coverReferenceAudioUrl?: string;
+  libraryRvcVoiceId?: string;
   songName?: string;
   styleDesc?: string;
   lyrics?: string;
@@ -54,10 +70,24 @@ interface AudioInputPanelProps {
   onPitchChange: (value: number) => void;
   onEmotionChange?: (value: 'happy' | 'sad' | 'angry' | 'fearful' | 'disgusted' | 'surprised' | 'neutral' | undefined) => void;
   onReferenceAudioUrlChange?: (value: string) => void;
+  onSourceSongAudioUrlChange?: (value: string) => void;
+  onCoverRhVolumeChange?: (value: number) => void;
+  onCoverPitchChange?: (value: number) => void;
+  onCoverIndexRateChange?: (value: number) => void;
+  onCoverVocalMixPctChange?: (value: number) => void;
+  onCoverAccompanimentMixPctChange?: (value: number) => void;
+  onRvcTrainModelNameChange?: (value: string) => void;
+  onRvcCoverModelNameChange?: (value: string) => void;
   onSongNameChange?: (value: string) => void;
   onStyleDescChange?: (value: string) => void;
   onLyricsChange?: (value: string) => void;
-  onOutputAudioChange: (audioUrl: string, originalUrl?: string) => void;
+  onOutputAudioChange: (audioUrl: string, originalUrl?: string, outputAudios?: string[], originalOutputAudios?: string[]) => void;
+  onRvcTrainComplete?: (payload: {
+    outputModelUrl: string;
+    outputModelRemoteUrl?: string;
+    outputModelLocalPath?: string;
+    rvcTrainModelName?: string;
+  }) => void;
 }
 
 const VOICE_IDS = [
@@ -93,6 +123,18 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   pitch,
   emotion,
   referenceAudioUrl = '',
+  sourceSongAudioUrl = '',
+  coverRhVolume = 5,
+  coverPitch = 0,
+  coverIndexRate = 0.75,
+  coverVocalMixPct = 100,
+  coverAccompanimentMixPct = 100,
+  rvcTrainModelName = '',
+  rvcCoverModelName = '',
+  outputModelUrl = '',
+  outputModelRemoteUrl = '',
+  coverReferenceAudioUrl = '',
+  libraryRvcVoiceId = '',
   songName = '',
   styleDesc = '',
   lyrics = '',
@@ -107,10 +149,19 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   onPitchChange,
   onEmotionChange,
   onReferenceAudioUrlChange,
+  onSourceSongAudioUrlChange,
+  onCoverRhVolumeChange,
+  onCoverPitchChange,
+  onCoverIndexRateChange,
+  onCoverVocalMixPctChange,
+  onCoverAccompanimentMixPctChange,
+  onRvcTrainModelNameChange,
+  onRvcCoverModelNameChange,
   onSongNameChange,
   onStyleDescChange,
   onLyricsChange,
   onOutputAudioChange,
+  onRvcTrainComplete,
 }) => {
   const { cloudMap } = useNxModelPricing();
   const { locale } = useAppLocale();
@@ -120,21 +171,24 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   const voiceMergeTargetRef = useRef<'text' | 'lyrics' | 'styleDesc'>('text');
   const isIndexTts2 = model === 'index-tts2';
   const isRhartSong = isAudioSongModel(model);
+  const effectiveRvcCoverModel = resolveRvcCoverModelPath({
+    rvcCoverModelName,
+    rvcTrainModelName,
+  });
+  const hasRvcCoverModel =
+    !!((outputModelUrl || outputModelRemoteUrl || '').trim()) || !!effectiveRvcCoverModel;
+  const hasCoverSource = !!(sourceSongAudioUrl || '').trim();
+  const isAudioCover = isAudioCoverModel(model);
+  const isRvcTrain = isRvcTrainModel(model);
+
+  const audioModelOptions = useMemo(() => baseAudioModelOptions, []);
 
   useEffect(() => {
     if (!isRetiredAudioModel(model) || !onModelChange) return;
     onModelChange(normalizeAudioModelIfRetired(model));
   }, [model, onModelChange]);
 
-  /** 有参考音时自动切到 Index-TTS 2.0（写歌模型不强制切换） */
-  useEffect(() => {
-    const ref = (referenceAudioUrl || '').trim();
-    if (!ref || !onModelChange) return;
-    if (isAudioSongModel(model)) return;
-    if (model !== 'index-tts2') {
-      onModelChange('index-tts2');
-    }
-  }, [referenceAudioUrl, model, onModelChange]);
+  /** rvcTrain 入边时由 Workspace 写入 model；此处不再按双路 audio 自动切换 */
   const textInputRef = useRef<HTMLTextAreaElement>(null);
   const showAlert = useDarkAlert().showAlert;
 
@@ -174,6 +228,29 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       setLocalText(text);
     }
   }, [text, nodeId]);
+
+  /** rvcTrain 入边或节点已有 RVC 模型包 → 有原曲时自动切翻唱 */
+  useEffect(() => {
+    if (!onModelChange || isAudioSongModel(model)) return;
+    if (hasRvcCoverModel && hasCoverSource && !isAudioCoverModel(model)) {
+      onModelChange(AI_VOICE_COVER_MODEL_ID);
+    }
+  }, [hasRvcCoverModel, hasCoverSource, model, onModelChange]);
+
+  /** 1 路参考音：无台词 → Index-TTS；有 RVC 模型卡时不切训练模块 */
+  useEffect(() => {
+    const ref = (referenceAudioUrl || '').trim();
+    if (!ref || !onModelChange) return;
+    if (isAudioSongModel(model) || isAudioCoverModel(model)) return;
+    if (hasRvcCoverModel) return;
+    if ((sourceSongAudioUrl || '').trim()) return;
+    const hasText = localText.trim().length > 0;
+    if (!hasText) {
+      if (!isRvcTrainModel(model)) onModelChange(RVC_VOICE_TRAIN_MODEL_ID);
+      return;
+    }
+    if (isRvcTrainModel(model)) onModelChange('index-tts2');
+  }, [referenceAudioUrl, sourceSongAudioUrl, localText, model, onModelChange, hasRvcCoverModel]);
 
   useEffect(() => {
     return () => {
@@ -353,12 +430,30 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     onStatusUpdate: (packet) => {
       // 处理状态更新
       if (packet.status === 'SUCCESS') {
-        // SUCCESS 状态：更新输出音频
+        const modelUrl =
+          packet.payload?.outputModelUrl ||
+          (isRvcModelPackageUrl(String(packet.payload?.audioUrl ?? '')) ? packet.payload?.audioUrl : undefined) ||
+          (isRvcModelPackageUrl(String(packet.payload?.url ?? '')) ? packet.payload?.url : undefined);
+        if (modelUrl && (isRvcTrain || isRvcModelPackageUrl(String(modelUrl)))) {
+          onRvcTrainComplete?.({
+            outputModelUrl: String(modelUrl),
+            outputModelRemoteUrl: packet.payload?.outputModelRemoteUrl as string | undefined,
+            outputModelLocalPath: packet.payload?.outputModelLocalPath as string | undefined,
+            rvcTrainModelName: packet.payload?.rvcTrainModelName as string | undefined,
+          });
+          return;
+        }
         const audioUrl = packet.payload?.url || packet.payload?.audioUrl;
         const originalUrl = packet.payload?.originalAudioUrl;
+        const outputAudiosRaw = Array.isArray(packet.payload?.outputAudios)
+          ? packet.payload.outputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : undefined;
+        const originalOutputAudiosRaw = Array.isArray(packet.payload?.originalOutputAudios)
+          ? packet.payload.originalOutputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : undefined;
         
         if (audioUrl) {
-          onOutputAudioChange(audioUrl, originalUrl);
+          onOutputAudioChange(audioUrl, originalUrl, outputAudiosRaw, originalOutputAudiosRaw);
         }
       } else if (packet.status === 'ERROR') {
         // 错误处理
@@ -372,6 +467,13 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       }
     },
     onComplete: (result) => {
+      if (isRvcTrain) {
+        const modelUrl =
+          result?.outputModelUrl ||
+          (isRvcModelPackageUrl(String(result?.url ?? '')) ? result?.url : undefined) ||
+          (isRvcModelPackageUrl(String(result?.audioUrl ?? '')) ? result?.audioUrl : undefined);
+        if (modelUrl) return;
+      }
       // 优先使用 localPath（如果存在）
       const localPath = result?.localPath;
       let audioUrl = result?.url || result?.audioUrl;
@@ -387,7 +489,13 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       
       if (audioUrl) {
         const originalUrl = result?.originalAudioUrl;
-        onOutputAudioChange(audioUrl, originalUrl);
+        const outputAudiosRaw = Array.isArray(result?.outputAudios)
+          ? result.outputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : undefined;
+        const originalOutputAudiosRaw = Array.isArray(result?.originalOutputAudios)
+          ? result.originalOutputAudios.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
+          : undefined;
+        onOutputAudioChange(audioUrl, originalUrl, outputAudiosRaw, originalOutputAudiosRaw);
       }
     },
     onError: (error) => {
@@ -426,6 +534,21 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     const effectiveText = localText.trim();
     if (isRhartSong) {
       if (!(songName ?? '').trim() || !(styleDesc ?? '').trim() || !(lyrics ?? '').trim()) return;
+    } else if (isAudioCover) {
+      if (!(sourceSongAudioUrl ?? '').trim()) {
+        showAlert(at.coverMissingSource);
+        return;
+      }
+      const hasModel =
+        !!((outputModelUrl || outputModelRemoteUrl || '').trim()) ||
+        !!(libraryRvcVoiceId || '').trim() ||
+        !!effectiveRvcCoverModel;
+      if (!hasModel) {
+        showAlert(at.coverMissingModel);
+        return;
+      }
+    } else if (isRvcTrain) {
+      if (!(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()) return;
     } else if (!effectiveText) {
       return;
     }
@@ -434,8 +557,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
 
     try {
       const requestParams: any = {
-        model,
-        text: (effectiveText || '').trim(),
+        model: isAudioCover ? AI_VOICE_COVER_MODEL_ID : isRvcTrain ? RVC_VOICE_TRAIN_MODEL_ID : model,
+        text: isAudioCover || isRvcTrain ? '' : (effectiveText || '').trim(),
         enable_base64_output: false,
         english_normalization: false,
       };
@@ -443,6 +566,44 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         requestParams.songName = (songName ?? '').trim();
         requestParams.styleDesc = (styleDesc ?? '').trim();
         requestParams.lyrics = (lyrics ?? '').trim();
+      } else if (isAudioCover) {
+        let srcUrl = (sourceSongAudioUrl || '').trim();
+        if (srcUrl.startsWith('local-resource://') || srcUrl.startsWith('file://')) {
+          srcUrl = srcUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
+        }
+        let resolvedOutputModelUrl = (outputModelUrl || '').trim();
+        let resolvedOutputModelRemoteUrl = (outputModelRemoteUrl || '').trim();
+        const libId = (libraryRvcVoiceId || '').trim();
+        if (!resolvedOutputModelUrl && libId && window.electronAPI?.getRvcVoices) {
+          try {
+            const voices = await window.electronAPI.getRvcVoices();
+            const item = (voices as Array<{ id: string }>).find((v) => v.id === libId);
+            if (item) {
+              resolvedOutputModelUrl = rvcVoiceModelPackageUrl(item as Parameters<typeof rvcVoiceModelPackageUrl>[0]) || '';
+              resolvedOutputModelRemoteUrl =
+                (item as { originalModelUrl?: string }).originalModelUrl || resolvedOutputModelRemoteUrl;
+            }
+          } catch {
+            /* 主进程补全 */
+          }
+        }
+        requestParams.sourceSongAudioUrl = srcUrl;
+        requestParams.rvcCoverModelName = effectiveRvcCoverModel || undefined;
+        requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim() || undefined;
+        requestParams.outputModelUrl = resolvedOutputModelUrl || undefined;
+        requestParams.outputModelRemoteUrl = resolvedOutputModelRemoteUrl || undefined;
+        requestParams.libraryRvcVoiceId = libId || undefined;
+        requestParams.coverPitch = clampCoverPitch(coverPitch);
+        requestParams.coverIndexRate = clampCoverIndexRate(coverIndexRate);
+        requestParams.coverVocalMixPct = clampCoverVocalMixPct(coverVocalMixPct);
+        requestParams.coverAccompanimentMixPct = clampCoverAccompanimentMixPct(coverAccompanimentMixPct);
+      } else if (isRvcTrain) {
+        let refUrl = (referenceAudioUrl || '').trim();
+        if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
+          refUrl = refUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
+        }
+        requestParams.referenceAudioUrl = refUrl;
+        requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim();
       } else if (isIndexTts2) {
         let refUrl = (referenceAudioUrl || '').trim();
         if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
@@ -461,13 +622,18 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     } catch (error) {
       console.error('音频生成失败:', error);
     }
-  }, [flushTextSync, localText, model, isIndexTts2, isRhartSong, songName, styleDesc, lyrics, referenceAudioUrl, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId]);
+  }, [flushTextSync, localText, model, isIndexTts2, isAudioCover, isRvcTrain, isRhartSong, songName, styleDesc, lyrics, sourceSongAudioUrl, referenceAudioUrl, effectiveRvcCoverModel, rvcTrainModelName, outputModelUrl, outputModelRemoteUrl, coverReferenceAudioUrl, libraryRvcVoiceId, coverPitch, coverIndexRate, coverVocalMixPct, coverAccompanimentMixPct, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId]);
 
   const isRunDisabled =
     aiStatus === 'PROCESSING' ||
     (isRhartSong
       ? !(songName ?? '').trim() || !(styleDesc ?? '').trim() || !(lyrics ?? '').trim()
-      : !localText.trim() || (isIndexTts2 && !(referenceAudioUrl || '').trim()));
+      : isAudioCover
+        ? !(sourceSongAudioUrl ?? '').trim() ||
+          (!hasRvcCoverModel && !(outputModelUrl || outputModelRemoteUrl || '').trim() && !(libraryRvcVoiceId || '').trim())
+        : isRvcTrain
+          ? !(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()
+          : !localText.trim() || (isIndexTts2 && !(referenceAudioUrl || '').trim()));
 
   return (
     <div className={canvasBottomInputPanelShell(isDarkMode, { pad: 'p-4' })}>
@@ -492,7 +658,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
               ))}
             </select>
           </div>
-          {!isIndexTts2 && !isRhartSong && (
+          {!isIndexTts2 && !isRhartSong && !isAudioCover && !isRvcTrain && (
             <>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <label className={`text-xs font-medium whitespace-nowrap ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.voiceLabel}</label>
@@ -564,6 +730,22 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
               </button>
             </div>
           )}
+          {isRvcTrain && onRvcTrainModelNameChange && (
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+                {at.rvcTrainModelLabel}
+              </label>
+              <input
+                type="text"
+                value={rvcTrainModelName}
+                onChange={(e) => onRvcTrainModelNameChange(e.target.value)}
+                placeholder={at.rvcTrainModelPlaceholder}
+                className={`flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs ${
+                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border border-gray-300 placeholder:text-gray-500'
+                } outline-none focus:ring-2 focus:ring-green-500/50`}
+              />
+            </div>
+          )}
         </div>
 
         {/* 右侧：价格 + 运行按钮（与图片模块一致：价格在左、按钮在右） */}
@@ -571,6 +753,18 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           {(() => {
             if (!model) return null;
             try {
+              if (isAudioCover) {
+                return (
+                  <span
+                    className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
+                      isDarkMode ? 'text-green-200 bg-green-500/25' : 'text-green-700 bg-green-100'
+                    }`}
+                    title={at.localCoverFreeTitle}
+                  >
+                    {at.localCoverFree}
+                  </span>
+                );
+              }
               const price = getAudioDisplayPrice(model, cloudMap);
               return (
                 <span
@@ -615,17 +809,60 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
             {aiStatus === 'PROCESSING' ? (
               <>
                 <div className={`w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin`} />
-                {at.generating}
+                {isRvcTrain ? at.generatingRvcTrain : at.generating}
               </>
             ) : (
               <>
                 <Play className="w-3 h-3" />
-                {at.generateAudio}
+                {isRvcTrain ? at.generateRvcTrain : at.generateAudio}
               </>
             )}
           </button>
         </div>
       </div>
+
+      {isAudioCover && onCoverPitchChange && (
+        <div
+          className={`flex flex-wrap items-center gap-x-4 gap-y-2 mb-3 flex-shrink-0 pb-3 ${
+            isDarkMode ? 'border-b border-gray-700/30' : 'border-b border-gray-300/30'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-[140px] flex-1 max-w-[200px]">
+            <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+              {at.coverPitchLabel(`${clampCoverPitch(coverPitch) > 0 ? '+' : ''}${clampCoverPitch(coverPitch)}`)}
+            </label>
+            <input
+              type="range"
+              min={-12}
+              max={12}
+              step={1}
+              value={clampCoverPitch(coverPitch)}
+              onChange={(e) => onCoverPitchChange(clampCoverPitch(parseInt(e.target.value, 10)))}
+              className="flex-1 min-w-0 h-2 accent-green-500 cursor-pointer"
+              title={at.coverPitchTitle}
+              aria-label={at.coverPitchTitle}
+            />
+          </div>
+          {onCoverIndexRateChange && (
+            <div className="flex items-center gap-2 min-w-[140px] flex-1 max-w-[200px]">
+              <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+                {at.coverIndexRateLabel(String(Math.round(clampCoverIndexRate(coverIndexRate) * 100)))}
+              </label>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(clampCoverIndexRate(coverIndexRate) * 100)}
+                onChange={(e) => onCoverIndexRateChange(clampCoverIndexRate(parseInt(e.target.value, 10) / 100))}
+                className="flex-1 min-w-0 h-2 accent-green-500 cursor-pointer"
+                title={at.coverIndexRateTitle}
+                aria-label={at.coverIndexRateTitle}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 主要内容区域 - 左右分栏布局 */}
       <div className="flex-1 min-h-0 flex gap-4 overflow-hidden">
@@ -721,6 +958,127 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
               />
             </div>
           </div>
+        ) : isRvcTrain ? (
+          <div className="flex-1 min-w-0 min-h-0 grid grid-cols-2 gap-2">
+            {(() => {
+              const connected = !!(referenceAudioUrl || '').trim();
+              return (
+                <div
+                  className={`flex flex-col items-center justify-center gap-2 min-h-[120px] rounded-xl border transition-colors ${
+                    connected
+                      ? isDarkMode
+                        ? 'border-emerald-500/45 bg-emerald-500/10'
+                        : 'border-emerald-400/70 bg-emerald-50/90'
+                      : isDarkMode
+                        ? 'border-white/12 bg-black/30'
+                        : 'border-gray-300/80 bg-gray-50/90'
+                  }`}
+                >
+                  <div
+                    className={`flex h-11 w-11 items-center justify-center rounded-full ${
+                      connected
+                        ? isDarkMode
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : 'bg-emerald-100 text-emerald-600'
+                        : isDarkMode
+                          ? 'bg-white/5 text-white/30'
+                          : 'bg-gray-200/80 text-gray-400'
+                    }`}
+                  >
+                    <Mic className="h-5 w-5" strokeWidth={2} />
+                  </div>
+                  <span className={`text-sm font-medium ${isDarkMode ? 'text-white/85' : 'text-gray-800'}`}>
+                    {at.rvcTrainAudioLabel}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-0.5 text-xs font-medium ${
+                      connected
+                        ? isDarkMode
+                          ? 'text-emerald-400'
+                          : 'text-emerald-600'
+                        : isDarkMode
+                          ? 'text-white/40'
+                          : 'text-gray-400'
+                    }`}
+                  >
+                    {connected ? (
+                      <>
+                        <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+                        {at.coverSlotConnected}
+                      </>
+                    ) : (
+                      at.coverSlotPending
+                    )}
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        ) : isAudioCover ? (
+          <div className="flex-1 min-w-0 min-h-0 grid grid-cols-2 gap-2">
+            {[
+              {
+                key: 'model',
+                label: at.coverRvcModelLabel,
+                connected: hasRvcCoverModel,
+                Icon: Package,
+              },
+              {
+                key: 'source',
+                label: at.coverSourceSongLabel,
+                connected: hasCoverSource,
+                Icon: Music2,
+              },
+            ].map(({ key, label, connected, Icon }) => (
+              <div
+                key={key}
+                className={`flex flex-col items-center justify-center gap-1.5 min-h-[96px] rounded-xl border transition-colors ${
+                  connected
+                    ? isDarkMode
+                      ? 'border-emerald-500/45 bg-emerald-500/10'
+                      : 'border-emerald-400/70 bg-emerald-50/90'
+                    : isDarkMode
+                      ? 'border-white/12 bg-black/30'
+                      : 'border-gray-300/80 bg-gray-50/90'
+                }`}
+              >
+                <div
+                  className={`flex h-9 w-9 items-center justify-center rounded-full ${
+                    connected
+                      ? isDarkMode
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-emerald-100 text-emerald-600'
+                      : isDarkMode
+                        ? 'bg-white/5 text-white/30'
+                        : 'bg-gray-200/80 text-gray-400'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" strokeWidth={2} />
+                </div>
+                <span className={`text-xs font-medium ${isDarkMode ? 'text-white/85' : 'text-gray-800'}`}>{label}</span>
+                <span
+                  className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
+                    connected
+                      ? isDarkMode
+                        ? 'text-emerald-400'
+                        : 'text-emerald-600'
+                      : isDarkMode
+                        ? 'text-white/40'
+                        : 'text-gray-400'
+                  }`}
+                >
+                  {connected ? (
+                    <>
+                      <Check className="h-3 w-3" strokeWidth={2.5} />
+                      {at.coverSlotConnected}
+                    </>
+                  ) : (
+                    at.coverSlotPending
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
         ) : (
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
           <div className="mb-2 flex items-center gap-2 min-w-0 flex-shrink-0">
@@ -793,8 +1151,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         </div>
         )}
 
-        {/* 右侧：语速/音量/音调（仅语音合成模型） */}
-        {!isIndexTts2 && !isRhartSong && (
+        {/* 右侧：语速/音量/音调（仅 MiniMax 语音合成） */}
+        {!isIndexTts2 && !isRhartSong && !isAudioCover && !isRvcTrain && (
             <div className="w-48 flex-shrink-0 flex flex-col gap-4">
             <div className="flex flex-col">
               <label className={`text-xs font-medium mb-2 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>

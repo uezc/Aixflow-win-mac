@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { User, Copy, Check, Trash2, ChevronLeft, ChevronRight, Download, Upload, ExternalLink, Plus, X, Mic, Headphones, Square, Loader2, Pencil, Box } from 'lucide-react';
+import { User, Copy, Check, Trash2, ChevronLeft, ChevronRight, Download, Upload, ExternalLink, Plus, X, Mic, Headphones, Square, Loader2, Pencil, Box, Layers } from 'lucide-react';
 import { useDarkAlert } from '../contexts/DarkAlertContext';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { assetLibraryT } from '../i18n/assetLibraryI18n';
@@ -33,6 +33,18 @@ import {
   assetLibListCard,
   assetLibListCardSelected,
   assetLibMsgSuccess,
+  assetLibEditModalBackdrop,
+  assetLibEditModalPanel,
+  assetLibEditModalTitle,
+  assetLibEditModalLabel,
+  assetLibEditModalInput,
+  assetLibEditModalMutedLink,
+  assetLibEditModalCloseScratch,
+  assetLibEditModalCancelScratch,
+  assetLibEditModalSaveScratch,
+  assetLibEditModalPrimaryScratch,
+  assetLibEditModalSecondaryActionScratch,
+  assetLibEditModalCanvasPickScratch,
 } from '../utils/assetLibraryChrome';
 
 /** 本地音无法解码波形时的占位条（横向绿色波纹） */
@@ -42,6 +54,15 @@ const ADD_VOICE_FALLBACK_WAVEFORM_BARS: number[] = Array.from({ length: 56 }, (_
 });
 
 const EMPTY_FOUR_VIEWS: [string, string, string, string] = ['', '', '', ''];
+
+function pathToPreviewUrl(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
+  return `local-resource://${normalized}`;
+}
+
+function isImageFilePath(filePath: string): boolean {
+  return /\.(png|jpe?g|webp|gif|bmp)$/i.test(filePath.trim());
+}
 
 /** 角色头像取自四视图顺序中的第一张非空图 */
 function avatarFromViewImages(views: readonly string[]): string {
@@ -272,6 +293,14 @@ const CharacterList: React.FC<CharacterListProps> = ({
   const characterListScrollRef = useRef<HTMLDivElement>(null);
   const [fourViewHover, setFourViewHover] = useState<{ character: Character; rect: DOMRect } | null>(null);
   const [imageTo3dHover, setImageTo3dHover] = useState<{ character: Character; rect: DOMRect } | null>(null);
+  /** 3D 模型库：编辑弹窗（备注 + 参考图头像） */
+  const [showImageTo3dEditModal, setShowImageTo3dEditModal] = useState(false);
+  const [edit3dCharacterId, setEdit3dCharacterId] = useState<string | null>(null);
+  const [edit3dNickname, setEdit3dNickname] = useState('');
+  const [edit3dAvatarPreview, setEdit3dAvatarPreview] = useState('');
+  const [edit3dSubmitting, setEdit3dSubmitting] = useState(false);
+  const [edit3dModalHiddenForCanvasPick, setEdit3dModalHiddenForCanvasPick] = useState(false);
+  const edit3dAvatarInputRef = useRef<HTMLInputElement>(null);
   /** 画廊模式：当前悬停展示 3D 网格预览的条目 */
   const [galleryHovered3dId, setGalleryHovered3dId] = useState<string | null>(null);
   /** 从画布选参考图前暂存添加角色表单，关闭弹窗期间保留 */
@@ -785,8 +814,124 @@ const CharacterList: React.FC<CharacterListProps> = ({
       );
       setShowAddModal(true);
     },
-    [stopAddModalVoicePreview],
+    [stopAddModalVoicePreview, libT.roleVoiceSelected],
   );
+
+  const resetImageTo3dEditModal = useCallback(() => {
+    setShowImageTo3dEditModal(false);
+    setEdit3dCharacterId(null);
+    setEdit3dNickname('');
+    setEdit3dAvatarPreview('');
+    setEdit3dSubmitting(false);
+  }, []);
+
+  const openEditImageTo3dCharacter = useCallback((character: Character, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEdit3dCharacterId(character.id);
+    setEdit3dNickname((character.nickname || character.name || '').trim());
+    setEdit3dAvatarPreview(resolveCharacterThumbSrc(character));
+    setShowImageTo3dEditModal(true);
+  }, []);
+
+  const handlePickImageTo3dAvatar = useCallback(async () => {
+    const applyPickedPath = (filePath: string) => {
+      if (!isImageFilePath(filePath)) {
+        setExportImportMsg('请选择图片文件（png / jpg / webp 等）');
+        setTimeout(() => setExportImportMsg(null), 2500);
+        return;
+      }
+      setEdit3dAvatarPreview(pathToPreviewUrl(filePath));
+    };
+
+    try {
+      if (window.electronAPI?.pickImageTo3dUpload) {
+        const pick = await window.electronAPI.pickImageTo3dUpload();
+        if (pick && !pick.canceled && pick.filePath) {
+          applyPickedPath(pick.filePath);
+          return;
+        }
+        if (pick?.canceled) return;
+      }
+    } catch (err) {
+      console.warn('[3D模型编辑] pickImageTo3dUpload 失败，尝试 pickImageTo3dAvatar', err);
+    }
+
+    try {
+      if (window.electronAPI?.pickImageTo3dAvatar) {
+        const pick = await window.electronAPI.pickImageTo3dAvatar();
+        if (pick && !pick.canceled && pick.filePath) {
+          applyPickedPath(pick.filePath);
+          return;
+        }
+        if (pick?.canceled) return;
+      }
+    } catch (err) {
+      console.warn('[3D模型编辑] pickImageTo3dAvatar 不可用，回退浏览器选图', err);
+    }
+
+    edit3dAvatarInputRef.current?.click();
+  }, []);
+
+  const handleEdit3dAvatarFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : '';
+      if (url) setEdit3dAvatarPreview(url);
+    };
+    reader.readAsDataURL(file);
+    if (e.target) e.target.value = '';
+  }, []);
+
+  const handlePickImageTo3dAvatarFromCanvas = useCallback(async () => {
+    if (!requestViewSlotPickFromCanvas) return;
+    setEdit3dModalHiddenForCanvasPick(true);
+    try {
+      const url = await requestViewSlotPickFromCanvas(0);
+      if (url?.trim()) setEdit3dAvatarPreview(url.trim());
+    } finally {
+      setEdit3dModalHiddenForCanvasPick(false);
+    }
+  }, [requestViewSlotPickFromCanvas]);
+
+  const handleSaveImageTo3dEdit = useCallback(async () => {
+    if (!edit3dCharacterId) return;
+    const nickname = edit3dNickname.trim();
+    if (!nickname) {
+      setExportImportMsg(libT.roleNeedNickname);
+      setTimeout(() => setExportImportMsg(null), 2000);
+      return;
+    }
+    setEdit3dSubmitting(true);
+    try {
+      if (!window.electronAPI?.updateCharacter) return;
+      await window.electronAPI.updateCharacter(edit3dCharacterId, {
+        nickname,
+        name: nickname,
+        avatar: edit3dAvatarPreview.trim(),
+      });
+      await loadCharacters();
+      resetImageTo3dEditModal();
+      setExportImportMsg(libT.roleSaved);
+      setTimeout(() => setExportImportMsg(null), 2000);
+    } catch (err) {
+      console.error('保存 3D 模型失败:', err);
+      setExportImportMsg(libT.roleSaveFailed);
+      setTimeout(() => setExportImportMsg(null), 3000);
+    } finally {
+      setEdit3dSubmitting(false);
+    }
+  }, [
+    edit3dCharacterId,
+    edit3dNickname,
+    edit3dAvatarPreview,
+    loadCharacters,
+    resetImageTo3dEditModal,
+    libT.roleNeedNickname,
+    libT.roleSaved,
+    libT.roleSaveFailed,
+  ]);
 
   // 添加 / 修改角色（同一弹窗）
   const handleAddCharacter = useCallback(async () => {
@@ -1411,24 +1556,28 @@ const CharacterList: React.FC<CharacterListProps> = ({
                 </div>
 
                 <div className="flex shrink-0 items-center gap-0.5 ml-1">
-                  {!is3dEntry ? (
                   <button
                     type="button"
                     draggable={false}
-                    onClick={(e) => openEditCharacterMaterials(character, e)}
-                    className={assetLibCardActionBtn(isDarkMode, 'control')}
-                    title="修改参考音与四视图"
+                    onClick={(e) => {
+                      if (is3dEntry) {
+                        openEditImageTo3dCharacter(character, e);
+                      } else {
+                        openEditCharacterMaterials(character, e);
+                      }
+                    }}
+                    className={`${assetLibCardActionBtn(isDarkMode, 'control')} opacity-0 group-hover:opacity-100 transition-opacity`}
+                    title={is3dEntry ? libT.model3dEditTitle : '修改参考音与四视图'}
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
-                  ) : null}
-                  {!is3dEntry ? (
+                  {!is3dEntry && (
                   <button
                     type="button"
                     draggable={false}
                     onClick={(e) => handlePreviewVoice(character, e)}
                     disabled={!hasVoice}
-                    className={`p-1.5 rounded-full transition-colors ${
+                    className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity transition-colors ${
                       !hasVoice
                         ? isDarkMode
                           ? 'text-white/20 cursor-not-allowed'
@@ -1447,16 +1596,16 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       <Headphones className="w-3.5 h-3.5" />
                     )}
                   </button>
-                  ) : null}
+                  )}
                   {assetFilter !== 'imageTo3d' ? (
                   <button
                     type="button"
                     draggable={false}
                     onClick={(e) => handleCopyCharacterDisplayName(character, e)}
-                    className={`p-1.5 rounded-full transition-colors ${
+                    className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity transition-colors ${
                       copiedCharacterId === character.id
                         ? assetLibCopySuccess(isDarkMode)
-                        : assetLibCardActionBtn(isDarkMode, 'sensing')
+                        : assetLibCardActionBtn(isDarkMode, 'operators')
                     }`}
                     title="复制角色名"
                   >
@@ -1472,7 +1621,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       type="button"
                       draggable={false}
                       onClick={(e) => handleJumpToRole(character, e)}
-                      className={`p-1.5 rounded-full transition-opacity ${assetLibBtnIcon(isDarkMode)} !p-1.5`}
+                      className={`p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity ${assetLibBtnIcon(isDarkMode, 'motion')} !p-1.5`}
                       title="打开角色主页"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
@@ -1507,7 +1656,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
       {showAddModal &&
         createPortal(
           <div
-            className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60"
+            className={`fixed inset-0 z-[10000] flex items-center justify-center p-4 ${assetLibEditModalBackdrop(isDarkMode)}`}
             onClick={() => {
               if (addSubmitting) return;
               resetAddCharacterForm();
@@ -1515,33 +1664,38 @@ const CharacterList: React.FC<CharacterListProps> = ({
             }}
           >
             <div
-              className={`w-full max-w-lg rounded-xl shadow-xl overflow-hidden ${
-                isDarkMode ? 'bg-zinc-900 border border-white/10' : 'bg-white border border-gray-200'
-              }`}
+              className={`relative w-full max-w-lg rounded-2xl border p-4 shadow-xl overflow-hidden ${assetLibEditModalPanel(isDarkMode)}`}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className={`p-4 border-b flex items-center justify-between ${
-                isDarkMode ? 'border-white/10' : 'border-gray-200'
-              }`}>
-                <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+              {!isDarkMode ? (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-0 h-1.5 rounded-t-2xl bg-gradient-to-r from-[var(--scratch-looks)] via-[var(--scratch-sound)] to-[var(--scratch-myBlocks)]"
+                    aria-hidden
+                  />
+                  <div className="pointer-events-none absolute -top-10 -right-10 h-36 w-36 rounded-full bg-fuchsia-300/35 blur-2xl" aria-hidden />
+                  <div className="pointer-events-none absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-violet-400/30 blur-2xl" aria-hidden />
+                </>
+              ) : null}
+              <div className="relative flex items-center justify-between mb-3">
+                <h3 className={`text-sm font-semibold ${assetLibEditModalTitle(isDarkMode)}`}>
                   {addModalEditingCharacterId ? libT.roleEditMaterials : libT.roleAddTitle}
                 </h3>
                 <button
+                  type="button"
                   onClick={() => {
                     if (addSubmitting) return;
                     resetAddCharacterForm();
                     setShowAddModal(false);
                   }}
-                  className={`p-1 rounded hover:bg-white/10 transition-colors ${
-                    isDarkMode ? 'text-white/60 hover:text-white' : 'text-gray-500 hover:text-gray-800'
-                  }`}
+                  className={assetLibBtnIcon(isDarkMode, assetLibEditModalCloseScratch(isDarkMode))}
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <div className="p-4 space-y-4">
+              <div className="relative space-y-4">
                 <div>
-                  <label className={`block text-xs font-medium mb-1.5 ${isDarkMode ? 'text-white/80' : 'text-gray-600'}`}>
+                  <label className={`block text-xs font-medium mb-1 ${assetLibEditModalLabel(isDarkMode)}`}>
                     {libT.roleNicknameLabel} <span className="text-red-500">*</span>
                   </label>
                   <input
@@ -1550,17 +1704,15 @@ const CharacterList: React.FC<CharacterListProps> = ({
                     onChange={(e) => setAddNickname(e.target.value)}
                     placeholder={libT.roleNicknamePlaceholder}
                     disabled={addSubmitting}
-                    className={`w-full px-3 py-2 rounded-lg border text-sm ${
-                      isDarkMode
-                        ? 'bg-black/30 border-white/20 text-white placeholder-white/40'
-                        : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'
-                    } focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-50`}
+                    className={`w-full px-2 py-1.5 rounded-lg border text-sm outline-none transition-shadow disabled:opacity-50 ${assetLibEditModalInput(isDarkMode)}`}
                   />
                 </div>
                 <div className="min-w-0 flex flex-col max-w-md">
                   <label
                     htmlFor="add-character-voice-input"
-                    className={`block text-xs font-medium mb-1.5 ${isDarkMode ? 'text-white/80' : 'text-gray-600'}`}
+                    className={`block text-xs mb-1.5 font-semibold ${
+                      isDarkMode ? 'text-white/80' : 'text-[var(--scratch-sound)]'
+                    }`}
                   >
                     {libT.roleUploadVoice}
                   </label>
@@ -1582,11 +1734,11 @@ const CharacterList: React.FC<CharacterListProps> = ({
                           disabled={addSubmitting}
                           title={libT.roleUploadVoiceOptional}
                           aria-label={libT.roleUploadVoice}
-                          className={`w-full min-h-[2.75rem] rounded-xl border-2 border-dashed flex items-center justify-center gap-2 px-2 transition-colors ${
+                          className={`w-full min-h-[2.75rem] rounded-xl border-2 border-dashed flex items-center justify-center gap-2 px-2 transition-colors disabled:opacity-50 ${
                             isDarkMode
                               ? 'border-white/20 hover:border-sky-500/60 hover:bg-white/5 text-white/70'
-                              : 'border-gray-300 hover:border-sky-400 hover:bg-sky-50/40 text-gray-600'
-                          } disabled:opacity-50`}
+                              : 'border-[var(--scratch-sound)]/55 bg-fuchsia-50/90 text-fuchsia-800/75 hover:border-[var(--scratch-sound)]'
+                          }`}
                         >
                           <Mic className="h-5 w-5 shrink-0" aria-hidden />
                           <span className="text-xs">{libT.roleUploadVoiceClick}</span>
@@ -1599,15 +1751,15 @@ const CharacterList: React.FC<CharacterListProps> = ({
                             disabled={addSubmitting}
                             title={addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
                             aria-label={addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
-                            className={`w-full min-h-[2.75rem] rounded-xl border-2 px-2 py-1 flex items-center justify-center transition-colors ${
+                            className={`w-full min-h-[2.75rem] rounded-xl border-2 px-2 py-1 flex items-center justify-center transition-colors disabled:opacity-50 ${
                               addModalVoicePlaying
                                 ? isDarkMode
                                   ? 'border-sky-400/90 ring-2 ring-sky-400/45 bg-sky-500/15'
-                                  : 'border-sky-500 ring-2 ring-sky-400/55 bg-sky-50'
+                                  : 'border-[var(--scratch-sound)] ring-2 ring-fuchsia-300/45 bg-fuchsia-50'
                                 : isDarkMode
                                   ? 'border-sky-500/55 hover:border-sky-400/85 hover:bg-sky-500/10'
-                                  : 'border-sky-500/70 hover:border-sky-500 hover:bg-sky-50/80'
-                            } disabled:opacity-50`}
+                                  : 'ring-1 ring-[var(--scratch-sound)]/35 border-[var(--scratch-sound)]/55 hover:border-[var(--scratch-sound)] bg-fuchsia-50/90'
+                            }`}
                           >
                             <span className="sr-only">
                               {addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
@@ -1626,7 +1778,9 @@ const CharacterList: React.FC<CharacterListProps> = ({
                           </button>
                           <div className="flex items-start justify-between gap-2">
                             <span
-                              className={`text-xs min-w-0 flex-1 line-clamp-2 ${isDarkMode ? 'text-white/55' : 'text-gray-600'}`}
+                              className={`text-xs min-w-0 flex-1 line-clamp-2 ${
+                                isDarkMode ? 'text-white/55' : 'text-fuchsia-800/75'
+                              }`}
                               title={addVoiceLabel || undefined}
                             >
                               {addVoiceLabel || libT.roleVoiceSelected}
@@ -1637,11 +1791,11 @@ const CharacterList: React.FC<CharacterListProps> = ({
                               title={libT.roleReplaceVoice}
                               aria-label={libT.roleReplaceVoice}
                               onClick={() => addVoiceInputRef.current?.click()}
-                              className={`text-xs shrink-0 rounded-full px-2 py-0.5 transition-colors ${
+                              className={`text-xs shrink-0 rounded-full px-2 py-0.5 transition-colors disabled:opacity-50 ${
                                 isDarkMode
                                   ? 'text-sky-300/90 hover:bg-white/10'
-                                  : 'text-sky-700 hover:bg-sky-50'
-                              } disabled:opacity-50`}
+                                  : 'text-[var(--scratch-sound)] hover:bg-fuchsia-100/80'
+                              }`}
                             >
                               {libT.roleReplaceShort}
                             </button>
@@ -1654,7 +1808,11 @@ const CharacterList: React.FC<CharacterListProps> = ({
                           onClick={() => void handlePickVoiceFromCanvas()}
                           disabled={addSubmitting}
                           title={libT.roleVoicePickTitle}
-                          className={`mt-auto w-full py-2 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(isDarkMode, '!w-full')}`}
+                          className={`mt-auto w-full py-2 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(
+                            isDarkMode,
+                            '!w-full',
+                            assetLibEditModalCanvasPickScratch(isDarkMode, 0),
+                          )}`}
                         >
                           {libT.rolePickFromCanvas}
                         </button>
@@ -1663,7 +1821,9 @@ const CharacterList: React.FC<CharacterListProps> = ({
                   </div>
                 <div>
                   <span
-                    className={`block text-xs font-medium mb-1.5 ${isDarkMode ? 'text-white/80' : 'text-gray-600'}`}
+                    className={`block text-xs font-semibold mb-1.5 ${
+                      isDarkMode ? 'text-white/80' : 'text-[var(--scratch-looks)]'
+                    }`}
                   >
                     {libT.roleUploadFourViews}
                   </span>
@@ -1689,11 +1849,11 @@ const CharacterList: React.FC<CharacterListProps> = ({
                             addViewSlotIndexRef.current = slot;
                             addViewInputRef.current?.click();
                           }}
-                          className={`relative aspect-square w-full max-h-24 rounded-lg border-2 border-dashed overflow-hidden flex items-center justify-center transition-colors ${
+                          className={`relative aspect-square w-full max-h-24 rounded-lg border-2 border-dashed overflow-hidden flex items-center justify-center transition-colors disabled:opacity-50 ${
                             isDarkMode
                               ? 'border-white/20 hover:border-blue-500/50 hover:bg-white/5 text-white/50'
-                              : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50 text-gray-400'
-                          } disabled:opacity-50`}
+                              : 'border-[var(--scratch-looks)]/45 hover:border-[var(--scratch-looks)] bg-violet-50/50 text-[var(--scratch-looks)]/70'
+                          }`}
                         >
                           {addViewImages[slot] ? (
                             <img
@@ -1711,7 +1871,11 @@ const CharacterList: React.FC<CharacterListProps> = ({
                             onClick={() => void handlePickViewSlotFromCanvas(slot)}
                             disabled={addSubmitting}
                             title={libT.roleViewPickTitle}
-                            className={`w-full shrink-0 py-2 px-1 text-[11px] font-medium leading-tight disabled:opacity-50 ${assetLibBtnPrimary(isDarkMode, '!w-full !py-2 !px-1 !text-[11px]')}`}
+                            className={`w-full shrink-0 py-2 px-1 text-[11px] font-medium leading-tight disabled:opacity-50 ${assetLibBtnPrimary(
+                              isDarkMode,
+                              '!w-full !py-2 !px-1 !text-[11px]',
+                              assetLibEditModalCanvasPickScratch(isDarkMode, slot + 1),
+                            )}`}
                           >
                             {libT.roleViewPickFromCanvas}
                           </button>
@@ -1720,30 +1884,38 @@ const CharacterList: React.FC<CharacterListProps> = ({
                     ))}
                   </div>
                   <p
-                    className={`text-[11px] mt-1.5 ${isDarkMode ? 'text-white/35' : 'text-gray-500'}`}
+                    className={`text-[11px] mt-1.5 ${isDarkMode ? 'text-white/35' : 'text-violet-700/70'}`}
                   >
                     {addModalEditingCharacterId ? libT.roleFourViewsHintEdit : libT.roleFourViewsHint}
                   </p>
                 </div>
               </div>
-              <div className={`p-4 border-t flex justify-end gap-2 ${
-                isDarkMode ? 'border-white/10' : 'border-gray-200'
-              }`}>
+              <div className="relative flex justify-end gap-2 mt-4">
                 <button
+                  type="button"
                   onClick={() => {
                     if (addSubmitting) return;
                     resetAddCharacterForm();
                     setShowAddModal(false);
                   }}
                   disabled={addSubmitting}
-                  className={`${assetLibBtnSecondary(isDarkMode, '!px-4 !py-2')} disabled:opacity-50`}
+                  className={assetLibBtnSecondary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalCancelScratch(isDarkMode),
+                  )}
                 >
                   {libT.roleCancel}
                 </button>
                 <button
+                  type="button"
                   onClick={handleAddCharacter}
                   disabled={addSubmitting || !addNickname.trim()}
-                  className={`${assetLibBtnPrimary(isDarkMode, '!px-4 !py-2')} disabled:opacity-50`}
+                  className={assetLibBtnPrimary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalSaveScratch(isDarkMode),
+                  )}
                 >
                   {addSubmitting
                     ? addModalEditingCharacterId
@@ -1757,6 +1929,157 @@ const CharacterList: React.FC<CharacterListProps> = ({
             </div>
           </div>,
           document.body
+        )}
+
+      {/* 3D 模型库：编辑备注与参考图 */}
+      {showImageTo3dEditModal && !edit3dModalHiddenForCanvasPick &&
+        createPortal(
+          <div
+            className={`fixed inset-0 z-[10000] flex items-center justify-center p-4 ${assetLibEditModalBackdrop(isDarkMode)}`}
+            onClick={() => {
+              if (edit3dSubmitting) return;
+              resetImageTo3dEditModal();
+            }}
+          >
+            <div
+              className={`relative w-full max-w-md rounded-2xl border p-4 shadow-xl overflow-hidden ${assetLibEditModalPanel(isDarkMode)}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {!isDarkMode ? (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-0 h-1.5 rounded-t-2xl bg-gradient-to-r from-[var(--scratch-looks)] via-[var(--scratch-sound)] to-[var(--scratch-myBlocks)]"
+                    aria-hidden
+                  />
+                  <div className="pointer-events-none absolute -top-10 -right-10 h-36 w-36 rounded-full bg-fuchsia-300/35 blur-2xl" aria-hidden />
+                  <div className="pointer-events-none absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-violet-400/30 blur-2xl" aria-hidden />
+                </>
+              ) : null}
+              <div className="relative flex items-center justify-between mb-3">
+                <h3 className={`text-sm font-semibold ${assetLibEditModalTitle(isDarkMode)}`}>
+                  {libT.model3dEditTitle}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (edit3dSubmitting) return;
+                    resetImageTo3dEditModal();
+                  }}
+                  className={assetLibBtnIcon(isDarkMode, assetLibEditModalCloseScratch(isDarkMode))}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="relative flex items-center gap-3 mb-4">
+                <input
+                  ref={edit3dAvatarInputRef}
+                  type="file"
+                  accept="image/*,.png,.jpg,.jpeg,.webp,.gif,.bmp"
+                  className="hidden"
+                  onChange={handleEdit3dAvatarFileSelect}
+                  aria-hidden
+                />
+                <button
+                  type="button"
+                  disabled={edit3dSubmitting}
+                  onClick={() => void handlePickImageTo3dAvatar()}
+                  title={libT.model3dUploadAvatarLocal}
+                  className="relative shrink-0 rounded-full disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-400/60"
+                >
+                  {edit3dAvatarPreview ? (
+                    <img
+                      src={edit3dAvatarPreview}
+                      alt=""
+                      className={`w-16 h-16 rounded-full object-cover ${
+                        isDarkMode ? 'border border-white/10' : 'ring-2 ring-[var(--scratch-looks)]/70 shadow-md shadow-violet-300/40'
+                      }`}
+                    />
+                  ) : (
+                    <div
+                      className={`w-16 h-16 rounded-full flex items-center justify-center ${
+                        isDarkMode ? 'bg-violet-500/10' : 'bg-gradient-to-br from-violet-100 to-fuchsia-100 ring-2 ring-[var(--scratch-looks)]/45'
+                      }`}
+                    >
+                      <Box className={`w-7 h-7 ${isDarkMode ? 'text-violet-400' : 'text-[var(--scratch-looks)]'}`} />
+                    </div>
+                  )}
+                </button>
+                <div className="flex flex-col gap-1.5 min-w-0 flex-1">
+                  <div className="flex flex-row flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => void handlePickImageTo3dAvatar()}
+                      disabled={edit3dSubmitting}
+                      className={assetLibBtnPrimary(
+                        isDarkMode,
+                        'text-xs !px-2.5 !py-1.5 gap-1 flex-1 min-w-[7rem]',
+                        assetLibEditModalSecondaryActionScratch(isDarkMode),
+                      )}
+                    >
+                      <Upload className="w-3.5 h-3.5 shrink-0" />
+                      {libT.model3dUploadAvatarLocal}
+                    </button>
+                    {requestViewSlotPickFromCanvas ? (
+                      <button
+                        type="button"
+                        onClick={() => void handlePickImageTo3dAvatarFromCanvas()}
+                        disabled={edit3dSubmitting}
+                        className={assetLibBtnPrimary(
+                          isDarkMode,
+                          'text-xs !px-2.5 !py-1.5 gap-1 flex-1 min-w-[7rem]',
+                          assetLibEditModalCanvasPickScratch(isDarkMode, 1),
+                        )}
+                      >
+                        <Layers className="w-3.5 h-3.5 shrink-0" />
+                        {libT.rolePickFromCanvas}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <label className={`block text-xs mb-1 font-medium ${assetLibEditModalLabel(isDarkMode)}`}>
+                {libT.roleNicknameLabel} <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={edit3dNickname}
+                onChange={(e) => setEdit3dNickname(e.target.value)}
+                placeholder={libT.roleNicknamePlaceholder}
+                disabled={edit3dSubmitting}
+                className={`w-full mb-4 px-2 py-1.5 rounded-lg text-sm border outline-none transition-shadow disabled:opacity-50 ${assetLibEditModalInput(isDarkMode)}`}
+              />
+              <div className="relative flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (edit3dSubmitting) return;
+                    resetImageTo3dEditModal();
+                  }}
+                  disabled={edit3dSubmitting}
+                  className={assetLibBtnSecondary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalCancelScratch(isDarkMode),
+                  )}
+                >
+                  {libT.roleCancel}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSaveImageTo3dEdit()}
+                  disabled={edit3dSubmitting || !edit3dNickname.trim()}
+                  className={assetLibBtnPrimary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5 disabled:opacity-50',
+                    assetLibEditModalSaveScratch(isDarkMode),
+                  )}
+                >
+                  {edit3dSubmitting ? libT.roleSaving : libT.roleSave}
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
         )}
 
     </div>

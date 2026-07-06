@@ -13,15 +13,19 @@ build/icon-512.png
 
 # 默认数字人库 staging（构建临时目录，勿提交）
 resources/default-digital-human-library/files.staging-*/
+resources/default-asset-library/files.staging-*/
 
 # Whisper：模型与预编译 CLI 体积/版权按需本机放置（勿提交）
 resources/whisper/*.bin
 resources/whisper/*.exe
 resources/whisper/*.dll
+resources/rvc/engine/
 
 # Demucs 构建产物（体积大，按需本地构建）
 resources/demucs/demucs_cli.exe
 scripts/build-demucs-cli/demucs/
+scripts/build-rvc-cli/.build-venv/
+scripts/build-rvc-cli/build_workspace/
 
 # ffmpeg 构建时从 node_modules 复制，不纳入仓库
 resources/ffmpeg/

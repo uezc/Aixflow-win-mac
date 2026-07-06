@@ -63,6 +63,25 @@ export const store = new Store({
       localAudioPath?: string;
       originalAudioUrl?: string;
     }>,
+    /** RVC 音色模型资产库（训练产出的 zip 包） */
+    rvcVoiceLibrary: [] as Array<{
+      id: string;
+      nickname: string;
+      name: string;
+      createdAt: number;
+      avatar?: string;
+      localAvatarPath?: string;
+      rvcTrainModelName?: string;
+      packageFileName?: string;
+      modelPackageUrl?: string;
+      localModelPath?: string;
+      originalModelUrl?: string;
+      /** 训练用声音片段（local-resource） */
+      trainAudioUrl?: string;
+      localTrainAudioPath?: string;
+      /** 训练音频原始远程 URL（OSS 等） */
+      originalTrainAudioUrl?: string;
+    }>,
     // 阿里云 OSS 配置（可选，优先使用环境变量）
     ossAccessKeyId: '',
     ossAccessKeySecret: '',

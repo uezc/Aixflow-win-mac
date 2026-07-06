@@ -14,7 +14,17 @@ const waveBarGradient = (isDarkMode: boolean) =>
 export const ReferenceAudioWaveStrip: React.FC<{
   src: string;
   isDarkMode: boolean;
-}> = ({ src, isDarkMode }) => {
+  variant?: 'default' | 'compact';
+  /** 紧凑模式下仅显示波形（无麦克风与文字标签） */
+  waveOnly?: boolean;
+  emptyLabel?: string;
+  playLabel?: string;
+}> = ({ src, isDarkMode, variant = 'default', waveOnly = false, emptyLabel, playLabel }) => {
+  const isCompact = variant === 'compact';
+  const compactWaveOnly = isCompact && waveOnly;
+  const barCount = isCompact ? 28 : WAVE_BAR_COUNT;
+  const stripMinH = isCompact ? 58 : WAVE_STRIP_MIN_H_PX;
+  const trackMinH = isCompact ? 40 : WAVE_TRACK_MIN_H_PX;
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
 
@@ -42,18 +52,21 @@ export const ReferenceAudioWaveStrip: React.FC<{
   }, [src]);
 
   const barHeightsPx = useMemo(() => {
-    const span = Math.max(12, WAVE_TRACK_MIN_H_PX - 8);
+    const span = Math.max(isCompact ? 8 : 12, trackMinH - 8);
     const lo = Math.round(0.16 * span);
     const hi = Math.round(0.98 * span);
-    return Array.from({ length: WAVE_BAR_COUNT }, () => lo + Math.floor(Math.random() * (hi - lo + 1)));
-  }, [src]);
+    return Array.from({ length: barCount }, () => lo + Math.floor(Math.random() * (hi - lo + 1)));
+  }, [src, barCount, trackMinH, isCompact]);
 
   const barGrad = waveBarGradient(isDarkMode);
   const trackBg = isDarkMode
     ? 'bg-gradient-to-b from-violet-950/90 via-black/70 to-black/85'
     : 'bg-gradient-to-b from-violet-100 to-violet-200/70';
   const outerBorder = isDarkMode ? 'border-violet-500/25' : 'border-violet-400/35';
-  const gridCols = { gridTemplateColumns: `repeat(${WAVE_BAR_COUNT}, minmax(0, 1fr))` } as const;
+  const gridCols = { gridTemplateColumns: `repeat(${barCount}, minmax(0, 1fr))` } as const;
+
+  const emptyTitle = emptyLabel || '暂无参考音';
+  const playTitle = playLabel || (playing ? '点击暂停' : '点击播放');
 
   if (!src.trim()) {
     const emptyOuterBorder = isDarkMode ? 'border-white/10' : 'border-gray-300/80';
@@ -65,6 +78,58 @@ export const ReferenceAudioWaveStrip: React.FC<{
     const emptyBarGrad = isDarkMode
       ? 'bg-gradient-to-t from-zinc-800 via-zinc-600/90 to-zinc-500/80'
       : 'bg-gradient-to-t from-gray-500/70 via-gray-400/60 to-gray-300/50';
+
+    if (isCompact) {
+      if (compactWaveOnly) {
+        return (
+          <div
+            className="nodrag w-full overflow-hidden rounded-lg cursor-not-allowed opacity-55"
+            style={{ minHeight: stripMinH }}
+            title={emptyTitle}
+            aria-label={emptyTitle}
+          >
+            <div
+              className={`grid w-full min-w-0 items-end gap-px rounded-lg px-1.5 py-1 ${emptyTrackBg}`}
+              style={{ ...gridCols, minHeight: trackMinH }}
+            >
+              {barHeightsPx.map((hPx, i) => (
+                <span
+                  key={i}
+                  className={`min-w-0 w-full justify-self-center max-w-[2.5px] rounded-t-full ${emptyBarGrad} opacity-35`}
+                  style={{ height: `${hPx}px` }}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div
+          className={`nodrag flex w-full items-center gap-2.5 rounded-lg border px-2.5 py-2 cursor-not-allowed ${emptyOuterBorder} ${emptyOuterBg}`}
+          style={{ minHeight: stripMinH }}
+          title={emptyTitle}
+          aria-label={emptyTitle}
+        >
+          <Mic className={`w-4 h-4 shrink-0 ${emptyMic}`} aria-hidden />
+          <span className={`text-[11px] font-medium truncate flex-1 ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
+            {emptyTitle}
+          </span>
+          <div
+            className={`grid min-w-0 flex-[2] items-end gap-px rounded-md px-1.5 py-1 ${emptyTrackBg}`}
+            style={{ ...gridCols, minHeight: trackMinH }}
+          >
+            {barHeightsPx.map((hPx, i) => (
+              <span
+                key={i}
+                className={`min-w-0 w-full justify-self-center max-w-[2px] rounded-t-full ${emptyBarGrad} opacity-35`}
+                style={{ height: `${hPx}px` }}
+              />
+            ))}
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div
@@ -101,21 +166,55 @@ export const ReferenceAudioWaveStrip: React.FC<{
       <button
         type="button"
         onClick={togglePlay}
-        title={playing ? '点击暂停' : '点击播放'}
-        className={`nodrag flex w-full flex-col rounded-lg border overflow-hidden text-left cursor-pointer transition-opacity hover:opacity-95 active:opacity-90 ${outerBorder} ${
-          isDarkMode ? 'bg-violet-950/25' : 'bg-violet-50/95'
+        title={playTitle}
+        aria-label={playTitle}
+        className={`nodrag w-full overflow-hidden text-left transition-opacity ${
+          compactWaveOnly
+            ? 'cursor-pointer hover:opacity-95 active:opacity-90'
+            : `cursor-pointer hover:opacity-95 active:opacity-90 ${outerBorder}`
+        } ${
+          compactWaveOnly
+            ? 'rounded-lg'
+            : isCompact
+              ? `flex items-center gap-2.5 rounded-lg px-2.5 py-2 border ${isDarkMode ? 'bg-violet-950/25 border-violet-500/25' : 'bg-violet-50/95 border-violet-400/35'}`
+              : `flex flex-col rounded-lg border ${isDarkMode ? 'bg-violet-950/25 border-violet-500/25' : 'bg-violet-50/95 border-violet-400/35'}`
         }`}
-        style={{ minHeight: WAVE_STRIP_MIN_H_PX }}
+        style={{ minHeight: stripMinH }}
       >
         <audio ref={audioRef} src={src} preload="none" className="hidden" />
+        {isCompact && !compactWaveOnly ? (
+          <>
+            <Mic
+              className={`w-4 h-4 shrink-0 ${isDarkMode ? 'text-violet-300' : 'text-violet-600'}`}
+              aria-hidden
+            />
+            {playLabel ? (
+              <span
+                className={`text-[11px] font-medium truncate shrink-0 max-w-[5rem] ${
+                  isDarkMode ? 'text-violet-200/90' : 'text-violet-800'
+                }`}
+              >
+                {playLabel}
+              </span>
+            ) : null}
+          </>
+        ) : null}
         <div
-          className={`grid w-full min-w-0 flex-1 items-end gap-px px-1 py-1 ${trackBg}`}
-          style={{ ...gridCols, minHeight: WAVE_TRACK_MIN_H_PX }}
+          className={`grid min-w-0 items-end gap-px ${
+            compactWaveOnly
+              ? 'w-full rounded-lg px-1.5 py-1'
+              : isCompact
+                ? 'flex-1 rounded-md px-1.5 py-1'
+                : 'w-full flex-1 px-1 py-1'
+          } ${trackBg}`}
+          style={{ ...gridCols, minHeight: trackMinH }}
         >
           {barHeightsPx.map((hPx, i) => (
             <span
               key={i}
-              className={`min-w-0 w-full justify-self-center max-w-[3px] rounded-t-full origin-bottom ${barGrad}`}
+              className={`min-w-0 w-full justify-self-center rounded-t-full origin-bottom ${barGrad} ${
+                isCompact ? 'max-w-[2.5px]' : 'max-w-[3px]'
+              }`}
               style={{
                 height: `${hPx}px`,
                 opacity: playing ? 0.98 : 0.88,

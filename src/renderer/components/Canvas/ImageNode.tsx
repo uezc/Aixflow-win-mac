@@ -11,7 +11,6 @@ import {
   Cuboid,
   X,
   Image as ImageIcon,
-  ZoomIn,
   PenTool,
   Download,
   Sparkles,
@@ -20,6 +19,7 @@ import {
   ChevronDown,
   FlipHorizontal2,
   FlipVertical2,
+  Crop,
 } from 'lucide-react';
 import { ModuleProgressBar } from './ModuleProgressBar';
 import {
@@ -45,7 +45,10 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { imageNodeChromeT, imageNodeCameraPresetLabel } from '../../i18n/imageNodeI18n';
+import { mapProjectPath } from '../../utils/pathMapper';
 import CubeCameraController, { CameraControlValue } from './CubeCameraController';
+import ImageCropModal from './ImageCropModal';
+import { cropImageToPngBuffer, type NormalizedCropRect } from '../../utils/imageCropUtils';
 import {
   getPhotographyPrompt,
   DEFAULT_CAMERA_VALUE,
@@ -78,7 +81,7 @@ import {
   messageContainsRefundHint,
 } from '../../utils/userErrorMessageCn';
 import { nodeFloatPillBtn } from '../../utils/assetLibraryChrome';
-import { scratchTintClass } from '../../theme/scratchColors';
+import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
 
 interface ImageNodeData {
   width?: number;
@@ -727,6 +730,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const [splitGridMenuHover, setSplitGridMenuHover] = useState(false);
   const [flipMenuHover, setFlipMenuHover] = useState(false);
   const flipMenuLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [cropBusy, setCropBusy] = useState(false);
   /** 预览翻转：先写 DOM，再低优先级持久化，避免 setNodes 卡住主线程 */
   const flipLiveRef = useRef({ h: !!data?.flipH, v: !!data?.flipV });
   const [watermarkPriceHover, setWatermarkPriceHover] = useState(false);
@@ -1764,6 +1769,118 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     }, 160);
   }, []);
 
+  const topToolbarIconBtn = useCallback(
+    (scratch: ScratchColorId = 'looks', extra = '') => {
+      if (isDarkMode) {
+        return `flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white hover:bg-white/25 transition-all ${extra}`.trim();
+      }
+      return nodeFloatPillBtn(isDarkMode, `h-8 w-8 shrink-0 justify-center !p-0 ${extra}`, scratch);
+    },
+    [isDarkMode],
+  );
+
+  const openImagePreview = useCallback(() => {
+    const previewSrc = getImageDisplaySrc(
+      formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath),
+    );
+    if (!previewSrc) return;
+    if (onPreviewImage) {
+      onPreviewImage(previewSrc, id);
+      return;
+    }
+    window.open(previewSrc, '_blank', 'noopener,noreferrer');
+  }, [previewImagePath, primaryOutputImage, tinyImagePath, onPreviewImage, id]);
+
+  const selectedAtPointerDownRef = useRef(false);
+
+  const handleOutputImagePointerDown = useCallback(() => {
+    selectedAtPointerDownRef.current = selected;
+    beginNativeDragPrepare();
+  }, [selected, beginNativeDragPrepare]);
+
+  const handleOutputImageClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!selectedAtPointerDownRef.current || !selected || outputImages.length > 1) return;
+      e.stopPropagation();
+      openImagePreview();
+    },
+    [selected, outputImages.length, openImagePreview],
+  );
+
+  useEffect(() => {
+    if (!selected || !primaryOutputImage || outputImages.length > 1) return;
+    if (showCropModal || showAllOutputImages) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== ' ' || e.repeat) return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      if ((window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openImagePreview();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [selected, primaryOutputImage, outputImages.length, openImagePreview, showCropModal, showAllOutputImages]);
+
+  const cropSourceUrl = useMemo(() => {
+    const raw = previewImagePath || primaryOutputImage || tinyImagePath;
+    if (!raw) return '';
+    return getImageDisplaySrc(formatImagePath(raw));
+  }, [previewImagePath, primaryOutputImage, tinyImagePath]);
+
+  const handleCropConfirm = useCallback(
+    async (rect: NormalizedCropRect) => {
+      if (!cropSourceUrl) return;
+      setCropBusy(true);
+      try {
+        if (!window.electronAPI?.createImageLocalResourceFromBuffer) {
+          throw new Error('createImageLocalResourceFromBuffer IPC 不可用');
+        }
+        const { buffer, width, height } = await cropImageToPngBuffer(cropSourceUrl, rect);
+        const result = await window.electronAPI.createImageLocalResourceFromBuffer(
+          projectId,
+          `crop-${Date.now()}.png`,
+          buffer,
+        );
+        if (!result?.previewUrl) throw new Error('预览图路径为空');
+        setOutputImage(result.previewUrl);
+        const adapted = computeAdaptiveNodeSize(result.width ?? width, result.height ?? height);
+        setSize(adapted);
+        flipLiveRef.current = { h: false, v: false };
+        updateNodeData({
+          outputImage: result.previewUrl,
+          outputImages: undefined,
+          originalImageUrl: result.originalUrl,
+          localPath: result.originalPath,
+          tinyThumbUrl: result.tinyUrl,
+          avgColorHex: result.avgColorHex,
+          flipH: false,
+          flipV: false,
+          imageAsset: {
+            preview: result.previewUrl,
+            tiny: result.tinyUrl,
+            original: result.originalUrl,
+            ghost: result.ghostBase64,
+            avgColorHex: result.avgColorHex,
+            width: result.width,
+            height: result.height,
+          },
+          width: adapted.w,
+          height: adapted.h,
+          errorMessage: undefined,
+        });
+        setShowCropModal(false);
+      } catch (err) {
+        console.error('[ImageNode] 裁剪失败:', err);
+        showAlert(imgc.cropFailed);
+      } finally {
+        setCropBusy(false);
+      }
+    },
+    [cropSourceUrl, projectId, computeAdaptiveNodeSize, updateNodeData, showAlert, imgc.cropFailed],
+  );
+
   useEffect(
     () => () => {
       if (flipMenuLeaveTimerRef.current != null) clearTimeout(flipMenuLeaveTimerRef.current);
@@ -2594,254 +2711,214 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           borderRadius={16}
         />
 
-        {/* 模块内右上角图片上传按钮；选中时缩小画布也显示 */}
+        {/* 顶部工具栏：仅图标，悬停 title 显示文字 */}
         {selected && (
-          <>
+          <div
+            className="nodrag nopan absolute -top-14 left-0 right-0 z-10 flex items-center justify-center gap-2"
+            style={{ pointerEvents: 'all' }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
             <input
               ref={fileInputRef}
               type="file"
               accept="image/*"
               aria-label={imgc.uploadImageTitle}
               onChange={handleFileChange}
-              onClick={(e) => {
-                // 确保点击事件不会冒泡到 React Flow
-                e.stopPropagation();
-              }}
+              onClick={(e) => e.stopPropagation()}
               className="hidden"
               style={{ display: 'none' }}
             />
-            <button
-              onClick={handleUploadImage}
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              className={`nodrag absolute top-2 right-2 p-1.5 rounded-lg transition-all z-10 ${
-                isDarkMode 
-                  ? 'apple-panel hover:bg-white/20' 
-                  : 'apple-panel-light hover:bg-gray-200/30'
-              }`}
-              title={imgc.uploadImageTitle}
-              style={{ pointerEvents: 'all' }}
-              type="button"
-            >
-              <Upload className={`w-3.5 h-3.5 ${
-                isDarkMode ? 'text-white/80' : 'text-gray-700'
-              }`} />
-            </button>
-          </>
-        )}
-
-        {/* 左上角下载与放大预览按钮；选中或悬停时缩小画布也显示 */}
-        {primaryOutputImage && (selected || isHovered) && (
-          <div className="nodrag absolute top-2 left-2 flex items-center gap-1 z-10" style={{ pointerEvents: 'all' }}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDownloadImage();
-              }}
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              className={`p-1.5 rounded-lg transition-all ${
-                isDarkMode
-                  ? 'apple-panel hover:bg-white/20'
-                  : 'apple-panel-light hover:bg-gray-200/30'
-              }`}
-              title={imgc.downloadTitle}
-              aria-label={imgc.downloadTitle}
-            >
-              <Download className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                const previewSrc = getImageDisplaySrc(formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath));
-                if (!previewSrc) return;
-                if (onPreviewImage) {
-                  onPreviewImage(previewSrc, id);
-                  return;
-                }
-                window.open(previewSrc, '_blank', 'noopener,noreferrer');
-              }}
-              onMouseDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              className={`p-1.5 rounded-lg transition-all ${
-                isDarkMode
-                  ? 'apple-panel hover:bg-white/20'
-                  : 'apple-panel-light hover:bg-gray-200/30'
-              }`}
-              title={imgc.zoomPreviewTitle}
-              aria-label={imgc.zoomPreviewTitle}
-            >
-              <ZoomIn className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-            </button>
-          </div>
-        )}
-
-        {/* 画板按钮：选中时显示，点击后在画板工具中打开图片进行绘图标记 */}
-        {selected && primaryOutputImage && (
-          <div
-            className="nodrag nopan absolute -top-14 left-0 right-0 flex justify-center gap-2 z-10"
-            style={{ pointerEvents: 'all' }}
-          >
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                const baseSrc = getImageDisplaySrc(formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath));
-                if (!baseSrc) return;
-                // data URL 不能加 query，否则格式被破坏导致画板无法加载（视频提取的第一帧/最后一帧为 data URL）
-                const urlForBoard = baseSrc.startsWith('data:') ? baseSrc : `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}_t=${Date.now()}`;
-                if (onOpenDrawingBoard) {
-                  onOpenDrawingBoard(urlForBoard, id, data?.localPath);
-                } else if (onPreviewImage) {
-                  onPreviewImage(baseSrc, id);
-                } else {
-                  window.open(baseSrc, '_blank', 'noopener,noreferrer');
-                }
-              }}
-              className={
-                isDarkMode
-                  ? 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/15 hover:bg-white/25 text-white'
-                  : nodeFloatPillBtn(isDarkMode, 'gap-1.5 px-3 py-1.5', 'looks')
-              }
-              title={imgc.drawingBoardTitle}
-              aria-label={imgc.drawingBoardAria}
-            >
-              <PenTool className="w-4 h-4" />
-              {imgc.drawingBoardButton}
-            </button>
-            <div
-              className="relative inline-flex flex-col items-stretch nodrag nopan"
-              onMouseEnter={openFlipMenu}
-              onMouseLeave={scheduleCloseFlipMenu}
-            >
-              <div
-                className={`flex cursor-default items-center gap-0.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all select-none ${
-                  isDarkMode
-                    ? `bg-white/15 text-white ${
-                        flipHUi || flipVUi
-                          ? 'ring-1 ring-violet-400/50 bg-violet-500/20'
-                          : flipMenuHover
-                            ? 'ring-1 ring-white/30'
-                            : ''
-                      }`
-                    : `scratch-float-btn ${scratchTintClass('variables')} gap-0.5 px-3 py-1.5 ${
-                        flipHUi || flipVUi ? 'ring-2 ring-offset-1 ring-gray-900/20' : ''
-                      } ${flipMenuHover && !(flipHUi || flipVUi) ? 'ring-2 ring-offset-1 ring-gray-900/10' : ''}`
-                }`}
-                title={imgc.flipMenuHoverHint}
-                role="group"
-                aria-label={imgc.flipMenuHoverHint}
-              >
-                <FlipHorizontal2 className="w-4 h-4 shrink-0 opacity-90" aria-hidden />
-                <span>{imgc.flipButton}</span>
-                <ChevronDown className="w-3 h-3 shrink-0 opacity-80" aria-hidden />
-              </div>
-              {flipMenuHover && (
-                <div
-                  className="absolute left-0 top-full z-[60] min-w-[10.5rem] pt-1 nodrag nopan"
-                  onMouseEnter={openFlipMenu}
-                  onMouseLeave={scheduleCloseFlipMenu}
-                  onPointerDown={(ev) => ev.stopPropagation()}
-                  onClick={(ev) => ev.stopPropagation()}
-                >
-                  <div
-                    className={`rounded-lg border py-1 shadow-xl ${
-                      isDarkMode ? 'bg-zinc-900 border-white/15 text-white/95' : 'bg-white border-gray-200 text-gray-900'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${
-                        flipHUi
-                          ? isDarkMode
-                            ? 'bg-violet-500/20 text-violet-100'
-                            : 'bg-violet-100 text-violet-900'
-                          : isDarkMode
-                            ? 'hover:bg-white/10'
-                            : 'hover:bg-gray-100'
-                      }`}
-                      title={imgc.flipHorizontalTitle}
-                      aria-label={imgc.flipHorizontalTitle}
-                      aria-pressed={flipHUi}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        toggleFlipH();
-                      }}
-                    >
-                      <FlipHorizontal2 className="w-4 h-4 shrink-0" />
-                      {imgc.flipHorizontalTitle}
-                    </button>
-                    <button
-                      type="button"
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${
-                        flipVUi
-                          ? isDarkMode
-                            ? 'bg-violet-500/20 text-violet-100'
-                            : 'bg-violet-100 text-violet-900'
-                          : isDarkMode
-                            ? 'hover:bg-white/10'
-                            : 'hover:bg-gray-100'
-                      }`}
-                      title={imgc.flipVerticalTitle}
-                      aria-label={imgc.flipVerticalTitle}
-                      aria-pressed={flipVUi}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        toggleFlipV();
-                      }}
-                    >
-                      <FlipVertical2 className="w-4 h-4 shrink-0" />
-                      {imgc.flipVerticalTitle}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-            {showPanoramaPlacementEntry && (
+            {primaryOutputImage ? (
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  const scene3dSrc =
-                    typeof data?.sceneDisplay3dUrl === 'string' ? data.sceneDisplay3dUrl.trim() : '';
-                  const flatSrc = getImageDisplaySrc(
-                    formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath),
-                  );
-                  const baseSrc = scene3dSrc || flatSrc;
-                  if (!baseSrc || !onOpenPanoramaPlacement) return;
-                  const urlForPanel = baseSrc.startsWith('data:') ? baseSrc : `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}_t=${Date.now()}`;
-                  const nw = imgRef.current?.naturalWidth ?? imageNaturalPx?.w;
-                  const nh = imgRef.current?.naturalHeight ?? imageNaturalPx?.h;
-                  onOpenPanoramaPlacement({
-                    nodeId: id,
-                    imageUrl: urlForPanel,
-                    localPath: data?.localPath,
-                    pixelWidth: nw,
-                    pixelHeight: nh,
-                  });
+                  handleDownloadImage();
                 }}
-                className={
-                  isDarkMode
-                    ? `flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/15 hover:bg-white/25 text-white`
-                    : nodeFloatPillBtn(isDarkMode, 'gap-1.5 px-3 py-1.5', 'sensing')
-                }
-                title={imgc.panoramaPlacementTitle}
-                aria-label={imgc.panoramaPlacementAria}
+                className={topToolbarIconBtn('looks')}
+                title={imgc.downloadTitle}
+                aria-label={imgc.downloadTitle}
               >
-                <Globe className="w-4 h-4" />
-                {imgc.panoramaPlacementButton}
+                <Download className="w-4 h-4 shrink-0" />
               </button>
-            )}
+            ) : null}
+            <button
+              type="button"
+              onClick={handleUploadImage}
+              className={topToolbarIconBtn('looks')}
+              title={imgc.uploadImageTitle}
+              aria-label={imgc.uploadImageTitle}
+            >
+              <Upload className="w-4 h-4 shrink-0" />
+            </button>
+            {primaryOutputImage ? (
+              <>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const baseSrc = getImageDisplaySrc(formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath));
+                    if (!baseSrc) return;
+                    const urlForBoard = baseSrc.startsWith('data:') ? baseSrc : `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+                    if (onOpenDrawingBoard) {
+                      onOpenDrawingBoard(urlForBoard, id, data?.localPath);
+                    } else if (onPreviewImage) {
+                      onPreviewImage(baseSrc, id);
+                    } else {
+                      window.open(baseSrc, '_blank', 'noopener,noreferrer');
+                    }
+                  }}
+                  className={topToolbarIconBtn('looks')}
+                  title={imgc.drawingBoardTitle}
+                  aria-label={imgc.drawingBoardAria}
+                >
+                  <PenTool className="w-4 h-4 shrink-0" />
+                </button>
+                <div
+                  className="relative inline-flex flex-col items-stretch nodrag nopan"
+                  onMouseEnter={openFlipMenu}
+                  onMouseLeave={scheduleCloseFlipMenu}
+                >
+                  <div
+                    className={`flex h-8 cursor-default items-center justify-center gap-0.5 rounded-lg px-2 transition-all select-none ${
+                      isDarkMode
+                        ? `bg-white/15 text-white ${
+                            flipHUi || flipVUi
+                              ? 'ring-1 ring-violet-400/50 bg-violet-500/20'
+                              : flipMenuHover
+                                ? 'ring-1 ring-white/30'
+                                : 'hover:bg-white/25'
+                          }`
+                        : `scratch-float-btn ${scratchTintClass('variables')} px-2 ${
+                            flipHUi || flipVUi ? 'ring-2 ring-offset-1 ring-gray-900/20' : ''
+                          } ${flipMenuHover && !(flipHUi || flipVUi) ? 'ring-2 ring-offset-1 ring-gray-900/10' : ''}`
+                    }`}
+                    title={imgc.flipMenuHoverHint}
+                    role="group"
+                    aria-label={imgc.flipMenuHoverHint}
+                  >
+                    <FlipHorizontal2 className="w-4 h-4 shrink-0 opacity-90" aria-hidden />
+                    <ChevronDown className="w-3 h-3 shrink-0 opacity-80" aria-hidden />
+                  </div>
+                  {flipMenuHover && (
+                    <div
+                      className="absolute left-0 top-full z-[60] min-w-[10.5rem] pt-1 nodrag nopan"
+                      onMouseEnter={openFlipMenu}
+                      onMouseLeave={scheduleCloseFlipMenu}
+                      onPointerDown={(ev) => ev.stopPropagation()}
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
+                      <div
+                        className={`rounded-lg border py-1 shadow-xl ${
+                          isDarkMode ? 'bg-zinc-900 border-white/15 text-white/95' : 'bg-white border-gray-200 text-gray-900'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${
+                            flipHUi
+                              ? isDarkMode
+                                ? 'bg-violet-500/20 text-violet-100'
+                                : 'bg-violet-100 text-violet-900'
+                              : isDarkMode
+                                ? 'hover:bg-white/10'
+                                : 'hover:bg-gray-100'
+                          }`}
+                          title={imgc.flipHorizontalTitle}
+                          aria-label={imgc.flipHorizontalTitle}
+                          aria-pressed={flipHUi}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            toggleFlipH();
+                          }}
+                        >
+                          <FlipHorizontal2 className="w-4 h-4 shrink-0" />
+                          {imgc.flipHorizontalTitle}
+                        </button>
+                        <button
+                          type="button"
+                          className={`flex w-full items-center gap-2 px-3 py-2 text-xs font-medium transition-colors ${
+                            flipVUi
+                              ? isDarkMode
+                                ? 'bg-violet-500/20 text-violet-100'
+                                : 'bg-violet-100 text-violet-900'
+                              : isDarkMode
+                                ? 'hover:bg-white/10'
+                                : 'hover:bg-gray-100'
+                          }`}
+                          title={imgc.flipVerticalTitle}
+                          aria-label={imgc.flipVerticalTitle}
+                          aria-pressed={flipVUi}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            toggleFlipV();
+                          }}
+                        >
+                          <FlipVertical2 className="w-4 h-4 shrink-0" />
+                          {imgc.flipVerticalTitle}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {!hasMultiOutputImages && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!cropSourceUrl) return;
+                      setShowCropModal(true);
+                    }}
+                    className={topToolbarIconBtn(
+                      'operators',
+                      showCropModal
+                        ? isDarkMode
+                          ? '!bg-emerald-500/25 ring-1 ring-emerald-400/50'
+                          : 'ring-2 ring-offset-1 ring-gray-900/20'
+                        : '',
+                    )}
+                    title={imgc.cropTitle}
+                    aria-label={imgc.cropTitle}
+                    aria-pressed={showCropModal}
+                  >
+                    <Crop className="w-4 h-4 shrink-0" />
+                  </button>
+                )}
+                {showPanoramaPlacementEntry && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const scene3dSrc =
+                        typeof data?.sceneDisplay3dUrl === 'string' ? data.sceneDisplay3dUrl.trim() : '';
+                      const flatSrc = getImageDisplaySrc(
+                        formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath),
+                      );
+                      const baseSrc = scene3dSrc || flatSrc;
+                      if (!baseSrc || !onOpenPanoramaPlacement) return;
+                      const urlForPanel = baseSrc.startsWith('data:') ? baseSrc : `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+                      const nw = imgRef.current?.naturalWidth ?? imageNaturalPx?.w;
+                      const nh = imgRef.current?.naturalHeight ?? imageNaturalPx?.h;
+                      onOpenPanoramaPlacement({
+                        nodeId: id,
+                        imageUrl: urlForPanel,
+                        localPath: data?.localPath,
+                        pixelWidth: nw,
+                        pixelHeight: nh,
+                      });
+                    }}
+                    className={topToolbarIconBtn('sensing')}
+                    title={imgc.panoramaPlacementTitle}
+                    aria-label={imgc.panoramaPlacementAria}
+                  >
+                    <Globe className="w-4 h-4 shrink-0" />
+                  </button>
+                )}
+              </>
+            ) : null}
           </div>
         )}
 
@@ -2988,16 +3065,19 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   !!dragOutFileSourceUrl &&
                   !dragOutFileSourceUrl.startsWith('blob:')
                 }
-                onPointerDown={beginNativeDragPrepare}
+                onPointerDown={handleOutputImagePointerDown}
+                onClick={handleOutputImageClick}
                 onDragStart={handleOutputImageDragStart}
                 title={
-                  outputImages.length <= 1 &&
-                  !!dragOutFileSourceUrl &&
-                  !dragOutFileSourceUrl.startsWith('blob:')
-                    ? locale === 'en'
-                      ? 'Drag to desktop or a folder to copy the image file'
-                      : '拖到桌面或文件夹以复制图片文件'
-                    : undefined
+                  selected && outputImages.length <= 1
+                    ? imgc.previewOpenHint
+                    : outputImages.length <= 1 &&
+                        !!dragOutFileSourceUrl &&
+                        !dragOutFileSourceUrl.startsWith('blob:')
+                      ? locale === 'en'
+                        ? 'Drag to desktop or a folder to copy the image file'
+                        : '拖到桌面或文件夹以复制图片文件'
+                      : undefined
                 }
                 className="absolute inset-0 w-full h-full object-contain rounded-2xl select-none transition-opacity duration-150"
                 style={{
@@ -3829,6 +3909,24 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           </div>
           );
         })()}
+
+        {showCropModal && cropSourceUrl ? (
+          <ImageCropModal
+            imageUrl={cropSourceUrl}
+            isDarkMode={isDarkMode}
+            title={imgc.cropTitle}
+            hint={imgc.cropHint}
+            cancelLabel={imgc.cropCancel}
+            confirmLabel={imgc.cropConfirm}
+            confirmingLabel={imgc.cropConfirming}
+            busy={cropBusy}
+            onConfirm={(rect) => void handleCropConfirm(rect)}
+            onCancel={() => {
+              if (cropBusy) return;
+              setShowCropModal(false);
+            }}
+          />
+        ) : null}
 
         {/* 3D 视角控制器弹窗：在 Image 下方，仅选中且打开时渲染 */}
         {is3DPopoverOpen && threeDPopoverPosition && createPortal(

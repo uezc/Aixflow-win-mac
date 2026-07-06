@@ -231,6 +231,89 @@ export function digitalHumanPosterUrl(item: DigitalHumanLibraryItem): string {
 /** 从数字人库拖到画布 */
 export const NEXFLOW_DIGITAL_HUMAN_DRAG_MIME = 'application/x-nexflow-digital-human';
 
+/** 从 RVC 音色库拖到画布 */
+export const NEXFLOW_RVC_VOICE_DRAG_MIME = 'application/x-nexflow-rvc-voice';
+
+/** RVC 音色模型资产库条目（训练产出的 zip 包，仅素材库管理，不可在声音节点播放） */
+export interface RvcVoiceLibraryItem {
+  id: string;
+  nickname: string;
+  name: string;
+  createdAt: number;
+  /** 列表头像（可选） */
+  avatar?: string;
+  localAvatarPath?: string;
+  /** 训练时填写的模型名称（可选，与显示名可不同） */
+  rvcTrainModelName?: string;
+  /** 模型包文件名（不含扩展名，默认显示名来源） */
+  packageFileName?: string;
+  /** 本地模型包 URL（local-resource） */
+  modelPackageUrl?: string;
+  localModelPath?: string;
+  /** 原始远程 URL（RunningHub 24h 有效，仅作备份） */
+  originalModelUrl?: string;
+  /** 训练用声音片段 */
+  trainAudioUrl?: string;
+  localTrainAudioPath?: string;
+  originalTrainAudioUrl?: string;
+}
+
+function rvcVoiceMediaUrlFromPaths(url?: string, localPath?: string, remoteFallback?: string): string {
+  const lp = (localPath || '').trim();
+  if (lp && pathLooksAbsolute(lp)) {
+    const normalized = lp.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
+    return `local-resource://${normalized}`;
+  }
+  const u = (url || '').trim();
+  if (isLoadableMediaUrl(u)) return u;
+  const remote = (remoteFallback || '').trim();
+  if (isLoadableMediaUrl(remote)) return remote;
+  return '';
+}
+
+/** RVC 模型包 URL（zip 等） */
+export function rvcVoiceModelPackageUrl(item: RvcVoiceLibraryItem): string {
+  return rvcVoiceMediaUrlFromPaths(item.modelPackageUrl, item.localModelPath, item.originalModelUrl);
+}
+
+/** RVC 训练音频片段 URL */
+export function rvcVoiceTrainAudioUrl(item: RvcVoiceLibraryItem): string {
+  return rvcVoiceMediaUrlFromPaths(item.trainAudioUrl, item.localTrainAudioPath, item.originalTrainAudioUrl);
+}
+
+/** 从模型包路径/URL 提取默认显示名（文件名去扩展名） */
+export function deriveRvcPackageDisplayName(urlOrPath: string, localPath?: string): string {
+  const raw = (localPath || urlOrPath || '').trim();
+  if (!raw) return 'RVC';
+  const withoutQuery = raw.split('?')[0];
+  const base = withoutQuery.split(/[/\\]/).pop() || 'RVC';
+  const stripped = base.replace(/\.(zip|pth|index|tar\.gz|tgz)$/i, '').trim();
+  return stripped || 'RVC';
+}
+
+/** 音色库卡片 / 画布展示名：优先训练时填写的模型名称 */
+export function rvcVoiceDisplayName(item: RvcVoiceLibraryItem, fallback = '未命名音色'): string {
+  const model = (item.rvcTrainModelName || '').trim();
+  if (model) return model;
+  const nick = (item.nickname || item.name || '').trim();
+  if (nick) return nick;
+  const pkg = (item.packageFileName || '').trim();
+  if (pkg) return pkg;
+  const derived = deriveRvcPackageDisplayName(item.modelPackageUrl || '', item.localModelPath);
+  return derived !== 'RVC' ? derived : fallback;
+}
+
+/** RVC 音色库卡片头像 */
+export function rvcVoiceAvatarUrl(item: RvcVoiceLibraryItem): string {
+  const lp = (item.localAvatarPath || '').trim();
+  if (lp && pathLooksAbsolute(lp)) {
+    return formatLocalResourceFromFsPath(lp);
+  }
+  const av = (item.avatar || '').trim();
+  if (isLoadableMediaUrl(av)) return av;
+  return '';
+}
+
 /** 解析角色参考音 URL（角色列表试听 / 拖入画布与主进程 local-resource 规则一致） */
 export function resolveCharacterVoiceUrlForDrag(character: Character): string | null {
   if (character.localVoicePath) {

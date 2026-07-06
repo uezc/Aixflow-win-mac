@@ -164,6 +164,17 @@ body.nexflow-settings-page::-webkit-scrollbar {
   will-change: transform;
 }
 
+/* 播放光晕仅加在 node-wrapper 内层，避免 > * { position:relative } 破坏 absolute 布局与外挂 chrome */
+.nexflow-video-node > .node-wrapper {
+  position: absolute !important;
+  inset: 0;
+}
+
+.nexflow-video-node .node-wrapper > .nexflow-media-playing-glow {
+  position: absolute !important;
+  inset: 0;
+}
+
 /* EdgeCanvasLayer：强制平滑插值，will-change 启用 GPU 加速与硬件抗锯齿 */
 .nexflow-edge-canvas {
   image-rendering: auto !important;
@@ -513,6 +524,12 @@ body {
 .nexflow-media-playing-glow {
   position: relative;
   isolation: isolate;
+}
+
+/* 播放光晕在 ::after 上；主体内容需置于光晕之上 */
+.nexflow-media-playing-glow > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* 光晕画在 ::after 上，避免画布平移时 .is-dragging { box-shadow: none } 清掉播放指示 */
@@ -1735,10 +1752,57 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
   border: none !important;
 }
 
+.light-mode .react-flow__node-audio .custom-node-container.apple-panel-light:has(.nexflow-audio-waveform-fill),
+.light-mode .react-flow__node-audioTranscribe .custom-node-container.apple-panel-light:has(.nexflow-audio-waveform-fill) {
+  background: transparent !important;
+}
+
 .light-mode .react-flow__node-audio .custom-node-container.apple-panel-light,
 .light-mode .react-flow__node-audioTranscribe .custom-node-container.apple-panel-light {
   /* 声音 Sound */
   background: #cf63cf !important;
+  border: none !important;
+}
+
+/* 明亮模式：画布模块不使用 ring/外描边，仅靠 Scratch 分类底色与圆角区分 */
+.light-mode .react-flow__node .custom-node-container {
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  box-shadow: none !important;
+}
+
+/* 声音模块：React Flow 选框与固定外框 280×160 对齐（外挂控件不参与测量） */
+.react-flow__node.react-flow__node-audio {
+  width: 280px !important;
+  height: 160px !important;
+  min-width: 280px !important;
+  min-height: 160px !important;
+  max-width: 280px !important;
+  max-height: 160px !important;
+  overflow: visible !important;
+}
+
+.nexflow-audio-node-shell {
+  width: 280px;
+  height: 160px;
+  max-width: 280px;
+  max-height: 160px;
+  pointer-events: none;
+}
+
+.nexflow-audio-node-shell .custom-node-container,
+.nexflow-audio-node-shell .pointer-events-auto {
+  pointer-events: auto;
+}
+
+/* 播放光晕内层 overlay；连线 Handle 留在外层，避免被 z-index / overflow 遮挡 */
+.nexflow-audio-node-shell .custom-node-container > .react-flow__handle {
+  z-index: 30 !important;
+}
+
+.light-mode .react-flow__node-rvcTrain .custom-node-container.apple-panel-light {
+  /* RVC 音色训练：外观 Looks（紫） */
+  background: #9966ff !important;
   border: none !important;
 }
 

@@ -18,6 +18,12 @@ export interface VideoPreviewRef {
   flushPlaybackTime: () => void;
   /** 读取当前播放头（秒），用于离开视频区时与 React state 异步解耦、精确落盘 */
   getCurrentTimeSec: () => number | null;
+  getDurationSec: () => number | null;
+  seekTo: (sec: number) => void;
+  setVolume: (volume: number) => void;
+  getVolume: () => number;
+  /** 画布 transform 下通过 body 壳全屏播放 */
+  openPortalFullscreen: () => void;
 }
 
 interface VideoPreviewProps {
@@ -34,6 +40,8 @@ interface VideoPreviewProps {
   onClick?: () => void;
   /** 为 true 时暂停播放，避免离屏/缩小时 GPU 压力 */
   isPaused?: boolean;
+  /** 播放到结尾后自动从头循环（画布视频节点预览） */
+  loop?: boolean;
   /** 视频元数据加载完成时回调（宽高、时长），用于节点按视频比例调整尺寸及裁剪功能 */
   onLoadedMetadata?: (videoWidth: number, videoHeight: number, duration?: number) => void;
   /** canplay 触发后回调，用于节点执行淡入显示 */
@@ -46,6 +54,8 @@ interface VideoPreviewProps {
   onPlaybackTime?: (timeSec: number, durationSec?: number, immediate?: boolean) => void;
   /** 播放状态变化（用于节点彩虹光晕等） */
   onPlayingChange?: (playing: boolean) => void;
+  /** 外挂播放条 UI 刷新（不写节点 data） */
+  onUiPlaybackTick?: (timeSec: number, durationSec: number, playing: boolean) => void;
   /** 重新挂载 <video> 后恢复到此秒数（如拖进度条/暂停后鼠标离开导致卸载再挂） */
   initialPlaybackTimeSec?: number;
   /**
@@ -91,12 +101,14 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
   muted = false,
   onClick,
   isPaused = false,
+  loop = false,
   onLoadedMetadata,
   onCanPlay,
   onDecodedFrame,
   onLastFrameCapture,
   onPlaybackTime,
   onPlayingChange,
+  onUiPlaybackTick,
   initialPlaybackTimeSec,
   fixFullscreenForTransformedParent = false,
   portalFullscreenTitle: _portalFullscreenTitle = 'Fullscreen',
@@ -163,15 +175,38 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     return Number.isFinite(t) ? t : null;
   }, []);
 
-  useImperativeHandle(ref, () => ({
-    pause: () => videoElRef.current?.pause(),
-    play: () => videoElRef.current?.play().catch(() => {}),
-    releaseVideo,
-    captureCurrentFrame,
-    warmupDecode,
-    flushPlaybackTime,
-    getCurrentTimeSec,
-  }), [releaseVideo, captureCurrentFrame, warmupDecode, flushPlaybackTime, getCurrentTimeSec]);
+  const getDurationSec = React.useCallback((): number | null => {
+    const v = videoElRef.current;
+    if (!v) return null;
+    const d = v.duration;
+    return Number.isFinite(d) && d > 0 ? d : null;
+  }, []);
+
+  const seekTo = React.useCallback((sec: number) => {
+    const v = videoElRef.current;
+    if (!v || !Number.isFinite(sec)) return;
+    const d = v.duration;
+    const hi = Number.isFinite(d) && d > 0 ? Math.max(0, d - 1e-6) : sec;
+    try {
+      v.currentTime = Math.min(Math.max(0, sec), hi);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const setVolume = React.useCallback((volume: number) => {
+    const v = videoElRef.current;
+    if (!v) return;
+    const next = Math.min(1, Math.max(0, volume));
+    v.volume = next;
+    v.muted = next <= 0;
+  }, []);
+
+  const getVolume = React.useCallback((): number => {
+    const v = videoElRef.current;
+    if (!v) return 1;
+    return v.muted ? 0 : v.volume;
+  }, []);
 
   const lastSrcRef = React.useRef<string>('');
   /** 当前 URL 是否已做过「首帧黑屏」修正，避免 loadeddata/canplay 重复 seek */
@@ -772,7 +807,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
   }, [flushPlaybackTime]);
 
   const openPortalFullscreenLayer = useCallback(() => {
-      if (!fixFullscreenForTransformedParent || !controls) return;
+      if (!fixFullscreenForTransformedParent) return;
       const host = videoHostRef.current;
       const vid = videoElRef.current;
       if (!host || !vid || portalShellRef.current) return;
@@ -848,7 +883,6 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       });
   }, [
       fixFullscreenForTransformedParent,
-      controls,
       portalFullscreenExitTitle,
       restorePortalFullscreen,
   ]);
@@ -923,6 +957,21 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     };
   }, [onPlayingChange]);
 
+  useImperativeHandle(ref, () => ({
+    pause: () => videoElRef.current?.pause(),
+    play: () => videoElRef.current?.play().catch(() => {}),
+    releaseVideo,
+    captureCurrentFrame,
+    warmupDecode,
+    flushPlaybackTime,
+    getCurrentTimeSec,
+    getDurationSec,
+    seekTo,
+    setVolume,
+    getVolume,
+    openPortalFullscreen: () => openPortalFullscreenLayer(),
+  }), [releaseVideo, captureCurrentFrame, warmupDecode, flushPlaybackTime, getCurrentTimeSec, getDurationSec, seekTo, setVolume, getVolume, openPortalFullscreenLayer]);
+
   const videoEl = (
     <video
       ref={videoElRef}
@@ -933,6 +982,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       preload={preload}
       playsInline={playsInline}
       muted={muted}
+      loop={loop}
       draggable={false}
       className={className}
       style={{ width: '100%', objectFit: 'contain', borderRadius: 8, ...style }}
@@ -942,6 +992,19 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       onLoadedData={handleLoadedData}
       onCanPlay={handleCanPlayWrapped}
       onEnded={(e) => {
+        if (loop) {
+          const v = e.currentTarget;
+          if (!isPausedRef.current) {
+            try {
+              v.currentTime = 0;
+              void v.play().catch(() => {});
+            } catch {
+              /* ignore */
+            }
+          }
+          onUiPlaybackTick?.(0, Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0, !v.paused);
+          return;
+        }
         handlePlaybackReport(e, true);
         onPlayingChange?.(false);
         if (onLastFrameCapture && cleanSrc) {
@@ -949,11 +1012,48 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
         }
       }}
       onLoadedMetadata={handleLoadedMetadataInner}
-      onSeeked={(e) => handlePlaybackReport(e, true)}
-      onPlay={() => onPlayingChange?.(true)}
+      onSeeked={(e) => {
+        handlePlaybackReport(e, true);
+        const v = e.currentTarget;
+        const d = v.duration;
+        onUiPlaybackTick?.(
+          v.currentTime,
+          Number.isFinite(d) && d > 0 ? d : 0,
+          !v.paused,
+        );
+      }}
+      onTimeUpdate={(e) => {
+        if (!onUiPlaybackTick) return;
+        const v = e.currentTarget;
+        if (v.seeking) return;
+        const d = v.duration;
+        onUiPlaybackTick(
+          v.currentTime,
+          Number.isFinite(d) && d > 0 ? d : 0,
+          !v.paused,
+        );
+      }}
+      onPlay={() => {
+        onPlayingChange?.(true);
+        const v = videoElRef.current;
+        if (v && onUiPlaybackTick) {
+          const d = v.duration;
+          onUiPlaybackTick(
+            v.currentTime,
+            Number.isFinite(d) && d > 0 ? d : 0,
+            true,
+          );
+        }
+      }}
       onPause={(e) => {
         handlePlaybackReport(e, true);
         onPlayingChange?.(false);
+        const v = e.currentTarget;
+        onUiPlaybackTick?.(
+          v.currentTime,
+          Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0,
+          false,
+        );
       }}
       onClick={onClick}
     >

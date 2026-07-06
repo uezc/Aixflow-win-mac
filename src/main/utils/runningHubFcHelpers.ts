@@ -50,6 +50,26 @@ export function unwrapRunningHubForwardBody(raw: Record<string, unknown>): Recor
   return out;
 }
 
+/** 从 FC 转发提交响应提取 RunningHub taskId（含 `{ code, data: { taskId } }` 包装） */
+export function extractRhTaskIdFromForward(raw: Record<string, unknown>): string | undefined {
+  const data = unwrapRunningHubForwardBody(raw);
+  const top =
+    (typeof data.taskId === 'string' && data.taskId.trim()) ||
+    (typeof data.task_id === 'string' && data.task_id.trim()) ||
+    '';
+  if (top) return top;
+  const inner = data.data;
+  if (inner != null && typeof inner === 'object' && !Array.isArray(inner)) {
+    const o = inner as { taskId?: string; task_id?: string };
+    const nested =
+      (typeof o.taskId === 'string' && o.taskId.trim()) ||
+      (typeof o.task_id === 'string' && o.task_id.trim()) ||
+      '';
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 /** 从 RunningHub 提交/轮询响应提取可读错误（含 errorCode） */
 function extractRhFailedReasonMessage(failedReason: unknown): string {
   if (!failedReason || typeof failedReason !== 'object') return '';
@@ -78,13 +98,20 @@ export function formatRunningHubTaskError(
     data.fail_reason ??
     data.failReason ??
     extractRhFailedReasonMessage(data.failedReason);
+  const frMsg = extractRhFailedReasonMessage(data.failedReason);
   const msg = typeof msgRaw === 'string' ? msgRaw.trim() : msgRaw != null ? String(msgRaw).trim() : '';
+  const isGenericMsg = !msg || /^工作流运行失败$/i.test(msg) || /^task failed$/i.test(msg);
+  let detail = isGenericMsg && frMsg ? frMsg.split('\n')[0].trim() : msg;
+  if (/Value not in list|not in \(list of length 47\)/i.test(`${detail} ${frMsg}`)) {
+    detail =
+      'RVC model_name 不在 RunningHub 官方 47 项预置列表内（自训练 openapi/ 路径不可用，非客户端故障）';
+  }
   const code =
     codeRaw != null && String(codeRaw).trim() !== '' && !['0', '200', 'SUCCESS'].includes(String(codeRaw))
       ? String(codeRaw).trim()
       : '';
-  if (code && msg) return `[${code}] ${msg}`;
-  return msg || fallback;
+  if (code && detail) return `[${code}] ${detail}`;
+  return detail || frMsg.split('\n')[0].trim() || fallback;
 }
 
 export function logRunningHubTaskFailure(
@@ -247,7 +274,7 @@ export async function rhPostChargeAudio(
   const usePrepaid = prepaidLedgerTaskId != null && String(prepaidLedgerTaskId).trim() !== '';
   const taskId = usePrepaid ? String(prepaidLedgerTaskId).trim() : fallbackFcId;
   const billing = usePrepaid ? ('none' as const) : ('charge' as const);
-  const { data } = await fcForwardRequest(
+  const { data: raw } = await fcForwardRequest(
     taskId,
     'audio',
     billing,
@@ -259,7 +286,7 @@ export async function rhPostChargeAudio(
     },
     options?.billingModelId ? { billingModelId: options.billingModelId } : undefined,
   );
-  return data;
+  return unwrapRunningHubForwardBody(raw as Record<string, unknown>);
 }
 
 export async function rhQueryPollAudio(

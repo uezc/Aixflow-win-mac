@@ -11,6 +11,7 @@ import ImageTo3dInlineGlbPreview from '../ImageTo3dInlineGlbPreview';
 import GlbModelViewer from './GlbModelViewer';
 import GlbViewerPlaceholder from './GlbViewerPlaceholder';
 import { preloadGlbPreviewUrl } from '../../utils/glbPreviewPreload';
+import { isRhPreviewRenderTextureUrl } from '../../utils/glbViewerUtils';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { ModuleProgressBar } from './ModuleProgressBar';
 import {
@@ -38,6 +39,8 @@ export interface ImageTo3dNodeData {
   previewSnapshotUrl?: string;
   /** 已写入左侧「3D 模型」资产库的角色 id */
   libraryCharacterId?: string;
+  /** image-to-3d | trellis2 */
+  model?: string;
 }
 
 interface ImageTo3dNodeProps extends NodeProps<ImageTo3dNodeData> {
@@ -81,8 +84,13 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
   const [freezeFrameUrl, setFreezeFrameUrl] = useState<string | null>(null);
 
   const previewGlbUrl =
-    (data?.remoteGlbUrl || data?.outputGlbUrl || data?.localGlbUrl || '').trim() || '';
-  const resultTextureUrl = (data?.resultTextureUrl || '').trim();
+    (data?.localGlbUrl || data?.remoteGlbUrl || data?.outputGlbUrl || '').trim() || '';
+  const resultTextureUrlRaw = (data?.resultTextureUrl || '').trim();
+  const resultTextureUrl = isRhPreviewRenderTextureUrl(resultTextureUrlRaw)
+    ? ''
+    : resultTextureUrlRaw;
+  const [embeddedTextureUrl, setEmbeddedTextureUrl] = useState('');
+  const previewTextureUrl = resultTextureUrl || embeddedTextureUrl;
   const hasOutput = !!previewGlbUrl;
   const rawProgress = typeof data?.progress === 'number' ? data.progress : 0;
   /** 兼容旧数据 progress=100；仅 1–99 为生成中 */
@@ -119,7 +127,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
         glbRemoteUrl: data?.remoteGlbUrl || data?.outputGlbUrl || data?.localGlbUrl,
         textureLocalPath: data?.localTexturePath,
         textureRemoteUrl: data?.resultTextureRemoteUrl as string | undefined,
-        textureResourceUrl: resultTextureUrl,
+        textureResourceUrl: previewTextureUrl,
         referenceRemoteUrl: (data?.inputImageUrl || '').trim() || undefined,
       });
       if (r?.canceled) return;
@@ -151,7 +159,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     data?.inputImageUrl,
     data?.resultTextureRemoteUrl,
     previewGlbUrl,
-    resultTextureUrl,
+    previewTextureUrl,
     flashDownloadNotice,
     id,
     locale,
@@ -173,7 +181,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     }
     setSavingToLibrary(true);
     try {
-      const tex = resultTextureUrl || undefined;
+      const tex = previewTextureUrl || undefined;
       const char = await window.electronAPI.registerImageTo3dCharacter({
         inputImageUrl: (data?.inputImageUrl || '').trim() || undefined,
         localGlbPath: data?.localGlbPath,
@@ -205,7 +213,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     locale,
     onDataChange,
     onLibrarySaved,
-    resultTextureUrl,
+    previewTextureUrl,
     savedToLibrary,
     flashDownloadNotice,
     t,
@@ -247,9 +255,12 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     setPointerInsideNode(false);
   }, [selected, hasOutput, fullscreen, isGenerating, capturePreviewFrame]);
 
-  /** 画布预览：选中且鼠标在节点内时挂载 WebGL；离开节点用截图保持画面 */
+  /** 画布预览：
+   * - 选中节点 → 立即挂载 WebGL（不需要等鼠标移入）
+   * - 未选中 → 仅鼠标在节点内时才挂载（性能优化）
+   */
   const mountWebGL =
-    !!selected && pointerInsideNode && !fullscreen && !isGenerating;
+    !!selected ? !fullscreen && !isGenerating : pointerInsideNode && !fullscreen && !isGenerating;
 
   const persistPreviewSnapshot = useCallback(() => {
     const dataUrl = captureRef.current?.();
@@ -265,11 +276,36 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     });
   }, [persistPreviewSnapshot]);
 
-  const glbKey = `${previewGlbUrl}|${resultTextureUrl}`;
+  const glbKey = `${previewGlbUrl}|${previewTextureUrl}`;
 
   useEffect(() => {
     if (previewGlbUrl) preloadGlbPreviewUrl(previewGlbUrl);
   }, [previewGlbUrl]);
+
+  /** Trellis2：工作流未单独输出 base_color PNG，从本地 GLB 内嵌贴图提取并用于预览 */
+  useEffect(() => {
+    if (!hasOutput || resultTextureUrl) {
+      setEmbeddedTextureUrl('');
+      return;
+    }
+    const api = window.electronAPI?.ensureImageTo3dLocalTexture;
+    if (!api) return;
+    let cancelled = false;
+    void api({
+      glbLocalPath: data?.localGlbPath,
+      glbResourceUrl: previewGlbUrl,
+    }).then((r) => {
+      if (cancelled || !r?.textureLocalUrl) return;
+      setEmbeddedTextureUrl(r.textureLocalUrl);
+      onDataChange?.(id, {
+        resultTextureUrl: r.textureLocalUrl,
+        localTexturePath: r.textureLocalPath,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasOutput, resultTextureUrl, data?.localGlbPath, previewGlbUrl, id, onDataChange]);
 
   useEffect(() => {
     if (selected && previewGlbUrl) preloadGlbPreviewUrl(previewGlbUrl);
@@ -311,12 +347,14 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
   }, [isGenerating, hasOutput, selected, mountWebGL, schedulePersistPreviewSnapshot]);
 
   const frozenSnapshotUrl = (freezeFrameUrl || snapshotUrl || '').trim();
+  /** 只要节点被选中，就强制显示实时 3D，不显示静态截图 */
   const showFrozenSnapshot =
     hasOutput &&
     !isGenerating &&
     !fullscreen &&
     !!frozenSnapshotUrl &&
-    (!selected || !pointerInsideNode);
+    !selected &&
+    !pointerInsideNode;
   const showInputStill =
     !mountWebGL &&
     hasOutput &&
@@ -393,10 +431,11 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
               >
                 <ImageTo3dInlineGlbPreview
                   glbUrl={previewGlbUrl}
-                  textureUrl={resultTextureUrl}
+                  textureUrl={previewTextureUrl}
                   placeholderImageUrl={inputStillUrl}
                   previewKey={id}
-                  showReferencePlaceholder={!!inputStillUrl}
+                  // 鼠标在节点内时，优先显示 3D 模型，不显示参考图占位
+                  showReferencePlaceholder={false}
                   wrapperClassName="relative h-full w-full"
                   cameraFraming={IMAGE_TO_3D_PREVIEW_CAMERA_FRAMING}
                   gridStyle="showcase"
@@ -415,7 +454,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
             ) : (
               <GlbModelViewer
                 url={previewGlbUrl}
-                overrideTextureUrl={resultTextureUrl}
+                overrideTextureUrl={previewTextureUrl}
                 className={`absolute inset-0 w-full h-full ${showFrozenSnapshot ? 'opacity-0 pointer-events-none' : ''}`}
                 showGridWhenEmpty
                 enabled={mountWebGL}
@@ -529,7 +568,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
       {fullscreen && hasOutput && (
         <ImageTo3dFullscreenView
           glbUrl={previewGlbUrl}
-          overrideTextureUrl={resultTextureUrl}
+          overrideTextureUrl={previewTextureUrl}
           referenceImageUrl={inputStillUrl}
           topOffset={workspaceHeaderBottom}
           onClose={() => setFullscreen(false)}

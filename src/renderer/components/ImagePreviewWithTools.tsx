@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { ChevronLeft, LayoutGrid } from 'lucide-react';
 
 export interface ImagePreviewWithToolsProps {
@@ -19,6 +19,17 @@ export const ImagePreviewWithTools: React.FC<ImagePreviewWithToolsProps> = ({
   onImportToCanvas,
   importToCanvasLabel = '导入到画布',
 }) => {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
   return (
     <div className="fixed inset-0 z-[200] bg-black/90 flex flex-col items-center justify-center">
       <div className="relative flex-1 flex items-center justify-center w-full max-w-[95vw] max-h-[85vh] p-4">

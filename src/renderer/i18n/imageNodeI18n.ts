@@ -39,9 +39,18 @@ export type ImageNodeChromeStrings = {
   flipHorizontalTitle: string;
   flipVerticalTitle: string;
   flipMenuHoverHint: string;
+  cropButton: string;
+  cropTitle: string;
+  cropHint: string;
+  cropConfirm: string;
+  cropConfirming: string;
+  cropCancel: string;
+  cropFailed: string;
   uploadImageTitle: string;
   downloadTitle: string;
   zoomPreviewTitle: string;
+  /** 节点已选中时：再次点击或空格放大 */
+  previewOpenHint: string;
   creditsSuffix: string;
   editTitle: string;
   webglChecking: string;
@@ -133,9 +142,17 @@ const zh: ImageNodeChromeStrings = {
   flipHorizontalTitle: '水平翻转',
   flipVerticalTitle: '垂直翻转',
   flipMenuHoverHint: '悬停选择水平或垂直翻转',
+  cropButton: '裁剪',
+  cropTitle: '图片裁剪',
+  cropHint: '拖拽选框移动位置，拖动四角调整范围，确认后替换当前图片',
+  cropConfirm: '确认裁剪',
+  cropConfirming: '裁剪中…',
+  cropCancel: '取消',
+  cropFailed: '裁剪失败，请确认图片已加载完成',
   uploadImageTitle: '上传图片',
   downloadTitle: '下载',
   zoomPreviewTitle: '放大预览',
+  previewOpenHint: '再次点击或按空格放大预览',
   creditsSuffix: '元宝',
   editTitle: '编辑标题',
   webglChecking: '检测 WebGL…',
@@ -220,9 +237,17 @@ const en: ImageNodeChromeStrings = {
   flipHorizontalTitle: 'Flip horizontal',
   flipVerticalTitle: 'Flip vertical',
   flipMenuHoverHint: 'Hover for horizontal or vertical flip',
+  cropButton: 'Crop',
+  cropTitle: 'Crop image',
+  cropHint: 'Drag the box to move; drag corners to resize. Confirm to replace the current image.',
+  cropConfirm: 'Apply crop',
+  cropConfirming: 'Cropping…',
+  cropCancel: 'Cancel',
+  cropFailed: 'Crop failed. Ensure the image is loaded.',
   uploadImageTitle: 'Upload image',
   downloadTitle: 'Download',
   zoomPreviewTitle: 'Zoom preview',
+  previewOpenHint: 'Click again or press Space to zoom',
   creditsSuffix: 'credits',
   editTitle: 'Edit title',
   webglChecking: 'Checking WebGL…',

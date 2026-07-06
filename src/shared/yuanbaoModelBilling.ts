@@ -27,6 +27,8 @@ export const MODEL_YUANBAO_RATES: Record<string, ModelYuanbaoRate> = {
   'tts-basic': { yuanbao: 5, tier: 'medium', label: 'TTS配音' },
   'music-gen': { yuanbao: 15, tier: 'medium', label: '音乐生成' },
   'image-to-3d': { yuanbao: 20, tier: 'high', label: '3D转换' },
+  trellis2: { yuanbao: 40, tier: 'high', label: 'Trellis2 3D' },
+  '2072903678922674177': { yuanbao: 40, tier: 'high', label: 'Trellis2 3D' },
 };
 
 export function yuanbaoToCnyApprox(yuanbao: number): number {

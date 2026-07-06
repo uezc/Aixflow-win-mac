@@ -8,11 +8,11 @@ export const ASSET_LIBRARY_SIDEBAR_COLLAPSED_WIDTH_PX = 48;
 /** 画布控件相对侧栏右缘的内边距 */
 export const ASSET_LIBRARY_CANVAS_GAP_PX = 23;
 
-export type AssetLibTabId = 'role' | 'scene' | 'model3d' | 'digitalHuman';
+export type AssetLibTabId = 'role' | 'scene' | 'model3d' | 'digitalHuman' | 'rvcVoice';
 
-export function assetLibBtnSecondary(isDarkMode: boolean, extra = '', scratch?: ScratchColorId) {
+export function assetLibBtnSecondary(isDarkMode: boolean, extra = '', scratch: ScratchColorId = 'control') {
   const base = `nexflow-btn-secondary nexflow-btn-secondary-sm inline-flex items-center justify-center ${extra}`;
-  if (!isDarkMode && scratch) {
+  if (scratch) {
     return `${base} ${scratchTintClass(scratch)}`.trim();
   }
   return `${base} ${
@@ -22,14 +22,11 @@ export function assetLibBtnSecondary(isDarkMode: boolean, extra = '', scratch?: 
 
 export function assetLibBtnPrimary(isDarkMode: boolean, extra = '', scratch: ScratchColorId = 'control') {
   const base = `nexflow-btn-primary nexflow-btn-primary-sm inline-flex items-center justify-center ${extra}`;
-  if (!isDarkMode) {
-    return `${base} ${scratchTintClass(scratch)}`.trim();
-  }
-  return base.trim();
+  return `${base} ${scratchTintClass(scratch)}`.trim();
 }
 
-export function assetLibBtnIcon(isDarkMode: boolean, scratch?: ScratchColorId) {
-  return assetLibBtnSecondary(isDarkMode, '!p-1.5 !min-w-0', isDarkMode ? undefined : scratch);
+export function assetLibBtnIcon(isDarkMode: boolean, scratch: ScratchColorId = 'control') {
+  return assetLibBtnSecondary(isDarkMode, '!p-1.5 !min-w-0', scratch);
 }
 
 export function assetLibTabActive(isDarkMode: boolean, _tab?: AssetLibTabId) {
@@ -140,10 +137,64 @@ export function nodeFloatPillBtn(isDarkMode: boolean, extra = '', scratch?: Scra
   } ${extra}`.trim();
 }
 
-/** 角色卡片行内圆形操作钮（明亮模式 Scratch 色） */
-export function assetLibCardActionBtn(isDarkMode: boolean, scratch: ScratchColorId, extra = '') {
-  if (!isDarkMode) {
-    return `${assetLibBtnIcon(isDarkMode, scratch)} !p-1.5 ${extra}`.trim();
-  }
-  return `${assetLibBtnIcon(isDarkMode)} !p-1.5 ${extra}`.trim();
+/** 角色卡片行内圆形操作钮（明亮/暗黑模式均支持 Scratch 色） */
+export function assetLibCardActionBtn(isDarkMode: boolean, scratch: ScratchColorId = 'control', extra = '') {
+  return `${assetLibBtnIcon(isDarkMode, scratch)} !p-1.5 ${extra}`.trim();
+}
+
+/** 资产库编辑弹窗：明亮模式紫罗兰主题（对齐 RVC 音色编辑弹窗） */
+export function assetLibEditModalBackdrop(isDarkMode: boolean) {
+  return isDarkMode ? 'bg-black/55' : 'bg-violet-950/25 backdrop-blur-[2px]';
+}
+
+export function assetLibEditModalPanel(isDarkMode: boolean) {
+  return isDarkMode
+    ? 'bg-[#1a1a1e] border-white/10 shadow-black/40'
+    : 'bg-gradient-to-br from-violet-50 via-white to-fuchsia-50 border-violet-300/70 shadow-violet-400/25';
+}
+
+export function assetLibEditModalTitle(isDarkMode: boolean) {
+  return isDarkMode ? 'text-white' : 'text-violet-900';
+}
+
+export function assetLibEditModalLabel(isDarkMode: boolean) {
+  return isDarkMode ? 'text-white/80' : 'text-violet-800';
+}
+
+export function assetLibEditModalInput(isDarkMode: boolean) {
+  return isDarkMode
+    ? 'bg-black/30 border-white/10 text-white placeholder:text-white/35'
+    : 'bg-white/90 border-violet-300/65 text-violet-950 placeholder:text-violet-400/65 focus:border-[var(--scratch-looks)] focus:ring-2 focus:ring-violet-300/45';
+}
+
+export function assetLibEditModalMutedLink(isDarkMode: boolean) {
+  return isDarkMode ? 'text-white/70 opacity-60 hover:opacity-100' : 'text-violet-700/80 opacity-80 hover:opacity-100';
+}
+
+export function assetLibEditModalCloseScratch(isDarkMode: boolean): ScratchColorId | undefined {
+  return isDarkMode ? 'control' : 'looks';
+}
+
+export function assetLibEditModalCancelScratch(isDarkMode: boolean): ScratchColorId | undefined {
+  return isDarkMode ? 'control' : 'sensing';
+}
+
+export function assetLibEditModalSaveScratch(isDarkMode: boolean): ScratchColorId {
+  return isDarkMode ? 'control' : 'looks';
+}
+
+export function assetLibEditModalPrimaryScratch(isDarkMode: boolean): ScratchColorId {
+  return isDarkMode ? 'control' : 'looks';
+}
+
+export function assetLibEditModalSecondaryActionScratch(isDarkMode: boolean): ScratchColorId {
+  return isDarkMode ? 'control' : 'sound';
+}
+
+/** 明亮模式「画布中选择」按钮轮换色（避免全部黄色 events） */
+const LIGHT_CANVAS_PICK_PALETTE: ScratchColorId[] = ['sound', 'motion', 'operators', 'looks', 'sensing', 'control'];
+
+export function assetLibEditModalCanvasPickScratch(isDarkMode: boolean, variant = 0): ScratchColorId {
+  if (isDarkMode) return 'control';
+  return LIGHT_CANVAS_PICK_PALETTE[variant % LIGHT_CANVAS_PICK_PALETTE.length];
 }

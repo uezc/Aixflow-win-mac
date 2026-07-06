@@ -94,6 +94,10 @@ export const AUDIO_MODEL_CNY = {
   'speech-2.8-hd': 0.15,
   /** Index-TTS 2.0（路径为 run/ai-app/…，须显式 billingModelId） */
   'index-tts2': 0.2,
+  'ai-voice-cover': 0.3,
+  /** RVC 音色模型训练（run/ai-app/2072990640429953025） */
+  'rvc-voice-train': 0.5,
+  '2072990640429953025': 0.5,
 };
 
 /**

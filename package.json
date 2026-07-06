@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.6.3",
+  "version": "1.6.5",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -14,6 +14,7 @@
     "build:preload": "tsc -p tsconfig.preload.json && node scripts/create-preload-package.js",
     "build:renderer": "npm run copy-icon && vite build",
     "build:all": "npm run build:main && npm run build:renderer",
+    "build:rvc-engine": "python scripts/build-rvc-cli/build_rvc.py",
     "preview": "vite preview",
     "alipay:verify": "backend\\.venv\\Scripts\\python.exe backend\\verify_alipay_env.py",
     "alipay:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-alipay-test.ps1",
@@ -27,8 +28,10 @@
     "download-vc-redist": "node scripts/download-vc-redist.js",
     "copy-yt-dlp": "node scripts/copy-yt-dlp-to-resources.mjs --if-missing",
     "download-whisper-model": "node scripts/download-whisper-model-to-resources.mjs --if-missing",
+    "pack:optional-bundles": "node scripts/pack-optional-engine-bundles.mjs",
+    "upload:optional-bundles": "node scripts/upload-optional-bundles-to-oss.mjs --no-confirm",
     "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
-    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && npm run download-whisper-model && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
+    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
     "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
     "upload:release": "node scripts/upload-release-to-oss.js",
     "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
@@ -141,8 +144,12 @@
         "to": "demucs"
       },
       {
-        "from": "resources/whisper",
-        "to": "whisper"
+        "from": "resources/rvc/manifest.json",
+        "to": "rvc/manifest.json"
+      },
+      {
+        "from": "resources/whisper/manifest.json",
+        "to": "whisper/manifest.json"
       },
       {
         "from": "build/vc_redist.x64.exe",

@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "bundleUrl": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/aixflow%20uploads/optional-bundles/whisper-engine-win-x64-base-1.0.0.zip",
+  "sha256": "e247f13e1e1c4858d5f80795bd2c46421edbda237bffc050c074711e50de5414",
+  "sizeBytes": 1416304428,
+  "modelFile": "ggml-medium.bin",
+  "note": "首次转写时下载；可通过 NEXFLOW_WHISPER_ENGINE_BUNDLE_URL 覆盖。打包 zip：npm run pack:optional-bundles"
+}

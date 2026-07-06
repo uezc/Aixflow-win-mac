@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from '
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Handle, Position, NodeProps, Node, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
-import { Loader2, Scissors, Upload, Video, Download, Play, Pause, Film, Eraser, X, Check, ChevronDown, LayoutGrid } from 'lucide-react';
+import { Loader2, Scissors, Upload, Video, Download, Play, Pause, Film, Eraser, X, Check, ChevronDown, LayoutGrid, Maximize2, Volume2 } from 'lucide-react';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { ModuleProgressBar } from './ModuleProgressBar';
@@ -101,6 +101,144 @@ function formatSplitFrameImagePath(path: string): string {
   }
   return `local-resource://${normalizedPath}`;
 }
+
+function formatVideoClock(s: number) {
+  if (!Number.isFinite(s) || s < 0) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, '0')}`;
+}
+
+const VideoPlaybackControlsBar: React.FC<{
+  isDarkMode: boolean;
+  isPlaying: boolean;
+  currentTime: number;
+  displayDuration: number;
+  volume: number;
+  videoPreviewRef: React.RefObject<VideoPreviewRef>;
+  setCurrentTime: (t: number) => void;
+  onTogglePlay: () => void;
+  onVolumeChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  className?: string;
+}> = ({
+  isDarkMode,
+  isPlaying,
+  currentTime,
+  displayDuration,
+  volume,
+  videoPreviewRef,
+  setCurrentTime,
+  onTogglePlay,
+  onVolumeChange,
+  className = '',
+}) => (
+  <>
+    <style>{`
+      .nexflow-video-mini-range {
+        -webkit-appearance: none;
+        appearance: none;
+        height: 3px;
+        border-radius: 999px;
+        background: ${isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)'};
+        outline: none;
+      }
+      .nexflow-video-mini-range::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #a78bfa;
+        border: none;
+        box-shadow: 0 0 0 2px ${isDarkMode ? 'rgba(10,10,12,0.9)' : 'rgba(255,255,255,0.95)'};
+        cursor: pointer;
+      }
+      .nexflow-video-mini-range::-moz-range-thumb {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #a78bfa;
+        border: none;
+        cursor: pointer;
+      }
+      .nexflow-video-mini-range:disabled {
+        opacity: 0.45;
+      }
+    `}</style>
+    <div
+      className={`nodrag nopan flex w-full flex-col gap-1 ${className}`}
+      style={{ pointerEvents: 'all' }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onTogglePlay();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className={`nodrag shrink-0 bg-transparent p-0 transition-opacity ${
+            isDarkMode ? 'text-violet-300/90 hover:text-violet-200' : 'text-violet-600 hover:text-violet-700'
+          }`}
+          title={isPlaying ? '暂停' : '播放'}
+          aria-label={isPlaying ? '暂停' : '播放'}
+        >
+          {isPlaying ? (
+            <Pause className="h-3.5 w-3.5" strokeWidth={2.25} />
+          ) : (
+            <Play className="ml-px h-3.5 w-3.5" strokeWidth={2.25} />
+          )}
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={Math.max(displayDuration, 0.01)}
+          step={0.01}
+          value={currentTime}
+          disabled={displayDuration <= 0}
+          onChange={(e) => {
+            e.stopPropagation();
+            const newTime = parseFloat(e.target.value);
+            videoPreviewRef.current?.seekTo(newTime);
+            setCurrentTime(newTime);
+          }}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          className={`nexflow-video-mini-range nodrag min-w-0 flex-1 ${displayDuration > 0 ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+          aria-label="播放进度"
+          title="点击或拖拽选择播放位置"
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2 pl-5">
+        <span className={`text-[10px] font-mono tabular-nums ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
+          {formatVideoClock(currentTime)}
+          {displayDuration > 0 ? ` / ${formatVideoClock(displayDuration)}` : ''}
+        </span>
+        <div
+          className="nodrag flex shrink-0 items-center gap-1"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Volume2 className={`h-3 w-3 ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`} />
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={volume}
+            onChange={onVolumeChange}
+            className="nexflow-video-mini-range w-14 cursor-pointer"
+            aria-label="音量"
+            title="音量"
+          />
+        </div>
+      </div>
+    </div>
+  </>
+);
 
 function VideoPlaceholder({ isDarkMode }: { isDarkMode: boolean }) {
   return (
@@ -965,6 +1103,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const prevResumeVideoUrlRef = useRef<string | undefined>(undefined);
   /** 与 ref 同步写入 React state，保证 VideoPreview 首帧能拿到「离开/拖动」后的进度（避免仅 ref 时子组件已跑 tryNudge） */
   const [resumePlaybackSec, setResumePlaybackSec] = useState<number | undefined>(undefined);
+  const [externalPlaybackHeld, setExternalPlaybackHeld] = useState(false);
+  const [uiCurrentTime, setUiCurrentTime] = useState(0);
+  const [uiDuration, setUiDuration] = useState(0);
+  const [uiVolume, setUiVolume] = useState(1);
+  const [playerControlsHost, setPlayerControlsHost] = useState<HTMLElement | null>(null);
   const handlePreviewPlaybackTime = useCallback(
     (timeSec: number, durationSec?: number, immediate?: boolean) => {
       if (Number.isFinite(timeSec)) {
@@ -1098,10 +1241,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   }, [zoom, isInteracting, isVisualInteractionLocked]);
   const showDetailedUi = lodLevel === 'near';
   const showTextLabelInFar = zoom >= ZOOM_THRESHOLD_ICON_ONLY;
-  /** 悬停时强制允许渲染 video，确保鼠标放上去就能播放 */
+  /** 悬停时强制允许渲染 video，确保鼠标放上去就能播放；拖拽/缩放节点时保持画面层 */
   const shouldRenderVideo =
     (lodLevel !== 'far' && (isVisible || isInPrefetchArea)) ||
-    (isVideoAreaHovered && activeVideoNodeId === id);
+    (isVideoAreaHovered && activeVideoNodeId === id) ||
+    dragging ||
+    !!data?._isResizing ||
+    (Boolean(selected) && !!videoDisplayUrl);
   const isUltraNear = zoom >= ultraNearZoomThreshold;
   const isHardFrozenRef = useRef(false);
   const isHardFrozen = useMemo(() => {
@@ -1128,8 +1274,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     return result;
   }, [performanceMode, selected, dragging, data?._isResizing, vx, vy, zoom, xPos, yPos, size.w, size.h, isInteracting, isVisualInteractionLocked]);
   const isInteractionVisualLock = isVisualInteractionLocked;
-  // 仅由「指针是否在视频内容区」控制暂停：不用 hoveredVideoNodeId，避免全局 store 与 leave 防抖竞态导致「人已悬停却仍暂停」
-  const isPaused = !isVideoAreaHovered;
+  const showSelectedChrome = selected || dragging;
+  const showNodeChrome = showSelectedChrome || isPreviewPlaying;
+  const playbackActive = isVideoAreaHovered || (externalPlaybackHeld && showNodeChrome);
+  /** 仅由「指针是否在视频内容区」或外挂播放条控制暂停 */
+  const isPaused = !playbackActive;
 
   // 稳定的视频展示 URL，避免因 data 引用变化导致 src 抖动、视频重载闪动
   const videoDisplayUrl = useMemo(() => {
@@ -1157,8 +1306,9 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const baseShouldMountVideoTag = useMemo(() => {
     if (!videoDisplayUrl) return false;
     const lodOk = lodLevel === 'near' || lodLevel === 'mid';
-    /** 悬停时绕过 lodLevel，确保鼠标放上去就能播放 */
-    const hoverGrantsMount = isVideoAreaHovered && activeVideoNodeId === id;
+    /** 悬停或外挂播放时绕过 lodLevel，确保能播放 */
+    const hoverGrantsMount =
+      (isVideoAreaHovered || (externalPlaybackHeld && isPreviewPlaying)) && activeVideoNodeId === id;
     if (!lodOk && !hoverGrantsMount) return false;
     if (perfLevel >= 3) return false;
     if (!hoverGrantsMount && (!isInPrefetchArea || isHardFrozen)) return false;
@@ -1167,7 +1317,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     if (isFastMoving && !allowDuringInteraction && !hoverGrantsMount) return false;
     if (isInteractionVisualLock && !allowDuringInteraction && !hoverGrantsMount) return false;
     return true;
-  }, [videoDisplayUrl, lodLevel, perfLevel, isInPrefetchArea, isHardFrozen, emergencyUnloadActive, isFastMoving, isInteractionVisualLock, isUltraNear, isFpsDropped, isVideoAreaHovered, activeVideoNodeId, id]);
+  }, [videoDisplayUrl, lodLevel, perfLevel, isInPrefetchArea, isHardFrozen, emergencyUnloadActive, isFastMoving, isInteractionVisualLock, isUltraNear, isFpsDropped, isVideoAreaHovered, externalPlaybackHeld, isPreviewPlaying, activeVideoNodeId, id]);
   const [stickyVideoMount, setStickyVideoMount] = useState(false);
   useEffect(() => {
     if (baseShouldMountVideoTag) {
@@ -1179,7 +1329,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     }
   }, [baseShouldMountVideoTag, isInteractionVisualLock, stickyVideoMount]);
   const hoverDuringLockGrantsMount =
-    isVideoAreaHovered &&
+    (isVideoAreaHovered || (externalPlaybackHeld && isPreviewPlaying)) &&
     isInteractionVisualLock &&
     !!videoDisplayUrl &&
     isInPrefetchArea &&
@@ -2165,9 +2315,37 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       return zoom < ZOOM_THRESHOLD_ICON_ONLY - FAR_PLACEHOLDER_HYSTERESIS;
     });
   }, [zoom]);
-  const keepVideoLayerDuringInteraction = isInteractionVisualLock && shouldMountVideoTag;
-  const showPlaceholder = (dragging || data?._isResizing || isHardFrozen || showFarPlaceholder) && !keepVideoLayerDuringInteraction;
+  const keepVideoWhenLoaded =
+    !!videoDisplayUrl &&
+    (hasPoster ||
+      !!localLastFrame ||
+      !!(videoDisplayUrl && getVideoLastFrame(videoDisplayUrl)) ||
+      !!ghostImage);
+  const keepVideoLayerDuringInteraction =
+    (isInteractionVisualLock || dragging || !!data?._isResizing) && !!videoDisplayUrl;
+  const showPlaceholder =
+    (isHardFrozen || (showFarPlaceholder && !keepVideoWhenLoaded)) &&
+    !keepVideoLayerDuringInteraction;
   const hasRenderableVideo = !!outputVideo && !showPlaceholder && !errorMessage;
+
+  /** 开始拖拽节点时预先截取静帧，避免 video 卸载后 poster 层空白 */
+  useEffect(() => {
+    if (!dragging || !videoDisplayUrl) return;
+    if (keepVideoWhenLoaded) return;
+    try {
+      videoPreviewRef.current?.captureCurrentFrame?.(videoDisplayUrl, onFrameCaptured);
+    } catch {
+      /* ignore */
+    }
+    requestStaticFrameAtPlayback(thumbPlaybackSec);
+  }, [
+    dragging,
+    videoDisplayUrl,
+    keepVideoWhenLoaded,
+    onFrameCaptured,
+    requestStaticFrameAtPlayback,
+    thumbPlaybackSec,
+  ]);
 
   /** 尺寸或占位/成片布局切换后，刷新 React Flow Handle 测量，修正入边锚点 */
   useEffect(() => {
@@ -2246,13 +2424,156 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     setDecodedFrameReady(true);
   }, []);
 
-  /** 悬停播放且已解码出帧时隐藏 poster 层，减少双层合成 */
-  const hidePosterDuringActivePlayback =
-    isVideoAreaHovered &&
-    !isPaused &&
-    decodedFrameReady &&
+  const handleUiPlaybackTick = useCallback((timeSec: number, durationSec: number, playing: boolean) => {
+    if (Number.isFinite(timeSec)) setUiCurrentTime(timeSec);
+    if (Number.isFinite(durationSec) && durationSec > 0) setUiDuration(durationSec);
+    if (!playing && externalPlaybackHeld) setExternalPlaybackHeld(false);
+  }, [externalPlaybackHeld]);
+
+  const pendingKeyboardPlayRef = useRef(false);
+
+  const handleExternalTogglePlay = useCallback(() => {
+    if (isPreviewPlaying) {
+      pendingKeyboardPlayRef.current = false;
+      videoPreviewRef.current?.pause();
+      setExternalPlaybackHeld(false);
+      return;
+    }
+    setExternalPlaybackHeld(true);
+    setIsVideoAreaHovered(true);
+    setHoveredVideoNodeId(id);
+    setActiveVideoNodeId(id);
+    if (videoDisplayUrl && readyVideoSrcSetRef.current.has(videoDisplayUrl)) {
+      setVideoStatus('finished');
+      setIsVideoVisible(true);
+      setDecodedFrameReady(true);
+    }
+    const pv = videoPreviewRef.current;
+    if (!pv) {
+      pendingKeyboardPlayRef.current = true;
+      return;
+    }
+    pendingKeyboardPlayRef.current = false;
+    pv.warmupDecode?.();
+    pv.setVolume(uiVolume > 0 ? uiVolume : 1);
+    pv.play();
+  }, [id, isPreviewPlaying, uiVolume, videoDisplayUrl]);
+
+  const handleExternalVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const next = parseFloat(e.target.value);
+    if (!Number.isFinite(next)) return;
+    setUiVolume(next);
+    videoPreviewRef.current?.setVolume(next);
+  }, []);
+
+  const showExternalPlayerControls =
+    showDetailedUi && showNodeChrome && !!outputVideo && !!videoDisplayUrl && shouldRenderVideo;
+  const showFloatingTopActions = showDetailedUi && showNodeChrome && !progress;
+  const showBottomActionRow =
+    showNodeChrome &&
+    (canUseBilibiliGrab || outputVideo || hasIncomingReferenceVideo || hasIncomingVideoModuleEdge);
+
+  const spaceKeyboardActive =
+    selected &&
+    hasRenderableVideo &&
+    !!videoDisplayUrl &&
+    shouldRenderVideo &&
+    !showTrimModal &&
+    !showBilibiliModal &&
+    !(progress > 0);
+
+  useEffect(() => {
+    if (!spaceKeyboardActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== ' ' && e.code !== 'Space') return;
+      if (e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      if ((window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleExternalTogglePlay();
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.getAttribute?.('role') === 'button' && active.tabIndex === -1) {
+        active.blur();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [spaceKeyboardActive, handleExternalTogglePlay]);
+
+  useEffect(() => {
+    if (!showExternalPlayerControls) setPlayerControlsHost(null);
+  }, [showExternalPlayerControls]);
+
+  useEffect(() => {
+    if (!showNodeChrome) setExternalPlaybackHeld(false);
+  }, [showNodeChrome]);
+
+  /** 空格/播放条起播时 video 可能尚未挂载，挂载后补 play */
+  useEffect(() => {
+    if (!pendingKeyboardPlayRef.current || !externalPlaybackHeld || isPreviewPlaying) return;
+    const pv = videoPreviewRef.current;
+    if (!pv) return;
+    pendingKeyboardPlayRef.current = false;
+    if (videoDisplayUrl && readyVideoSrcSetRef.current.has(videoDisplayUrl)) {
+      setVideoStatus('finished');
+      setIsVideoVisible(true);
+      setDecodedFrameReady(true);
+    }
+    pv.warmupDecode?.();
+    pv.setVolume(uiVolume > 0 ? uiVolume : 1);
+    pv.play();
+  }, [
+    externalPlaybackHeld,
+    isPreviewPlaying,
+    shouldMountVideoTag,
+    effectiveDecodePermission,
+    shouldRenderVideo,
+    videoDisplayUrl,
+    uiVolume,
+  ]);
+
+  useEffect(() => {
+    if (!isPreviewPlaying || !videoDisplayUrl) return;
+    if (readyVideoSrcSetRef.current.has(videoDisplayUrl)) {
+      setVideoStatus('finished');
+      setIsVideoVisible(true);
+      setDecodedFrameReady(true);
+    }
+  }, [isPreviewPlaying, videoDisplayUrl]);
+
+  const floatTopPillBtn = (extra = '') =>
+    isDarkMode
+      ? `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 hover:bg-white/25 text-white transition-colors ${extra}`
+      : `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/90 hover:bg-white text-gray-800 border border-gray-200/80 shadow-sm transition-colors ${extra}`;
+
+  const videoPlaybackControlsBar = (
+    <VideoPlaybackControlsBar
+      isDarkMode={isDarkMode}
+      isPlaying={isPreviewPlaying}
+      currentTime={uiCurrentTime}
+      displayDuration={uiDuration || videoDurationRef.current}
+      volume={uiVolume}
+      videoPreviewRef={videoPreviewRef}
+      setCurrentTime={setUiCurrentTime}
+      onTogglePlay={handleExternalTogglePlay}
+      onVolumeChange={handleExternalVolumeChange}
+      className="pointer-events-auto w-full max-w-[min(100%,320px)]"
+    />
+  );
+
+  /** 仅当 video 层已就绪后再藏 poster，避免黑屏有声 */
+  const videoLayerVisible =
     shouldMountVideoTag &&
-    effectiveDecodePermission;
+    effectiveDecodePermission &&
+    (videoStatus === 'finished' || isVideoVisible);
+  const hidePosterDuringActivePlayback =
+    isPreviewPlaying &&
+    !isPaused &&
+    videoLayerVisible &&
+    decodedFrameReady;
 
   if (isVideoPlaybackPerfDebugEnabled()) {
     recordVideoNodeRender(id);
@@ -2278,7 +2599,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         hasRenderableVideo
           ? 'p-0 bg-transparent shadow-none custom-node-container--transparent'
           : `${isDarkMode ? 'p-4 nexflow-glass-panel' : 'p-4 apple-panel-light'}`
-      } ${isPreviewPlaying && !data?._isResizing ? 'nexflow-media-playing-glow' : ''} ${selected && !isPreviewPlaying && isDarkMode && !data?._isResizing ? 'ring-2 ring-green-400/80' : ''} ${selected && !isPreviewPlaying && !isDarkMode && !data?._isResizing ? 'ring-2 ring-green-500' : ''} ${data?._isResizing ? '!shadow-none !ring-0' : ''} transition-all duration-200`}
+      } ${showSelectedChrome && !isPreviewPlaying && isDarkMode && !data?._isResizing ? 'ring-2 ring-green-400/80' : ''} ${showSelectedChrome && !isPreviewPlaying && !isDarkMode && !data?._isResizing ? 'ring-2 ring-green-500' : ''} ${data?._isResizing ? '!shadow-none !ring-0' : ''} transition-all duration-200`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClickCapture={() => {
@@ -2298,93 +2619,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       <Handle type="target" position={Position.Left} id="input" style={{ top: '50%' }} className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} title="输入图片/音频/参考视频" />
       <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
       <div className="node-wrapper absolute inset-0 rounded-2xl" style={{ contain: 'layout' }}>
+      <div
+        className={`absolute inset-0 rounded-2xl ${
+          isPreviewPlaying && !data?._isResizing ? 'nexflow-media-playing-glow' : ''
+        }`}
+      >
       {/* 始终渲染完整内容；poster-layer 永久挂载，严禁被 showPlaceholder 替换为 icon */}
       <>
-      {/* 左上角标题（节点外） */}
-      {showDetailedUi && (
-      <div className="title-area absolute -top-7 left-0 z-10">
-        {isEditingTitle ? (
-          <input
-            ref={titleInputRef}
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => {
-              setIsEditingTitle(false);
-              if (onDataChange && data?.title !== title) {
-                onDataChange(id, { title });
-              }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                setIsEditingTitle(false);
-                if (onDataChange && data?.title !== title) {
-                  onDataChange(id, { title });
-                }
-              }
-              if (e.key === 'Escape') {
-                setIsEditingTitle(false);
-                setTitle(data?.title || 'video');
-              }
-            }}
-            className={`bg-transparent outline-none font-bold text-xs ${
-              isDarkMode ? 'text-white/80' : 'text-gray-900'
-            }`}
-            style={{
-              caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
-              minWidth: '40px',
-              maxWidth: '120px',
-            }}
-            title="编辑标题"
-            autoFocus
-          />
-        ) : (
-          <span
-            onClick={handleTitleDoubleClick}
-            className={`font-bold text-xs cursor-pointer select-none ${
-              isDarkMode ? 'text-white/80' : 'text-gray-900'
-            } hover:opacity-70 transition-opacity`}
-            >
-            {title || 'video'}
-          </span>
-        )}
-      </div>
-      )}
-
-      {/* 右上角上传视频按钮（与 AudioNode 一致，使用 IPC 选择文件） */}
-      {showDetailedUi && selected && (
-        <button
-          type="button"
-          onClick={handleUploadVideo}
-          onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-          className={`nodrag absolute top-2 right-2 p-1.5 rounded-lg transition-all z-[100] ${
-            isDarkMode ? 'apple-panel hover:bg-white/20' : 'apple-panel-light hover:bg-gray-200/30'
-          }`}
-          title="上传视频"
-          aria-label="上传视频"
-          style={{ pointerEvents: 'all' }}
-        >
-          <Upload className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-        </button>
-      )}
-      {/* 左上角下载按钮 */}
-      {hasRenderableVideo && videoDisplayUrl && (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); handleDownloadVideo(); }}
-          onMouseDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
-          className={`nodrag absolute top-2 left-2 p-1.5 rounded-lg transition-all z-[100] ${
-            isDarkMode ? 'apple-panel hover:bg-white/20' : 'apple-panel-light hover:bg-gray-200/30'
-          }`}
-          title="下载"
-          aria-label="下载"
-          style={{ pointerEvents: 'all' }}
-        >
-          <Download className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white/80' : 'text-gray-700'}`} />
-        </button>
-      )}
-
       {/* 全模块覆盖进度条（生成中时纯色遮罩，不显示其他内容） */}
       <ModuleProgressBar
         visible={progress > 0}
@@ -2413,10 +2654,14 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           }
         }}
         onMouseLeave={() => {
+          if (dragging) return;
+          const keepPlaying = externalPlaybackHeld && isPreviewPlaying;
           try {
             const pv = videoPreviewRef.current;
             if (pv) {
-              pv.pause();
+              if (!keepPlaying) {
+                pv.pause();
+              }
               const raw = pv.getCurrentTimeSec?.();
               if (raw != null && Number.isFinite(raw)) {
                 lastPlaybackMediaTimeRef.current = raw;
@@ -2424,10 +2669,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 recordPlaybackPersistCall('VideoNode.onMouseLeave');
                 onDataChange?.(id, { playbackCurrentTimeSec: raw });
               }
-              if (videoDisplayUrl && !isLibraryReferenceVideo) {
+              if (!keepPlaying && videoDisplayUrl && !isLibraryReferenceVideo) {
                 pv.captureCurrentFrame?.(videoDisplayUrl, onFrameCaptured);
               }
-              if (isLibraryReferenceVideo) {
+              if (!keepPlaying && isLibraryReferenceVideo) {
                 pv.releaseVideo?.();
                 setVideoStatus('loading');
                 setDecodedFrameReady(true);
@@ -2436,9 +2681,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           } catch {
             /* ignore */
           }
-          setIsVideoAreaHovered(false);
-          setHoveredVideoNodeId(null);
-          scheduleClearActiveVideoNodeId();
+          if (!keepPlaying) {
+            setIsVideoAreaHovered(false);
+            setHoveredVideoNodeId(null);
+            scheduleClearActiveVideoNodeId();
+          }
         }}
       >
         {outputVideo ? (
@@ -2464,9 +2711,9 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                       key={videoDisplayUrl}
                       initial={{ opacity: 0 }}
                       animate={{
-                        opacity: videoStatus === 'finished' ? 1 : 0,
+                        opacity: videoLayerVisible ? 1 : 0,
                         filter:
-                          isLibraryReferenceVideo || videoStatus === 'finished' ? 'blur(0px)' : 'blur(8px)',
+                          isLibraryReferenceVideo || videoLayerVisible ? 'blur(0px)' : 'blur(8px)',
                       }}
                       exit={{ opacity: 0 }}
                       transition={{
@@ -2491,14 +2738,18 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         poster={effectivePosterSrc || undefined}
                         className="w-full h-full bg-transparent rounded-2xl object-contain"
                         style={{ borderRadius: 16 }}
-                        preload={isVideoAreaHovered ? 'auto' : isLibraryReferenceVideo ? 'none' : 'metadata'}
+                        preload={playbackActive ? 'auto' : isLibraryReferenceVideo ? 'none' : 'metadata'}
                         playsInline
-                        muted={!isVideoAreaHovered}
-                        controls={showDetailedUi && (selected || isVideoAreaHovered)}
+                        muted={!playbackActive}
+                        loop
+                        controls={false}
                         fixFullscreenForTransformedParent
                         portalFullscreenTitle={vt.previewVideoFullscreen}
                         portalFullscreenExitTitle={vt.previewVideoExitFullscreen}
-                        onLoadedMetadata={handleVideoLoadedMetadata}
+                        onLoadedMetadata={(w, h, d) => {
+                          handleVideoLoadedMetadata(w, h, d);
+                          if (d != null && Number.isFinite(d) && d > 0) setUiDuration(d);
+                        }}
                         onCanPlay={() => {
                           if (videoDisplayUrl) {
                             readyVideoSrcSetRef.current.add(videoDisplayUrl);
@@ -2517,6 +2768,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         onDecodedFrame={handleDecodedFrame}
                         isPaused={isPaused}
                         onPlayingChange={setIsPreviewPlaying}
+                        onUiPlaybackTick={handleUiPlaybackTick}
                         onLastFrameCapture={onFrameCaptured}
                         onPlaybackTime={handlePreviewPlaybackTime}
                       />
@@ -2563,12 +2815,133 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       </div>
       </>
       </div>
+      </div>
 
-      {/* 导入在线视频（B 站 / YouTube，本机 yt-dlp）+ 视频去水印 + 裁剪：选中时显示在模块下方，并列 */}
-      {selected && (canUseBilibiliGrab || outputVideo || hasIncomingReferenceVideo || hasIncomingVideoModuleEdge) ? (
+      {showDetailedUi && showNodeChrome ? (
+        <div className="title-area pointer-events-auto absolute -top-7 left-0 z-10 max-w-full overflow-hidden">
+          {isEditingTitle ? (
+            <input
+              ref={titleInputRef}
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                setIsEditingTitle(false);
+                if (onDataChange && data?.title !== title) {
+                  onDataChange(id, { title });
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  setIsEditingTitle(false);
+                  if (onDataChange && data?.title !== title) {
+                    onDataChange(id, { title });
+                  }
+                }
+                if (e.key === 'Escape') {
+                  setIsEditingTitle(false);
+                  setTitle(data?.title || 'video');
+                }
+              }}
+              className={`bg-transparent outline-none font-bold text-xs ${
+                isDarkMode ? 'text-white/80' : 'text-gray-900'
+              }`}
+              style={{
+                caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
+                minWidth: '40px',
+                maxWidth: '120px',
+              }}
+              title="编辑标题"
+              autoFocus
+            />
+          ) : (
+            <span
+              onClick={handleTitleDoubleClick}
+              className={`block max-w-[280px] truncate font-bold text-xs cursor-pointer select-none ${
+                isDarkMode ? 'text-white/80' : 'text-gray-900'
+              } hover:opacity-70 transition-opacity`}
+            >
+              {title || 'video'}
+            </span>
+          )}
+        </div>
+      ) : null}
+
+      {showFloatingTopActions ? (
         <div
-          className="nodrag nopan absolute -bottom-9 left-0 right-0 flex justify-center items-center gap-2 z-10"
+          className="nodrag nopan pointer-events-auto absolute -top-14 left-0 right-0 z-10 flex justify-center gap-2"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          {hasRenderableVideo && videoDisplayUrl ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleDownloadVideo();
+              }}
+              className={floatTopPillBtn()}
+              title="下载"
+              aria-label="下载"
+            >
+              <Download className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              handleUploadVideo();
+            }}
+            className={floatTopPillBtn()}
+            title="上传视频"
+            aria-label="上传视频"
+          >
+            <Upload className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+          </button>
+          {hasRenderableVideo && videoDisplayUrl ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                videoPreviewRef.current?.openPortalFullscreen?.();
+              }}
+              className={floatTopPillBtn()}
+              title={vt.previewVideoFullscreen}
+              aria-label={vt.previewVideoFullscreen}
+            >
+              <Maximize2 className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {showExternalPlayerControls ? (
+        <div
+          ref={setPlayerControlsHost}
+          className="nodrag nopan node-floating-toolbar pointer-events-none absolute top-full left-0 right-0 z-10 mt-[calc(0.25rem+3mm)] flex justify-center overflow-visible px-1"
+        />
+      ) : null}
+
+      {showExternalPlayerControls && playerControlsHost
+        ? createPortal(videoPlaybackControlsBar, playerControlsHost)
+        : null}
+
+      {/* 导入在线视频（B 站 / YouTube，本机 yt-dlp）+ 视频去水印 + 裁剪：选中或播放中显示在模块下方 */}
+      {showBottomActionRow ? (
+        <div
+          className={`nodrag nopan absolute top-full left-0 right-0 flex justify-center items-center gap-2 z-10 px-1 ${
+            showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
+          }`}
           style={{ pointerEvents: 'all' }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
         >
           {canUseBilibiliGrab ? (
             <button

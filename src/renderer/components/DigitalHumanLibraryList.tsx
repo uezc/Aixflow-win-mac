@@ -21,6 +21,17 @@ import {
   assetLibListCard,
   assetLibListCardSelected,
   assetLibMsgSuccess,
+  assetLibEditModalBackdrop,
+  assetLibEditModalPanel,
+  assetLibEditModalTitle,
+  assetLibEditModalLabel,
+  assetLibEditModalInput,
+  assetLibEditModalCloseScratch,
+  assetLibEditModalCancelScratch,
+  assetLibEditModalSaveScratch,
+  assetLibEditModalPrimaryScratch,
+  assetLibEditModalSecondaryActionScratch,
+  assetLibEditModalCanvasPickScratch,
 } from '../utils/assetLibraryChrome';
 import { toElectronVideoElementSrc } from '../utils/normalizeVideoUrl';
 import DigitalHumanLibraryVideoHoverPreview from './DigitalHumanLibraryVideoHoverPreview';
@@ -265,11 +276,11 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
         >
           {displayName}
         </p>
-        <div className="absolute top-1.5 right-1.5 z-[3] flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="absolute top-1.5 right-1.5 z-[3] flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             type="button"
             onClick={(e) => openEditModal(item, e)}
-            className={assetLibCardActionBtn(isDarkMode, 'control')}
+            className={`${assetLibCardActionBtn(isDarkMode, 'control')} opacity-0 group-hover:opacity-100 transition-opacity`}
             title={t.dhEditTitle}
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -281,7 +292,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
                 e.stopPropagation();
                 onPlaceToCanvas(item);
               }}
-              className={assetLibCardActionBtn(isDarkMode, 'motion')}
+              className={`${assetLibCardActionBtn(isDarkMode, 'operators')} opacity-0 group-hover:opacity-100 transition-opacity`}
               title={t.dhPlaceOnCanvas}
             >
               <Layers className="w-3.5 h-3.5" />
@@ -426,7 +437,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
           })
         }
         {...bindVideoHover(item, videoOk)}
-        className={`flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${
+        className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${
           selected
             ? assetLibListCardSelected(isDarkMode)
             : assetLibListCard(isDarkMode)
@@ -459,7 +470,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
           <button
             type="button"
             onClick={(e) => openEditModal(item, e)}
-            className={assetLibCardActionBtn(isDarkMode, 'control')}
+            className={`${assetLibCardActionBtn(isDarkMode, 'control')} opacity-0 group-hover:opacity-100 transition-opacity`}
             title={t.dhEditTitle}
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -471,7 +482,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
                 e.stopPropagation();
                 onPlaceToCanvas(item);
               }}
-              className={assetLibCardActionBtn(isDarkMode, 'motion')}
+              className={`${assetLibCardActionBtn(isDarkMode, 'operators')} opacity-0 group-hover:opacity-100 transition-opacity`}
               title={t.dhPlaceOnCanvas}
             >
               <Layers className="w-3.5 h-3.5" />
@@ -570,7 +581,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
       {showModal && !modalHiddenForCanvasPick &&
         createPortal(
           <div
-            className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 p-4"
+            className={`fixed inset-0 z-[10000] flex items-center justify-center p-4 ${assetLibEditModalBackdrop(isDarkMode)}`}
             onClick={() => {
               if (submitting) return;
               setShowModal(false);
@@ -578,39 +589,47 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
             }}
           >
             <div
-              className={`relative w-full max-w-md rounded-xl border shadow-2xl p-4 ${
-                isDarkMode ? 'bg-[#1a1a1e] border-white/10' : 'bg-white border-gray-200'
-              }`}
+              className={`relative w-full max-w-md rounded-2xl border shadow-xl p-4 overflow-hidden ${assetLibEditModalPanel(isDarkMode)}`}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+              {!isDarkMode ? (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-x-0 top-0 h-1.5 rounded-t-2xl bg-gradient-to-r from-[var(--scratch-looks)] via-[var(--scratch-sound)] to-[var(--scratch-myBlocks)]"
+                    aria-hidden
+                  />
+                  <div className="pointer-events-none absolute -top-10 -right-10 h-36 w-36 rounded-full bg-fuchsia-300/35 blur-2xl" aria-hidden />
+                  <div className="pointer-events-none absolute -bottom-12 -left-8 h-32 w-32 rounded-full bg-violet-400/30 blur-2xl" aria-hidden />
+                </>
+              ) : null}
+              <div className="relative flex items-center justify-between mb-3">
+                <h3 className={`text-sm font-semibold ${assetLibEditModalTitle(isDarkMode)}`}>
                   {editingId ? t.dhEditTitle : t.dhAddTitle}
                 </h3>
-                <button type="button" onClick={() => setShowModal(false)} className={assetLibBtnIcon(isDarkMode, isDarkMode ? undefined : 'variables')}>
+                <button
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className={assetLibBtnIcon(isDarkMode, assetLibEditModalCloseScratch(isDarkMode))}
+                >
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <label className={`block text-xs mb-1 ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
+              <label className={`block text-xs mb-1 font-medium ${assetLibEditModalLabel(isDarkMode)}`}>
                 {t.dhNickname}
               </label>
               <input
                 value={nickname}
                 onChange={(e) => setNickname(e.target.value)}
                 placeholder={t.dhNicknamePlaceholder}
-                className={`w-full mb-3 px-2 py-1.5 text-sm rounded-lg border ${
-                  isDarkMode
-                    ? 'bg-black/30 border-white/15 text-white placeholder:text-white/35'
-                    : 'bg-gray-50 border-gray-200 text-gray-900'
-                }`}
+                className={`w-full mb-3 px-2 py-1.5 text-sm rounded-lg border outline-none transition-shadow ${assetLibEditModalInput(isDarkMode)}`}
               />
-              <span className={`block text-xs font-medium mb-2 ${isDarkMode ? 'text-white/75' : 'text-gray-600'}`}>
+              <span className={`block text-xs font-semibold mb-2 ${isDarkMode ? 'text-white/75' : 'text-[var(--scratch-sound)]'}`}>
                 {t.dhReferenceVideo}
               </span>
-              <div className="flex justify-center mb-3">
+              <div className="relative flex justify-center mb-3">
                 <div
-                  className={`relative w-full rounded-lg overflow-hidden border ${
-                    isDarkMode ? 'border-white/15 bg-black/40' : 'border-gray-200 bg-gray-50'
+                  className={`relative w-full rounded-xl overflow-hidden border ${
+                    isDarkMode ? 'border-white/15 bg-black/40' : 'ring-1 ring-[var(--scratch-sound)]/35 shadow-sm shadow-fuchsia-200/50 border-violet-200/60 bg-fuchsia-50/40'
                   }`}
                   style={{
                     maxWidth: MODAL_PREVIEW_MAX_W,
@@ -634,20 +653,24 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
                     />
                   ) : (
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <Video className={`w-8 h-8 ${isDarkMode ? 'text-white/25' : 'text-gray-300'}`} />
+                      <Video className={`w-8 h-8 ${isDarkMode ? 'text-white/25' : 'text-[var(--scratch-sound)]/45'}`} />
                     </div>
                   )}
                 </div>
               </div>
               {modalHint ? (
-                <p className={`mb-2 text-xs ${isDarkMode ? 'text-amber-300/90' : 'text-amber-700'}`}>{modalHint}</p>
+                <p className={`relative mb-2 text-xs ${isDarkMode ? 'text-amber-300/90' : 'text-fuchsia-800/75'}`}>{modalHint}</p>
               ) : null}
-              <div className="flex flex-row gap-2 mb-4">
+              <div className="relative flex flex-row flex-wrap gap-2 mb-4">
                 <button
                   type="button"
                   disabled={submitting}
                   onClick={() => void pickLocalVideo()}
-                  className={`flex-1 py-2 px-2 text-xs font-medium disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${assetLibBtnPrimary(isDarkMode, '!w-auto flex-1', 'control')}`}
+                  className={`flex-1 py-2 px-2 text-xs font-medium disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${assetLibBtnPrimary(
+                    isDarkMode,
+                    '!w-auto flex-1',
+                    assetLibEditModalSecondaryActionScratch(isDarkMode),
+                  )}`}
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden />
                   {t.dhUploadVideo}
@@ -657,22 +680,39 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
                     type="button"
                     disabled={submitting}
                     onClick={() => void pickVideoFromCanvas()}
-                    className={`flex-1 py-2 px-2 text-xs font-medium disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${assetLibBtnPrimary(isDarkMode, '!w-auto flex-1', 'events')}`}
+                    className={`flex-1 py-2 px-2 text-xs font-medium disabled:opacity-50 inline-flex items-center justify-center gap-1.5 ${assetLibBtnPrimary(
+                      isDarkMode,
+                      '!w-auto flex-1',
+                      assetLibEditModalCanvasPickScratch(isDarkMode, 1),
+                    )}`}
                   >
                     <Layers className="w-3.5 h-3.5 shrink-0" aria-hidden />
                     {t.dhPickVideoFromCanvas}
                   </button>
                 ) : null}
               </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" disabled={submitting} onClick={() => setShowModal(false)} className={assetLibBtnSecondary(isDarkMode)}>
+              <div className="relative flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setShowModal(false)}
+                  className={assetLibBtnSecondary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5',
+                    assetLibEditModalCancelScratch(isDarkMode),
+                  )}
+                >
                   {t.sceneCancel}
                 </button>
                 <button
                   type="button"
                   disabled={submitting || !videoPreview.trim()}
                   onClick={() => void handleSave()}
-                  className={assetLibBtnPrimary(isDarkMode, '', 'control')}
+                  className={assetLibBtnPrimary(
+                    isDarkMode,
+                    'text-xs !px-3 !py-1.5',
+                    assetLibEditModalSaveScratch(isDarkMode),
+                  )}
                 >
                   {submitting ? t.roleSaving : t.sceneSave}
                 </button>

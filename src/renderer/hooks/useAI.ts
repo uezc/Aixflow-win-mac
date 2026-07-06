@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { isCloudAiAuthRequiredError } from '../utils/cloudAiGateMessage';
+import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
 
 /**
  * AI 状态类型
@@ -162,6 +162,7 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
       const localPath = (payload as any).localPath;
       const receivedImageUrl = (payload as any).imageUrl;
       const receivedVideoUrl = (payload as any).videoUrl;
+      const receivedAudioUrl = (payload as any).audioUrl;
       const receivedUrl = (payload as any).url;
       const originalVideoUrl = (payload as any).originalVideoUrl; // 原始远程 URL（备用）
       const extractedUrl = extractUrlFromText((payload as any).text);
@@ -169,11 +170,13 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
       // 如果有本地路径，转换为 local-resource:// 协议 URL
       let displayImageUrl: string | undefined;
       let displayVideoUrl: string | undefined;
+      let displayAudioUrl: string | undefined;
       
       if (localPath) {
         // 检查 localPath 是否是视频或图片文件（通过文件扩展名判断）
         const isVideoFile = /\.(mp4|webm|mov|avi|mkv)$/i.test(localPath);
         const isImageFile = /\.(png|jpg|jpeg|webp|gif)$/i.test(localPath);
+        const isAudioFile = /\.(mp3|wav|flac|aac|m4a|ogg|opus)$/i.test(localPath);
         
         // 路径标准化：统一将 Windows 路径中的反斜杠转换为正斜杠
         // 避免 C:/ 和 C:\ 混用导致的字符串解析异常
@@ -220,18 +223,38 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
           // 如果 receivedImageUrl 存在但 localPath 不是图片文件，使用 receivedImageUrl（可能是远程 URL）
           displayImageUrl = receivedImageUrl;
         }
+        if (receivedAudioUrl && isAudioFile) {
+          displayAudioUrl = localResourceUrl;
+        } else if (receivedAudioUrl) {
+          if (receivedAudioUrl.startsWith('file://')) {
+            let filePath = receivedAudioUrl.replace(/^file:\/\/\/?/, '');
+            if (filePath.match(/^[a-zA-Z]\//)) {
+              filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+            }
+            displayAudioUrl = `local-resource://${filePath.replace(/\\/g, '/')}`;
+          } else {
+            displayAudioUrl = receivedAudioUrl;
+          }
+        } else if (isAudioFile && (receivedUrl || extractedUrl)) {
+          displayAudioUrl = localResourceUrl;
+        }
       } else {
         // 没有本地路径，使用远程 URL
-        displayImageUrl = receivedImageUrl || (receivedUrl && !receivedVideoUrl ? receivedUrl : null) || (extractedUrl && !receivedVideoUrl ? extractedUrl : null);
-        displayVideoUrl = receivedVideoUrl || (receivedUrl && !receivedImageUrl ? receivedUrl : null) || (extractedUrl && !receivedImageUrl ? extractedUrl : null);
+        displayImageUrl = receivedImageUrl || (receivedUrl && !receivedVideoUrl && !receivedAudioUrl ? receivedUrl : null) || (extractedUrl && !receivedVideoUrl && !receivedAudioUrl ? extractedUrl : null);
+        displayVideoUrl = receivedVideoUrl || (receivedUrl && !receivedImageUrl && !receivedAudioUrl ? receivedUrl : null) || (extractedUrl && !receivedImageUrl && !receivedAudioUrl ? extractedUrl : null);
+        displayAudioUrl =
+          receivedAudioUrl ||
+          (receivedUrl && !receivedVideoUrl && !receivedImageUrl ? receivedUrl : null) ||
+          (extractedUrl && !receivedVideoUrl && !receivedImageUrl ? extractedUrl : null);
       }
 
       // 检查是否有有效的 URL（远程或本地）
       // 对于视频，优先检查 videoUrl，如果没有则检查 url（可能是视频 URL）
-      const hasValidUrl = (displayImageUrl || displayVideoUrl) && 
+      const hasValidUrl = (displayImageUrl || displayVideoUrl || displayAudioUrl) && 
         (displayImageUrl?.startsWith('local-resource://') || 
          displayVideoUrl?.startsWith('local-resource://') || 
-         /^https?:\/\//.test(displayImageUrl || displayVideoUrl || ''));
+         displayAudioUrl?.startsWith('local-resource://') || 
+         /^https?:\/\//.test(displayImageUrl || displayVideoUrl || displayAudioUrl || ''));
       
       // 检查是否有文本内容（用于 LLM 和 Text 模块）
       // 双重保障：优先使用 text，而不是等待 localPath 读取
@@ -272,6 +295,7 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
           ...payload,
           ...(displayImageUrl ? { imageUrl: displayImageUrl } : {}),
           ...(displayVideoUrl ? { videoUrl: displayVideoUrl, url: displayVideoUrl } : {}),
+          ...(displayAudioUrl ? { audioUrl: displayAudioUrl, url: displayAudioUrl } : {}),
           ...(localPath ? { localPath } : {}),
           ...(originalVideoUrl ? { originalVideoUrl } : {}),
         };
@@ -421,9 +445,7 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         callbacksRef.current.onComplete?.(payload);
       } else if (packet.status === 'ERROR') {
         const payload = callbackPacket.payload as { error?: string; nxAuthRequired?: boolean } | undefined;
-        if (isCloudAiAuthRequiredError(payload?.error, payload?.nxAuthRequired)) {
-          window.dispatchEvent(new CustomEvent('nx-saas-login-required'));
-        }
+        promptNxSaasLoginIfNeeded(payload?.error, payload?.nxAuthRequired);
         callbacksRef.current.onError?.(packet.payload?.error || 'Unknown error');
       }
     };
@@ -505,6 +527,8 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
 
       setStatus('ERROR');
       setPayload({ error: errorMessage });
+
+      promptNxSaasLoginIfNeeded(errorMessage);
 
       // 将错误透传给业务侧，用于弹窗等
       callbacksRef.current.onError?.(errorMessage);

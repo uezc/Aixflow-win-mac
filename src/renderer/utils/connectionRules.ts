@@ -25,6 +25,7 @@ export const MENU_TYPE_TO_NODE_TYPE: Record<string, string> = {
   character: 'character',
   digitalHuman: 'digitalHuman',
   audio: 'audio',
+  rvcTrain: 'rvcTrain',
 };
 
 export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
@@ -41,6 +42,7 @@ export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
   character: 'character',
   digitalHuman: 'digitalHuman',
   audio: 'audio',
+  rvcTrain: 'rvcTrain',
   audioTranscribe: 'audioTranscribe',
 };
 
@@ -65,7 +67,8 @@ const FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE: Record<string, string[]> = {
   videoSplice: ['text', 'llm', 'textSplit', 'character'],
   // 角色模块：仅连到 图片 / 视频 / 视频换人 / 声音（由目标类型决定传参）
   character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool'],
-  audio: ['llm', 'textSplit', 'image', 'character'], // 允许 audio -> text（转写）；LLM 尚未接音轨输入故禁止
+  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage'], // 允许 audio -> minimalistText（转写）；拼图仅接受图片入边
+  rvcTrain: ['text', 'llm', 'textSplit', 'image', 'character', 'videoSplice', 'photoCollage', 'canvas-tool', 'heyGem'],
   digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool', 'imageTo3d'],
 };
 
@@ -91,7 +94,24 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'audioTranscribe',
     'cameraControl',
   ],
-  audio: ['llm', 'textSplit', 'image', 'character'], // 允许 audio -> minimalistText（转写）
+  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage'], // 允许 audio -> minimalistText（转写）
+  rvcTrain: [
+    'minimalistText',
+    'text',
+    'llm',
+    'textSplit',
+    'image',
+    'character',
+    'video',
+    'wanAnimate',
+    'heyGem',
+    'videoSplice',
+    'photoCollage',
+    'audioTranscribe',
+    'cameraControl',
+    'imageTo3d',
+    'rvcTrain',
+  ],
   digitalHuman: [
     'minimalistText',
     'text',
@@ -107,7 +127,7 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
   cameraControl: ['minimalistText', 'text', 'llm', 'textSplit', 'video', 'character', 'audio', 'cameraControl'], // 旧项目兼容：3D 只能连到 image
 };
 
-const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'imageTo3d', 'character', 'audio'];
+const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
 
 /** 四视图勾选：显式 boolean[4]；缺省视为旧数据「未存勾选」 */
 export function parseReferenceTransmitSlots(raw: unknown): boolean[] | null {
@@ -234,6 +254,14 @@ export function getAllowedMenuTypes(
     return [];
   }
 
+  if (sourceNodeType === 'rvcTrain') {
+    return ['audio'];
+  }
+
+  if (sourceNodeType === 'videoSplice') {
+    return ['video'];
+  }
+
   const forbidden = getForbiddenMenuTypesBySourceNodeType(sourceNodeType);
   let types = ALL_MENU_TYPES.filter((t) => !forbidden.includes(t));
   if (sourceNodeType === 'video' || sourceNodeType === 'wanAnimate' || sourceNodeType === 'heyGem') {
@@ -248,7 +276,7 @@ export function getAllowedMenuTypes(
   // 从音频节点拖线：保留「声音」选项（创建新音频节点），并添加「提取人声」「提取背景音」
   if (sourceNodeType === 'audio') {
     if (types.includes('audio')) {
-      types = types.filter((t) => t !== 'audio').concat(['audio', 'audio-extract-vocals', 'audio-extract-background']);
+      types = types.filter((t) => t !== 'audio').concat(['audio', 'audio-voice-cover', 'audio-extract-vocals', 'audio-extract-background']);
     }
   }
   // canvas-tool 在允许 image 时也显示（video 时为帧导出选项）
@@ -311,6 +339,15 @@ export function isConnectionAllowed(
   }
   if (tgt === 'imageTo3d') {
     return src === 'image';
+  }
+  if (tgt === 'rvcTrain') {
+    return src === 'audio';
+  }
+  if (src === 'rvcTrain') {
+    return tgt === 'audio';
+  }
+  if (src === 'videoSplice') {
+    return tgt === 'video';
   }
   const forbidden = FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE[src];
   if (!forbidden) return true;

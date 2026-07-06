@@ -9,7 +9,17 @@ import axios from 'axios';
 import path from 'path';
 import fs from 'fs';
 import { randomUUID } from 'crypto';
-import { rhPostChargeAudio, rhQueryPollAudio } from '../../utils/runningHubFcHelpers.js';
+import { rhPostChargeAudio, rhQueryPollAudio, formatRunningHubTaskError, extractRhTaskIdFromForward } from '../../utils/runningHubFcHelpers.js';
+import { isRvcModelPackageUrl } from '../../../shared/rvcVoiceTrainUtils.js';
+import {
+  deriveRvcCoverModelPath,
+  resolveRvcVoiceModelPackageUrl,
+  clampCoverPitch,
+  clampCoverIndexRate,
+  clampCoverVocalMixPct,
+  clampCoverAccompanimentMixPct,
+} from '../../../shared/rvcVoiceCoverUtils.js';
+import { store } from '../../services/store.js';
 import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/fcBalanceError.js';
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
@@ -34,7 +44,7 @@ function isRetriableAudioPollError(pollError: unknown): boolean {
 
 interface AudioInput {
   text: string;
-  model?: string; // 'speech-2.8-hd' | 'index-tts2' | 'rhart-song' | 'rhart-song-v5.5'
+  model?: string; // 'speech-2.8-hd' | 'index-tts2' | 'ai-voice-cover' | 'rhart-song-v5.5'
   voice_id?: string;
   speed?: number;
   volume?: number;
@@ -53,12 +63,204 @@ interface AudioInput {
   styleDesc?: string;
   /** 全能写歌：歌词 */
   lyrics?: string;
+  /** RVC 翻唱：RH model_name（.pth 路径） */
+  rvcCoverModelName?: string;
+  /** RVC 翻唱：原曲音频 URL */
+  sourceSongAudioUrl?: string;
+  /** 来自 RVC 训练卡 / 音色库 */
+  libraryRvcVoiceId?: string;
+  outputModelUrl?: string;
+  outputModelRemoteUrl?: string;
+  /** @deprecated SeedVC V2 已移除，保留字段兼容旧项目数据 */
+  coverReferenceAudioUrl?: string;
+  /** RVC 翻唱：音调（半音，-12~12） */
+  coverPitch?: number;
+  /** RVC 翻唱：index 检索占比 0~1 */
+  coverIndexRate?: number;
+  /** RVC 翻唱：混音人声音量 %（25~300） */
+  coverVocalMixPct?: number;
+  /** RVC 翻唱：混音伴奏音量 %（25~300） */
+  coverAccompanimentMixPct?: number;
+  /** @deprecated 旧 RH 工作流音量，本地翻唱无效 */
+  coverRhVolume?: number;
+  /** RVC 翻唱输出：with_accompaniment | vocals_only */
+  coverOutputMode?: 'with_accompaniment' | 'vocals_only';
+  /** RVC 音色训练：模型名称（RH node 6） */
+  rvcTrainModelName?: string;
+}
+
+const RH_RVC_VOICE_TRAIN_APP_ID = '2072990640429953025';
+
+function resolveEffectiveAudioModel(rawModel: string | undefined, audioInput: AudioInput): string {
+  const m = String(rawModel ?? '').trim() || 'speech-2.8-hd';
+  if (m === 'ai-voice-cover') return 'ai-voice-cover';
+  if (m === 'rvc-voice-train') return 'rvc-voice-train';
+  const sourceSong = String(audioInput.sourceSongAudioUrl ?? '').trim();
+  const rvcModel = String(
+    audioInput.rvcCoverModelName ?? deriveRvcCoverModelPath(String(audioInput.rvcTrainModelName ?? '')),
+  ).trim();
+  const hasRvcCard = !!(rvcModel || audioInput.libraryRvcVoiceId || audioInput.outputModelUrl);
+  if (
+    sourceSong &&
+    hasRvcCard &&
+    m !== 'index-tts2' &&
+    m !== 'rhart-song-v5.5' &&
+    m !== 'rhart-song' &&
+    m !== 'rvc-voice-train'
+  ) {
+    return 'ai-voice-cover';
+  }
+  const ref = String(audioInput.referenceAudioUrl ?? '').trim();
+  const hasText = String(audioInput.text ?? '').trim().length > 0;
+  if (ref && !hasText && !sourceSong && m !== 'index-tts2' && m !== 'rhart-song-v5.5' && m !== 'rhart-song') {
+    return 'rvc-voice-train';
+  }
+  return m;
 }
 
 export class AudioProvider extends BaseProvider {
   readonly modelId = 'audio';
 
   private readonly runningHubApiBaseUrl = 'https://nexflow-fc-rh.stub/openapi/v2';
+
+  /** 本地/URL 音频 → RH ai-app fieldValue（必要时上传 OSS） */
+  private async resolveAudioUrlForRhApp(urlOrPath: string): Promise<string> {
+    let audioFieldValue = (urlOrPath || '').trim();
+    if (!audioFieldValue) throw new Error('音频 URL 为空');
+    if (audioFieldValue.startsWith('local-resource://') || audioFieldValue.startsWith('file://')) {
+      let filePath = audioFieldValue.startsWith('local-resource://')
+        ? audioFieldValue.replace(/^local-resource:\/\/+/, '')
+        : audioFieldValue.replace(/^file:\/\/+/, '');
+      filePath = filePath.replace(/%5C/gi, '/');
+      if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
+      filePath = decodeURIComponent(filePath);
+      if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+      const normalizedFilePath = path.normalize(filePath);
+      if (!fs.existsSync(normalizedFilePath)) throw new Error(`文件不存在: ${normalizedFilePath}`);
+      const audioBuffer = fs.readFileSync(normalizedFilePath);
+      const ext = path.extname(normalizedFilePath).toLowerCase();
+      const mimeType =
+        ext === '.wav' ? 'audio/wav' : ext === '.ogg' ? 'audio/ogg' : ext === '.m4a' ? 'audio/mp4' : 'audio/mpeg';
+      const { VideoProvider } = await import('./VideoProvider.js');
+      const vp = new VideoProvider();
+      audioFieldValue = await vp.uploadAudioToOSS(audioBuffer, mimeType);
+    } else if (!audioFieldValue.startsWith('http://') && !audioFieldValue.startsWith('https://')) {
+      throw new Error('音频需为公网 URL 或本地文件路径（local-resource:// 或 file://）');
+    }
+    return audioFieldValue;
+  }
+
+  private decodeLocalResourcePath(urlOrPath: string): string {
+    let filePath = (urlOrPath || '').trim();
+    if (filePath.startsWith('local-resource://')) {
+      filePath = filePath.replace(/^local-resource:\/\/+/, '');
+    } else if (filePath.startsWith('file://')) {
+      filePath = filePath.replace(/^file:\/\/+/, '');
+    } else {
+      return filePath;
+    }
+    filePath = filePath.replace(/%5C/gi, '/');
+    if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
+    filePath = decodeURIComponent(filePath);
+    if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+    return path.normalize(filePath);
+  }
+
+  /** 翻唱提交前：从音色库补全 outputModelUrl（面板/批量任务可能只传 libraryRvcVoiceId） */
+  private enrichRvcCoverAudioInput(audioInput: AudioInput): AudioInput {
+    if (String(audioInput.outputModelUrl ?? '').trim() || String(audioInput.outputModelRemoteUrl ?? '').trim()) {
+      return audioInput;
+    }
+    const libId = String(audioInput.libraryRvcVoiceId ?? '').trim();
+    if (!libId) return audioInput;
+    const items = (store.get('rvcVoiceLibrary') || []) as Array<{
+      id?: string;
+      modelPackageUrl?: string;
+      localModelPath?: string;
+      originalModelUrl?: string;
+    }>;
+    const item = items.find((x) => x.id === libId);
+    const pkg = resolveRvcVoiceModelPackageUrl(item);
+    if (!pkg) return audioInput;
+    return {
+      ...audioInput,
+      outputModelUrl: pkg,
+      outputModelRemoteUrl: item?.originalModelUrl || audioInput.outputModelRemoteUrl,
+    };
+  }
+
+  private requireRhTaskIdFromSubmit(data: Record<string, unknown>, label: string): string {
+    const taskId = extractRhTaskIdFromForward(data);
+    if (!taskId) {
+      console.error(`[音频生成] ${label} 提交响应`, JSON.stringify(data).slice(0, 2500));
+      throw new Error(`${label}提交失败：${formatRunningHubTaskError(data, '未返回 taskId')}`);
+    }
+    return taskId;
+  }
+
+  private resolveLocalRvcCoverModelPackage(coverInput: AudioInput): string {
+    const pkg = (coverInput.outputModelUrl || coverInput.outputModelRemoteUrl || '').trim();
+    if (
+      pkg &&
+      (isRvcModelPackageUrl(pkg) ||
+        pkg.startsWith('local-resource://') ||
+        pkg.startsWith('file://') ||
+        pkg.startsWith('http://') ||
+        pkg.startsWith('https://'))
+    ) {
+      return pkg;
+    }
+    throw new Error('RVC 翻唱需要 RVC 模型：请从音色库选择或连接 RVC 训练节点');
+  }
+
+  private async runLocalRvcVoiceCover(
+    coverInput: AudioInput,
+    nodeId: string,
+    onStatus: (packet: AIStatusPacket) => void,
+    projectId?: string,
+    nodeTitle?: string,
+  ): Promise<void> {
+    const sourceSong = (coverInput.sourceSongAudioUrl || '').trim();
+    if (!sourceSong) throw new Error('RVC 翻唱需要原曲音频，请连接 audio 节点');
+    const modelPackageUrl = this.resolveLocalRvcCoverModelPackage(coverInput);
+    const { runLocalRvcCover } = await import('../../services/localRvcCover.js');
+    onStatus({ nodeId, status: 'START', payload: {} });
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { localRvcCover: true, stage: 'prepare' },
+    });
+    const result = await runLocalRvcCover({
+      projectId,
+      sourceSongUrl: sourceSong,
+      modelPackageUrl,
+      pitch: clampCoverPitch(coverInput.coverPitch),
+      indexRate: clampCoverIndexRate(coverInput.coverIndexRate),
+      vocalMixPct: clampCoverVocalMixPct(coverInput.coverVocalMixPct),
+      accompanimentMixPct: clampCoverAccompanimentMixPct(coverInput.coverAccompanimentMixPct),
+      onProgress: (message) => {
+        onStatus({ nodeId, status: 'PROCESSING', payload: { localRvcCover: true, stage: message } });
+      },
+      onEngineDownload: (p) => {
+        onStatus({
+          nodeId,
+          status: 'PROCESSING',
+          payload: { localRvcCover: true, engineDownload: p },
+        });
+      },
+    });
+    onStatus({
+      nodeId,
+      status: 'SUCCESS',
+      payload: {
+        url: result.audioUrl,
+        audioUrl: result.audioUrl,
+        localPath: result.localPath,
+        outputAudios: [result.audioUrl],
+        text: '本地 RVC 翻唱完成',
+      },
+    });
+  }
 
   private async ensureLedgerAudioTask(
     nodeId: string,
@@ -100,7 +302,7 @@ export class AudioProvider extends BaseProvider {
       const audioInput = input as AudioInput;
       const {
         text,
-        model = 'speech-2.8-hd',
+        model: rawModel,
         voice_id = 'Wise_Woman',
         speed = 1,
         volume = 1,
@@ -118,18 +320,50 @@ export class AudioProvider extends BaseProvider {
         lyrics,
       } = audioInput;
 
+      const model = resolveEffectiveAudioModel(rawModel, audioInput);
+
       if (model === 'rhart-song') {
         throw new Error('SUNO v5 已从前端下架，请在面板中选择 SUNO v5.5（rhart-song-v5.5）。');
       }
 
       const isSongLike = model === 'rhart-song-v5.5';
-      if (!isSongLike && !text) {
+      const isCoverModel = model === 'ai-voice-cover';
+      const isRvcTrain = model === 'rvc-voice-train';
+      if (!isSongLike && !isCoverModel && !isRvcTrain && !String(text ?? '').trim()) {
         throw new Error('文本是必需的');
+      }
+      if (isRvcTrain) {
+        const trainAudio = (referenceAudioUrl || '').trim();
+        const modelName = String(audioInput.rvcTrainModelName ?? '').trim();
+        if (!trainAudio) throw new Error('RVC 训练需要连接训练音频（1 路 audio 入边）');
+        if (!modelName) throw new Error('请填写 RVC 模型名称');
       }
       if (isSongLike) {
         if (!(songName ?? '').trim()) throw new Error('全能写歌 需要填写歌曲名');
         if (!(styleDesc ?? '').trim()) throw new Error('全能写歌 需要填写风格描述');
         if (!(lyrics ?? '').trim()) throw new Error('全能写歌 需要填写歌词');
+      }
+
+      // RVC 翻唱：100% 本地（Demucs + RVC 推理 + 伴奏混回），不扣元宝、不走 RH 翻唱 API
+      if (model === 'ai-voice-cover') {
+        const coverInput = this.enrichRvcCoverAudioInput(audioInput);
+        console.log('[音频生成] RVC 翻唱路由 本地推理', {
+          hasPkg: !!(coverInput.outputModelUrl || coverInput.outputModelRemoteUrl),
+          libraryRvcVoiceId: coverInput.libraryRvcVoiceId || '',
+        });
+        try {
+          await this.runLocalRvcVoiceCover(coverInput, nodeId, onStatus, projectId, nodeTitle);
+        } catch (error: unknown) {
+          const message =
+            (error instanceof Error ? error.message : String(error)) || '本地 RVC 翻唱失败，请稍后重试';
+          console.error('[音频生成] 本地 RVC 翻唱失败:', message);
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: message, localRvcCover: true },
+          });
+        }
+        return;
       }
 
       const cloudBlock = getCloudAiBlockReason();
@@ -177,11 +411,57 @@ export class AudioProvider extends BaseProvider {
           ledgerSong,
         );
         fcChargedTaskId = ledgerSong || fcBaseId;
-        const taskId = data.taskId || data.task_id;
-        if (!taskId) throw new Error('SUNO v5.5 提交失败：未返回 taskId');
+        const taskId = this.requireRhTaskIdFromSubmit(data, 'SUNO v5.5');
         onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
         const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerSong);
-        if (pollResult.audioUrl) await this.handleAudioResult(pollResult.audioUrl, nodeId, onStatus, projectId, nodeTitle);
+        if (pollResult.audioUrls.length > 0) {
+          await this.handleAudioResults(pollResult.audioUrls, nodeId, onStatus, projectId, nodeTitle);
+        }
+        return;
+      }
+
+      // RVC 音色模型训练：AI 应用 2072990640429953025（训练音频须为 OSS 公网 URL，与 Index-TTS2 一致）
+      if (model === 'rvc-voice-train') {
+        const trainAudio = (referenceAudioUrl || '').trim();
+        const modelName = String(audioInput.rvcTrainModelName ?? '').trim();
+        const audioField = await this.resolveAudioUrlForRhApp(trainAudio);
+        const appPayload = {
+          nodeInfoList: [
+            { nodeId: '5', fieldName: 'audio', fieldValue: audioField, description: 'audio' },
+            { nodeId: '6', fieldName: 'value', fieldValue: modelName, description: 'name' },
+          ],
+          instanceType: 'plus',
+          usePersonalQueue: 'false',
+          retainSeconds: 120,
+        };
+        console.log('[音频生成] RVC 训练提交 instance=plus', { modelName, audioField: audioField.slice(0, 64) });
+        const fcBaseId = randomUUID();
+        const ledgerRvc = await this.ensureLedgerAudioTask(nodeId, 'rvc-voice-train', audioInput);
+        const data = await rhPostChargeAudio(
+          `${this.runningHubApiBaseUrl}/run/ai-app/${RH_RVC_VOICE_TRAIN_APP_ID}`,
+          appPayload as Record<string, unknown>,
+          fcBaseId,
+          { billingModelId: 'rvc-voice-train' },
+          ledgerRvc,
+        );
+        fcChargedTaskId = ledgerRvc || fcBaseId;
+        const taskId = this.requireRhTaskIdFromSubmit(data, 'RVC 训练');
+        onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
+        const pollResult = await this.pollTaskUntilModelFile(
+          String(taskId),
+          fcBaseId,
+          nodeId,
+          onStatus,
+          ledgerRvc,
+        );
+        await this.handleRvcTrainResult(
+          pollResult.modelUrl,
+          modelName,
+          nodeId,
+          onStatus,
+          projectId,
+          nodeTitle,
+        );
         return;
       }
 
@@ -190,25 +470,7 @@ export class AudioProvider extends BaseProvider {
         if (!referenceAudioUrl || !referenceAudioUrl.trim()) {
           throw new Error('Index-TTS2.0 配音神器需要上传参考音（参考音为必填）');
         }
-        let audioFieldValue: string = referenceAudioUrl.trim();
-        if (audioFieldValue.startsWith('local-resource://') || audioFieldValue.startsWith('file://')) {
-          let filePath = audioFieldValue.startsWith('local-resource://') ? audioFieldValue.replace(/^local-resource:\/\/+/, '') : audioFieldValue.replace(/^file:\/\/+/, '');
-          filePath = filePath.replace(/%5C/gi, '/');
-          if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
-          filePath = decodeURIComponent(filePath);
-          if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
-          const normalizedFilePath = path.normalize(filePath);
-          // 参考音来自应用内“选择文件”对话框，允许用户选择的任意路径
-          if (!fs.existsSync(normalizedFilePath)) throw new Error(`文件不存在: ${normalizedFilePath}`);
-          const audioBuffer = fs.readFileSync(normalizedFilePath);
-          const ext = path.extname(normalizedFilePath).toLowerCase();
-          const mimeType = ext === '.wav' ? 'audio/wav' : ext === '.ogg' ? 'audio/ogg' : ext === '.m4a' ? 'audio/mp4' : 'audio/mpeg';
-          const { VideoProvider } = await import('./VideoProvider.js');
-          const vp = new VideoProvider();
-          audioFieldValue = await vp.uploadAudioToOSS(audioBuffer, mimeType);
-        } else if (!audioFieldValue.startsWith('http://') && !audioFieldValue.startsWith('https://')) {
-          throw new Error('参考音需为公网 URL 或本地文件路径（local-resource:// 或 file://）');
-        }
+        const audioFieldValue = await this.resolveAudioUrlForRhApp(referenceAudioUrl.trim());
         const appPayload = {
           nodeInfoList: [
             { nodeId: '13', fieldName: 'audio', fieldValue: audioFieldValue, description: '参考音' },
@@ -229,11 +491,12 @@ export class AudioProvider extends BaseProvider {
           ledgerTts,
         );
         fcChargedTaskId = ledgerTts || fcBaseId;
-        const taskId = data.taskId || data.task_id;
-        if (!taskId) throw new Error('Index-TTS2.0 提交失败：未返回 taskId');
+        const taskId = this.requireRhTaskIdFromSubmit(data, 'Index-TTS2.0');
         onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
         const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerTts);
-        if (pollResult.audioUrl) await this.handleAudioResult(pollResult.audioUrl, nodeId, onStatus, projectId, nodeTitle);
+        if (pollResult.audioUrls.length > 0) {
+          await this.handleAudioResults(pollResult.audioUrls, nodeId, onStatus, projectId, nodeTitle);
+        }
         return;
       }
 
@@ -264,12 +527,7 @@ export class AudioProvider extends BaseProvider {
 
       console.log('[音频生成] 提交响应:', JSON.stringify(data, null, 2));
 
-      // 提取 taskId
-      const taskId =
-        data.taskId ||
-        data.task_id ||
-        (data.data as { taskId?: string } | undefined)?.taskId ||
-        (data.data as { task_id?: string } | undefined)?.task_id;
+      const taskId = extractRhTaskIdFromForward(data);
 
       if (!taskId) {
         // 如果没有 taskId，可能直接返回了结果
@@ -281,7 +539,7 @@ export class AudioProvider extends BaseProvider {
             return;
           }
         }
-        throw new Error('未获取到任务 ID，请检查 API 响应');
+        throw new Error(`未获取到任务 ID：${formatRunningHubTaskError(data, '未返回 taskId')}`);
       }
 
       console.log(`[音频生成] 获取到 taskId: ${taskId}，开始轮询...`);
@@ -433,8 +691,193 @@ export class AudioProvider extends BaseProvider {
     }
   }
 
+  private extractModelUrlsFromPollResults(results: unknown): string[] {
+    if (!Array.isArray(results)) return [];
+    const urls: string[] = [];
+    for (const item of results) {
+      const r = item as { url?: string; outputType?: string };
+      const url = String(r?.url ?? '').trim();
+      if (!url) continue;
+      const ot = String(r?.outputType ?? '').toLowerCase();
+      const lower = url.toLowerCase();
+      const looksModel =
+        ['pth', 'pt', 'index', 'zip', 'ckpt', 'safetensors', 'onnx'].some((ext) => ot.includes(ext)) ||
+        /\.(pth|pt|index|zip|ckpt|safetensors|onnx)(\?|$)/i.test(lower) ||
+        /rvc|model|weight/i.test(lower);
+      if (looksModel) urls.push(url);
+    }
+    if (urls.length === 0) {
+      for (const item of results) {
+        const url = String((item as { url?: string })?.url ?? '').trim();
+        if (url && !/\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/i.test(url)) urls.push(url);
+      }
+    }
+    return urls;
+  }
+
+  private async pollTaskUntilModelFile(
+    taskId: string,
+    fcBaseId: string,
+    nodeId: string,
+    onStatus: (packet: AIStatusPacket) => void,
+    ledgerTaskId?: string | null,
+  ): Promise<{ modelUrl: string }> {
+    const totalTimeout = 45 * 60 * 1000;
+    const startTime = Date.now();
+    let attempt = 0;
+    let lastPollTime = startTime;
+    while (true) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= totalTimeout) throw new Error(`RVC 训练轮询超时（45 分钟），任务 ID: ${taskId}`);
+      const pollInterval = elapsed < 60000 ? 3000 : 5000;
+      const timeSinceLastPoll = Date.now() - lastPollTime;
+      if (timeSinceLastPoll < pollInterval) await new Promise((r) => setTimeout(r, pollInterval - timeSinceLastPoll));
+      attempt++;
+      lastPollTime = Date.now();
+      try {
+        const pollData = await rhQueryPollAudio(taskId, `${fcBaseId}:poll:${attempt}`, ledgerTaskId);
+        const status = pollData.status;
+        if (status === 'SUCCESS') {
+          const modelUrls = this.extractModelUrlsFromPollResults(pollData.results);
+          if (modelUrls.length > 0) return { modelUrl: modelUrls[0] };
+          throw new Error('RVC 训练已完成但未返回模型文件，请在 RunningHub 查看任务输出');
+        }
+        if (status === 'FAILED' || status === 'FAILURE') {
+          const errorMessage = (pollData.errorMessage || pollData.error || '任务失败') as string;
+          throw new Error(String(errorMessage));
+        }
+        onStatus({ nodeId, status: 'PROCESSING', payload: { taskId } });
+      } catch (pollError: unknown) {
+        if (isFcBalanceInsufficientError(pollError)) throw pollError;
+        if (isRetriableAudioPollError(pollError)) {
+          await new Promise((r) => setTimeout(r, 5000));
+          lastPollTime = Date.now();
+          continue;
+        }
+        throw pollError;
+      }
+    }
+  }
+
+  private async handleRvcTrainResult(
+    modelUrl: string,
+    modelName: string,
+    nodeId: string,
+    onStatus: (packet: AIStatusPacket) => void,
+    projectId?: string,
+    nodeTitle?: string,
+  ): Promise<void> {
+    try {
+      const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
+      const safeName = `${nodeTitle || 'rvc'}_${modelName}`.replace(/[^\w\u4e00-\u9fff.-]+/g, '_');
+      const urlLower = modelUrl.toLowerCase();
+      const isZip = /\.zip(\?|$)/.test(urlLower);
+      let downloadedPath: string | null = null;
+      if (isZip) {
+        downloadedPath = await this.downloadRvcModelPackage(modelUrl, safeName, projectId, nodeId);
+      } else {
+        downloadedPath = await autoDownloadResource(modelUrl, 'audio', {
+          resourceType: 'audio',
+          nodeId,
+          nodeTitle: safeName,
+          projectId,
+        });
+      }
+      const localUrl = downloadedPath
+        ? `local-resource://${downloadedPath.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1))}`
+        : modelUrl;
+      onStatus({
+        nodeId,
+        status: 'SUCCESS',
+        payload: {
+          outputModelUrl: localUrl,
+          outputModelRemoteUrl: modelUrl,
+          outputModelLocalPath: downloadedPath ?? undefined,
+          rvcTrainModelName: modelName,
+          text: `RVC 训练完成：${modelName}`,
+        },
+      });
+    } catch (e) {
+      console.warn('[音频生成] RVC 模型下载失败，使用远程 URL', e);
+      onStatus({
+        nodeId,
+        status: 'SUCCESS',
+        payload: {
+          outputModelUrl: modelUrl,
+          outputModelRemoteUrl: modelUrl,
+          rvcTrainModelName: modelName,
+          text: `RVC 训练完成：${modelName}`,
+        },
+      });
+    }
+  }
+
+  /** RVC 训练 zip 包下载（保留 .zip 扩展名） */
+  private async downloadRvcModelPackage(
+    remoteUrl: string,
+    baseName: string,
+    projectId?: string,
+    nodeId?: string,
+  ): Promise<string | null> {
+    const axios = (await import('axios')).default;
+    const fs = await import('fs');
+    const path = await import('path');
+    const crypto = await import('crypto');
+    const { app } = await import('electron');
+
+    const userDataPath = app.getPath('userData');
+    let saveDir: string;
+    if (projectId) {
+      const { getProjectFolderPath } = await import('../../utils/projectFolderHelper.js');
+      const projectFolderPath = await getProjectFolderPath(projectId);
+      saveDir = projectFolderPath
+        ? path.join(projectFolderPath, 'assets')
+        : path.join(userDataPath, 'assets');
+    } else {
+      saveDir = path.join(userDataPath, 'assets');
+    }
+    if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+
+    const urlHash = crypto.createHash('md5').update(remoteUrl).digest('hex').substring(0, 12);
+    const safeBase = baseName.slice(0, 48) || 'rvc-model';
+    const fileName = `${safeBase}-${urlHash}.zip`;
+    const filePath = path.join(saveDir, fileName);
+    if (fs.existsSync(filePath)) return filePath;
+
+    const response = await axios.get(remoteUrl, {
+      responseType: 'arraybuffer',
+      timeout: 300000,
+      proxy: false,
+    });
+    fs.writeFileSync(filePath, Buffer.from(response.data));
+    console.log('[音频生成] RVC 模型包已保存:', filePath.replace(/\\/g, '/'));
+    return filePath;
+  }
+
+  private extractAudioUrlsFromPollResults(results: unknown): string[] {
+    if (!Array.isArray(results)) return [];
+    const urls: string[] = [];
+    for (const item of results) {
+      const r = item as { url?: string; outputType?: string };
+      const url = String(r?.url ?? '').trim();
+      if (!url || isRvcModelPackageUrl(url)) continue;
+      const ot = String(r?.outputType ?? '').toLowerCase();
+      const looksAudio =
+        ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].some((ext) => ot.includes(ext)) ||
+        /\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/i.test(url);
+      if (looksAudio) urls.push(url);
+    }
+    if (urls.length === 0) {
+      for (const item of results) {
+        const url = String((item as { url?: string })?.url ?? '').trim();
+        if (url && !isRvcModelPackageUrl(url) && /\.(mp3|wav|ogg|m4a|flac|aac)(\?|$)/i.test(url)) urls.push(url);
+      }
+    }
+    return urls;
+  }
+
   /**
-   * 轮询任务直到成功或失败，返回结果音频 URL（用于 Index-TTS2 等 AI 应用）
+   * 轮询任务直到成功或失败，返回全部音频 URL（用于 AI 应用 / 翻唱多结果）
    */
   private async pollTaskUntilSuccess(
     taskId: string,
@@ -442,7 +885,7 @@ export class AudioProvider extends BaseProvider {
     nodeId: string,
     onStatus: (packet: AIStatusPacket) => void,
     ledgerTaskId?: string | null,
-  ): Promise<{ audioUrl: string }> {
+  ): Promise<{ audioUrl: string; audioUrls: string[] }> {
     const totalTimeout = 10 * 60 * 1000;
     const startTime = Date.now();
     let attempt = 0;
@@ -459,15 +902,14 @@ export class AudioProvider extends BaseProvider {
         const pollData = await rhQueryPollAudio(taskId, `${fcBaseId}:poll:${attempt}`, ledgerTaskId);
         const status = pollData.status;
         if (status === 'SUCCESS') {
-          const audioUrl =
-            Array.isArray(pollData.results) && pollData.results.length > 0
-              ? (pollData.results[0] as { url?: string })?.url
-              : undefined;
-          if (audioUrl) return { audioUrl };
+          const audioUrls = this.extractAudioUrlsFromPollResults(pollData.results);
+          if (audioUrls.length > 0) return { audioUrl: audioUrls[0], audioUrls };
+          throw new Error('任务成功但未返回音频结果');
         } else if (status === 'FAILED' || status === 'FAILURE') {
-          const errorMessage = (pollData.errorMessage || pollData.error || '任务失败') as string;
-          const errorCode = pollData.errorCode ? `[错误码: ${pollData.errorCode}] ` : '';
-          throw new Error(`${errorCode}${errorMessage}`);
+          if (pollData.failedReason) {
+            console.error('[音频生成] RH failedReason:', JSON.stringify(pollData.failedReason, null, 2));
+          }
+          throw new Error(formatRunningHubTaskError(pollData as Record<string, unknown>, '任务失败'));
         }
         onStatus({ nodeId, status: 'PROCESSING', payload: { taskId } });
       } catch (pollError: unknown) {
@@ -485,6 +927,76 @@ export class AudioProvider extends BaseProvider {
   }
 
   /**
+   * 处理单段或多段音频结果：逐张下载并回传 outputAudios
+   */
+  private async handleAudioResults(
+    audioUrls: string[],
+    nodeId: string,
+    onStatus: (packet: AIStatusPacket) => void,
+    projectId?: string,
+    nodeTitle?: string,
+  ): Promise<void> {
+    if (audioUrls.length === 0) return;
+    if (audioUrls.length === 1) {
+      await this.handleAudioResult(audioUrls[0], nodeId, onStatus, projectId, nodeTitle);
+      return;
+    }
+    try {
+      const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
+      const finalUrls: string[] = [];
+      const originalUrls: string[] = [];
+      let primaryLocalPath: string | undefined;
+      for (let i = 0; i < audioUrls.length; i++) {
+        const remote = audioUrls[i];
+        originalUrls.push(remote);
+        try {
+          const downloadedPath = await autoDownloadResource(remote, 'audio', {
+            resourceType: 'audio',
+            nodeId,
+            nodeTitle: `${nodeTitle || 'audio'}_${i + 1}`,
+            projectId,
+          });
+          if (downloadedPath) {
+            finalUrls.push(`local-resource://${downloadedPath.replace(/\\/g, '/')}`);
+            if (i === 0) primaryLocalPath = downloadedPath;
+          } else {
+            finalUrls.push(remote);
+          }
+        } catch {
+          finalUrls.push(remote);
+        }
+      }
+      const primary = finalUrls[0];
+      onStatus({
+        nodeId,
+        status: 'SUCCESS',
+        payload: {
+          url: primary,
+          audioUrl: primary,
+          originalAudioUrl: originalUrls[0],
+          localPath: primaryLocalPath,
+          outputAudios: finalUrls,
+          originalOutputAudios: originalUrls,
+          text: `翻唱完成，共 ${finalUrls.length} 段音频`,
+        },
+      });
+    } catch (downloadError: unknown) {
+      console.error('[音频生成] 多段音频处理失败:', downloadError);
+      onStatus({
+        nodeId,
+        status: 'SUCCESS',
+        payload: {
+          url: audioUrls[0],
+          audioUrl: audioUrls[0],
+          outputAudios: audioUrls,
+          originalOutputAudios: audioUrls,
+          text: `翻唱完成，共 ${audioUrls.length} 段音频`,
+        },
+      });
+    }
+  }
+
+  /**
    * 处理音频结果：下载音频文件到本地
    */
   private async handleAudioResult(
@@ -494,6 +1006,10 @@ export class AudioProvider extends BaseProvider {
     projectId?: string,
     nodeTitle?: string,
   ): Promise<void> {
+    if (isRvcModelPackageUrl(audioUrl)) {
+      console.warn('[音频生成] 跳过将 RVC 模型包当作音频处理:', audioUrl.slice(0, 96));
+      return;
+    }
     try {
       // 自动下载音频到本地
       const { autoDownloadResource } = await import('../../utils/resourceDownloader.js');
@@ -518,6 +1034,8 @@ export class AudioProvider extends BaseProvider {
             audioUrl: localAudioUrl,
             originalAudioUrl: audioUrl, // 保存原始远程 URL
             localPath: downloadedPath,
+            outputAudios: [localAudioUrl],
+            originalOutputAudios: [audioUrl],
             text: `音频生成完成: ${localAudioUrl}`,
           },
         });
@@ -530,6 +1048,8 @@ export class AudioProvider extends BaseProvider {
           payload: {
             url: audioUrl,
             audioUrl: audioUrl,
+            outputAudios: [audioUrl],
+            originalOutputAudios: [audioUrl],
             text: `音频生成完成: ${audioUrl}`,
           },
         });
@@ -543,6 +1063,8 @@ export class AudioProvider extends BaseProvider {
         payload: {
           url: audioUrl,
           audioUrl: audioUrl,
+          outputAudios: [audioUrl],
+          originalOutputAudios: [audioUrl],
           text: `音频生成完成: ${audioUrl}`,
         },
       });

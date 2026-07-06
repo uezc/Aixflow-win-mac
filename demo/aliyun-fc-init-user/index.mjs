@@ -761,6 +761,50 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
     const timeoutId = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
     try {
       const um = fwd.uploadMultipart;
+      const ufu = fwd.uploadFromUrl;
+      if (
+        ufu &&
+        typeof ufu === 'object' &&
+        typeof ufu.url === 'string' &&
+        ufu.url.trim().length > 0 &&
+        provider === 'runninghub' &&
+        method === 'POST'
+      ) {
+        const srcUrl = String(ufu.url).trim();
+        const srcRes = await fetch(srcUrl, { signal: controller.signal });
+        if (!srcRes.ok) {
+          const e = new Error(`UPLOAD_FROM_URL_FETCH_FAILED HTTP ${srcRes.status}`);
+          e.response = { status: srcRes.status, data: {} };
+          throw e;
+        }
+        const arr = await srcRes.arrayBuffer();
+        const buf = Buffer.from(arr);
+        const filename = String(ufu.filename || 'file.bin');
+        const contentType = String(ufu.contentType || 'application/octet-stream');
+        const fieldName = String(ufu.fieldName || 'file');
+        const blob = new Blob([buf], { type: contentType });
+        const form = new FormData();
+        form.append(fieldName, blob, filename);
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}` },
+          body: form,
+          signal: controller.signal,
+        });
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = {};
+        }
+        if (!res.ok) {
+          const errMsg = data?.message || data?.error?.message || data?.error || `HTTP ${res.status}`;
+          const e = new Error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
+          e.response = { status: res.status, data };
+          throw e;
+        }
+        return data;
+      }
       if (
         um &&
         typeof um === 'object' &&

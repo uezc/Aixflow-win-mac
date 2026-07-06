@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronLeft, ChevronRight, Download, Trash2, Trash, LayoutGrid, AlertCircle } from 'lucide-react';
 import AssetLibrarySidebar from '../AssetLibrarySidebar';
-import type { Character, SceneLibraryItem, DigitalHumanLibraryItem } from '../characterListShared';
+import type { Character, SceneLibraryItem, DigitalHumanLibraryItem, RvcVoiceLibraryItem } from '../characterListShared';
 import { TaskImageDisplay } from './TaskImageDisplay';
 import { TaskMediaPreview } from './TaskMediaPreview';
 import {
@@ -48,6 +48,7 @@ export interface WorkspaceSidebarProps {
   characterListRefreshTrigger: number;
   sceneListRefreshTrigger: number;
   digitalHumanListRefreshTrigger: number;
+  rvcVoiceListRefreshTrigger: number;
   onSelectCharacter: (character: Character) => void;
   /** 添加角色时从画布点选参考音（音频等），返回 { url, label } 或取消时 null */
   requestVoicePickFromCanvas?: () => Promise<{ url: string; label: string } | null>;
@@ -77,6 +78,8 @@ export interface WorkspaceSidebarProps {
   onPlaceSceneToCanvas?: (scene: SceneLibraryItem, anchorScreen: { x: number; y: number }) => void;
   /** 数字人资产「导入到画布」：创建 HeyGem 节点 */
   onPlaceDigitalHumanToCanvas?: (item: DigitalHumanLibraryItem, anchorScreen: { x: number; y: number }) => void;
+  onPlaceRvcVoiceToCanvas?: (item: RvcVoiceLibraryItem, anchorScreen: { x: number; y: number }) => void;
+  onRvcVoiceUpdated?: (item: RvcVoiceLibraryItem) => void;
 }
 
 /** 单任务卡片高度估计值（用于虚拟列表，含视频/音频时更高，measureElement 会动态修正） */
@@ -635,6 +638,7 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
   characterListRefreshTrigger,
   sceneListRefreshTrigger,
   digitalHumanListRefreshTrigger,
+  rvcVoiceListRefreshTrigger,
   onSelectCharacter,
   requestVoicePickFromCanvas,
   requestViewSlotPickFromCanvas,
@@ -658,6 +662,8 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
   onTaskPlaceToCanvas,
   onPlaceSceneToCanvas,
   onPlaceDigitalHumanToCanvas,
+  onPlaceRvcVoiceToCanvas,
+  onRvcVoiceUpdated,
 }: WorkspaceSidebarProps) {
   const { locale } = useAppLocale();
   const wc = workspaceChromeT(locale);
@@ -695,6 +701,21 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
       onPlaceDigitalHumanToCanvas(item, anchor);
     },
     [onPlaceDigitalHumanToCanvas],
+  );
+
+  const handlePlaceRvcVoiceOnCanvas = React.useCallback(
+    (item: RvcVoiceLibraryItem) => {
+      if (!onPlaceRvcVoiceToCanvas) return;
+      const panel = leftAssetPanelRef.current;
+      const anchor = panel
+        ? (() => {
+            const pr = panel.getBoundingClientRect();
+            return { x: pr.right + 36, y: pr.top + pr.height * 0.38 };
+          })()
+        : { x: 320, y: 400 };
+      onPlaceRvcVoiceToCanvas(item, anchor);
+    },
+    [onPlaceRvcVoiceToCanvas],
   );
 
   useEffect(() => {
@@ -735,6 +756,7 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
           characterListRefreshTrigger={characterListRefreshTrigger}
           sceneListRefreshTrigger={sceneListRefreshTrigger}
           digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
+          rvcVoiceListRefreshTrigger={rvcVoiceListRefreshTrigger}
           onSelectCharacter={onSelectCharacter}
           requestVoicePickFromCanvas={requestVoicePickFromCanvas}
           requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
@@ -742,6 +764,8 @@ const WorkspaceSidebar = React.memo(function WorkspaceSidebar({
           requestDigitalHumanVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
           onPlaceSceneToCanvas={handlePlaceSceneOnCanvas}
           onPlaceDigitalHumanToCanvas={handlePlaceDigitalHumanOnCanvas}
+          onPlaceRvcVoiceToCanvas={handlePlaceRvcVoiceOnCanvas}
+          onRvcVoiceUpdated={onRvcVoiceUpdated}
         />
       </div>
 
