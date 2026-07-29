@@ -33,14 +33,37 @@ import { AudioTranscribeNode } from './Canvas/AudioTranscribeNode';
 import VideoSpliceNode, { type TimelineClip, type VideoSpliceExportPayload } from './Canvas/VideoSpliceNode';
 import { resolveSpliceExportDimensions } from './Canvas/VideoSpliceAspectRatioDropdown';
 import PhotoCollageNode, { type CollageLayer } from './Canvas/PhotoCollageNode';
+import GridMapNode, { GRID_MAP_HMR_REV, nodeOuterSizeForCanvas } from './Canvas/GridMapNode';
+import ImageComparerNode, {
+  IMAGE_COMPARER_DEFAULT_H,
+  IMAGE_COMPARER_DEFAULT_W,
+} from './Canvas/ImageComparerNode';
 import ImageTo3dNode from './Canvas/ImageTo3dNode';
+import StoryboardScriptNode from './Canvas/StoryboardScriptNode';
+import ScriptNode from './Canvas/ScriptNode';
+import DirectorNode, { DIRECTOR_DEFAULT_H, DIRECTOR_DEFAULT_W } from './Canvas/DirectorNode';
 import { collageLayerSourceNodeId } from '../utils/collageLayerTransform';
 import { buildPhotoCollageLayersFromEdges } from '../utils/photoCollageFromEdges';
+import {
+  buildImageComparerUrlsFromEdges,
+  pickImageComparerTargetHandle,
+} from '../utils/imageComparerFromEdges';
+import {
+  buildGridMapCellsFromEdges,
+  emptyGridMapCells,
+  DEFAULT_GRID_MAP_CANVAS_H,
+  DEFAULT_GRID_MAP_CANVAS_W,
+  DEFAULT_GRID_MAP_COLS,
+  DEFAULT_GRID_MAP_ROWS,
+  type GridMapCell,
+} from '../utils/gridMapCompose';
 import { isLikelyVideoMediaUrl } from '../utils/mediaPreviewUrl';
 import WanAnimateNode from './Canvas/WanAnimateNode';
 import HeyGemNode from './Canvas/HeyGemNode';
 import FlowContent from './Canvas/FlowContent';
 import LLMInputPanel from './Canvas/LLMInputPanel';
+import StoryboardScriptInputPanel from './Canvas/StoryboardScriptInputPanel';
+import DirectorInputPanel from './Canvas/DirectorInputPanel';
 import ImageInputPanel from './Canvas/ImageInputPanel';
 import ImageTo3dInputPanel from './Canvas/ImageTo3dInputPanel';
 import RvcTrainNode from './Canvas/RvcTrainNode';
@@ -57,9 +80,12 @@ import {
   DEFAULT_IMAGE_ASPECT_RATIO,
   DEFAULT_VIDEO_ASPECT_RATIO,
   hasVideoOutputMedia,
+  hasImageOutputMedia,
   imageNodeSizeForAspectRatio,
   IMAGE_NODE_MAX_H,
   IMAGE_NODE_MAX_W,
+  IMAGE_NODE_DEFAULT_H,
+  IMAGE_NODE_DEFAULT_W,
   IMAGE_NODE_MIN_H,
   IMAGE_NODE_MIN_W,
   nodeStyleDimensions,
@@ -71,10 +97,18 @@ import {
   videoNodeSizeForAspectRatio,
   VIDEO_NODE_MAX_H,
   VIDEO_NODE_MAX_W,
+  VIDEO_NODE_DEFAULT_H,
+  VIDEO_NODE_DEFAULT_W,
   VIDEO_NODE_MIN_H,
   VIDEO_NODE_MIN_W,
 } from '../utils/nodeSizeFromAspectRatio';
-import { applyBuiltClipsToSpliceData, normalizeVideoTracks } from '../utils/videoSpliceTracks';
+import {
+  applyBuiltClipsToSpliceData,
+  collectSpliceIncomingSourceIds,
+  normalizeVideoTracks,
+  spliceBuiltHasNewConnectedSources,
+  spliceRebuildWouldDropConnected,
+} from '../utils/videoSpliceTracks';
 import {
   buildVideoSpliceClipsFromEdges,
   isTimelineMediaSourceNodeType,
@@ -82,6 +116,7 @@ import {
   probeTimelineMediaDuration,
   resolveSourceMediaDurationSec,
   resolveTimelineMediaFromSource,
+  sortNodesByReadingOrder,
   timelineClipsFingerprint,
 } from '../utils/timelineSourceMedia';
 import { readVideoNodePlaybackTimeSec } from '../utils/videoPlaybackTimeRegistry';
@@ -95,7 +130,6 @@ import CameraControlNode from './Canvas/CameraControlNode';
 import { MinimalNodePlaceholder, TINY_ZOOM_THRESHOLD_VALUE } from './Canvas/MinimalNodePlaceholder';
 import CharacterInputPanel from './Canvas/CharacterInputPanel';
 import CanvasToolPanel from './Canvas/CanvasToolPanel';
-import Panorama360PlacementPanel from './Canvas/Panorama360PlacementPanel';
 import {
   type Character,
   type SceneLibraryItem,
@@ -124,7 +158,37 @@ import { resolveRvcTrainAudioFromEdges } from '../utils/rvcTrainNodeEdgeInputs';
 import { ensureOssAudioUrlForRhTrain, pickBestAudioUrlForRhTrainFromNodeData } from '../utils/rvcTrainAudioUrl';
 import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
 import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../constants/rvcTrainLayout';
+import { IMAGE_TO_3D_HEIGHT, IMAGE_TO_3D_WIDTH } from '../constants/imageTo3dLayout';
+import {
+  MODULE_DISPLAY_SCALE,
+  MODULE_SIZE_SCALE_VERSION,
+  needsModuleSizeScaleUpgrade,
+  scaleModulePx,
+} from '../utils/moduleDisplayScale';
 import { DEFAULT_IMAGE_TO_3D_MODEL } from '../../shared/imageTo3dModels';
+import {
+  createDefaultStoryboardScriptState,
+  type StoryboardScriptState,
+} from '../../shared/storyboardScript';
+import {
+  buildDirectorMvImagePreviewClips,
+  buildDirectorMvVideoPreviewClips,
+  composeDirectorShotVideoPrompt,
+  ensureDirectorLipsyncMouthVisiblePrompt,
+  createDefaultDirectorPipelineState,
+  getDirectorShotStoryboard,
+  getOrderedAssetsWithImages,
+  getValidDirectorShotSongClipUrl,
+  packLyricSegmentsIntoShotPacks,
+  parseDirectorShotDurationSec,
+  replaceDirectorMvPlaceholdersWithVideos,
+  resolveDirectorShotMusicRange,
+  resolveDirectorShotPreferLipsync,
+  shotAudioRangeHasHumanVoice,
+  updateDirectorAsset,
+  updateDirectorShotStoryboard,
+  type DirectorPipelineState,
+} from '../../shared/directorPipeline';
 import { importImageTo3dAssetsToCharacters } from '../utils/importImageTo3dAsset';
 import { userFacingErrorMessage } from '../utils/userErrorMessageCn';
 import WorkspaceHeader from './Workspace/WorkspaceHeader';
@@ -134,10 +198,16 @@ import { mapProjectPath } from '../utils/pathMapper';
 import { useDarkAlert } from '../contexts/DarkAlertContext';
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { CanvasThemeProvider, useCanvasTheme } from '../contexts/CanvasThemeContext';
+import { LlmInputPanelProvider } from '../contexts/LlmInputPanelContext';
+import { StoryboardScriptInputPanelProvider } from '../contexts/StoryboardScriptInputPanelContext';
+import { DirectorInputPanelProvider } from '../contexts/DirectorInputPanelContext';
+import { ImageInputPanelProvider } from '../contexts/ImageInputPanelContext';
+import { VideoInputPanelProvider } from '../contexts/VideoInputPanelContext';
+import { AudioInputPanelProvider } from '../contexts/AudioInputPanelContext';
+import { ImageTo3dInputPanelProvider } from '../contexts/ImageTo3dInputPanelContext';
 import { workspaceChromeT } from '../i18n/workspaceI18n';
 import { assetLibraryT } from '../i18n/assetLibraryI18n';
 import { imageNodeChromeT } from '../i18n/imageNodeI18n';
-import { panoramaPlacementT } from '../i18n/panoramaPlacementI18n';
 import { PERF_POLICY } from '../config/perfPolicy';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI, DEFAULT_VIDEO_MODEL_REPLACING_SORA2 } from '../config/sora2UiPolicy';
 import { isRetiredVideoModel, normalizeVideoModelIfRetired } from '../config/videoModelUiPolicy';
@@ -148,16 +218,33 @@ import {
   buildLtx23HdrMultiPayload,
   isLtx23HdrMultiRunnable,
   validateLtx23HdrMultiInputs,
+  mergeLtx23HdrMultiPreserveOrder,
 } from '../../common/ltx23HdrMulti';
 import { isRetiredAudioModel, normalizeAudioModelIfRetired } from '../config/audioModelUiPolicy';
 import {
   normalizeGrok3DurationStr,
+  normalizeRhartVideoXDurationStr,
   normalizeGrok3StableDurationStr,
   normalizeLtx23DurationChoice,
   normalizeSeedanceDurationChoice,
   normalizeGeminiOmniDurationChoice,
+  normalizeGeminiOmniFlashDurationChoice,
   coerceSeedanceResolution,
+  coerceSeedanceRatio,
 } from '../utils/videoBillingSku';
+import {
+  buildDirectorSpawnedVideoInvokeInput,
+  buildDirectorSpawnedVideoNodeData,
+  directorVideoBatchLayoutAspect,
+  isDirectorLipsyncModel,
+  normalizeDirectorVideoBatchAspect,
+  normalizeDirectorVideoBatchDuration,
+  normalizeDirectorVideoBatchModel,
+  normalizeDirectorVideoBatchResolution,
+  normalizeDirectorVideoLipsyncModel,
+  pickNearestDirectorVideoBatchDuration,
+  prepareDirectorShotVideoPayload,
+} from '../utils/directorVideoBatch';
 import {
   bindContainerRef,
   setNodePositions,
@@ -173,7 +260,16 @@ import {
   CHARACTER_OUTPUT_AUDIO_HANDLE,
   DEFAULT_REFERENCE_TRANSMIT_SLOTS,
   getCharacterTransmitImageUrls,
+  resolveReferenceTransmitSlots,
 } from '../utils/connectionRules';
+import {
+  collectUpstreamTextPartsForTarget,
+  collectLinkedTextTitlesForTarget,
+  normalizeTextSplitSourceHandle,
+  pickTextSplitSegmentText,
+  resolveLlmInputTextFromEdges,
+  resolveTextSplitSegments,
+} from '../utils/textSplitSegmentUtils';
 import {
   isDigitalHumanAudioOutputHandle,
   isDigitalHumanVideoOutputHandle,
@@ -186,11 +282,21 @@ import {
   getNodeDisplayPrice,
   getMattingDisplayPrice,
   getWatermarkRemovalDisplayPrice,
+  getImageUpscaleV3DisplayPrice,
   getCharacterMultiAngleDisplayPrice,
   getLlmChatDisplayPrice,
+  IMAGE_REVERSE_DEFAULT_MODEL,
+  normalizeImageReverseCaptionModel,
+  type ImageReverseCaptionModel,
 } from '../utils/cloudModelPricing';
-import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../utils/audioSongModels';
+import { isAudioSongModel, buildMusicDownloadSuggestedName, audioDisplayTitleFromFileName, resolveAudioNodeDisplayTitle } from '../utils/audioSongModels';
 import { buildAudioIncomingPatchFromEdges, buildCoverTargetPatchesAfterSourceDurationChange } from '../utils/audioNodeEdgeInputs';
+import {
+  DOUBAO_SEED_AUDIO_MODEL_ID,
+  isDoubaoSeedAudioModel,
+  clampDoubaoSpeechRate,
+  clampDoubaoLoudnessRate,
+} from '../utils/doubaoSeedAudioModel';
 import { isAudioCoverModel, AI_VOICE_COVER_MODEL_ID, resolveRvcCoverModelPath, deriveRvcCoverModelPath, normalizeRvcCoverOutputMode, clampCoverPitch, clampCoverIndexRate, clampCoverVocalMixPct, clampCoverAccompanimentMixPct, resolveCoverAccompanimentMixPct, type RvcCoverOutputMode } from '../utils/audioCoverModel';
 import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from '../utils/audioRvcTrainModel';
 import { isRvcModelPackageUrl } from '../../shared/rvcVoiceTrainUtils';
@@ -276,6 +382,31 @@ function pickAudioOutputUrlFromAudioNodeData(data: Record<string, unknown> | und
   const raw = (data.originalAudioUrl ?? data.outputAudio ?? multi[0] ?? data.referenceAudioUrl) as string | undefined;
   const s = typeof raw === 'string' ? raw.trim() : '';
   return s || undefined;
+}
+
+/** 浏览器探测音频时长（秒），失败返回 0 */
+function probeHtmlAudioDurationSec(url: string): Promise<number> {
+  const src = String(url || '').trim();
+  if (!src) return Promise.resolve(0);
+  return new Promise((resolve) => {
+    try {
+      const audio = new Audio();
+      audio.preload = 'metadata';
+      const done = (sec: number) => {
+        audio.removeAttribute('src');
+        audio.load();
+        resolve(sec);
+      };
+      audio.onloadedmetadata = () => {
+        const d = Number(audio.duration);
+        done(Number.isFinite(d) && d > 0 ? d : 0);
+      };
+      audio.onerror = () => done(0);
+      audio.src = src;
+    } catch {
+      resolve(0);
+    }
+  });
 }
 
 // 截取视频第一帧的工具函数
@@ -655,6 +786,68 @@ function pickImageUrlFromImageSourceNode(sourceNode: Node | undefined): string {
   );
 }
 
+function collectStoryboardScriptMediaFromEdges(
+  nodeId: string,
+  nodes: Node[],
+  edges: Edge[],
+): { imageUrls: string[]; videoUrls: string[]; textParts: string[] } {
+  const imageUrls: string[] = [];
+  const videoUrls: string[] = [];
+  const textParts: string[] = [];
+  for (const edge of edges.filter((e) => e.target === nodeId)) {
+    const src = nodes.find((n) => n.id === edge.source);
+    if (!src) continue;
+    if (src.type === 'image') {
+      const url = pickImageUrlFromImageSourceNode(src);
+      if (url) imageUrls.push(url);
+    } else if (isVideoTrackSourceNodeType(src.type)) {
+      const url =
+        pickReferenceVideoFromSourceNode(src, edge.sourceHandle) ||
+        String(
+          src.data?.outputVideo ||
+            src.data?.originalVideoUrl ||
+            src.data?.outputVideoUrl ||
+            src.data?.videoUrl ||
+            src.data?.localUrl ||
+            '',
+        ).trim();
+      if (url) videoUrls.push(url);
+    } else if (src.type === 'minimalistText' || src.type === 'text') {
+      if (src.data?.text) textParts.push(String(src.data.text).trim());
+    } else if (src.type === 'llm' && src.data?.outputText) {
+      textParts.push(String(src.data.outputText).trim());
+    } else if (src.type === 'textSplit') {
+      const segText = pickTextSplitSegmentText(src.data, edge.sourceHandle);
+      if (segText) textParts.push(segText);
+    }
+  }
+  return { imageUrls, videoUrls, textParts };
+}
+
+/** 分镜脚本 → 下游：取勾选行（无勾选则全部）的图片/视频提示词 */
+function pickStoryboardScriptPromptsForDownstream(
+  sourceNode: Node | undefined | null,
+  kind: 'image' | 'video',
+): string {
+  if (!sourceNode || sourceNode.type !== 'storyboardScript') return '';
+  const script = createDefaultStoryboardScriptState(
+    (sourceNode.data as { storyboardScript?: StoryboardScriptState })?.storyboardScript || {},
+  );
+  const indexes =
+    script.selectedRowIndexes?.length > 0
+      ? script.selectedRowIndexes
+      : script.rows.map((_, i) => i);
+  const key = kind === 'video' ? '视频提示词' : '图片提示词';
+  const parts: string[] = [];
+  for (const i of indexes) {
+    const row = script.rows[i];
+    if (!row) continue;
+    const text = String(row[key] || '').trim();
+    if (text) parts.push(text);
+  }
+  return parts.join('\n\n');
+}
+
 /** 图片转 3D：参考图（仅 input 入边；连线图片不作为贴图） */
 const resolveImageTo3dInputUrl = (node: Node, edges: Edge[], nodes: Node[]): string => {
   for (const edge of edges.filter((e) => e.target === node.id)) {
@@ -705,6 +898,24 @@ function collectImageTargetInputImagesFromEdges(imageId: string, nds: Node[], ed
     }
   }
   return collected.slice(0, 10);
+}
+
+/**
+ * 合并参考图列表：保留用户拖拽后的相对顺序，只增删/替换缺失项。
+ * 避免连线同步按边顺序把面板排序冲掉。
+ */
+function mergeInputImagesPreserveOrder(current: string[] | undefined, incoming: string[]): string[] {
+  const next = (incoming || []).filter((u) => typeof u === 'string' && u.trim()).slice(0, 10);
+  const prev = (current || []).filter((u) => typeof u === 'string' && u.trim());
+  if (next.length === 0) return [];
+  if (prev.length === 0) return next;
+  const nextSet = new Set(next);
+  const kept = prev.filter((u) => nextSet.has(u));
+  if (kept.length === next.length) return kept.slice(0, 10);
+  const keptSet = new Set(kept);
+  const appended = next.filter((u) => !keptSet.has(u));
+  if (kept.length === 0 && prev.length === next.length) return next;
+  return [...kept, ...appended].slice(0, 10);
 }
 
 /** 从指向 Video / 视频换人 的 input 入边收集参考图（含角色卡多槽勾选） */
@@ -992,6 +1203,13 @@ function isVideoModuleNodeType(t: string | undefined): boolean {
   return t === 'video' || t === 'wanAnimate' || t === 'heyGem';
 }
 
+/** 任务 URL / 扩展名像音频时，避免误当成视频历史或视频节点 */
+function looksLikeAudioMediaUrl(url: string | undefined | null): boolean {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  return /\.(flac|mp3|wav|aac|m4a|ogg|opus)(?:$|[?#])/i.test(u);
+}
+
 /** 可作为参考视频源：普通视频模块、视频换人、HeyGem 均输出视频 */
 function isVideoTrackSourceNodeType(t: string | undefined): boolean {
   return t === 'video' || t === 'wanAnimate' || t === 'heyGem';
@@ -1010,7 +1228,19 @@ function pickReferenceVideoFromSourceNode(node: Node | undefined, sourceHandle?:
     return pickDigitalHumanVideoUrl(node.data as Record<string, unknown>);
   }
   if (isVideoTrackSourceNodeType(node.type)) {
-    return String(node.data?.outputVideo || node.data?.originalVideoUrl || '').trim();
+    const output = String(node.data?.outputVideo || '').trim();
+    const original = String(node.data?.originalVideoUrl || '').trim();
+    const ref = String((node.data as { referenceVideoUrl?: string })?.referenceVideoUrl || '').trim();
+    const isLocal = (u: string) =>
+      u.startsWith('local-resource://') ||
+      u.startsWith('file://') ||
+      /^[a-zA-Z]:[/\\]/.test(u) ||
+      u.startsWith('/');
+    // 提取音频优先用本地文件，避免远程 URL 下载超时/断连导致「提取失效」
+    if (isLocal(output)) return output;
+    if (isLocal(original)) return original;
+    if (isLocal(ref)) return ref;
+    return output || original || ref;
   }
   return '';
 }
@@ -1024,6 +1254,7 @@ function estimateYuanbaoForTaskNodeStatic(
   if (!node) return undefined;
   if (taskPrompt === '抠图') return getMattingDisplayPrice(cloudMap, 1);
   if (taskPrompt === '去水印') return getWatermarkRemovalDisplayPrice(cloudMap, 1);
+  if (taskPrompt === '超分放大' || taskPrompt === '图像超分放大V3') return getImageUpscaleV3DisplayPrice(cloudMap, 1);
   if (taskPrompt === '人物多角度') return getCharacterMultiAngleDisplayPrice(cloudMap, 1);
   const t = String(node.type || '');
   if (t === 'minimalistText') return getLlmChatDisplayPrice(cloudMap, 1);
@@ -1045,14 +1276,23 @@ function patchNodeWithAspectRatioLayout(node: Node, aspectRatio: string, kind: '
   };
 }
 
+/** 图片：空容器才按比例改外形；已有成片时只改 aspectRatio（供下次生成），外形跟图片 */
+function patchImageNodeAspectRatio(node: Node, aspectRatio: string): Node {
+  const data = (node.data || {}) as Record<string, unknown>;
+  if (hasImageOutputMedia(data)) {
+    return { ...node, data: { ...data, aspectRatio } };
+  }
+  return patchNodeWithAspectRatioLayout(node, aspectRatio, 'image');
+}
+
 function patchNodeWithMediaLayout(
   node: Node,
   mediaW: number | undefined,
   mediaH: number | undefined,
   kind: 'image' | 'video',
 ): Node {
-  const minW = kind === 'image' ? 369.46 : VIDEO_NODE_MIN_W;
-  const minH = kind === 'image' ? 211.12 : VIDEO_NODE_MIN_H;
+  const minW = kind === 'image' ? IMAGE_NODE_MIN_W : VIDEO_NODE_MIN_W;
+  const minH = kind === 'image' ? IMAGE_NODE_MIN_H : VIDEO_NODE_MIN_H;
   const maxW = kind === 'image' ? 2048 : VIDEO_NODE_MAX_W;
   const maxH = kind === 'image' ? 2048 : VIDEO_NODE_MAX_H;
   const aspectFallback =
@@ -1070,11 +1310,11 @@ function patchNodeWithMediaLayout(
     aspectFallback?.h ?? minH,
   );
   const aspectRatio =
-    mediaW && mediaH && mediaW > 0 && mediaH > 0
-      ? kind === 'video'
-        ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(mediaW, mediaH))
-        : aspectRatioLabelFromPixelSize(mediaW, mediaH)
-      : String(node.data?.aspectRatio || (kind === 'image' ? DEFAULT_IMAGE_ASPECT_RATIO : DEFAULT_VIDEO_ASPECT_RATIO));
+    kind === 'video'
+      ? // 视频成片只更新节点外形尺寸，不覆盖用户为「下次生成」选择的比例
+        snapToVideoPanelAspectRatio(String(node.data?.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO))
+      : // 图片成片同理：外框跟素材，比例下拉仍保留用户生成设置
+        String(node.data?.aspectRatio || DEFAULT_IMAGE_ASPECT_RATIO);
   return {
     ...node,
     data: {
@@ -1246,7 +1486,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     r?.(url);
   }, []);
   const wcCanvas = useMemo(() => workspaceChromeT(locale), [locale]);
-  const panoPlaceModalT = useMemo(() => panoramaPlacementT(locale), [locale]);
+  // panorama placement UI removed — module-inline 360 only
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const flowContentApiRef = useRef<{
     screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number };
@@ -1293,6 +1533,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const pendingSelectionRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const lastNodeClickRef = useRef<{ id: string; at: number } | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const tasksListHydratedRef = useRef(false);
   /** 已触发过「恢复 RunningHub 视频轮询」的 projectId+node+task，避免重复 IPC */
   const runningHubVideoResumeStartedRef = useRef<Set<string>>(new Set());
   const timeoutPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1524,8 +1765,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       ...node,
       data: {
         ...sanitizeNodeDataForPersist(node.data as Record<string, any> | undefined),
-        width: node.data?.width || node.style?.width || (node.type === 'minimalistText' ? 369.46 : node.type === 'llm' ? 280 : undefined),
-        height: node.data?.height || node.style?.height || (node.type === 'minimalistText' ? 211.12 : node.type === 'llm' ? 160 : undefined),
+        width: node.data?.width || node.style?.width || (node.type === 'minimalistText' ? IMAGE_NODE_DEFAULT_W : node.type === 'llm' ? AUDIO_NODE_WIDTH : undefined),
+        height: node.data?.height || node.style?.height || (node.type === 'minimalistText' ? IMAGE_NODE_DEFAULT_H : node.type === 'llm' ? AUDIO_NODE_HEIGHT : undefined),
       },
       position: node.position,
     }));
@@ -1809,9 +2050,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           setEdgeDeleteModeId(null);
         }
       }
-      // ESC：优先关闭预览，否则弹出退出确认
+      // ESC：画布点选模式优先取消；否则关闭预览，再否则弹出退出确认
       else if (e.key === 'Escape') {
         e.preventDefault();
+        if (characterAvatarPickPendingRef.current) {
+          cancelCharacterCanvasPick();
+          return;
+        }
         if (previewImage) {
           setPreviewImage(null);
           setPreviewImageNodeId(null);
@@ -1832,7 +2077,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp, previewImage, previewAudio]);
+  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp, previewImage, previewAudio, cancelCharacterCanvasPick]);
 
   // 画布上删除节点时，仅从任务列表中移除该节点下的任务；不删除项目文件夹内的图片/视频文件
   const removeTasksForNodeIds = useCallback((nodeIds: string[]) => {
@@ -1923,11 +2168,25 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const normalizedNonSelectChanges = nonSelectChanges.map((change: any) => {
           if (change?.type !== 'dimensions' || !change.id) return change;
           const node = nodeMap.get(change.id);
-          if (node?.type !== 'audio') return change;
-          return {
-            ...change,
-            dimensions: { width: AUDIO_NODE_WIDTH, height: AUDIO_NODE_HEIGHT },
-          };
+          if (node?.type === 'audio') {
+            return {
+              ...change,
+              dimensions: { width: AUDIO_NODE_WIDTH, height: AUDIO_NODE_HEIGHT },
+            };
+          }
+          // 图像/视频：选框一律以 data.width/height 为准。
+          // 底栏/工具条挂在节点内且 overflow:visible 时，RO 易误测成底栏宽度（如 840）或把下方面板算进高度。
+          if (node?.type === 'image' || node?.type === 'video' || node?.type === 'wanAnimate') {
+            const dataW = Number((node.data as { width?: unknown })?.width ?? node.width);
+            const dataH = Number((node.data as { height?: unknown })?.height ?? node.height);
+            if (Number.isFinite(dataW) && dataW > 0 && Number.isFinite(dataH) && dataH > 0) {
+              return {
+                ...change,
+                dimensions: { width: dataW, height: dataH },
+              };
+            }
+          }
+          return change;
         });
         onNodesChangeBase(normalizedNonSelectChanges);
       }
@@ -2065,11 +2324,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   parts.push(String(sourceNode.data.outputText).trim());
                   continue;
                 }
-                if (sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-                  const sh = edge.sourceHandle || '';
-                  const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-                  const seg = sourceNode.data.segments as (string | number | boolean)[];
-                  if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+                if (sourceNode.type === 'textSplit') {
+                  const segText = pickTextSplitSegmentText(sourceNode.data, 
+                    edge.sourceHandle,
+                  );
+                  if (segText) parts.push(segText);
                 }
               }
               // 当前节点自身的 3D prompt_payload
@@ -2127,21 +2386,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
             if (isVideoModuleNodeType(node.type)) {
               const collectedImages = collectVideoTargetInputImagesFromEdges(targetId, Array.from(nodeById.values()), nextEdges as Edge[]);
-              let newInputAudioUrl = '';
+              let edgeInputAudioUrl = '';
+              let hasAudioInputEdge = false;
               for (const edge of incomingEdges) {
                 const sourceNode = nodeById.get(edge.source);
                 if (sourceNode?.type === 'audio') {
+                  hasAudioInputEdge = true;
                   const url = pickAudioOutputUrlFromAudioNodeData(sourceNode.data as Record<string, unknown>);
-                  if (url) newInputAudioUrl = url;
+                  if (url) edgeInputAudioUrl = url;
                 } else if (
                   sourceNode?.type === 'digitalHuman' &&
                   isDigitalHumanAudioOutputHandle(edge.sourceHandle)
                 ) {
+                  hasAudioInputEdge = true;
                   const url = pickDigitalHumanAudioUrl(sourceNode.data as Record<string, unknown>);
-                  if (url) newInputAudioUrl = url;
+                  if (url) edgeInputAudioUrl = url;
                 }
               }
-              // 连线有输入则优先用连线，否则保留节点已有数据（含复制出的信息）
+              // 连线有输入则优先用连线，否则保留节点已有数据（含导演对口型裁剪的歌曲片段）
               const hasImageInputEdges = incomingEdges.some((edge) => {
                 const sourceNode = nodeById.get(edge.source);
                 const targetHandle = edge.targetHandle || 'input';
@@ -2155,46 +2417,76 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               });
               let newInputImages: string[];
               let newLtx23HdrBackgroundImage = String(node.data?.ltx23HdrBackgroundImage || '').trim();
-              if (node.data?.model === 'ltx-2.3-hdr-multi' && hasImageInputEdges) {
-                const split = splitLtx23HdrMultiImagesFromCollected(collectedImages, newLtx23HdrBackgroundImage);
-                newInputImages = split.storyboard;
-                newLtx23HdrBackgroundImage = split.background;
+              if (node.data?.model === 'ltx-2.3-hdr-multi' || node.data?.model === 'ltx-2.3-msr-av') {
+                const merged = mergeLtx23HdrMultiPreserveOrder(
+                  newLtx23HdrBackgroundImage,
+                  node.data?.inputImages as string[] | undefined,
+                  collectedImages,
+                );
+                newInputImages = merged.storyboard;
+                newLtx23HdrBackgroundImage = merged.background;
               } else {
                 newInputImages = hasImageInputEdges
-                  ? collectedImages.slice(0, 10)
+                  ? mergeInputImagesPreserveOrder(
+                      node.data?.inputImages as string[] | undefined,
+                      collectedImages.slice(0, 10),
+                    )
                   : ((node.data?.inputImages as string[] | undefined) || []);
               }
-              // 与底部面板打开时一致：从入边解析参考视频（WanAnimate / 可灵参考等）
+              // 裁剪/智能剪辑导出的成片：不要把上游源视频写入 referenceVideoUrl，
+              // 否则播放器可能回退到源片，表现为「开头对一下，闪一下又变回原片」
+              const isExportedMediaClip = !!(node.data as { exportedMediaClip?: boolean } | undefined)?.exportedMediaClip;
               let newReferenceVideoUrl = '';
-              const refEdge = incomingEdges.find((e) => {
-                const src = nodeById.get(e.source);
-                if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
-                return isVideoTrackSourceNodeType(src?.type);
-              });
-              const refSource = refEdge ? nodeById.get(refEdge.source) : null;
-              if (refSource?.type === 'digitalHuman') {
-                newReferenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
-              } else if (isVideoTrackSourceNodeType(refSource?.type)) {
-                const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
-                const t = (url || '').trim();
-                if (
-                  t &&
-                  (t.startsWith('http://') ||
-                    t.startsWith('https://') ||
-                    t.startsWith('local-resource://') ||
-                    t.startsWith('file://'))
-                ) {
-                  newReferenceVideoUrl = t;
+              if (!isExportedMediaClip) {
+                const refEdge = incomingEdges.find((e) => {
+                  const src = nodeById.get(e.source);
+                  if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
+                  return isVideoTrackSourceNodeType(src?.type);
+                });
+                const refSource = refEdge ? nodeById.get(refEdge.source) : null;
+                if (refSource?.type === 'digitalHuman') {
+                  newReferenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
+                } else if (isVideoTrackSourceNodeType(refSource?.type)) {
+                  const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
+                  const t = (url || '').trim();
+                  if (
+                    t &&
+                    (t.startsWith('http://') ||
+                      t.startsWith('https://') ||
+                      t.startsWith('local-resource://') ||
+                      t.startsWith('file://'))
+                  ) {
+                    newReferenceVideoUrl = t;
+                  }
                 }
               }
               const currentInputImages = (node.data?.inputImages as string[] | undefined) || [];
+              const textParts = collectUpstreamTextPartsForTarget(
+                targetId,
+                Array.from(nodeById.values()),
+                nextEdges as Edge[],
+              );
+              const newPrompt = textParts.length > 0 ? textParts.join(',') : (node.data?.prompt || '');
               const currentLtx23HdrBackgroundImage = String(node.data?.ltx23HdrBackgroundImage || '').trim();
               const currentInputAudioUrl = (node.data?.inputAudioUrl as string | undefined) || '';
+              const keepDirectorSongClip =
+                !hasAudioInputEdge &&
+                !!currentInputAudioUrl &&
+                (Number.isFinite(Number(node.data?.directorAudioClipStartSec)) ||
+                  Number.isFinite(Number(node.data?.directorAudioClipEndSec)) ||
+                  Number.isFinite(Number(node.data?.directorAudioClipDurationSec)));
+              const newInputAudioUrl = hasAudioInputEdge
+                ? edgeInputAudioUrl
+                : keepDirectorSongClip
+                  ? currentInputAudioUrl
+                  : '';
               const currentReferenceVideoUrl = ((node.data?.referenceVideoUrl as string | undefined) || '').trim();
+              const currentPrompt = (node.data?.prompt as string | undefined) || '';
               const inputImagesChanged = JSON.stringify(currentInputImages) !== JSON.stringify(newInputImages);
               const hdrBackgroundChanged = currentLtx23HdrBackgroundImage !== newLtx23HdrBackgroundImage;
               const inputAudioChanged = currentInputAudioUrl !== newInputAudioUrl;
               const referenceChanged = currentReferenceVideoUrl !== newReferenceVideoUrl;
+              const promptChanged = currentPrompt !== newPrompt;
               const hasImg = newInputImages.length > 0 || !!newLtx23HdrBackgroundImage;
               const hasRef = !!newReferenceVideoUrl.trim();
               const hasAud = !!newInputAudioUrl.trim();
@@ -2203,7 +2495,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               const shouldClearWanAnimate =
                 node.type === 'video' && node.data?.model === 'wan-animate' && !hasRef;
               const modelNeedsUpdate = shouldAutoWanAnimate || shouldClearWanAnimate;
-              if (inputImagesChanged || hdrBackgroundChanged || inputAudioChanged || referenceChanged || modelNeedsUpdate) {
+              if (inputImagesChanged || hdrBackgroundChanged || inputAudioChanged || referenceChanged || promptChanged || modelNeedsUpdate) {
                 mutated = true;
                 const modelDataPatch = shouldAutoWanAnimate
                   ? {
@@ -2229,6 +2521,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ltx23HdrBackgroundImage: newLtx23HdrBackgroundImage || undefined,
                           inputAudioUrl: newInputAudioUrl || undefined,
                           referenceVideoUrl: newReferenceVideoUrl || undefined,
+                          ...(promptChanged ? { prompt: newPrompt } : {}),
                           ...(shouldAutoWanAnimate
                             ? {
                                 model: 'wan-animate' as const,
@@ -2252,8 +2545,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   data: {
                     ...node.data,
                     inputImages: newInputImages,
+                    ...(promptChanged ? { prompt: newPrompt } : {}),
                     ...(newLtx23HdrBackgroundImage ? { ltx23HdrBackgroundImage: newLtx23HdrBackgroundImage } : {}),
-                    ...(newInputAudioUrl ? { inputAudioUrl: newInputAudioUrl } : {}),
+                    ...(inputAudioChanged
+                      ? { inputAudioUrl: newInputAudioUrl || undefined }
+                      : newInputAudioUrl
+                        ? { inputAudioUrl: newInputAudioUrl }
+                        : {}),
                     ...(referenceChanged ? { referenceVideoUrl: newReferenceVideoUrl || undefined } : {}),
                     ...modelDataPatch,
                   },
@@ -2269,6 +2567,43 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 nextEdges as Edge[],
                 node.data as Record<string, unknown>,
               );
+              let textConnected = false;
+              for (const edge of incomingEdges) {
+                const src = nodeById.get(edge.source);
+                if (
+                  src &&
+                  (src.type === 'minimalistText' ||
+                    src.type === 'text' ||
+                    src.type === 'llm' ||
+                    src.type === 'textSplit' ||
+                    src.type === 'audioTranscribe')
+                ) {
+                  textConnected = true;
+                  break;
+                }
+              }
+              if (selectedNode?.id === node.id) {
+                setAudioInputPanelData((prev) => {
+                  if (!prev || prev.nodeId !== node.id) return prev;
+                  const nextAudioConnected = !!(patch?.referenceAudioUrl || '').trim();
+                  const nextSourceConnected = !!(patch?.sourceSongAudioUrl || '').trim();
+                  if (
+                    prev.isTextConnected === textConnected &&
+                    prev.isAudioConnected === nextAudioConnected &&
+                    prev.isSourceSongConnected === nextSourceConnected &&
+                    !patch
+                  ) {
+                    return prev;
+                  }
+                  return {
+                    ...prev,
+                    ...(patch || {}),
+                    isTextConnected: textConnected,
+                    isAudioConnected: nextAudioConnected,
+                    isSourceSongConnected: nextSourceConnected,
+                  };
+                });
+              }
               if (patch) {
                 const cur = node.data as Record<string, unknown>;
                 const changed =
@@ -2278,10 +2613,64 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 if (changed) {
                   mutated = true;
                   nextNodes[nodeIndex] = { ...node, data: { ...node.data, ...patch } };
-                  if (selectedNode?.id === node.id) {
-                    setAudioInputPanelData((prev) =>
-                      prev && prev.nodeId === node.id ? { ...prev, ...patch } : prev,
-                    );
+                }
+              }
+              return;
+            }
+
+            // 导演：从入边音频同步 mvMusic（防 onConnect 写入被旧 patch 冲掉后可再灌回）
+            if (node.type === 'director') {
+              let audioSource: Node | undefined;
+              for (const edge of incomingEdges) {
+                const src = nodeById.get(edge.source);
+                if (src?.type === 'audio') {
+                  audioSource = src;
+                  break;
+                }
+              }
+              if (audioSource) {
+                const url = pickAudioOutputUrlFromAudioNodeData(
+                  audioSource.data as Record<string, unknown>,
+                );
+                if (url) {
+                  const prev = createDefaultDirectorPipelineState(
+                    (node.data as { director?: DirectorPipelineState })?.director || {},
+                  );
+                  const prevUrl = String(prev.mvMusic?.url || '').trim();
+                  const mediaDur = Number(audioSource.data?.mediaDurationSec);
+                  const durationSec =
+                    Number.isFinite(mediaDur) && mediaDur > 0
+                      ? mediaDur
+                      : prev.mvMusic.durationSec || 0;
+                  const title = resolveAudioNodeDisplayTitle(
+                    audioSource.data as Record<string, unknown>,
+                    prev.mvMusic.title || 'MV音乐',
+                  );
+                  if (
+                    prevUrl !== url ||
+                    prev.mode !== 'mv' ||
+                    String(prev.mvMusic.sourceNodeId || '') !== audioSource.id
+                  ) {
+                    mutated = true;
+                    const next = createDefaultDirectorPipelineState({
+                      ...prev,
+                      mode: 'mv',
+                      phase: prev.mode === 'mv' ? prev.phase : 'music',
+                      mvMusic: {
+                        ...prev.mvMusic,
+                        url,
+                        title,
+                        durationSec,
+                        sourceNodeId: audioSource.id,
+                        summary:
+                          prev.mvMusic.summary ||
+                          (durationSec > 0 ? `时长约 ${Math.round(durationSec)} 秒` : ''),
+                      },
+                    });
+                    nextNodes[nodeIndex] = {
+                      ...node,
+                      data: { ...node.data, director: next, title: next.title || node.data?.title },
+                    };
                   }
                 }
               }
@@ -2295,6 +2684,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 Array.from(nodeById.values()),
                 node.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
               );
+              const connectedIds = collectSpliceIncomingSourceIds(targetId, nextEdges as Edge[]);
+              const blockDropOnly =
+                spliceRebuildWouldDropConnected(node.data, built, connectedIds) &&
+                !spliceBuiltHasNewConnectedSources(node.data, built);
+              if (blockDropOnly) {
+                return;
+              }
               const prevFp = timelineClipsFingerprint(
                 normalizeVideoTracks(node.data as { videoTracks?: TimelineClip[][]; videoClips?: TimelineClip[] }),
                 (node.data?.audioTracks || [[]]) as TimelineClip[][],
@@ -2304,7 +2700,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 mutated = true;
                 nextNodes[nodeIndex] = {
                   ...node,
-                  data: { ...node.data, ...applyBuiltClipsToSpliceData(node.data, built) },
+                  data: {
+                    ...node.data,
+                    ...applyBuiltClipsToSpliceData(node.data, built, connectedIds),
+                  },
                 };
               }
               return;
@@ -2324,6 +2723,119 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   ...node,
                   data: { ...node.data, layers: nextLayers },
                 };
+              }
+              return;
+            }
+
+            if (node.type === 'gridMap') {
+              const cols = Number(node.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+              const rows = Number(node.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+              const prevCells = ((node.data?.cells || []) as GridMapCell[]).slice();
+              const nextCells = buildGridMapCellsFromEdges(
+                targetId,
+                nextEdges as Edge[],
+                Array.from(nodeById.values()),
+                prevCells,
+                cols,
+                rows,
+              );
+              if (JSON.stringify(prevCells) !== JSON.stringify(nextCells)) {
+                mutated = true;
+                nextNodes[nodeIndex] = {
+                  ...node,
+                  data: { ...node.data, cells: nextCells },
+                };
+              }
+              return;
+            }
+
+            if (node.type === 'imageComparer') {
+              const urls = buildImageComparerUrlsFromEdges(
+                targetId,
+                nextEdges as Edge[],
+                Array.from(nodeById.values()),
+              );
+              const curA = String(node.data?.imageAUrl || '');
+              const curB = String(node.data?.imageBUrl || '');
+              if (
+                curA !== urls.imageAUrl ||
+                curB !== urls.imageBUrl ||
+                node.data?.imageASourceNodeId !== urls.imageASourceNodeId ||
+                node.data?.imageBSourceNodeId !== urls.imageBSourceNodeId
+              ) {
+                mutated = true;
+                nextNodes[nodeIndex] = {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    imageAUrl: urls.imageAUrl,
+                    imageBUrl: urls.imageBUrl,
+                    imageASourceNodeId: urls.imageASourceNodeId,
+                    imageBSourceNodeId: urls.imageBSourceNodeId,
+                  },
+                };
+              }
+              return;
+            }
+
+            if (node.type === 'llm') {
+              const resolvedInputText = resolveLlmInputTextFromEdges(
+                targetId,
+                Array.from(nodeById.values()),
+                nextEdges as Edge[],
+              );
+              if ((node.data?.inputText || '') !== resolvedInputText) {
+                mutated = true;
+                nextNodes[nodeIndex] = {
+                  ...node,
+                  data: { ...node.data, inputText: resolvedInputText },
+                };
+                if (selectedNode?.id === node.id) {
+                  const incoming = (nextEdges as Edge[]).filter((e) => e.target === targetId);
+                  const hasTextConnection = incoming.some((e) => {
+                    const src = nodeById.get(e.source);
+                    return src && (src.type === 'minimalistText' || src.type === 'text');
+                  });
+                  const hasLLMConnection = incoming.some((e) => {
+                    const src = nodeById.get(e.source);
+                    return src?.type === 'llm' && !!src.data?.outputText;
+                  });
+                  const hasSplitConnection = incoming.some((e) => {
+                    const src = nodeById.get(e.source);
+                    return src?.type === 'textSplit';
+                  });
+                  setLlmInputPanelData((prev) =>
+                    prev && prev.nodeId === node.id
+                      ? {
+                          ...prev,
+                          inputText: resolvedInputText,
+                          isInputLocked: false,
+                          hasLinkedText:
+                            (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+                          linkedInputText: resolvedInputText,
+                          linkedTextTitle: collectLinkedTextTitlesForTarget(
+                            node.id,
+                            Array.from(nodeById.values()),
+                            nextEdges as Edge[],
+                          ),
+                        }
+                      : prev,
+                  );
+                }
+              }
+              return;
+            }
+
+            if (node.type === 'minimalistText' || node.type === 'text') {
+              const parts = collectUpstreamTextPartsForTarget(
+                targetId,
+                Array.from(nodeById.values()),
+                nextEdges as Edge[],
+              );
+              const textVal = parts.join('\n');
+              if ((node.data?.text || '') !== textVal) {
+                mutated = true;
+                nextNodes[nodeIndex] = { ...node, data: { ...node.data, text: textVal } };
               }
               return;
             }
@@ -2389,8 +2901,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         x: r.left + r.width / 2,
         y: r.top + r.height / 2,
       });
-      const MIN_W = 369.46;
-      const MIN_H = 211.12;
+      const MIN_W = IMAGE_NODE_MIN_W;
+      const MIN_H = IMAGE_NODE_MIN_H;
       const mw = typeof result.width === 'number' && result.width > 0 ? result.width : MIN_W;
       const mh = typeof result.height === 'number' && result.height > 0 ? result.height : MIN_H;
       const scale = Math.max(MIN_W / mw, MIN_H / mh);
@@ -2520,8 +3032,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return sorted.slice(0, MAX_DISPLAY_TASKS);
   }, [tasks]);
 
+  const hasTimeoutTask = useMemo(() => tasks.some((t) => t.status === 'timeout'), [tasks]);
+
   useEffect(() => {
-    const hasTimeoutTask = tasks.some((t) => t.status === 'timeout');
     if (!hasTimeoutTask || !window.electronAPI?.nxCloudGetTasks) {
       if (timeoutPollTimerRef.current) {
         clearTimeout(timeoutPollTimerRef.current);
@@ -2596,7 +3109,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         timeoutPollTimerRef.current = null;
       }
     };
-  }, [tasks]);
+  }, [hasTimeoutTask]);
 
   // LLM 输入面板状态（用于底部弹窗）
   const [llmInputPanelData, setLlmInputPanelData] = useState<{
@@ -2606,18 +3119,53 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     prompt: string;
     savedPrompts: Array<{ id: string; name: string; content: string }>;
     isInputLocked?: boolean;
+    /** 上游文本已连入（显示标题标签；正文不进入底栏） */
+    hasLinkedText?: boolean;
+    linkedInputText?: string;
+    /** 上游文本节点标题（角标与输入区内标签） */
+    linkedTextTitle?: string;
     isImageReverseMode?: boolean;
     imageUrlForReverse?: string;
     imageAssetForReverse?: DualImageAsset;
     isVideoAnalysisMode?: boolean;
     videoUrlForAnalysis?: string;
     /** 图像反推使用的模型：gpt-4o | joy-caption-two */
-    reverseCaptionModel?: 'gpt-4o' | 'joy-caption-two';
+    /** 图像反推：openai/gpt-5.6-terra | joy-caption-two（旧 gpt-4o 规范为 Terra） */
+    reverseCaptionModel?: ImageReverseCaptionModel;
+    /** 普通对话聊天模型 */
+    chatModel?: string;
+    /** 人设区是否展开（影响面板高度） */
+    personaExpanded?: boolean;
   } | null>(null);
   const llmInputPanelDataRef = useRef<typeof llmInputPanelData>(null);
   useEffect(() => {
     llmInputPanelDataRef.current = llmInputPanelData;
   }, [llmInputPanelData]);
+
+  const [storyboardScriptInputPanelData, setStoryboardScriptInputPanelData] = useState<{
+    nodeId: string;
+    userPrompt: string;
+    chatModel?: string;
+    storyboardScript?: StoryboardScriptState;
+    imageUrls: string[];
+    videoUrls: string[];
+  } | null>(null);
+  const storyboardScriptInputPanelDataRef = useRef<typeof storyboardScriptInputPanelData>(null);
+  useEffect(() => {
+    storyboardScriptInputPanelDataRef.current = storyboardScriptInputPanelData;
+  }, [storyboardScriptInputPanelData]);
+
+  const [directorInputPanelData, setDirectorInputPanelData] = useState<{
+    nodeId: string;
+    userPrompt: string;
+    chatModel?: string;
+    scriptText: string;
+    director?: DirectorPipelineState;
+  } | null>(null);
+  const directorInputPanelDataRef = useRef<typeof directorInputPanelData>(null);
+  useEffect(() => {
+    directorInputPanelDataRef.current = directorInputPanelData;
+  }, [directorInputPanelData]);
 
   // Image 输入面板状态（用于底部弹窗）
   const [imageInputPanelData, setImageInputPanelData] = useState<{
@@ -2626,6 +3174,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     resolution: string;
     aspectRatio: string;
     model: string;
+    /** 全能图片 G-2 文生图：low | medium | high */
+    quality?: string;
     seedreamWidth?: number; // seedream-v4.5 宽 1024-4096
     seedreamHeight?: number; // seedream-v4.5 高 1024-4096
     inputImages?: string[]; // 输入的参考图数组（最多10张）
@@ -2661,8 +3211,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const [videoInputPanelData, setVideoInputPanelData] = useState<{
     nodeId: string;
     prompt: string;
-    aspectRatio: '16:9' | '9:16' | '1:1' | '2:3' | '3:2';
-    model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+    aspectRatio: '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | 'adaptive' | '4:3' | '3:4' | '21:9';
+    model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
     hd: boolean;
     duration: '5' | '10' | '15' | '25';
     inputImages?: string[];
@@ -2749,7 +3299,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     uploadPromise?: Promise<{ success: boolean; url?: string; error?: string }>; // 视频上传到 OSS 的 Promise
   } | null>(null);
 
-  // Audio 输入面板状态（用于底部弹窗）
+  // Audio 输入面板状态（挂到节点下方，对齐 Image/Video）
   const [audioInputPanelData, setAudioInputPanelData] = useState<{
     nodeId: string;
     text: string;
@@ -2759,6 +3309,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     volume: number;
     pitch: number;
     emotion?: 'happy' | 'sad' | 'angry' | 'fearful' | 'disgusted' | 'surprised' | 'neutral';
+    /** 上游文本/LLM 等已连入 */
+    isTextConnected?: boolean;
+    /** 上游音频已连入（参考音） */
+    isAudioConnected?: boolean;
+    /** 上游原曲已连入 */
+    isSourceSongConnected?: boolean;
     referenceAudioUrl?: string;
     sourceSongAudioUrl?: string;
     coverPitch?: number;
@@ -2772,19 +3328,31 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     outputModelUrl?: string;
     outputModelRemoteUrl?: string;
     coverReferenceAudioUrl?: string;
+    libraryRvcVoiceId?: string;
     songName?: string;
     styleDesc?: string;
     lyrics?: string;
+    speechRate?: number;
+    loudnessRate?: number;
   } | null>(null);
 
   const createNodeFromTask = useCallback(
     (task: Task, position: { x: number; y: number }) => {
-      const taskType =
+      let taskType =
         task.taskType ||
         (task.imageUrl ? 'image' : task.videoUrl ? 'video' : task.audioUrl ? 'audio' : task.prompt?.trim() ? 'text' : 'image');
       const imageUrl = task.imageUrl || (task.localFilePath ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
-      const videoUrl = task.videoUrl || (task.localFilePath && taskType === 'video' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
-      const audioUrl = task.audioUrl || (task.localFilePath && taskType === 'audio' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
+      let videoUrl = task.videoUrl || (task.localFilePath && taskType === 'video' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
+      let audioUrl = task.audioUrl || (task.localFilePath && taskType === 'audio' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
+      // 历史误标：音频被写成 taskType=video + videoUrl=mp3 → 放入画布会变成空视频节点
+      if (
+        (taskType === 'video' || !!videoUrl) &&
+        (looksLikeAudioMediaUrl(videoUrl) || looksLikeAudioMediaUrl(audioUrl) || looksLikeAudioMediaUrl(task.localFilePath))
+      ) {
+        taskType = 'audio';
+        if (!audioUrl) audioUrl = videoUrl || (task.localFilePath ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
+        videoUrl = '';
+      }
       const nodeTitle = (task.nodeTitle || taskType).replace(/[/\\?*:|"]/g, '_');
       const textContent = (task.prompt || '').trim();
 
@@ -2800,8 +3368,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             originalImageUrl: imageUrl,
             title: nodeTitle,
             prompt: task.prompt || '',
-            width: 369.46,
-            height: 211.12,
+            width: IMAGE_NODE_DEFAULT_W,
+            height: IMAGE_NODE_DEFAULT_H,
+            moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
           },
           selected: true,
           selectable: true,
@@ -2821,8 +3390,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             originalVideoUrl: videoUrl,
             title: nodeTitle,
             prompt: task.prompt || '',
-            width: 738.91,
-            height: 422.22,
+            width: VIDEO_NODE_DEFAULT_W,
+            height: VIDEO_NODE_DEFAULT_H,
+            moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
           },
           selected: true,
           selectable: true,
@@ -2928,8 +3498,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             label: 'llm',
             title: task.nodeTitle || 'llm',
             outputText: textContent,
-            width: 300,
-            height: 160,
+            width: scaleModulePx(300),
+            height: AUDIO_NODE_HEIGHT,
+            moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
             isUserResized: false,
           },
           selected: true,
@@ -2942,16 +3513,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setImageTo3dInputPanelData(null);
         setCharacterInputPanelData(null);
         setAudioInputPanelData(null);
-      }
-      if (
-        (taskType === 'image' && imageUrl) ||
-        (taskType === 'video' && videoUrl) ||
-        (taskType === 'audio' && audioUrl) ||
-        (taskType === 'text' && textContent)
-      ) {
-        setTimeout(() => {
-          flowContentApiRef.current?.fitView?.({ duration: 600, padding: 0.2 });
-        }, 100);
       }
     },
     [setNodes, setSelectedNode, setVideoInputPanelData, setLlmInputPanelData, setImageInputPanelData, setCharacterInputPanelData, setAudioInputPanelData]
@@ -3004,13 +3565,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   // 画板编辑：从 Image 节点画板按钮打开，在画布上加载当前图片供绘图标记
   const [drawingBoardForImage, setDrawingBoardForImage] = useState<{ imageUrl: string; nodeId: string; localPath?: string } | null>(null);
-  const [panoramaPlacementForImage, setPanoramaPlacementForImage] = useState<{
-    nodeId: string;
-    textureUrl: string;
-    pixelW?: number;
-    pixelH?: number;
-  } | null>(null);
-  const [panoramaPlacementFillHost, setPanoramaPlacementFillHost] = useState(false);
   
   // 明暗模式状态（与项目列表页共用 localStorage）
   const [isDarkMode, setIsDarkMode] = useState(() => readIsDarkMode());
@@ -3059,6 +3613,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const n = parseFloat(v);
     return Number.isFinite(n) && n >= 0.5 && n <= 4 ? n : DARK_DOT_SIZE_DEFAULT;
   });
+  const CANVAS_DOT_GAP_DEFAULT = 60;
+  const [canvasDotGap, setCanvasDotGap] = useState(() => {
+    if (typeof localStorage === 'undefined') return CANVAS_DOT_GAP_DEFAULT;
+    const v = localStorage.getItem('nexflow_canvas_dot_gap');
+    if (v == null) return CANVAS_DOT_GAP_DEFAULT;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= 20 && n <= 180 ? n : CANVAS_DOT_GAP_DEFAULT;
+  });
   const [moduleComponentColor, setModuleComponentColor] = useState<string | undefined>(() => {
     if (typeof localStorage === 'undefined') return undefined;
     return localStorage.getItem('nexflow_module_component_color') || undefined;
@@ -3106,6 +3668,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       localStorage.setItem('nexflow_dark_dot_size', String(darkDotSize));
     }
   }, [darkDotSize]);
+  useEffect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('nexflow_canvas_dot_gap', String(canvasDotGap));
+    }
+  }, [canvasDotGap]);
 
   const canvasDotSize = isDarkMode ? darkDotSize : lightDotSize;
 
@@ -3226,6 +3793,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
       } catch (error) {
         console.error('加载任务列表失败:', error);
+      } finally {
+        tasksListHydratedRef.current = true;
       }
     };
 
@@ -3328,15 +3897,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   })()
                 : rawNode;
             // 根据节点类型设置不同的最小尺寸
-            let MIN_WIDTH = 369.46;
-            let MIN_HEIGHT = 211.12;
+            let MIN_WIDTH = IMAGE_NODE_MIN_W;
+            let MIN_HEIGHT = IMAGE_NODE_MIN_H;
             
-            if (node.type === 'text' || node.type === 'minimalistText') {
-              MIN_WIDTH = 280;
-              MIN_HEIGHT = 160;
-            } else if (node.type === 'llm') {
-              MIN_WIDTH = 369.46;
-              MIN_HEIGHT = 211.12;
+            if (node.type === 'text' || node.type === 'minimalistText' || node.type === 'llm' || node.type === 'audio') {
+              MIN_WIDTH = AUDIO_NODE_WIDTH;
+              MIN_HEIGHT = AUDIO_NODE_HEIGHT;
             }
             
             // 从 data 或 style 中恢复尺寸
@@ -3353,10 +3919,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             
             // 如果仍然没有尺寸，使用节点类型的默认值
             if (!width) {
-              width = node.type === 'text' || node.type === 'minimalistText' ? 280 : MIN_WIDTH;
+              width = node.type === 'text' || node.type === 'minimalistText' || node.type === 'llm' || node.type === 'audio'
+                ? AUDIO_NODE_WIDTH
+                : MIN_WIDTH;
             }
             if (!height) {
-              height = node.type === 'text' || node.type === 'minimalistText' ? 160 : MIN_HEIGHT;
+              height = node.type === 'text' || node.type === 'minimalistText' || node.type === 'llm' || node.type === 'audio'
+                ? AUDIO_NODE_HEIGHT
+                : MIN_HEIGHT;
+            }
+
+            // 一次性将旧工程模块放大到 MODULE_DISPLAY_SCALE，避免重复放大
+            if (needsModuleSizeScaleUpgrade(node.data as { moduleSizeScaleVersion?: unknown })) {
+              width = Number(width) * MODULE_DISPLAY_SCALE;
+              height = Number(height) * MODULE_DISPLAY_SCALE;
             }
             
             // 确保不小于最小尺寸
@@ -3383,11 +3959,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 resolutionGrok3: '720p',
               };
             }
-            if (isVideoModuleNodeType(node.type) && nodeData.model === 'grok-3') {
+            if (isVideoModuleNodeType(node.type) && (nodeData.model === 'grok-3' || nodeData.model === 'rhart-video-x')) {
               const g3Res = String(nodeData.resolutionGrok3 || '').toLowerCase();
               const patches: Record<string, unknown> = {};
               if (g3Res !== '720p') patches.resolutionGrok3 = '720p';
-              const g3Dur = normalizeGrok3DurationStr(nodeData.durationGrok3, '10');
+              const g3Dur =
+                nodeData.model === 'rhart-video-x'
+                  ? normalizeRhartVideoXDurationStr(nodeData.durationGrok3, '10')
+                  : normalizeGrok3DurationStr(nodeData.durationGrok3, '10');
               if (String(nodeData.durationGrok3 || '') !== g3Dur) patches.durationGrok3 = g3Dur;
               if (Object.keys(patches).length > 0) nodeData = { ...nodeData, ...patches };
             }
@@ -3419,6 +3998,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 ...nodeData,
                 width,
                 height,
+                moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
               },
               style: {
                 ...(node.style || {}),
@@ -3430,6 +4010,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             };
           });
           setNodes(nodesWithSize);
+          // 尺寸迁移后尽快落盘，避免下次加载重复放大
+          const shouldPersistScale = projectData.nodes.some((n: Node) =>
+            needsModuleSizeScaleUpgrade(n.data as { moduleSizeScaleVersion?: unknown }),
+          );
+          if (shouldPersistScale) {
+            setTimeout(() => {
+              if (cancelled) return;
+              hydratedProjectIdRef.current = projectId;
+              void saveProjectNow({ nodes: nodesWithSize, edges: projectData.edges || [] });
+            }, 500);
+          }
           
           // 进入画布时自动归位：节点常在 y 数千坐标，若 fitView 未就绪会看起来像「节点全丢」
           if (nodesWithSize.length > 0) {
@@ -3482,9 +4073,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           audioTracks?: TimelineClip[][];
                         },
                       );
+                      const connectedIds = collectSpliceIncomingSourceIds(n.id, edgesWithHandles);
+                      const blockDropOnly =
+                        spliceRebuildWouldDropConnected(n.data, built, connectedIds) &&
+                        !spliceBuiltHasNewConnectedSources(n.data, built);
+                      if (blockDropOnly) {
+                        return n;
+                      }
                       return {
                         ...n,
-                        data: { ...n.data, ...applyBuiltClipsToSpliceData(n.data, built) },
+                        data: {
+                          ...n.data,
+                          ...applyBuiltClipsToSpliceData(n.data, built, connectedIds),
+                        },
                       };
                     }
                     if (n.type === 'photoCollage') {
@@ -3496,6 +4097,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         prevLayers,
                       );
                       return { ...n, data: { ...n.data, layers: nextLayers } };
+                    }
+                    if (n.type === 'gridMap') {
+                      const cols = Number(n.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+                      const rows = Number(n.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+                      const prevCells = ((n.data?.cells || []) as GridMapCell[]).slice();
+                      const nextCells = buildGridMapCellsFromEdges(
+                        n.id,
+                        edgesWithHandles,
+                        currentNodes,
+                        prevCells,
+                        cols,
+                        rows,
+                      );
+                      return { ...n, data: { ...n.data, cells: nextCells } };
                     }
                     return n;
                   }),
@@ -3596,7 +4211,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return () => {
       cancelled = true;
     };
-  }, [projectId, setNodes, setEdges, refreshUndoRedoState, projectReloadNonce]);
+  }, [projectId, setNodes, setEdges, refreshUndoRedoState, projectReloadNonce, saveProjectNow]);
 
   // 离开画布前强制落盘一次；但若已通过 handleNavigateBack 保存，则跳过（避免 setNodes([]) 后 ref 已空，用空数据覆盖）
   useEffect(() => {
@@ -3723,6 +4338,43 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
   }, [setNodes]);
 
+  const handleTextSplitNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        const next: Node = {
+          ...node,
+          data: {
+            ...node.data,
+            ...updates,
+          },
+        };
+        if (updates.width !== undefined || updates.height !== undefined) {
+          const w =
+            updates.width !== undefined
+              ? Number(updates.width)
+              : Number(node.data?.width) || 240;
+          const h =
+            updates.height !== undefined
+              ? Number(updates.height)
+              : Number(node.data?.height) || 200;
+          next.style = {
+            ...(node.style || {}),
+            width: `${w}px`,
+            height: `${h}px`,
+            minWidth: '200px',
+            minHeight: '100px',
+          };
+        }
+        return next;
+      }),
+    );
+  }, [setNodes]);
+
+  const tryReplaceDirectorMvClipFromVideoNodeRef = useRef<
+    ((videoNodeId: string, videoUrl: string) => void) | null
+  >(null);
+
   // 用于 VideoNode 更新数据的回调（处理视频输出变化，同步到连接的 Character 节点）
   const handleVideoNodeDataChange = useCallback((nodeId: string, updates: { outputVideo?: string; originalVideoUrl?: string; mediaDurationSec?: number; width?: number; height?: number; title?: string; progress?: number; progressMessage?: string; errorMessage?: string; videoAsset?: { poster?: string; ghost?: string; width?: number; height?: number }; playbackCurrentTimeSec?: number }) => {
     if (updates.playbackCurrentTimeSec !== undefined) {
@@ -3731,7 +4383,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const applyUpdate = () => {
       // 通过对象解构生成新引用，保证 React 能正确检测 state 变更
       setNodes((nds) => {
-        const updatedNodes = nds.map((node) => patchVideoNodeData(node, nodeId, updates));
+        let updatedNodes = nds.map((node) => patchVideoNodeData(node, nodeId, updates));
+
+        // 导演隐藏视频节点失败时，把错误写回表内「成片」列
+        if (updates.errorMessage) {
+          const videoNode = updatedNodes.find((n) => n.id === nodeId);
+          const shotNo = String(
+            (videoNode?.data as { directorShotNo?: string } | undefined)?.directorShotNo || '',
+          ).trim();
+          const directorId = String(
+            (videoNode?.data as { directorSourceId?: string } | undefined)?.directorSourceId || '',
+          ).trim();
+          if (shotNo && directorId) {
+            updatedNodes = updatedNodes.map((n) => {
+              if (n.id !== directorId || n.type !== 'director') return n;
+              let nextDir = createDefaultDirectorPipelineState(
+                (n.data as { director?: DirectorPipelineState })?.director || {},
+              );
+              nextDir = updateDirectorShotStoryboard(nextDir, shotNo, {
+                videoStatus: 'error',
+                videoError: String(updates.errorMessage || ''),
+                videoNodeId: nodeId,
+              });
+              return { ...n, data: { ...n.data, director: nextDir } };
+            });
+          }
+        }
 
       // 如果 video 节点的 outputVideo 或 originalVideoUrl 更新了，自动更新连接到它的 character 节点
       // 优先使用网络 URL（originalVideoUrl），如果没有则使用 outputVideo（如果是网络 URL）
@@ -3765,6 +4442,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               videoUrlToPass = outputVideo;
             }
           }
+        }
+        const mvReplaceUrl = String(videoUrlToPass || updates.originalVideoUrl || updates.outputVideo || '').trim();
+        if (mvReplaceUrl) {
+          queueMicrotask(() => {
+            tryReplaceDirectorMvClipFromVideoNodeRef.current?.(nodeId, mvReplaceUrl);
+          });
         }
         
         // 查找所有从本 video 连到 character 的边（角色仅 input 把手，兼容旧数据 video-input）
@@ -4160,7 +4843,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       n.type === 'image'
         ? `${n.id}:${(n.data?.prompt_payload as any)?.qwen_instruction ?? (n.data?.prompt_payload as any)?.prompt_metadata?.formatted_output ?? (n.data?.prompt_payload as any)?.full_camera_prompt ?? (n.data?.prompt_payload as any)?.camera_tags ?? ''}`
         : n.type === 'textSplit'
-          ? `${n.id}:${n.data?.inputText ?? ''}`
+          ? `${n.id}:${n.data?.inputText ?? ''}:${JSON.stringify(resolveTextSplitSegments(n.data))}`
           : `${n.id}:${(n.data?.text ?? n.data?.outputText ?? '')}`
     )
     .join('|');
@@ -4208,11 +4891,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           if (src.data?.text) parts.push(String(src.data.text).trim());
         } else if (src.type === 'llm' && src.data?.outputText) {
           parts.push(String(src.data.outputText).trim());
-        } else if (src.type === 'textSplit' && src.data?.segments) {
-          const sh = e.sourceHandle || '';
-          const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-          const seg = src.data.segments as (string | number | boolean)[];
-          if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+        } else if (src.type === 'textSplit') {
+          const segText = pickTextSplitSegmentText(src.data, 
+            e.sourceHandle,
+          );
+          if (segText) parts.push(segText);
         } else if (src.type === 'image') {
           const pp = src.data?.prompt_payload as { qwen_instruction?: string; prompt_metadata?: { formatted_output?: string }; full_camera_prompt?: string; camera_tags?: string } | undefined;
           const cameraPrompt = pp?.qwen_instruction || pp?.prompt_metadata?.formatted_output || pp?.full_camera_prompt || pp?.camera_tags || '';
@@ -4222,9 +4905,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       // 连线有输入则优先用连线，否则保留节点已有数据（含复制出的信息）
       const imageNode = nodes.find((n) => n.id === imageId);
       const resolvedPrompt = parts.length > 0 ? parts.join(',') : (imageNode?.data?.prompt || '');
-      const newInputImages = collectImageTargetInputImagesFromEdges(imageId, nodes, edges);
+      const fromEdges = collectImageTargetInputImagesFromEdges(imageId, nodes, edges);
+      const newInputImages = mergeInputImagesPreserveOrder(
+        imageNode?.data?.inputImages as string[] | undefined,
+        fromEdges,
+      );
       const promptOk = imageNode?.data?.prompt === resolvedPrompt;
-      const imgsOk = JSON.stringify([...(imageNode?.data?.inputImages || [])].sort()) === JSON.stringify([...newInputImages].sort());
+      const imgsOk = JSON.stringify(imageNode?.data?.inputImages || []) === JSON.stringify(newInputImages);
       if (promptOk && imgsOk) return;
       setNodes((nds) =>
         nds.map((node) => (node.id === imageId ? { ...node, data: { ...node.data, prompt: resolvedPrompt, inputImages: newInputImages } } : node))
@@ -4259,11 +4946,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           parts.push(String(src.data.outputText).trim());
         } else if (src.type === 'audioTranscribe' && src.data?.text) {
           parts.push(String(src.data.text).trim());
-        } else if (src.type === 'textSplit' && src.data?.segments) {
-          const sh = e.sourceHandle || '';
-          const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-          const seg = src.data.segments as (string | number | boolean)[];
-          if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+        } else if (src.type === 'textSplit') {
+          const segText = pickTextSplitSegmentText(src.data, 
+            e.sourceHandle,
+          );
+          if (segText) parts.push(segText);
         }
       }
       return parts;
@@ -4303,14 +4990,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
         const hasSplitConnection = incoming.some((e) => {
           const src = nodes.find((n) => n.id === e.source);
-          return src && src.type === 'textSplit' && src.data?.segments;
+          return src && src.type === 'textSplit';
         });
         setLlmInputPanelData((prev) =>
           prev && prev.nodeId === llmId
             ? {
                 ...prev,
                 inputText: resolvedInputText,
-                isInputLocked: (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+                isInputLocked: false,
+                hasLinkedText: (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+                linkedInputText: resolvedInputText,
+                linkedTextTitle: collectLinkedTextTitlesForTarget(llmId, nodes, edges),
               }
             : prev
         );
@@ -4321,21 +5011,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   // 文本拆分节点 segments 变化时，同步到下游（文本、LLM、图片、视频、音频等）
   const textSplitSegmentsKey = nodes
     .filter((n) => n.type === 'textSplit')
-    .map((n) => `${n.id}:${JSON.stringify(n.data?.segments ?? [])}`)
+    .map((n) => `${n.id}:${JSON.stringify(resolveTextSplitSegments(n.data))}`)
     .join('|');
   useEffect(() => {
-    const splitNodes = nodes.filter((n) => n.type === 'textSplit' && n.data?.segments);
+    const splitNodes = nodes.filter((n) => n.type === 'textSplit' && resolveTextSplitSegments(n.data).length > 0);
     splitNodes.forEach((sourceNode) => {
-      const seg = sourceNode.data!.segments as (string | number | boolean)[];
+      const seg = resolveTextSplitSegments(sourceNode.data);
       const outEdges = edges.filter((e) => e.source === sourceNode.id && e.target);
       outEdges.forEach((edge) => {
-        const sh = edge.sourceHandle || '';
-        const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-        if (!Number.isInteger(idx) || seg[idx] === undefined) return;
-        const textVal = String(seg[idx]);
+        const textVal = pickTextSplitSegmentText(seg, edge.sourceHandle);
+        if (!textVal) return;
         const targetNode = nodes.find((n) => n.id === edge.target);
         if (!targetNode) return;
-        if (targetNode.type === 'minimalistText') {
+        if (targetNode.type === 'minimalistText' || targetNode.type === 'text') {
           setNodes((nds) =>
             nds.map((node) =>
               node.id === edge.target ? { ...node, data: { ...node.data, text: textVal } } : node
@@ -4356,11 +5044,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               if (src.data?.text) parts.push(String(src.data.text).trim());
             } else if (src.type === 'llm' && src.data?.outputText) {
               parts.push(String(src.data.outputText).trim());
-            } else if (src.type === 'textSplit' && src.data?.segments) {
-              const sh = e.sourceHandle || '';
-              const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-              const seg = src.data.segments as (string | number | boolean)[];
-              if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+            } else if (src.type === 'textSplit') {
+              const segText = pickTextSplitSegmentText(src.data, 
+                e.sourceHandle,
+              );
+              if (segText) parts.push(segText);
             }
           }
           const resolvedInputText = parts.join(',');
@@ -4370,7 +5058,32 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             )
           );
           if (selectedNode?.id === edge.target) {
-            setLlmInputPanelData((prev) => (prev && prev.nodeId === edge.target ? { ...prev, inputText: resolvedInputText } : prev));
+            const incoming = edges.filter((e) => e.target === edge.target);
+            const hasTextConnection = incoming.some((e) => {
+              const src = nodes.find((n) => n.id === e.source);
+              return src && (src.type === 'minimalistText' || src.type === 'text');
+            });
+            const hasLLMConnection = incoming.some((e) => {
+              const src = nodes.find((n) => n.id === e.source);
+              return src?.type === 'llm' && !!src.data?.outputText;
+            });
+            const hasSplitConnection = incoming.some((e) => {
+              const src = nodes.find((n) => n.id === e.source);
+              return src?.type === 'textSplit';
+            });
+            setLlmInputPanelData((prev) =>
+              prev && prev.nodeId === edge.target
+                ? {
+                    ...prev,
+                    inputText: resolvedInputText,
+                    isInputLocked: false,
+                    hasLinkedText:
+                      (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+                    linkedInputText: resolvedInputText,
+                    linkedTextTitle: collectLinkedTextTitlesForTarget(edge.target, nodes, edges),
+                  }
+                : prev
+            );
           }
         } else if (targetNode.type === 'image') {
           const incoming = edges.filter((e) => {
@@ -4390,11 +5103,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               if (src.data?.text) parts.push(String(src.data.text).trim());
             } else if (src.type === 'llm' && src.data?.outputText) {
               parts.push(String(src.data.outputText).trim());
-            } else             if (src.type === 'textSplit' && src.data?.segments) {
-              const sh = e.sourceHandle || '';
-              const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-              const seg = src.data.segments as (string | number | boolean)[];
-              if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+            } else if (src.type === 'textSplit') {
+              const segText = pickTextSplitSegmentText(src.data, 
+                e.sourceHandle,
+              );
+              if (segText) parts.push(segText);
             }
           }
           // 连线有输入则优先用连线，否则保留节点已有数据（含复制出的信息）
@@ -4436,7 +5149,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           );
           if (selectedNode?.id === edge.target) {
             setAudioInputPanelData((prev) => {
-              if (prev && prev.nodeId === edge.target) return isRhartSong ? { ...prev, lyrics: textVal } : { ...prev, text: textVal };
+              if (prev && prev.nodeId === edge.target) {
+                return isRhartSong
+                  ? { ...prev, lyrics: textVal, isTextConnected: true }
+                  : { ...prev, text: textVal, isTextConnected: true };
+              }
               return prev;
             });
           }
@@ -4455,11 +5172,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               if (src.data?.text) parts.push(String(src.data.text).trim());
             } else if (src.type === 'llm' && src.data?.outputText) {
               parts.push(String(src.data.outputText).trim());
-            } else if (src.type === 'textSplit' && src.data?.segments) {
-              const sh = e.sourceHandle || '';
-              const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-              const seg = src.data.segments as (string | number | boolean)[];
-              if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+            } else if (src.type === 'textSplit') {
+              const segText = pickTextSplitSegmentText(src.data, 
+                e.sourceHandle,
+              );
+              if (segText) parts.push(segText);
             }
           }
           const resolvedInputText = parts.join('\n');
@@ -4510,6 +5227,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           ) {
             next.model = 'index-tts2';
           }
+          // 上传/写入音源后：若标题仍是占位「audio」，用文件名作为曲名
+          if (
+            updates.title === undefined &&
+            (updates.outputAudio !== undefined ||
+              updates.originalAudioUrl !== undefined ||
+              updates.sourceSongAudioUrl !== undefined)
+          ) {
+            const resolved = resolveAudioNodeDisplayTitle(next, '');
+            if (resolved) next.title = resolved;
+          }
           return { ...node, data: next };
         });
         if (updates.mediaDurationSec !== undefined) {
@@ -4544,11 +5271,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     }
   }, [setNodes]);
 
-  const handleVideoSpliceNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+  const handleVideoSpliceNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown> | ((prev: Record<string, unknown>) => Record<string, unknown>)) => {
     setNodes((nds) =>
-      nds.map((node) =>
-        node.id === nodeId ? { ...node, data: { ...node.data, ...updates } } : node
-      )
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        const prev = (node.data || {}) as Record<string, unknown>;
+        const patch = typeof updates === 'function' ? updates(prev) : updates;
+        if (!patch || Object.keys(patch).length === 0) return node;
+        return { ...node, data: { ...prev, ...patch } };
+      }),
     );
   }, [setNodes]);
 
@@ -4560,6 +5291,48 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
   }, [setNodes]);
 
+  const handleGridMapNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        const nextData = { ...node.data, ...updates };
+        const w = Number(updates.width ?? nextData.width);
+        const h = Number(updates.height ?? nextData.height);
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+          return {
+            ...node,
+            data: nextData,
+            style: { ...(node.style as object), ...nodeStyleDimensions(w, h) },
+            width: w,
+            height: h,
+          };
+        }
+        return { ...node, data: nextData };
+      }),
+    );
+  }, [setNodes]);
+
+  const handleImageComparerNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        const nextData = { ...node.data, ...updates };
+        const w = Number(updates.width ?? nextData.width);
+        const h = Number(updates.height ?? nextData.height);
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+          return {
+            ...node,
+            data: nextData,
+            style: { ...(node.style as object), ...nodeStyleDimensions(w, h) },
+            width: w,
+            height: h,
+          };
+        }
+        return { ...node, data: nextData };
+      }),
+    );
+  }, [setNodes]);
+
   /** 拆帧 / 一键拆分等：将图片节点写入 Workspace 画布状态 */
   const handleAddCanvasImageNodes = useCallback(
     (newNodes: Node[]) => {
@@ -4568,6 +5341,217 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       setTimeout(() => saveHistory('general'), 0);
     },
     [setNodes, saveHistory],
+  );
+
+  /** 视频智能剪辑 / 裁剪导出：新视频节点 + 连线（不改原视频） */
+  const handleAddVideoClipNodes = useCallback(
+    (payload: { nodes: Node[]; edges: Edge[] }) => {
+      if (!payload.nodes?.length) return;
+      setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(payload.nodes));
+      setEdges((eds) => {
+        let next = eds;
+        for (const edge of payload.edges || []) {
+          next = addEdge(edge, next);
+        }
+        return next;
+      });
+      setTimeout(() => saveHistory('general'), 0);
+    },
+    [setNodes, setEdges, saveHistory],
+  );
+
+  /** 多选视频：按从上到下、从左到右拼接为新视频模块，并与各源模块连线 */
+  const [videoJoinBusy, setVideoJoinBusy] = useState(false);
+  const handleJoinSelectedVideos = useCallback(
+    async (nodeIds: string[]) => {
+      if (videoJoinBusy) return;
+      const ids = [...new Set(nodeIds.filter(Boolean))];
+      if (ids.length < 2) return;
+      if (!window.electronAPI?.exportTimelineVideoToProject) {
+        showAlert(locale === 'en' ? 'Join video is not available' : '视频拼接功能不可用');
+        return;
+      }
+
+      const allNodes = latestNodesRef.current;
+      const selected = sortNodesByReadingOrder(
+        allNodes.filter((n) => ids.includes(n.id) && isVideoModuleNodeType(n.type)),
+      );
+      if (selected.length < 2) {
+        showAlert(locale === 'en' ? 'Select at least 2 video modules' : '请至少框选 2 个视频模块');
+        return;
+      }
+
+      type ClipBuild = {
+        node: Node;
+        url: string;
+        duration: number;
+      };
+      const builds: ClipBuild[] = [];
+      for (const node of selected) {
+        const media = resolveTimelineMediaFromSource(node);
+        if (!media?.url || media.clipType !== 'video') {
+          showAlert(
+            locale === 'en'
+              ? `Video module "${String(node.data?.title || node.id)}" has no playable file`
+              : `视频模块「${String(node.data?.title || node.id)}」没有可播放文件`,
+          );
+          return;
+        }
+        let duration = resolveSourceMediaDurationSec(node);
+        if (!(duration > 0.05) && window.electronAPI.getMediaDuration) {
+          try {
+            duration = Number(await window.electronAPI.getMediaDuration(media.url, projectId)) || 0;
+          } catch {
+            duration = 0;
+          }
+        }
+        if (!(duration > 0.05)) {
+          showAlert(
+            locale === 'en'
+              ? `Cannot read duration for "${String(node.data?.title || node.id)}"`
+              : `无法读取「${String(node.data?.title || node.id)}」的时长`,
+          );
+          return;
+        }
+        builds.push({ node, url: media.url, duration });
+      }
+
+      const GAP = 48;
+      let maxRight = -Infinity;
+      let minY = Infinity;
+      let maxBottom = -Infinity;
+      for (const { node } of builds) {
+        const w = Number(node.data?.width) || Number((node.style as { width?: number })?.width) || VIDEO_NODE_DEFAULT_W;
+        const h = Number(node.data?.height) || Number((node.style as { height?: number })?.height) || VIDEO_NODE_DEFAULT_H;
+        maxRight = Math.max(maxRight, node.position.x + w);
+        minY = Math.min(minY, node.position.y);
+        maxBottom = Math.max(maxBottom, node.position.y + h);
+      }
+      const placeholderW = VIDEO_NODE_DEFAULT_W;
+      const placeholderH = VIDEO_NODE_DEFAULT_H;
+      const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newPosition = {
+        x: maxRight + GAP,
+        y: minY + Math.max(0, (maxBottom - minY - placeholderH) / 2),
+      };
+
+      const placeholderNode: Node = {
+        id: newNodeId,
+        type: 'video',
+        position: newPosition,
+        selected: true,
+        data: {
+          label: locale === 'en' ? 'Joined clip' : '拼接视频',
+          title: locale === 'en' ? 'Joined clip' : '拼接视频',
+          width: placeholderW,
+          height: placeholderH,
+          exportedMediaClip: true,
+          isUserResized: true,
+          preserveExportLayout: true,
+          progress: 8,
+          progressMessage: locale === 'en' ? 'Joining videos…' : '正在拼接视频…',
+          errorMessage: undefined,
+        },
+        style: nodeStyleDimensions(placeholderW, placeholderH),
+      };
+      const joinEdges: Edge[] = builds.map(({ node }, i) => ({
+        id: `e-join-${node.id}-${newNodeId}-${i}`,
+        source: node.id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+      }));
+
+      setVideoJoinBusy(true);
+      handleAddVideoClipNodes({ nodes: [placeholderNode], edges: joinEdges });
+
+      try {
+        let cursor = 0;
+        const clips = builds.map((b) => {
+          const startTime = cursor;
+          cursor += b.duration;
+          return {
+            type: 'video',
+            src: b.url,
+            duration: b.duration,
+            startTime,
+            trimStart: 0,
+            trimEnd: b.duration,
+            name: String(b.node.data?.title || b.node.id),
+          };
+        });
+
+        const firstAsset = (builds[0]!.node.data?.videoAsset || {}) as { width?: number; height?: number };
+        const outW = Math.max(2, Math.round(Number(firstAsset.width) || 1280));
+        const outH = Math.max(2, Math.round(Number(firstAsset.height) || 720));
+
+        const res = await window.electronAPI.exportTimelineVideoToProject(projectId, clips, [[]], {
+          videoTrackVolume: 1,
+          videoTrackMuted: false,
+          outputWidth: outW,
+          outputHeight: outH,
+        });
+        if (!res?.success || !res.originalUrl) {
+          throw new Error(res?.error || (locale === 'en' ? 'Join failed' : '拼接失败'));
+        }
+
+        const pixelW = Number(res.width) || outW;
+        const pixelH = Number(res.height) || outH;
+        const adapted =
+          computeNodeSizeFromMedia(
+            pixelW,
+            pixelH,
+            VIDEO_NODE_MIN_W,
+            VIDEO_NODE_MIN_H,
+            VIDEO_NODE_MAX_W,
+            VIDEO_NODE_MAX_H,
+          ) || { w: placeholderW, h: placeholderH };
+        const aspectRatio = snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(pixelW, pixelH));
+
+        handleVideoNodeDataChange(newNodeId, {
+          outputVideo: res.originalUrl,
+          originalVideoUrl: undefined,
+          localPath: res.originalPath,
+          width: adapted.w,
+          height: adapted.h,
+          aspectRatio,
+          mediaDurationSec: cursor,
+          videoAsset: {
+            width: pixelW,
+            height: pixelH,
+            ...(res.posterUrl ? { poster: res.posterUrl } : {}),
+            ...(res.ghostBase64 ? { ghost: res.ghostBase64 } : {}),
+          },
+          progress: 100,
+          progressMessage: '',
+          errorMessage: undefined,
+        });
+        window.setTimeout(() => {
+          handleVideoNodeDataChange(newNodeId, { progress: 0, progressMessage: '' });
+        }, 420);
+        setTimeout(() => saveHistory('general'), 0);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : locale === 'en' ? 'Join failed' : '拼接失败';
+        console.error('[Workspace] join selected videos failed:', err);
+        showAlert(msg);
+        handleVideoNodeDataChange(newNodeId, {
+          progress: 0,
+          progressMessage: '',
+          errorMessage: msg,
+        });
+      } finally {
+        setVideoJoinBusy(false);
+      }
+    },
+    [
+      videoJoinBusy,
+      projectId,
+      locale,
+      showAlert,
+      handleAddVideoClipNodes,
+      handleVideoNodeDataChange,
+      saveHistory,
+    ],
   );
 
   /** 多段音频一键分离：新节点 + 连线写入 Workspace（与拆帧/拼图导出同一持久化路径） */
@@ -4633,7 +5617,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
 
       const GAP = 48;
-      const baseW = 369.46;
+      const baseW = IMAGE_NODE_DEFAULT_W;
       const aspect = logicalW / Math.max(logicalH, 1);
       let nodeW = baseW;
       let nodeH = baseW / aspect;
@@ -4705,6 +5689,138 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }, 0);
     },
     [projectId, setNodes]
+  );
+
+  /** 宫格图导出为图片节点：放在宫格节点右侧 */
+  const handleGridMapExportToCanvas = useCallback(
+    async (
+      gridNodeId: string,
+      dataUrl: string,
+      logicalW: number,
+      logicalH: number,
+      exportLabel?: string,
+    ) => {
+      const label = exportLabel || (locale === 'en' ? 'Grid compose' : '宫格合成');
+      let outputImage = dataUrl;
+      let originalImageUrl = dataUrl;
+      let localPath = '';
+      let tinyThumbUrl = '';
+      let avgColorHex = '';
+      let ghostBase64 = '';
+      let assetWidth: number | undefined = logicalW;
+      let assetHeight: number | undefined = logicalH;
+
+      if (window.electronAPI?.createImageLocalResourceFromBuffer && projectId) {
+        try {
+          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+          const binary = atob(base64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const resource = await window.electronAPI.createImageLocalResourceFromBuffer(
+            projectId,
+            `grid-map-export-${Date.now()}.png`,
+            bytes.buffer,
+          );
+          outputImage = resource.previewUrl;
+          originalImageUrl = resource.originalUrl;
+          localPath = resource.originalPath;
+          tinyThumbUrl = resource.tinyUrl || '';
+          avgColorHex = resource.avgColorHex || '';
+          ghostBase64 = resource.ghostBase64 || '';
+          assetWidth = resource.width ?? logicalW;
+          assetHeight = resource.height ?? logicalH;
+        } catch (err) {
+          console.error('[Workspace] 宫格图导出到画布保存失败:', err);
+        }
+      }
+
+      const GAP = 48;
+      const baseW = IMAGE_NODE_DEFAULT_W;
+      const aspect = logicalW / Math.max(logicalH, 1);
+      let nodeW = baseW;
+      let nodeH = baseW / aspect;
+      const maxH = baseW * 1.6;
+      if (nodeH > maxH) {
+        nodeH = maxH;
+        nodeW = nodeH * aspect;
+      }
+      if (nodeW < 200) nodeW = 200;
+      if (nodeH < 120) nodeH = 120;
+
+      let committedNewNode: Node | null = null;
+      const imageUrlForTask = outputImage;
+
+      setNodes((nds) => {
+        const grid = nds.find((n) => n.id === gridNodeId);
+        if (!grid) return nds;
+        const outerW = Number(grid.data?.width) || 520;
+        const outerH = Number(grid.data?.height) || 520;
+        const newX = grid.position.x + outerW + GAP;
+        const newY = grid.position.y + Math.max(0, (outerH - nodeH) / 2);
+
+        const newNode: Node = {
+          id: `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          type: 'image',
+          position: { x: newX, y: newY },
+          selected: true,
+          data: {
+            label,
+            width: nodeW,
+            height: nodeH,
+            isUserResized: false,
+            title: label,
+            resolution: '1k',
+            aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
+            model: 'banana-2.0',
+            seedreamWidth: 2048,
+            seedreamHeight: 2048,
+            prompt: '',
+            outputImage,
+            originalImageUrl,
+            localPath,
+            tinyThumbUrl,
+            avgColorHex,
+            imageAsset: {
+              preview: outputImage,
+              original: originalImageUrl,
+              tiny: tinyThumbUrl,
+              ghost: ghostBase64,
+              avgColorHex,
+              width: assetWidth,
+              height: assetHeight,
+            },
+          },
+        };
+        committedNewNode = newNode;
+        return nds.map((n) => ({ ...n, selected: false })).concat(newNode);
+      });
+
+      setEdges((eds) =>
+        addEdge(
+          {
+            id: `e-${gridNodeId}-${committedNewNode?.id || Date.now()}`,
+            source: gridNodeId,
+            target: committedNewNode!.id,
+            sourceHandle: 'output',
+            targetHandle: 'image-input',
+          },
+          eds,
+        ),
+      );
+
+      window.setTimeout(() => {
+        if (!committedNewNode) return;
+        handleAddTaskRef.current?.(
+          committedNewNode.id,
+          imageUrlForTask,
+          label,
+          undefined,
+          undefined,
+          committedNewNode,
+        );
+      }, 0);
+    },
+    [projectId, setNodes, setEdges, locale],
   );
 
   /** 剪辑导出为视频节点：放在剪辑节点右侧并连线 */
@@ -4897,6 +6013,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handleLlmNodeDataChangeRef = useRef<typeof handleLlmNodeDataChange | null>(null);
   handleLlmNodeDataChangeRef.current = handleLlmNodeDataChange;
 
+  const handleTextSplitNodeDataChangeRef = useRef<typeof handleTextSplitNodeDataChange | null>(null);
+  handleTextSplitNodeDataChangeRef.current = handleTextSplitNodeDataChange;
+
   const handleImageNodeDataChangeRef = useRef<typeof handleImageNodeDataChange | null>(null);
   const handleVideoNodeDataChangeRef = useRef<typeof handleVideoNodeDataChange | null>(null);
   const handleAudioNodeDataChangeRef = useRef<typeof handleAudioNodeDataChange | null>(null);
@@ -4916,10 +6035,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handleVideoSpliceNodeDataChangeRef = useRef<typeof handleVideoSpliceNodeDataChange | null>(null);
   const handleVideoSpliceExportToCanvasRef = useRef<typeof handleVideoSpliceExportToCanvas | null>(null);
   const handlePhotoCollageNodeDataChangeRef = useRef<typeof handlePhotoCollageNodeDataChange | null>(null);
+  const handleGridMapNodeDataChangeRef = useRef<typeof handleGridMapNodeDataChange | null>(null);
+  const handleImageComparerNodeDataChangeRef = useRef<typeof handleImageComparerNodeDataChange | null>(null);
   const handleAddTaskRef = useRef<typeof handleAddTask | null>(null);
   const handleAddTextTaskRef = useRef<((nodeId: string, outputText: string, inputPrompt?: string) => void) | null>(null);
   const handleCleanupSplitEdgesRef = useRef<((nodeId: string, keepSourceHandles: string[]) => void) | null>(null);
-  const handleAuxImageTaskCompleteRef = useRef<((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle'; imageUrl: string; imageUrls?: string[] }) => void) | null>(null);
+  const handleAuxImageTaskCompleteRef = useRef<((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle' | 'upscale-v3'; imageUrl: string; imageUrls?: string[] }) => void) | null>(null);
   const handleAIStatusUpdateRef = useRef<(packet: { nodeId: string; status: string; payload?: any }) => void>(() => {});
   /** 用户最近在 Image 提示词输入框编辑的时间戳，用于避免 sync 覆盖导致闪烁 */
   const lastImagePromptUserEditRef = useRef<number>(0);
@@ -4972,13 +6093,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 updatedNodes,
                 updatedNodes[targetIndex].data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
               );
-              updatedNodes[targetIndex] = {
-                ...updatedNodes[targetIndex],
-                data: {
-                  ...updatedNodes[targetIndex].data,
-                  ...applyBuiltClipsToSpliceData(updatedNodes[targetIndex].data, built),
-                },
-              };
+              const connectedIds = collectSpliceIncomingSourceIds(edge.target, edges);
+              const blockDropOnly =
+                spliceRebuildWouldDropConnected(updatedNodes[targetIndex].data, built, connectedIds) &&
+                !spliceBuiltHasNewConnectedSources(updatedNodes[targetIndex].data, built);
+              if (!blockDropOnly) {
+                updatedNodes[targetIndex] = {
+                  ...updatedNodes[targetIndex],
+                  data: {
+                    ...updatedNodes[targetIndex].data,
+                    ...applyBuiltClipsToSpliceData(updatedNodes[targetIndex].data, built, connectedIds),
+                  },
+                };
+              }
             }
             return;
           }
@@ -4999,13 +6126,55 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             }
             return;
           }
+          if (targetNode?.type === 'gridMap') {
+            const targetIndex = updatedNodes.findIndex((n) => n.id === edge.target);
+            if (targetIndex !== -1) {
+              const cols = Number(updatedNodes[targetIndex].data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+              const rows = Number(updatedNodes[targetIndex].data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+              const prevCells = ((updatedNodes[targetIndex].data?.cells || []) as GridMapCell[]).slice();
+              const nextCells = buildGridMapCellsFromEdges(
+                edge.target,
+                edges,
+                updatedNodes,
+                prevCells,
+                cols,
+                rows,
+              );
+              updatedNodes[targetIndex] = {
+                ...updatedNodes[targetIndex],
+                data: { ...updatedNodes[targetIndex].data, cells: nextCells },
+              };
+            }
+            return;
+          }
+          if (targetNode?.type === 'imageComparer') {
+            const targetIndex = updatedNodes.findIndex((n) => n.id === edge.target);
+            if (targetIndex !== -1) {
+              const urls = buildImageComparerUrlsFromEdges(edge.target, edges, updatedNodes);
+              updatedNodes[targetIndex] = {
+                ...updatedNodes[targetIndex],
+                data: {
+                  ...updatedNodes[targetIndex].data,
+                  imageAUrl: urls.imageAUrl,
+                  imageBUrl: urls.imageBUrl,
+                  imageASourceNodeId: urls.imageASourceNodeId,
+                  imageBSourceNodeId: urls.imageBSourceNodeId,
+                },
+              };
+            }
+            return;
+          }
           if (targetNode?.type === 'image') {
             // 更新目标 Image 节点的输入图片列表
             const targetIndex = updatedNodes.findIndex((n) => n.id === edge.target);
             if (targetIndex !== -1) {
               // 从连接的源节点收集所有输入图片
               // 使用 'image-input' 作为 targetHandle ID
-              const newInputImages = collectImageTargetInputImagesFromEdges(edge.target, updatedNodes, edges);
+              const fromEdges = collectImageTargetInputImagesFromEdges(edge.target, updatedNodes, edges);
+              const newInputImages = mergeInputImagesPreserveOrder(
+                updatedNodes[targetIndex].data?.inputImages as string[] | undefined,
+                fromEdges,
+              );
 
               updatedNodes[targetIndex] = {
                 ...updatedNodes[targetIndex],
@@ -5035,6 +6204,89 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       return updatedNodes;
     });
   }, [setEdges, setNodes, edges, selectedNode]);
+
+  // 任务列表已成功但画布图片节点尚无 outputImage 时回填（批量运行 / SUCCESS 双链路漏更新）
+  useEffect(() => {
+    const successImageTasks = tasks.filter(
+      (task) =>
+        task.taskType === 'image' &&
+        task.status === 'success' &&
+        task.nodeId &&
+        (task.imageUrl || task.localFilePath),
+    );
+    if (successImageTasks.length === 0) return;
+
+    const toSync: Array<{
+      nodeId: string;
+      url: string;
+      networkUrl?: string;
+      outputImages?: string[];
+    }> = [];
+
+    setNodes((nds) => {
+      let changed = false;
+      const next = nds.map((node) => {
+        if (node.type !== 'image') return node;
+        const task = successImageTasks.find((t) => t.nodeId === node.id);
+        if (!task) return node;
+
+        const runtime = tasks.find((t) => t.id === `runtime-${node.id}`);
+        const runtimeBusy =
+          !!runtime && ['running', 'processing'].includes(String(runtime.status || '').toLowerCase());
+        const progressBusy = typeof node.data?.progress === 'number' && node.data.progress > 0;
+        // 重新生成中：勿用旧 success 任务覆盖节点，避免进度遮罩与旧图交替闪烁
+        if (runtimeBusy || progressBusy) return node;
+
+        const rawTaskUrl =
+          task.imageUrl ||
+          (task.localFilePath
+            ? formatImagePathSync(task.localFilePath.replace(/\\/g, '/'))
+            : '');
+        if (!rawTaskUrl) return node;
+
+        const hasOutput = !!String(node.data?.outputImage || '').trim();
+        if (hasOutput) return node;
+
+        changed = true;
+        const formattedUrl = formatImagePathSync(rawTaskUrl);
+        const outputImages =
+          Array.isArray(task.outputImages) && task.outputImages.length > 0
+            ? task.outputImages.map((u) => formatImagePathSync(String(u || ''))).filter(Boolean)
+            : undefined;
+        const networkUrl =
+          typeof task.originalImageUrl === 'string' && /^https?:\/\//i.test(task.originalImageUrl.trim())
+            ? task.originalImageUrl.trim()
+            : formattedUrl.startsWith('http://') || formattedUrl.startsWith('https://')
+              ? formattedUrl
+              : undefined;
+        toSync.push({ nodeId: node.id, url: formattedUrl, networkUrl, outputImages });
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            outputImage: formattedUrl,
+            ...(outputImages && outputImages.length > 0 ? { outputImages } : {}),
+            ...(networkUrl ? { originalImageUrl: networkUrl } : {}),
+            progress: 0,
+            progressMessage: undefined,
+            errorMessage: undefined,
+          },
+        };
+      });
+      return changed ? next : nds;
+    });
+
+    toSync.forEach(({ nodeId, url, networkUrl, outputImages }) => {
+      handleImageNodeDataChange(nodeId, {
+        outputImage: url,
+        ...(outputImages && outputImages.length > 0 ? { outputImages } : {}),
+        ...(networkUrl ? { originalImageUrl: networkUrl } : {}),
+        progress: 0,
+        progressMessage: undefined,
+        errorMessage: undefined,
+      });
+    });
+  }, [tasks, setNodes, handleImageNodeDataChange]);
 
   const characterTransmitKey = useMemo(
     () =>
@@ -5107,25 +6359,33 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     if (imageIds.size === 0 && videoIds.size === 0) return;
     const pendingPanelImages =
       selectedNode?.type === 'image' && imageIds.has(selectedNode.id)
-        ? collectImageTargetInputImagesFromEdges(selectedNode.id, nodes, edges)
+        ? mergeInputImagesPreserveOrder(
+            nodes.find((n) => n.id === selectedNode.id)?.data?.inputImages as string[] | undefined,
+            collectImageTargetInputImagesFromEdges(selectedNode.id, nodes, edges),
+          )
         : null;
     const pendingPanelVideoImages =
       selectedNode && isVideoModuleNodeType(selectedNode.type) && videoIds.has(selectedNode.id)
-        ? collectVideoTargetInputImagesFromEdges(selectedNode.id, nodes, edges)
+        ? mergeInputImagesPreserveOrder(
+            nodes.find((n) => n.id === selectedNode.id)?.data?.inputImages as string[] | undefined,
+            collectVideoTargetInputImagesFromEdges(selectedNode.id, nodes, edges),
+          )
         : null;
     setNodes((nds) => {
       let any = false;
       const next = nds.map((node) => {
         if (node.type === 'image' && imageIds.has(node.id)) {
-          const newImgs = collectImageTargetInputImagesFromEdges(node.id, nds, edges);
+          const fromEdges = collectImageTargetInputImagesFromEdges(node.id, nds, edges);
           const cur = ((node.data?.inputImages as string[]) || []).slice();
+          const newImgs = mergeInputImagesPreserveOrder(cur, fromEdges);
           if (JSON.stringify(cur) === JSON.stringify(newImgs)) return node;
           any = true;
           return { ...node, data: { ...node.data, inputImages: newImgs } };
         }
         if (isVideoModuleNodeType(node.type) && videoIds.has(node.id)) {
-          const newImgs = collectVideoTargetInputImagesFromEdges(node.id, nds, edges);
+          const fromEdges = collectVideoTargetInputImagesFromEdges(node.id, nds, edges);
           const cur = ((node.data?.inputImages as string[]) || []).slice();
+          const newImgs = mergeInputImagesPreserveOrder(cur, fromEdges);
           if (JSON.stringify(cur) === JSON.stringify(newImgs)) return node;
           any = true;
           return { ...node, data: { ...node.data, inputImages: newImgs } };
@@ -5334,9 +6594,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     });
   }, [nodes, projectId, handleImageNodeDataChange, selectedNode, imageInputPanelData]);
 
-  // 抠图/去水印完成时，将结果加入任务列表（需在 nodeTypes 之前定义，供 ImageNodeWrapper 使用）
-  const handleAuxImageTaskComplete = useCallback((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle'; imageUrl: string; imageUrls?: string[] }) => {
-    const promptLabel = params.type === 'matting' ? '抠图' : params.type === 'watermark' ? '去水印' : '人物多角度';
+  // 抠图/去水印/超分完成时，将结果加入任务列表（需在 nodeTypes 之前定义，供 ImageNodeWrapper 使用）
+  const handleAuxImageTaskComplete = useCallback((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle' | 'upscale-v3'; imageUrl: string; imageUrls?: string[] }) => {
+    const promptLabel =
+      params.type === 'matting'
+        ? '抠图'
+        : params.type === 'watermark'
+          ? '去水印'
+          : params.type === 'upscale-v3'
+            ? '超分放大'
+            : '人物多角度';
     handleAddTask(params.nodeId, params.imageUrl, promptLabel, undefined, params.imageUrls);
   }, [handleAddTask]);
 
@@ -5347,6 +6614,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   const invokeLlmNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handleLlmNodeDataChangeRef.current?.(nodeId, updates);
+  }, []);
+
+  const invokeTextSplitNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    handleTextSplitNodeDataChangeRef.current?.(nodeId, updates);
   }, []);
 
   const invokeImageNodeDataChange = useCallback((nodeId: string, updates: any) => {
@@ -5364,7 +6635,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const invokeCharacterNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handleCharacterNodeDataChange(nodeId, updates);
   }, [handleCharacterNodeDataChange]);
-  const invokeVideoSpliceNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+  const invokeVideoSpliceNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown> | ((prev: Record<string, unknown>) => Record<string, unknown>)) => {
     handleVideoSpliceNodeDataChangeRef.current?.(nodeId, updates);
   }, []);
   const invokeVideoSpliceExportToCanvas = useCallback(
@@ -5382,6 +6653,1360 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
   }, []);
 
+  const invokeStoryboardScriptNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n)),
+    );
+    setStoryboardScriptInputPanelData((prev) => {
+      if (!prev || prev.nodeId !== nodeId) return prev;
+      const next = { ...prev };
+      if ('userPrompt' in updates) next.userPrompt = String(updates.userPrompt ?? '');
+      if ('chatModel' in updates) next.chatModel = updates.chatModel as string | undefined;
+      if ('storyboardScript' in updates) {
+        next.storyboardScript = updates.storyboardScript as StoryboardScriptState;
+      }
+      return next;
+    });
+  }, []);
+
+  const invokeScriptNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n)),
+    );
+  }, []);
+
+  /** 将音频节点输出灌入导演 mvMusic（函数式合并，可重复调用） */
+  const applyDirectorMvMusicFromAudio = useCallback(
+    (
+      directorNodeId: string,
+      music: { url: string; title: string; durationSec: number; sourceNodeId: string },
+    ) => {
+      const url = String(music.url || '').trim();
+      if (!url || !directorNodeId) return;
+      setNodes((curr) =>
+        curr.map((node) => {
+          if (node.id !== directorNodeId || node.type !== 'director') return node;
+          const prev = createDefaultDirectorPipelineState(
+            (node.data as { director?: DirectorPipelineState })?.director || {},
+          );
+          const durationSec =
+            music.durationSec > 0
+              ? music.durationSec
+              : prev.mvMusic.durationSec > 0
+                ? prev.mvMusic.durationSec
+                : 0;
+          const next = createDefaultDirectorPipelineState({
+            ...prev,
+            mode: 'mv',
+            phase: prev.mode === 'mv' ? prev.phase : 'music',
+            mvMusic: {
+              ...prev.mvMusic,
+              url,
+              title: music.title || prev.mvMusic.title || 'MV音乐',
+              durationSec,
+              sourceNodeId: music.sourceNodeId,
+              summary:
+                prev.mvMusic.summary ||
+                (durationSec > 0 ? `时长约 ${Math.round(durationSec)} 秒` : ''),
+            },
+          });
+          const prevUrl = String(prev.mvMusic?.url || '').trim();
+          const same =
+            prev.mode === 'mv' &&
+            prevUrl === url &&
+            prev.mvMusic.durationSec === durationSec &&
+            String(prev.mvMusic.sourceNodeId || '') === music.sourceNodeId;
+          if (same) return node;
+          return {
+            ...node,
+            data: { ...node.data, director: next, title: next.title || node.data?.title },
+          };
+        }),
+      );
+    },
+    [setNodes],
+  );
+
+  const invokeDirectorNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id !== nodeId) return n;
+        let nextData: Record<string, unknown> = { ...(n.data as Record<string, unknown>), ...updates };
+        // 合并 director，避免连线刚写入的 mvMusic 被节点内旧 patch 整包覆盖清掉
+        if ('director' in updates && updates.director && typeof updates.director === 'object') {
+          const prevDir = createDefaultDirectorPipelineState(
+            (n.data as { director?: DirectorPipelineState })?.director || {},
+          );
+          const incoming = createDefaultDirectorPipelineState(
+            updates.director as DirectorPipelineState,
+          );
+          const prevUrl = String(prevDir.mvMusic?.url || '').trim();
+          const nextUrl = String(incoming.mvMusic?.url || '').trim();
+          const mergedMusic =
+            nextUrl
+              ? incoming.mvMusic
+              : prevUrl
+                ? prevDir.mvMusic
+                : incoming.mvMusic;
+          nextData = {
+            ...nextData,
+            director: createDefaultDirectorPipelineState({
+              ...prevDir,
+              ...incoming,
+              mvMusic: mergedMusic,
+              linkedSpliceNodeId:
+                String(incoming.linkedSpliceNodeId || '').trim() ||
+                String(prevDir.linkedSpliceNodeId || '').trim(),
+            }),
+          };
+        }
+        const next: Node = {
+          ...n,
+          data: nextData,
+        };
+        if (updates.width !== undefined || updates.height !== undefined) {
+          const w =
+            updates.width !== undefined
+              ? Number(updates.width)
+              : Number((n.data as { width?: number })?.width) || 1100;
+          const h =
+            updates.height !== undefined
+              ? Number(updates.height)
+              : Number((n.data as { height?: number })?.height) || 640;
+          next.style = { ...(n.style as object), ...nodeStyleDimensions(w, h) };
+          next.width = w;
+          next.height = h;
+        }
+        return next;
+      }),
+    );
+    setDirectorInputPanelData((prev) => {
+      if (!prev || prev.nodeId !== nodeId) return prev;
+      const next = { ...prev };
+      if ('userPrompt' in updates) next.userPrompt = String(updates.userPrompt ?? '');
+      if ('director' in updates) {
+        const d = updates.director as DirectorPipelineState;
+        next.director = d;
+        next.scriptText = String(d?.scriptText ?? next.scriptText ?? '');
+        next.chatModel = d?.chatModel ?? next.chatModel;
+      }
+      return next;
+    });
+  }, []);
+
+  const invokeSpawnDirectorVideos = useCallback(
+    async (nodeId: string, opts?: { shotNos?: string[]; startLipsync?: boolean; lipsyncShotNos?: string[] }) => {
+      const allNodes = latestNodesRef.current as Node[];
+      const dirNode = allNodes.find((n) => n.id === nodeId);
+      if (!dirNode || dirNode.type !== 'director') return;
+
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      const onlyShotNos =
+        Array.isArray(opts?.shotNos) && opts!.shotNos!.length > 0
+          ? new Set(opts!.shotNos!.map((n) => String(n || '').trim()).filter(Boolean))
+          : null;
+      const shots = (director.shots || []).filter((s, i) => {
+        if (!String(s['最终提示词'] || '').trim()) return false;
+        if (!onlyShotNos) return true;
+        return onlyShotNos.has(String(s['镜号'] || i + 1));
+      });
+      if (shots.length === 0) return;
+
+      const shotsWithStoryboard = shots.filter((shot) => {
+        const rowIdx = (director.shots || []).indexOf(shot);
+        const shotNo =
+          String(shot['镜号'] || '').trim() || (rowIdx >= 0 ? String(rowIdx + 1) : '');
+        if (!shotNo) return false;
+        return !!String(director.storyboardsByShotNo?.[shotNo]?.imageUrl || '').trim();
+      });
+      if (shotsWithStoryboard.length === 0) return;
+
+      const assetRefs = getOrderedAssetsWithImages(director);
+      const batchModel = normalizeDirectorVideoBatchModel(director.videoBatchModel);
+      const batchLipsyncModel = normalizeDirectorVideoLipsyncModel(director.videoBatchLipsyncModel);
+      const batchDuration = normalizeDirectorVideoBatchDuration(batchModel, director.videoBatchDuration);
+      const batchAspectRatio = normalizeDirectorVideoBatchAspect(
+        batchModel,
+        director.videoBatchAspectRatio,
+      );
+      const layoutAspect = directorVideoBatchLayoutAspect(
+        batchModel,
+        director.mode === 'mv'
+          ? director.mvAspectRatio || batchAspectRatio
+          : batchAspectRatio,
+      );
+      const mvMusicUrl = String(director.mvMusic?.url || '').trim();
+      const lyricSegs = director.mvMusic?.lyricSegments || [];
+      const lyricPacks =
+        lyricSegs.length > 0
+          ? packLyricSegmentsIntoShotPacks(lyricSegs, {
+              clipLengthMode: director.mvMusic?.clipLengthMode,
+            })
+          : [];
+      const songDurSec = Number(director.mvMusic?.durationSec) || 0;
+      /** 仅在导演侧确认后才自动发起对口型；普通模型始终自动生成（结果写回表内） */
+      const startLipsync = opts?.startLipsync === true;
+      const forceLipsyncNos = new Set(
+        (Array.isArray(opts?.lipsyncShotNos) ? opts!.lipsyncShotNos! : [])
+          .map((n) => String(n || '').trim())
+          .filter(Boolean),
+      );
+
+      const GAP = 48;
+      const videoSize = videoNodeSizeForAspectRatio(layoutAspect);
+      const nodeW = videoSize?.w ?? 420;
+      const nodeH = videoSize?.h ?? 236;
+      /** 隐藏后台节点：成片在导演表内展示，不再依赖画布外接视频模块 */
+      const offscreenBaseX = -12000;
+      const offscreenBaseY = -12000;
+      const projectIdForTrim =
+        String((dirNode.data as { projectId?: string | null })?.projectId || projectId || '').trim() ||
+        undefined;
+
+      const newNodes: Node[] = [];
+      const autoRunIds: string[] = [];
+      const storyboardGeneratingWrites: Array<{ shotNo: string; videoNodeId: string }> = [];
+      const lipsyncTrimErrors: string[] = [];
+      const songClipCacheWrites: Array<{
+        shotNo: string;
+        songClipUrl: string;
+        startSec: number;
+        endSec: number;
+      }> = [];
+      const ts = Date.now();
+
+      for (let spawnIndex = 0; spawnIndex < shotsWithStoryboard.length; spawnIndex++) {
+        const shot = shotsWithStoryboard[spawnIndex];
+        const rowIdx = (director.shots || []).indexOf(shot);
+        const shotNo =
+          String(shot['镜号'] || '').trim() ||
+          (rowIdx >= 0 ? String(rowIdx + 1) : String(spawnIndex + 1));
+        const sb = getDirectorShotStoryboard(director, shotNo);
+        const musicRange = resolveDirectorShotMusicRange(director.shots || [], shotNo, director);
+        const shotDurSec =
+          Number(musicRange?.durationSec) > 0
+            ? Number(musicRange.durationSec)
+            : parseDirectorShotDurationSec(shot['时长'], 0);
+        const rangeStartSec = Math.max(0, Number(musicRange?.startSec) || 0);
+        const rangeEndRaw = Number(musicRange?.endSec);
+        const rangeEndSec =
+          Number.isFinite(rangeEndRaw) && rangeEndRaw > rangeStartSec + 0.05
+            ? rangeEndRaw
+            : rangeStartSec + Math.max(0.5, shotDurSec || 5);
+        const hasVoice = shotAudioRangeHasHumanVoice(lyricSegs, rangeStartSec, rangeEndSec);
+        const preferLipsync =
+          forceLipsyncNos.has(shotNo) ||
+          resolveDirectorShotPreferLipsync(shot, sb, {
+            hasHumanVoice: hasVoice,
+            packText: lyricPacks[rowIdx >= 0 ? rowIdx : spawnIndex]?.text || String(shot['对白旁白'] || ''),
+            audioStartSec: rangeStartSec,
+            songDurationSec: songDurSec,
+          });
+        const shotModel = preferLipsync ? batchLipsyncModel : batchModel;
+        const shotResolution = normalizeDirectorVideoBatchResolution(
+          shotModel,
+          preferLipsync
+            ? director.videoBatchLipsyncResolution
+            : director.videoBatchResolution,
+        );
+        const storyboardImageUrl = String(sb?.imageUrl || '').trim();
+        // 视频提示词：图生已有分镜，只保留机位/焦距/运镜/主体运动；对口型前置「人物正在面对镜头唱歌」
+        const videoMotionPrompt = composeDirectorShotVideoPrompt(shot, {
+          lipsync: preferLipsync,
+        });
+        const durationForShot =
+          shotDurSec > 0
+            ? pickNearestDirectorVideoBatchDuration(shotModel, shotDurSec)
+            : normalizeDirectorVideoBatchDuration(shotModel, batchDuration);
+        const aspectForShot =
+          director.mode === 'mv'
+            ? normalizeDirectorVideoBatchAspect(
+                shotModel,
+                director.mvAspectRatio || batchAspectRatio,
+              )
+            : normalizeDirectorVideoBatchAspect(shotModel, batchAspectRatio);
+
+        let prompt = '';
+        let inputImages: string[] = [];
+        let lipsyncAudioUrl = '';
+        let clipStartSec = 0;
+        let clipEndSec = 0;
+        let clipDurationSec = 0;
+
+        if (isDirectorLipsyncModel(shotModel)) {
+          // 对口型：精简动作提示词 + 分镜图 + 本镜歌曲片段
+          prompt = ensureDirectorLipsyncMouthVisiblePrompt(videoMotionPrompt);
+          if (!prompt.trim()) {
+            lipsyncTrimErrors.push(`镜${shotNo}：缺少视频提示词（机位/运镜等）`);
+            console.warn(`[Director] 镜${shotNo} 对口型缺少视频提示词，跳过`);
+            continue;
+          }
+          if (!storyboardImageUrl) {
+            lipsyncTrimErrors.push(`镜${shotNo}：缺少分镜图`);
+            console.warn(`[Director] 镜${shotNo} 对口型缺少分镜图，跳过`);
+            continue;
+          }
+          if (!mvMusicUrl) {
+            lipsyncTrimErrors.push(`镜${shotNo}：缺少歌曲，请先接入或上传音乐`);
+            console.warn(`[Director] 镜${shotNo} 对口型缺少歌曲，跳过`);
+            continue;
+          }
+          inputImages = [storyboardImageUrl];
+          clipStartSec = Math.max(0, Number(musicRange?.startSec) || 0);
+          const endSecRaw = Number(musicRange?.endSec);
+          clipEndSec =
+            Number.isFinite(endSecRaw) && endSecRaw > clipStartSec + 0.05
+              ? endSecRaw
+              : clipStartSec + Math.max(0.5, shotDurSec || 5);
+          const musicDurCap = Math.max(0, Number(director.mvMusic?.durationSec) || 0);
+          if (musicDurCap > 0.5) {
+            if (clipStartSec >= musicDurCap - 0.05) {
+              lipsyncTrimErrors.push(`镜${shotNo}：歌曲片段超出原曲时长`);
+              continue;
+            }
+            clipEndSec = Math.min(clipEndSec, musicDurCap);
+          }
+          clipDurationSec = Math.max(0.05, clipEndSec - clipStartSec);
+          // 优先用确认镜头步已裁好的原曲片段
+          lipsyncAudioUrl = getValidDirectorShotSongClipUrl(
+            sb,
+            mvMusicUrl,
+            clipStartSec,
+            clipEndSec,
+          );
+          if (!lipsyncAudioUrl) {
+            if (!window.electronAPI?.trimAudio) {
+              lipsyncTrimErrors.push(`镜${shotNo}：当前环境不支持裁剪歌曲片段`);
+              console.warn(`[Director] 镜${shotNo} 当前环境不支持 trimAudio，跳过`);
+              continue;
+            }
+            try {
+              console.log(
+                `[Director] 镜${shotNo} 裁剪歌曲片段 ${clipStartSec.toFixed(2)}s–${clipEndSec.toFixed(2)}s (${clipDurationSec.toFixed(2)}s)`,
+              );
+              const trimmed = await window.electronAPI.trimAudio(
+                projectIdForTrim,
+                mvMusicUrl,
+                clipStartSec,
+                clipEndSec,
+              );
+              lipsyncAudioUrl = String(trimmed?.audioUrl || '').trim();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err || '裁剪失败');
+              lipsyncTrimErrors.push(`镜${shotNo}：${msg}`);
+              console.warn(`[Director] 镜${shotNo} lipsync trimAudio failed:`, err);
+            }
+            if (lipsyncAudioUrl) {
+              songClipCacheWrites.push({
+                shotNo,
+                songClipUrl: lipsyncAudioUrl,
+                startSec: clipStartSec,
+                endSec: clipEndSec,
+              });
+            }
+          }
+          if (!lipsyncAudioUrl) {
+            if (!lipsyncTrimErrors.some((e) => e.startsWith(`镜${shotNo}：`))) {
+              lipsyncTrimErrors.push(`镜${shotNo}：歌曲片段裁剪失败`);
+            }
+            console.warn(`[Director] 镜${shotNo} 歌曲片段裁剪失败，跳过对口型生成`);
+            continue;
+          }
+        } else {
+          const prepared = prepareDirectorShotVideoPayload({
+            rawPrompt: videoMotionPrompt,
+            assetRefs,
+            model: shotModel,
+            storyboardImageUrl,
+            fallbackText: videoMotionPrompt,
+          });
+          prompt = prepared.prompt;
+          inputImages = prepared.inputImages;
+        }
+
+        const newId = `video-${ts}-${spawnIndex}-${Math.random().toString(36).slice(2, 6)}`;
+        const nodeData = buildDirectorSpawnedVideoNodeData({
+          model: shotModel,
+          duration: durationForShot,
+          aspectRatio: aspectForShot,
+          resolution: shotResolution,
+          prompt,
+          inputImages,
+          title: `镜${shotNo}`,
+          width: nodeW,
+          height: nodeH,
+          directorShotNo: shotNo,
+          directorSourceId: nodeId,
+          ...(lipsyncAudioUrl
+            ? {
+                inputAudioUrl: lipsyncAudioUrl,
+                directorAudioClipStartSec: clipStartSec,
+                directorAudioClipEndSec: clipEndSec,
+                directorAudioClipDurationSec: clipDurationSec,
+              }
+            : {}),
+        });
+        if (isDirectorLipsyncModel(shotModel)) {
+          (nodeData as Record<string, unknown>).actionPrompt = prompt;
+          const writtenAudio = String((nodeData as Record<string, unknown>).inputAudioUrl || '').trim();
+          // 硬性：对口型节点必须带上歌曲片段
+          if (!writtenAudio) {
+            lipsyncTrimErrors.push(`镜${shotNo}：节点未写入歌曲片段，已跳过`);
+            console.warn(`[Director] 镜${shotNo} lipsync node missing inputAudioUrl`);
+            continue;
+          }
+          console.log(`[Director] 镜${shotNo} 对口型节点已写入音频`, {
+            audio: writtenAudio.length > 80 ? `${writtenAudio.slice(0, 80)}…` : writtenAudio,
+            clip: `${clipStartSec.toFixed(2)}–${clipEndSec.toFixed(2)}s`,
+            startLipsync,
+          });
+          if (!(startLipsync || forceLipsyncNos.has(shotNo))) {
+            // 对口型需确认后才开跑；未确认则跳过本镜
+            continue;
+          }
+        }
+        newNodes.push({
+          id: newId,
+          type: 'video',
+          hidden: true,
+          position: { x: offscreenBaseX, y: offscreenBaseY + spawnIndex * (nodeH + GAP) },
+          data: nodeData,
+          style: { opacity: 0, pointerEvents: 'none', width: 1, height: 1 },
+        });
+        storyboardGeneratingWrites.push({ shotNo, videoNodeId: newId });
+        autoRunIds.push(newId);
+      }
+
+      if (lipsyncTrimErrors.length > 0 || songClipCacheWrites.length > 0 || storyboardGeneratingWrites.length > 0) {
+        const summary =
+          lipsyncTrimErrors.length === 0
+            ? ''
+            : lipsyncTrimErrors.length === 1
+              ? lipsyncTrimErrors[0]
+              : `对口型歌曲片段处理失败 ${lipsyncTrimErrors.length} 镜：\n${lipsyncTrimErrors.slice(0, 5).join('\n')}${
+                  lipsyncTrimErrors.length > 5 ? '\n…' : ''
+                }`;
+        if (summary) showAlert(summary);
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id !== nodeId) return n;
+            let nextDir = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            for (const w of songClipCacheWrites) {
+              nextDir = updateDirectorShotStoryboard(nextDir, w.shotNo, {
+                songClipUrl: w.songClipUrl,
+                songClipSourceUrl: mvMusicUrl,
+                songClipStartSec: w.startSec,
+                songClipEndSec: w.endSec,
+              });
+            }
+            for (const w of storyboardGeneratingWrites) {
+              nextDir = updateDirectorShotStoryboard(nextDir, w.shotNo, {
+                videoStatus: 'generating',
+                videoNodeId: w.videoNodeId,
+                videoError: '',
+                videoUrl: '',
+              });
+            }
+            if (summary) {
+              nextDir = createDefaultDirectorPipelineState({ ...nextDir, error: summary });
+            }
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                director: nextDir,
+              },
+            };
+          }),
+        );
+      }
+
+      if (newNodes.length === 0) return;
+
+      // 同镜号旧隐藏节点清理，避免画布堆积
+      const replaceShotNos = new Set(storyboardGeneratingWrites.map((w) => w.shotNo));
+      setNodes((nds) => [
+        ...nds.filter((n) => {
+          if (n.type !== 'video') return true;
+          const d = n.data as { directorSourceId?: string; directorShotNo?: string };
+          if (String(d?.directorSourceId || '').trim() !== nodeId) return true;
+          const sn = String(d?.directorShotNo || '').trim();
+          return !sn || !replaceShotNos.has(sn);
+        }),
+        ...newNodes,
+      ]);
+
+      // 表内自动生成：普通模型始终开跑；对口型仅确认后开跑
+      if (autoRunIds.length > 0 && window.electronAPI?.invokeAI) {
+        for (let i = 0; i < autoRunIds.length; i++) {
+          const vid = autoRunIds[i];
+          const n = newNodes.find((x) => x.id === vid);
+          if (!n) continue;
+          const d = n.data as Record<string, unknown>;
+          const input = buildDirectorSpawnedVideoInvokeInput(d, { projectId: projectIdForTrim });
+          if (!input) {
+            console.warn(`[Director] 节点 ${vid} 缺少生成参数，跳过自动生成`);
+            continue;
+          }
+          setNodes((nds) =>
+            nds.map((node) =>
+              node.id === vid
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      progress: 1,
+                      progressMessage: isDirectorLipsyncModel(String(d.model || ''))
+                        ? '正在初始化对口型…'
+                        : '正在初始化…',
+                      errorMessage: undefined,
+                    },
+                  }
+                : node,
+            ),
+          );
+          const delay = 50 * i;
+          window.setTimeout(() => {
+            void window.electronAPI
+              ?.invokeAI({
+                modelId: 'video',
+                nodeId: vid,
+                input,
+              })
+              .catch((err: unknown) => {
+                console.error(`[Director] 自动生成失败 ${vid}:`, err);
+                const msg = err instanceof Error ? err.message : '视频生成失败';
+                setNodes((nds) =>
+                  nds.map((node) => {
+                    if (node.id === vid) {
+                      return {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          progress: 0,
+                          errorMessage: msg,
+                        },
+                      };
+                    }
+                    if (node.id !== nodeId || node.type !== 'director') return node;
+                    const shotNo = String(d.directorShotNo || '').trim();
+                    if (!shotNo) return node;
+                    let nextDir = createDefaultDirectorPipelineState(
+                      (node.data as { director?: DirectorPipelineState })?.director || {},
+                    );
+                    nextDir = updateDirectorShotStoryboard(nextDir, shotNo, {
+                      videoStatus: 'error',
+                      videoError: msg,
+                      videoNodeId: vid,
+                    });
+                    return { ...node, data: { ...node.data, director: nextDir } };
+                  }),
+                );
+              });
+          }, delay);
+        }
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  /** MV：分镜图 + 音乐一键写入 VideoSplice 图片轨/音轨 */
+  const invokeDirectorPreviewToSplice = useCallback(
+    (nodeId: string) => {
+      const allNodes = latestNodesRef.current as Node[];
+      const dirNode = allNodes.find((n) => n.id === nodeId);
+      if (!dirNode || dirNode.type !== 'director') return;
+
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      const built = buildDirectorMvImagePreviewClips(director);
+      if (built.videoClips.length === 0) return;
+
+      const videoClips = built.videoClips as TimelineClip[];
+      const audioClips = built.audioClips as TimelineClip[];
+      const linkedId = String(director.linkedSpliceNodeId || '').trim();
+      const existing = linkedId
+        ? allNodes.find((n) => n.id === linkedId && n.type === 'videoSplice')
+        : undefined;
+
+      const dirW = Number(dirNode.data?.width) || 1100;
+      const GAP = 48;
+      const spliceW = 800;
+      const spliceH = 500;
+      // 剪辑模块 previewAspectId 用 16-9 形式，导演 mvAspectRatio 用 16:9
+      const previewAspectId = String(director.mvAspectRatio || '16:9').replace(':', '-');
+
+      const focusSpliceModule = (spliceId: string) => {
+        const fire = () => {
+          window.dispatchEvent(
+            new CustomEvent('nexflow-canvas-focus-nodes', {
+              detail: {
+                nodes: [{ id: spliceId, width: spliceW, height: spliceH }],
+              },
+            }),
+          );
+        };
+        requestAnimationFrame(() => {
+          requestAnimationFrame(fire);
+        });
+        window.setTimeout(fire, 160);
+      };
+
+      if (existing) {
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id === existing.id) {
+              return {
+                ...n,
+                selected: true,
+                data: {
+                  ...n.data,
+                  previewAspectId,
+                  ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
+                    videoTracks: [videoClips],
+                    videoClips,
+                    audioTracks: [audioClips],
+                  }),
+                },
+              };
+            }
+            if (n.id !== nodeId) return { ...n, selected: false };
+            const prev = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            // 图+歌预览留在当前步（确认分镜），不跳到剪辑预览
+            const next = createDefaultDirectorPipelineState({
+              ...prev,
+              linkedSpliceNodeId: existing.id,
+            });
+            return { ...n, selected: false, data: { ...n.data, director: next } };
+          }),
+        );
+        focusSpliceModule(existing.id);
+        return;
+      }
+
+      const spliceId = `videoSplice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const spliceNode: Node = {
+        id: spliceId,
+        type: 'videoSplice',
+        position: {
+          x: dirNode.position.x + dirW + GAP,
+          y: dirNode.position.y,
+        },
+        data: {
+          width: spliceW,
+          height: spliceH,
+          title: 'MV剪辑',
+          previewAspectId,
+          ...applyBuiltClipsToSpliceData(undefined, {
+            videoTracks: [videoClips],
+            videoClips,
+            audioTracks: [audioClips],
+          }),
+        },
+      };
+
+      setNodes((nds) =>
+        nds
+          .map((n) => {
+            if (n.id !== nodeId) return { ...n, selected: false };
+            const prev = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            const next = createDefaultDirectorPipelineState({
+              ...prev,
+              linkedSpliceNodeId: spliceId,
+            });
+            return { ...n, selected: false, data: { ...n.data, director: next } };
+          })
+          .concat({ ...spliceNode, selected: true }),
+      );
+      setEdges((eds) => [
+        ...eds,
+        {
+          id: `e-${nodeId}-${spliceId}-mv`,
+          source: nodeId,
+          target: spliceId,
+          sourceHandle: 'output',
+          targetHandle: 'input',
+        },
+      ]);
+      focusSpliceModule(spliceId);
+    },
+    [setNodes, setEdges],
+  );
+
+  /** 剪辑预览：把已生成视频 + 原曲一键铺进剪辑轨 */
+  const invokeDirectorVideosToSplice = useCallback(
+    (nodeId: string) => {
+      const allNodes = latestNodesRef.current as Node[];
+      const dirNode = allNodes.find((n) => n.id === nodeId);
+      if (!dirNode || dirNode.type !== 'director') return;
+
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      const shotVideos = allNodes
+        .filter(
+          (n) =>
+            n.type === 'video' &&
+            String((n.data as { directorSourceId?: string })?.directorSourceId || '').trim() ===
+              nodeId,
+        )
+        .map((n) => {
+          const d = (n.data || {}) as Record<string, unknown>;
+          // VideoNode 字段为 outputVideo / originalVideoUrl（不是 outputVideoUrl）
+          const media = resolveTimelineMediaFromSource(n);
+          const videoUrl = String(
+            media?.url ||
+              d.outputVideo ||
+              d.originalVideoUrl ||
+              d.outputVideoUrl ||
+              d.videoUrl ||
+              '',
+          ).trim();
+          return {
+            shotNo: String(d.directorShotNo || '').trim(),
+            videoUrl,
+            sourceNodeId: n.id,
+          };
+        })
+        .filter((v) => v.shotNo && v.videoUrl);
+
+      const built = buildDirectorMvVideoPreviewClips(director, shotVideos);
+      if (built.videoClips.length === 0) {
+        console.warn('[Director] 一键入剪辑轨（视频+歌）失败：未找到已生成视频', {
+          directorId: nodeId,
+          matchedNodes: shotVideos.length,
+          shots: (director.shots || []).length,
+        });
+        return;
+      }
+
+      const videoClips = built.videoClips as TimelineClip[];
+      const audioClips = built.audioClips as TimelineClip[];
+      const linkedId = String(director.linkedSpliceNodeId || '').trim();
+      const existing = linkedId
+        ? allNodes.find((n) => n.id === linkedId && n.type === 'videoSplice')
+        : undefined;
+
+      const dirW = Number(dirNode.data?.width) || 1100;
+      const GAP = 48;
+      const spliceW = 800;
+      const spliceH = 500;
+      const previewAspectId = String(director.mvAspectRatio || '16:9').replace(':', '-');
+      // 一键铺轨：整轨替换（勿 merge 旧分镜图占位），避免「点了没反应」
+      const nextSpliceTracks = applyBuiltClipsToSpliceData(undefined, {
+        videoTracks: [videoClips],
+        videoClips,
+        audioTracks: [audioClips],
+      });
+
+      const focusSpliceModule = (spliceId: string) => {
+        const fire = () => {
+          window.dispatchEvent(
+            new CustomEvent('nexflow-canvas-focus-nodes', {
+              detail: {
+                nodes: [{ id: spliceId, width: spliceW, height: spliceH }],
+              },
+            }),
+          );
+        };
+        requestAnimationFrame(() => {
+          requestAnimationFrame(fire);
+        });
+        window.setTimeout(fire, 160);
+      };
+
+      if (existing) {
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id === existing.id) {
+              return {
+                ...n,
+                selected: true,
+                data: {
+                  ...n.data,
+                  previewAspectId,
+                  ...nextSpliceTracks,
+                },
+              };
+            }
+            if (n.id !== nodeId) return { ...n, selected: false };
+            const prev = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            const next = createDefaultDirectorPipelineState({
+              ...prev,
+              linkedSpliceNodeId: existing.id,
+              phase: 'videos',
+            });
+            return { ...n, selected: false, data: { ...n.data, director: next } };
+          }),
+        );
+        focusSpliceModule(existing.id);
+        return;
+      }
+
+      const spliceId = `videoSplice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      const spliceNode: Node = {
+        id: spliceId,
+        type: 'videoSplice',
+        position: {
+          x: dirNode.position.x + dirW + GAP,
+          y: dirNode.position.y,
+        },
+        data: {
+          width: spliceW,
+          height: spliceH,
+          title: 'MV剪辑',
+          previewAspectId,
+          ...nextSpliceTracks,
+        },
+      };
+
+      setNodes((nds) =>
+        nds
+          .map((n) => {
+            if (n.id !== nodeId) return { ...n, selected: false };
+            const prev = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            const next = createDefaultDirectorPipelineState({
+              ...prev,
+              linkedSpliceNodeId: spliceId,
+              phase: 'videos',
+            });
+            return { ...n, selected: false, data: { ...n.data, director: next } };
+          })
+          .concat({ ...spliceNode, selected: true }),
+      );
+      setEdges((eds) => [
+        ...eds,
+        {
+          id: `e-${nodeId}-${spliceId}-mv-vid`,
+          source: nodeId,
+          target: spliceId,
+          sourceHandle: 'output',
+          targetHandle: 'input',
+        },
+      ]);
+      focusSpliceModule(spliceId);
+    },
+    [setNodes, setEdges],
+  );
+
+  const invokeDirectorConfirmGenVideos = useCallback(
+    (nodeId: string) => {
+      invokeSpawnDirectorVideos(nodeId);
+    },
+    [invokeSpawnDirectorVideos],
+  );
+
+  const invokeDirectorExportMv = useCallback(
+    async (nodeId: string) => {
+      const allNodes = latestNodesRef.current as Node[];
+      const dirNode = allNodes.find((n) => n.id === nodeId);
+      if (!dirNode || dirNode.type !== 'director') return;
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      const spliceId = String(director.linkedSpliceNodeId || '').trim();
+      if (!spliceId) {
+        invokeDirectorPreviewToSplice(nodeId);
+      }
+      const latest = latestNodesRef.current as Node[];
+      const dir2 = createDefaultDirectorPipelineState(
+        (
+          latest.find((n) => n.id === nodeId)?.data as { director?: DirectorPipelineState } | undefined
+        )?.director || director,
+      );
+      const sid = String(dir2.linkedSpliceNodeId || spliceId || '').trim();
+      const spliceNode = latest.find((n) => n.id === sid && n.type === 'videoSplice');
+      if (!spliceNode) return;
+
+      const d = (spliceNode.data || {}) as {
+        videoTracks?: TimelineClip[][];
+        videoClips?: TimelineClip[];
+        audioTracks?: TimelineClip[][];
+        previewAspectId?: string;
+        exportOutputWidth?: number;
+        exportOutputHeight?: number;
+        videoTrackVolume?: number[];
+        videoTrackMuted?: boolean[];
+        audioTrackVolume?: number[];
+        audioTrackMuted?: boolean[];
+      };
+      const videoTracks =
+        d.videoTracks && d.videoTracks.length > 0
+          ? d.videoTracks
+          : [Array.isArray(d.videoClips) ? d.videoClips : []];
+      const audioTracks = d.audioTracks && d.audioTracks.length > 0 ? d.audioTracks : [[]];
+      const clips = videoTracks[0] || [];
+      if (!videoTracks.some((t) => t.length > 0)) return;
+
+      const exportDims = resolveSpliceExportDimensions({
+        previewAspectId:
+          d.previewAspectId || String(director.mvAspectRatio || '16:9').replace(':', '-'),
+        exportOutputWidth: d.exportOutputWidth,
+        exportOutputHeight: d.exportOutputHeight,
+      });
+      const payload: VideoSpliceExportPayload = {
+        videoTracks,
+        clips,
+        audioTracks,
+        previewAspectId: exportDims.aspectId,
+        options: {
+          videoTrackVolume: (d.videoTrackVolume || [1]).map((v) => Math.min(2, (v ?? 1) * 2)),
+          videoTrackMuted: d.videoTrackMuted || [false],
+          audioTrackVolume: d.audioTrackVolume || [1],
+          audioTrackMuted: d.audioTrackMuted || [false],
+          outputWidth: exportDims.width,
+          outputHeight: exportDims.height,
+        },
+      };
+      await handleVideoSpliceExportToCanvas(sid, payload);
+    },
+    [handleVideoSpliceExportToCanvas, invokeDirectorPreviewToSplice],
+  );
+
+  /** 导演批量视频 SUCCESS 后：写回表内成片，并按镜号替换关联剪辑轨上的图片占位 */
+  const tryReplaceDirectorMvClipFromVideoNode = useCallback(
+    (videoNodeId: string, videoUrl: string) => {
+      const url = String(videoUrl || '').trim();
+      if (!url) return;
+      const allNodes = latestNodesRef.current as Node[];
+      const videoNode = allNodes.find((n) => n.id === videoNodeId);
+      if (!videoNode || videoNode.type !== 'video') return;
+      const shotNo = String((videoNode.data as { directorShotNo?: string })?.directorShotNo || '').trim();
+      const directorId = String(
+        (videoNode.data as { directorSourceId?: string })?.directorSourceId || '',
+      ).trim();
+      if (!shotNo || !directorId) return;
+
+      const dirNode = allNodes.find((n) => n.id === directorId && n.type === 'director');
+      if (!dirNode) return;
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      const spliceId = String(director.linkedSpliceNodeId || '').trim();
+
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === directorId && n.type === 'director') {
+            let nextDir = createDefaultDirectorPipelineState(
+              (n.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            nextDir = updateDirectorShotStoryboard(nextDir, shotNo, {
+              videoUrl: url,
+              videoStatus: 'ready',
+              videoNodeId,
+              videoError: '',
+            });
+            return { ...n, data: { ...n.data, director: nextDir } };
+          }
+          if (!spliceId || n.id !== spliceId || n.type !== 'videoSplice') return n;
+          const d = n.data as {
+            videoTracks?: TimelineClip[][];
+            videoClips?: TimelineClip[];
+            audioTracks?: TimelineClip[][];
+          };
+          const tracks =
+            d.videoTracks && d.videoTracks.length > 0
+              ? d.videoTracks.map((t) => [...t])
+              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []];
+          const nextTrack0 = replaceDirectorMvPlaceholdersWithVideos(tracks[0] || [], [
+            { shotNo, videoUrl: url, sourceNodeId: videoNodeId },
+          ]) as TimelineClip[];
+          tracks[0] = nextTrack0;
+          const audioTracks = d.audioTracks || [[]];
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
+                videoTracks: tracks,
+                videoClips: nextTrack0,
+                audioTracks,
+              }),
+            },
+          };
+        }),
+      );
+    },
+    [setNodes],
+  );
+
+  tryReplaceDirectorMvClipFromVideoNodeRef.current = tryReplaceDirectorMvClipFromVideoNode;
+
+  /**
+   * 卡死/强退后：表内 videoStatus=generating 会永久转圈。
+   * 从隐藏视频节点 / 任务列表收回已完成成片；无结果且无进行中任务则标为中断，允许重新生成。
+   */
+  const reconcileDirectorGeneratingVideos = useCallback(() => {
+    const allNodes = latestNodesRef.current as Node[];
+    const directors = allNodes.filter((n) => n.type === 'director');
+    if (directors.length === 0) return;
+
+    type Patch =
+      | { kind: 'ready'; directorId: string; shotNo: string; videoNodeId: string; url: string }
+      | { kind: 'interrupt'; directorId: string; shotNo: string };
+
+    const patches: Patch[] = [];
+    const interruptMsg =
+      '生成中断（应用退出），若平台已出片请点重新生成或从任务列表取回';
+
+    const pickNodeVideoUrl = (n: Node | undefined): string => {
+      if (!n || n.type !== 'video') return '';
+      const d = (n.data || {}) as Record<string, unknown>;
+      const a = String(d.originalVideoUrl || '').trim();
+      const b = String(d.outputVideo || '').trim();
+      const c = String(d.outputVideoUrl || '').trim();
+      const durl = String(d.videoUrl || '').trim();
+      for (const u of [a, b, c, durl]) {
+        if (u && !looksLikeAudioMediaUrl(u)) return u;
+      }
+      return '';
+    };
+
+    for (const dirNode of directors) {
+      const director = createDefaultDirectorPipelineState(
+        (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      for (let i = 0; i < (director.shots || []).length; i++) {
+        const shot = director.shots[i];
+        const shotNo = String(shot?.['镜号'] || i + 1).trim();
+        if (!shotNo) continue;
+        const sb = getDirectorShotStoryboard(director, shotNo);
+        if (sb.videoStatus !== 'generating') continue;
+
+        const sbUrl = String(sb.videoUrl || '').trim();
+        if (sbUrl) {
+          patches.push({
+            kind: 'ready',
+            directorId: dirNode.id,
+            shotNo,
+            videoNodeId: String(sb.videoNodeId || '').trim() || `virtual-${shotNo}`,
+            url: sbUrl,
+          });
+          continue;
+        }
+
+        const linkedId = String(sb.videoNodeId || '').trim();
+        let videoNode = linkedId
+          ? allNodes.find((n) => n.id === linkedId && n.type === 'video')
+          : undefined;
+        if (!videoNode) {
+          videoNode = allNodes.find((n) => {
+            if (n.type !== 'video') return false;
+            const d = n.data as { directorSourceId?: string; directorShotNo?: string };
+            return (
+              String(d?.directorSourceId || '').trim() === dirNode.id &&
+              String(d?.directorShotNo || '').trim() === shotNo
+            );
+          });
+        }
+
+        const fromNode = pickNodeVideoUrl(videoNode);
+        if (fromNode && videoNode) {
+          patches.push({
+            kind: 'ready',
+            directorId: dirNode.id,
+            shotNo,
+            videoNodeId: videoNode.id,
+            url: fromNode,
+          });
+          continue;
+        }
+
+        const nodeIdForTask = videoNode?.id || linkedId;
+        const isBusyStatus = (status: unknown) =>
+          ['running', 'processing'].includes(String(status || '').toLowerCase());
+        const isFailedStatus = (status: unknown) =>
+          ['failed', 'error', 'cancelled'].includes(String(status || '').toLowerCase());
+
+        // 重新生成：隐藏视频节点已在跑/刚 spawn，禁止用「同镜旧 success」抢写 ready（否则进度条闪一下就没）
+        if (videoNode && !fromNode) {
+          const d = (videoNode.data || {}) as Record<string, unknown>;
+          const err = String(d.errorMessage || '').trim();
+          const progress = typeof d.progress === 'number' ? Number(d.progress) : 0;
+          const runtime = tasks.find((t) => t.id === `runtime-${videoNode.id}`);
+          const runtimeBusy = !!runtime && isBusyStatus(runtime.status);
+          const exactTasks = tasks.filter(
+            (t) => t.taskType === 'video' && t.nodeId === videoNode.id,
+          );
+          const exactSuccess = exactTasks
+            .filter((t) => t.status === 'success' && String(t.videoUrl || '').trim())
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+          if (exactSuccess?.videoUrl) {
+            patches.push({
+              kind: 'ready',
+              directorId: dirNode.id,
+              shotNo,
+              videoNodeId: videoNode.id,
+              url: String(exactSuccess.videoUrl).trim(),
+            });
+            continue;
+          }
+          const exactRunning = exactTasks.some((t) => isBusyStatus(t.status));
+          if (!err && (runtimeBusy || exactRunning || (progress > 0 && progress < 100))) {
+            continue;
+          }
+          // 刚 spawn、任务尚未登记：有初始化进度则继续等；否则等任务列表水合后走下方中断
+          if (!err && exactTasks.length === 0) {
+            if (!tasksListHydratedRef.current) continue;
+            // progress 未写入且无任务：可能是崩溃残留空节点 → 落到下方 interrupt
+          } else if (exactTasks.some((t) => isFailedStatus(t.status))) {
+            patches.push({ kind: 'interrupt', directorId: dirNode.id, shotNo });
+            continue;
+          } else if (!err) {
+            // 其它未决状态：继续等，勿中断
+            continue;
+          }
+        }
+
+        // 无活节点时才用镜号标题收回（崩溃恢复）；有绑定节点时已在上方处理
+        const relatedTasks = tasks.filter((t) => {
+          if (t.taskType !== 'video') return false;
+          if (nodeIdForTask && t.nodeId === nodeIdForTask) return true;
+          if (
+            !videoNode &&
+            t.nodeTitle &&
+            String(t.nodeTitle).includes(`镜${shotNo}`)
+          ) {
+            return true;
+          }
+          return false;
+        });
+        const successTask = relatedTasks
+          .filter((t) => t.status === 'success' && String(t.videoUrl || '').trim())
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+        if (successTask?.videoUrl) {
+          const url = String(successTask.videoUrl).trim();
+          const vid =
+            videoNode?.id ||
+            (successTask.nodeId && allNodes.some((n) => n.id === successTask.nodeId)
+              ? successTask.nodeId
+              : linkedId) ||
+            `task-${successTask.id}`;
+          patches.push({
+            kind: 'ready',
+            directorId: dirNode.id,
+            shotNo,
+            videoNodeId: vid,
+            url,
+          });
+          continue;
+        }
+
+        const stillRunning = relatedTasks.some(
+          (t) => isBusyStatus(t.status) && !!String(t.runningHubTaskId || '').trim(),
+        );
+        if (stillRunning) continue;
+        // 任务列表未加载完时不误判中断
+        if (!tasksListHydratedRef.current) continue;
+
+        patches.push({ kind: 'interrupt', directorId: dirNode.id, shotNo });
+      }
+    }
+
+    if (patches.length === 0) return;
+
+    const ready = patches.filter((p): p is Extract<Patch, { kind: 'ready' }> => p.kind === 'ready');
+    const interrupts = patches.filter(
+      (p): p is Extract<Patch, { kind: 'interrupt' }> => p.kind === 'interrupt',
+    );
+
+    console.log('[Director] 收回卡住的成片状态', {
+      ready: ready.length,
+      interrupt: interrupts.length,
+    });
+
+    setNodes((nds) => {
+      let next = nds.map((n) => {
+        if (n.type === 'video') {
+          const hit = ready.find((r) => r.videoNodeId === n.id);
+          if (!hit) return n;
+          const d = (n.data || {}) as Record<string, unknown>;
+          if (pickNodeVideoUrl(n)) return n;
+          return {
+            ...n,
+            data: {
+              ...d,
+              outputVideo: hit.url,
+              originalVideoUrl: hit.url,
+              progress: 100,
+              progressMessage: '',
+              errorMessage: undefined,
+            },
+          };
+        }
+        if (n.type !== 'director') return n;
+        const mineReady = ready.filter((r) => r.directorId === n.id);
+        const mineInt = interrupts.filter((r) => r.directorId === n.id);
+        if (mineReady.length === 0 && mineInt.length === 0) return n;
+        let nextDir = createDefaultDirectorPipelineState(
+          (n.data as { director?: DirectorPipelineState })?.director || {},
+        );
+        for (const r of mineReady) {
+          nextDir = updateDirectorShotStoryboard(nextDir, r.shotNo, {
+            videoUrl: r.url,
+            videoStatus: 'ready',
+            videoNodeId: r.videoNodeId.startsWith('task-') || r.videoNodeId.startsWith('virtual-')
+              ? String(getDirectorShotStoryboard(nextDir, r.shotNo).videoNodeId || '')
+              : r.videoNodeId,
+            videoError: '',
+          });
+        }
+        for (const r of mineInt) {
+          nextDir = updateDirectorShotStoryboard(nextDir, r.shotNo, {
+            videoStatus: 'error',
+            videoError: interruptMsg,
+            videoUrl: '',
+          });
+        }
+        return { ...n, data: { ...n.data, director: nextDir } };
+      });
+
+      // 写回关联剪辑轨占位
+      for (const r of ready) {
+        const dirNode = next.find((n) => n.id === r.directorId && n.type === 'director');
+        if (!dirNode) continue;
+        const director = createDefaultDirectorPipelineState(
+          (dirNode.data as { director?: DirectorPipelineState })?.director || {},
+        );
+        const spliceId = String(director.linkedSpliceNodeId || '').trim();
+        if (!spliceId) continue;
+        next = next.map((n) => {
+          if (n.id !== spliceId || n.type !== 'videoSplice') return n;
+          const d = n.data as {
+            videoTracks?: TimelineClip[][];
+            videoClips?: TimelineClip[];
+            audioTracks?: TimelineClip[][];
+          };
+          const tracks =
+            d.videoTracks && d.videoTracks.length > 0
+              ? d.videoTracks.map((t) => [...t])
+              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []];
+          const nextTrack0 = replaceDirectorMvPlaceholdersWithVideos(tracks[0] || [], [
+            { shotNo: r.shotNo, videoUrl: r.url, sourceNodeId: r.videoNodeId },
+          ]) as TimelineClip[];
+          tracks[0] = nextTrack0;
+          const audioTracks = d.audioTracks || [[]];
+          return {
+            ...n,
+            data: {
+              ...n.data,
+              ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
+                videoTracks: tracks,
+                videoClips: nextTrack0,
+                audioTracks,
+              }),
+            },
+          };
+        });
+      }
+      return next;
+    });
+  }, [setNodes, tasks]);
+
+  const directorVideoReconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!projectId) return;
+    if (hydratedProjectIdRef.current !== projectId) return;
+    const hasGenerating = (latestNodesRef.current as Node[]).some((n) => {
+      if (n.type !== 'director') return false;
+      const director = createDefaultDirectorPipelineState(
+        (n.data as { director?: DirectorPipelineState })?.director || {},
+      );
+      return (director.shots || []).some((shot, i) => {
+        const shotNo = String(shot?.['镜号'] || i + 1).trim();
+        return getDirectorShotStoryboard(director, shotNo).videoStatus === 'generating';
+      });
+    });
+    if (!hasGenerating) return;
+    if (directorVideoReconcileTimerRef.current) clearTimeout(directorVideoReconcileTimerRef.current);
+    directorVideoReconcileTimerRef.current = setTimeout(() => {
+      reconcileDirectorGeneratingVideos();
+    }, 600);
+    return () => {
+      if (directorVideoReconcileTimerRef.current) clearTimeout(directorVideoReconcileTimerRef.current);
+    };
+  }, [projectId, nodes, tasks, reconcileDirectorGeneratingVideos]);
+
+  const invokeSpawnStoryboardSelectedImages = useCallback(
+    (nodeId: string) => {
+      const allNodes = latestNodesRef.current as Node[];
+      const sbNode = allNodes.find((n) => n.id === nodeId);
+      if (!sbNode || sbNode.type !== 'storyboardScript') return;
+
+      const script = createDefaultStoryboardScriptState((sbNode.data as { storyboardScript?: StoryboardScriptState })?.storyboardScript || {});
+      const selectedIndexes = script.selectedRowIndexes || [];
+      if (selectedIndexes.length === 0) return;
+
+      const sbW = Number(sbNode.data?.width) || 1024;
+      const sbH = Number(sbNode.data?.height) || 576;
+      const GAP = 48;
+      const imageSize = imageNodeSizeForAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
+      const nodeW = imageSize?.w ?? IMAGE_NODE_DEFAULT_W;
+      const nodeH = imageSize?.h ?? IMAGE_NODE_DEFAULT_H;
+      const baseX = sbNode.position.x + sbW + GAP;
+      const baseY = sbNode.position.y + Math.max(0, (sbH - nodeH) / 2);
+
+      const newNodes: Node[] = [];
+      const newEdges: Edge[] = [];
+      const ts = Date.now();
+      let spawnIndex = 0;
+
+      for (const rowIdx of selectedIndexes) {
+        const row = script.rows[rowIdx];
+        if (!row) continue;
+        const prompt = String(row['图片提示词'] || '').trim();
+        if (!prompt) continue;
+
+        const newId = `image-${ts}-${spawnIndex}-${Math.random().toString(36).slice(2, 6)}`;
+        const shotNo = row['镜号'] || String(rowIdx + 1);
+        newNodes.push({
+          id: newId,
+          type: 'image',
+          position: { x: baseX, y: baseY + spawnIndex * (nodeH + GAP) },
+          data: {
+            label: '分镜图片',
+            width: nodeW,
+            height: nodeH,
+            title: `镜${shotNo}`,
+            resolution: '1k',
+            aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
+            model: 'banana-2.0',
+            seedreamWidth: 2048,
+            seedreamHeight: 2048,
+            prompt,
+          },
+        });
+        newEdges.push({
+          id: `e-${nodeId}-${newId}-${ts}-${spawnIndex}`,
+          source: nodeId,
+          sourceHandle: 'output',
+          target: newId,
+          targetHandle: 'input',
+        });
+        spawnIndex += 1;
+      }
+
+      if (newNodes.length === 0) return;
+      setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNodes));
+      setEdges((eds) => eds.concat(newEdges));
+      setTimeout(() => saveHistory('general'), 0);
+    },
+    [setNodes, setEdges, saveHistory],
+  );
+
   const invokeRvcTrainNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     setNodes((nds) =>
       nds.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...updates } } : n)),
@@ -5395,14 +8020,34 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const invokePhotoCollageNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handlePhotoCollageNodeDataChangeRef.current?.(nodeId, updates);
   }, []);
+  const invokeGridMapNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    handleGridMapNodeDataChangeRef.current?.(nodeId, updates);
+  }, []);
+  const invokeImageComparerNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    handleImageComparerNodeDataChangeRef.current?.(nodeId, updates);
+  }, []);
+  const pickImageFromCanvasForGridMapRef = useRef<(() => Promise<string | null>) | null>(null);
+  const invokePickImageFromCanvasForGridMap = useCallback(() => {
+    return pickImageFromCanvasForGridMapRef.current?.() ?? Promise.resolve(null);
+  }, []);
+  const pickVideoFromCanvasRef = useRef<(() => Promise<string | null>) | null>(null);
+  const invokePickVideoFromCanvas = useCallback(() => {
+    return pickVideoFromCanvasRef.current?.() ?? Promise.resolve(null);
+  }, []);
   const invokeCleanupSplitEdges = useCallback((nodeId: string, keepSourceHandles: string[]) => {
     handleCleanupSplitEdgesRef.current?.(nodeId, keepSourceHandles);
   }, []);
-  const invokeAuxImageTaskComplete = useCallback((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle'; imageUrl: string; imageUrls?: string[] }) => {
+  const invokeAuxImageTaskComplete = useCallback((params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle' | 'upscale-v3'; imageUrl: string; imageUrls?: string[] }) => {
     handleAuxImageTaskCompleteRef.current?.(params);
   }, []);
   const [previewImageNodeId, setPreviewImageNodeId] = useState<string | null>(null);
   const handlePreviewImageFromNode = useCallback((url: string, nodeId?: string) => {
+    // 同一节点再次触发预览 → 关闭（再点一下关闭）
+    if (previewImage && (nodeId ? previewImageNodeId === nodeId : previewImage === url)) {
+      setPreviewImage(null);
+      setPreviewImageNodeId(null);
+      return;
+    }
     setSelectedNode(null);
     setLlmInputPanelData(null);
     setImageInputPanelData(null);
@@ -5412,7 +8057,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     setAudioInputPanelData(null);
     setPreviewImage(url);
     setPreviewImageNodeId(nodeId ?? null);
-  }, []);
+  }, [previewImage, previewImageNodeId]);
 
   const previewCanImportToCanvas = useMemo(() => {
     if (!previewImageNodeId) return false;
@@ -5524,7 +8169,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
     const logicalW = assetWidth && assetWidth > 0 ? assetWidth : 720;
     const logicalH = assetHeight && assetHeight > 0 ? assetHeight : 1024;
-    const baseW = 369.46;
+    const baseW = IMAGE_NODE_DEFAULT_W;
     const aspect = logicalW / Math.max(logicalH, 1);
     let nodeW = baseW;
     let nodeH = baseW / aspect;
@@ -5670,26 +8315,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     setDrawingBoardForImage({ imageUrl: url, nodeId, localPath });
   }, []);
 
-  const handleOpenPanoramaPlacement = useCallback(
-    (params: { nodeId: string; imageUrl: string; localPath?: string; pixelWidth?: number; pixelHeight?: number }) => {
-      setSelectedNode(null);
-      setLlmInputPanelData(null);
-      setImageInputPanelData(null);
-        setImageTo3dInputPanelData(null);
-      setVideoInputPanelData(null);
-      setCharacterInputPanelData(null);
-      setAudioInputPanelData(null);
-      setPanoramaPlacementFillHost(false);
-      setPanoramaPlacementForImage({
-        nodeId: params.nodeId,
-        textureUrl: params.imageUrl,
-        pixelW: params.pixelWidth,
-        pixelH: params.pixelHeight,
-      });
-    },
-    []
-  );
-
   /** [极小缩放静态化] Zoom < 5% 时渲染极简占位，减少小比例下重绘。skipPlaceholder=true 时始终渲染真实组件，避免 image/text 节点缩放时重挂载导致图像刷新 */
   const withTinyZoomStatic = useCallback(
     (NodeComp: React.ComponentType<any>, areEqual?: (prev: any, next: any) => boolean, skipPlaceholder = false) => {
@@ -5779,6 +8404,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (pa.imageAsset?.height !== na.imageAsset?.height) return false;
       if (pa.tinyThumbUrl !== na.tinyThumbUrl) return false;
       if (pa.avgColorHex !== na.avgColorHex) return false;
+      if (pa.open3DPopover !== na.open3DPopover) return false;
+      if (pa.isCameraViewModule !== na.isCameraViewModule) return false;
+      if (pa.viewMode !== na.viewMode) return false;
+      if (pa.sceneDisplay3dUrl !== na.sceneDisplay3dUrl) return false;
       // 位置必须参与比较，否则移动节点后不重渲染，子组件内仍用旧的 xPos/yPos（如一键拆分落点）
       if ((prev as any).xPos !== (next as any).xPos || (prev as any).yPos !== (next as any).yPos) return false;
       return true;
@@ -5799,7 +8428,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             onAuxImageTaskComplete={invokeAuxImageTaskComplete}
             onPreviewImage={handlePreviewImageFromNode}
             onOpenDrawingBoard={handleOpenDrawingBoard}
-            onOpenPanoramaPlacement={handleOpenPanoramaPlacement}
           />
           );
         },
@@ -5834,6 +8462,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             performanceMode={isPerformanceMode}
             onDataChange={invokeVideoNodeDataChange}
             onAddFrameSplitNodes={handleAddCanvasImageNodes}
+            onAddVideoClipNodes={handleAddVideoClipNodes}
             interactionSettings={videoInteractionSettings}
           />
           );
@@ -5934,6 +8563,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           performanceMode={isPerformanceMode}
           onDataChange={invokeAudioNodeDataChange}
           onSeparateAllAudios={invokeSeparateAllAudios}
+          onAddAudioClipNodes={handleAddVideoClipNodes}
           syncAudioPanelReferenceUrl={(url) => {
             setAudioInputPanelData((prev) =>
               prev && prev.nodeId === props.id ? { ...prev, referenceAudioUrl: url } : prev,
@@ -5966,7 +8596,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       React.memo((props: any) => {
         const { isDarkMode, performanceMode } = useCanvasTheme();
         return (
-        <TextSplitNode {...props} isDarkMode={isDarkMode} performanceMode={isPerformanceMode} onCleanupEdgesForHandles={invokeCleanupSplitEdges} />
+        <TextSplitNode {...props} isDarkMode={isDarkMode} performanceMode={isPerformanceMode} onCleanupEdgesForHandles={invokeCleanupSplitEdges} onDataChange={(updates) => invokeTextSplitNodeDataChange(props.id, updates)} />
         );
       }, nodeArePropsEqual),
       nodeArePropsEqual
@@ -6034,6 +8664,72 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
     (PhotoCollageNodeWrapper as any).displayName = 'PhotoCollageNodeWrapper';
 
+    const gridMapAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      if (pa.gridCols !== na.gridCols || pa.gridRows !== na.gridRows) return false;
+      if (pa.canvasW !== na.canvasW || pa.canvasH !== na.canvasH) return false;
+      if (pa.gapPx !== na.gapPx) return false;
+      if (JSON.stringify(pa.cells || []) !== JSON.stringify(na.cells || [])) return false;
+      return true;
+    };
+    const GridMapNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => {
+          const { isDarkMode } = useCanvasTheme();
+          return (
+            <GridMapNode
+              {...props}
+              projectId={projectId}
+              isDarkMode={isDarkMode}
+              onDataChange={invokeGridMapNodeDataChange}
+              onExportToCanvas={handleGridMapExportToCanvas}
+              onPickImageFromCanvas={invokePickImageFromCanvasForGridMap}
+            />
+          );
+        },
+        gridMapAreEqual,
+      ),
+      gridMapAreEqual,
+      true,
+    );
+    (GridMapNodeWrapper as any).displayName = 'GridMapNodeWrapper';
+
+    const imageComparerAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      if (pa.imageAUrl !== na.imageAUrl || pa.imageBUrl !== na.imageBUrl) return false;
+      if (pa.imageASourceNodeId !== na.imageASourceNodeId || pa.imageBSourceNodeId !== na.imageBSourceNodeId) return false;
+      if (pa.splitRatio !== na.splitRatio) return false;
+      if (pa.aspectRatio !== na.aspectRatio) return false;
+      if (pa.mediaWidth !== na.mediaWidth || pa.mediaHeight !== na.mediaHeight) return false;
+      if (pa.isUserResized !== na.isUserResized) return false;
+      return true;
+    };
+    const ImageComparerNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => {
+          const { isDarkMode } = useCanvasTheme();
+          return (
+            <ImageComparerNode
+              {...props}
+              projectId={projectId}
+              isDarkMode={isDarkMode}
+              onDataChange={invokeImageComparerNodeDataChange}
+            />
+          );
+        },
+        imageComparerAreEqual,
+      ),
+      imageComparerAreEqual,
+      true,
+    );
+    (ImageComparerNodeWrapper as any).displayName = 'ImageComparerNodeWrapper';
+
     const imageTo3dAreEqual = (prev: any, next: any) => {
       if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
       const pa = prev.data || {};
@@ -6070,6 +8766,103 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       true, // 缩放画布时不卸载 WebGL，避免贴图重载与卡顿
     );
     (ImageTo3dNodeWrapper as any).displayName = 'ImageTo3dNodeWrapper';
+
+    const storyboardScriptAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      if (pa.isGenerating !== na.isGenerating || pa.error !== na.error) return false;
+      if (pa.userPrompt !== na.userPrompt || pa.chatModel !== na.chatModel || pa.title !== na.title) return false;
+      if (JSON.stringify(pa.storyboardScript) !== JSON.stringify(na.storyboardScript)) return false;
+      return true;
+    };
+    const StoryboardScriptNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <StoryboardScriptNode
+            {...props}
+            data={{
+              ...props.data,
+              onUpdate: (updates) => invokeStoryboardScriptNodeDataChange(props.id, updates),
+              onSpawnSelectedImages: () => invokeSpawnStoryboardSelectedImages(props.id),
+            }}
+          />
+        ),
+        storyboardScriptAreEqual,
+      ),
+      storyboardScriptAreEqual,
+      true,
+    );
+    (StoryboardScriptNodeWrapper as any).displayName = 'StoryboardScriptNodeWrapper';
+
+    const scriptAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.text !== na.text || pa.title !== na.title) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const ScriptNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <ScriptNode
+            {...props}
+            data={{
+              ...props.data,
+              onUpdate: (updates: Record<string, unknown>) => invokeScriptNodeDataChange(props.id, updates),
+            }}
+          />
+        ),
+        scriptAreEqual,
+      ),
+      scriptAreEqual,
+      true,
+    );
+    (ScriptNodeWrapper as any).displayName = 'ScriptNodeWrapper';
+
+    const directorAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      if (pa.isGenerating !== na.isGenerating || pa.error !== na.error) return false;
+      if (pa.userPrompt !== na.userPrompt || pa.title !== na.title) return false;
+      if (JSON.stringify(pa.director) !== JSON.stringify(na.director)) return false;
+      return true;
+    };
+    const DirectorNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DirectorNode
+            {...props}
+            data={{
+              ...props.data,
+              projectId,
+              onUpdate: (updates: Record<string, unknown>) => invokeDirectorNodeDataChange(props.id, updates),
+              onSpawnVideos: (opts?: {
+                shotNos?: string[];
+                startLipsync?: boolean;
+                lipsyncShotNos?: string[];
+              }) => invokeSpawnDirectorVideos(props.id, opts),
+              onPreviewToSplice: () => invokeDirectorPreviewToSplice(props.id),
+              onVideosToSplice: () => invokeDirectorVideosToSplice(props.id),
+              onConfirmGenVideos: () => invokeDirectorConfirmGenVideos(props.id),
+              onExportMv: () => {
+                void invokeDirectorExportMv(props.id);
+              },
+              onPickImageFromCanvas: () => invokePickImageFromCanvasForGridMap(),
+              onPickVideoFromCanvas: () => invokePickVideoFromCanvas(),
+            }}
+          />
+        ),
+        directorAreEqual,
+      ),
+      directorAreEqual,
+      true,
+    );
+    (DirectorNodeWrapper as any).displayName = 'DirectorNodeWrapper';
 
     const rvcTrainAreEqual = (prev: any, next: any) => {
       if (prev.id !== next.id || prev.selected !== next.selected) return false;
@@ -6109,7 +8902,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       heyGem: HeyGemNodeWrapper,
       videoSplice: VideoSpliceNodeWrapper,
       photoCollage: PhotoCollageNodeWrapper,
+      gridMap: GridMapNodeWrapper,
+      imageComparer: ImageComparerNodeWrapper,
       imageTo3d: ImageTo3dNodeWrapper,
+      storyboardScript: StoryboardScriptNodeWrapper,
+      script: ScriptNodeWrapper,
+      director: DirectorNodeWrapper,
       rvcTrain: RvcTrainNodeWrapper,
       character: CharacterNodeWrapper,
       digitalHuman: DigitalHumanNodeWrapper,
@@ -6118,7 +8916,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       textSplit: TextSplitNodeWrapper,
       cameraControl: CameraControlNodeWrapper,
     };
-  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeSeparateAllAudios, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeImageTo3dNodeDataChange, invokeRvcTrainNodeDataChange, handlePhotoCollageExportToCanvas, handleAddCanvasImageNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, handleOpenPanoramaPlacement, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual]);
+  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeTextSplitNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeSeparateAllAudios, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeGridMapNodeDataChange, invokeImageComparerNodeDataChange, invokePickImageFromCanvasForGridMap, invokePickVideoFromCanvas, invokeImageTo3dNodeDataChange, invokeStoryboardScriptNodeDataChange, invokeSpawnStoryboardSelectedImages, invokeScriptNodeDataChange, invokeDirectorNodeDataChange, invokeSpawnDirectorVideos, invokeDirectorPreviewToSplice, invokeDirectorVideosToSplice, invokeDirectorConfirmGenVideos, invokeDirectorExportMv, invokeRvcTrainNodeDataChange, handlePhotoCollageExportToCanvas, handleGridMapExportToCanvas, handleAddCanvasImageNodes, handleAddVideoClipNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual, GRID_MAP_HMR_REV]);
 
   // 连接节点（拖拽中的临时线为虚线，连接完成后的线为实线）
   const onConnect = useCallback(
@@ -6151,6 +8949,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           targetHandle = 'input';
         } else if (targetNode && targetNode.type === 'photoCollage') {
           targetHandle = 'input';
+        } else if (targetNode && targetNode.type === 'gridMap') {
+          targetHandle = 'input';
+        } else if (targetNode && targetNode.type === 'imageComparer') {
+          targetHandle = pickImageComparerTargetHandle(
+            latestEdgesRef.current as Edge[],
+            params.target,
+            params.targetHandle,
+          );
         } else if (targetNode && targetNode.type === 'imageTo3d') {
           targetHandle = 'input';
         } else if (targetNode && targetNode.type === 'rvcTrain') {
@@ -6166,8 +8972,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
       }
       
-      const sourceNodeForEdge = params.source ? nodes.find((n) => n.id === params.source) : null;
-      const targetNodeForEdge = params.target ? nodes.find((n) => n.id === params.target) : null;
+      const sourceNodeForEdge = params.source
+        ? (latestNodesRef.current.find((n) => n.id === params.source) ??
+            nodes.find((n) => n.id === params.source) ??
+            null)
+        : null;
+      const targetNodeForEdge = params.target
+        ? (latestNodesRef.current.find((n) => n.id === params.target) ??
+            nodes.find((n) => n.id === params.target) ??
+            null)
+        : null;
       const characterEdgeCarriesStill =
         sourceNodeForEdge?.type === 'character' &&
         targetNodeForEdge &&
@@ -6186,14 +9000,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
       }
       let sourceHandle = params.sourceHandle;
-      if (!sourceHandle && sourceNodeForEdge?.type === 'textSplit') {
-        sourceHandle = 'output-0';
+      if (sourceNodeForEdge?.type === 'textSplit') {
+        sourceHandle = normalizeTextSplitSourceHandle(sourceHandle);
       } else if (!sourceHandle && sourceNodeForEdge?.type === 'character') {
         sourceHandle = 'output';
       } else if (!sourceHandle) {
         sourceHandle = 'output';
       }
       let videoSrc: string | undefined;
+      let audioSrc: string | undefined;
       if (
         sourceNodeForEdge &&
         targetNodeForEdge?.type === 'videoSplice'
@@ -6201,11 +9016,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (sourceNodeForEdge.type === 'digitalHuman' && isDigitalHumanVideoOutputHandle(sourceHandle)) {
           const raw = pickDigitalHumanVideoUrl(sourceNodeForEdge.data as Record<string, unknown>);
           if (raw) videoSrc = normalizeVideoUrl(raw);
+        } else if (sourceNodeForEdge.type === 'digitalHuman' && isDigitalHumanAudioOutputHandle(sourceHandle)) {
+          const raw = pickDigitalHumanAudioUrl(sourceNodeForEdge.data as Record<string, unknown>);
+          if (raw) audioSrc = normalizeVideoUrl(raw);
         } else if (isVideoTrackSourceNodeType(sourceNodeForEdge.type)) {
           const raw = String(
             sourceNodeForEdge.data?.outputVideo || sourceNodeForEdge.data?.originalVideoUrl || '',
           ).trim();
           if (raw) videoSrc = normalizeVideoUrl(raw);
+        } else if (sourceNodeForEdge.type === 'audio') {
+          const raw = pickAudioOutputUrlFromAudioNodeData(
+            sourceNodeForEdge.data as Record<string, unknown>,
+          );
+          if (raw) audioSrc = normalizeVideoUrl(raw);
         }
       }
       const newEdge = {
@@ -6216,6 +9039,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           ...((params as any).data || {}),
           ...(imageAsset ? { imageAsset } : {}),
           ...(videoSrc ? { videoSrc } : {}),
+          ...(audioSrc ? { audioSrc } : {}),
         },
         // 不设置 strokeDasharray，使用全局样式：
         //  - 拖拽中的临时连线：虚线（通过 CSS .react-flow__edge-connecting 控制）
@@ -6225,13 +9049,24 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       
       // 添加新边
       setEdges((eds) => {
-        const updatedEdges = addEdge(newEdge, eds);
+          let baseEds = eds;
+          // 图片对比：同一槽位仅保留一条入边
+          if (
+            params.target &&
+            targetNodeForEdge?.type === 'imageComparer' &&
+            (targetHandle === 'image_a' || targetHandle === 'image_b')
+          ) {
+            baseEds = eds.filter(
+              (e) => !(e.target === params.target && e.targetHandle === targetHandle),
+            );
+          }
+          const updatedEdges = addEdge(newEdge, baseEds);
         
-        // 如果连接的是 Image / Video 节点，根据源节点类型处理
-        if (params.target) {
-          setNodes((nds) => {
-            const targetNode = nds.find((n) => n.id === params.target);
-            const sourceNode = nds.find((n) => n.id === params.source);
+          // 如果连接的是 Image / Video 节点，根据源节点类型处理
+          if (params.target) {
+            setNodes((nds) => {
+              const targetNode = nds.find((n) => n.id === params.target);
+              const sourceNode = nds.find((n) => n.id === params.source);
             
             if (targetNode && targetNode.type === 'textSplit' && sourceNode) {
               let textToSplit = '';
@@ -6257,9 +9092,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 nds,
                 targetNode.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
               );
+              const connectedIds = collectSpliceIncomingSourceIds(params.target!, updatedEdges);
+              // 有新接入片段（如音频）时必须写入；wouldDrop 时仍靠 connectedIds 保留旧轨
+              const blockDropOnly =
+                spliceRebuildWouldDropConnected(targetNode.data, built, connectedIds) &&
+                !spliceBuiltHasNewConnectedSources(targetNode.data, built);
+              if (blockDropOnly) {
+                return nds;
+              }
               return nds.map((node) =>
                 node.id === params.target
-                  ? { ...node, data: { ...node.data, ...applyBuiltClipsToSpliceData(node.data, built) } }
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        ...applyBuiltClipsToSpliceData(node.data, built, connectedIds),
+                      },
+                    }
                   : node,
               );
             }
@@ -6351,8 +9200,45 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               );
             }
 
+            if (targetNode && targetNode.type === 'gridMap') {
+              const cols = Number(targetNode.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+              const rows = Number(targetNode.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+              const prevCells = ((targetNode.data?.cells || []) as GridMapCell[]).slice();
+              const nextCells = buildGridMapCellsFromEdges(
+                params.target!,
+                updatedEdges,
+                nds,
+                prevCells,
+                cols,
+                rows,
+              );
+              return nds.map((node) =>
+                node.id === params.target
+                  ? { ...node, data: { ...node.data, cells: nextCells } }
+                  : node,
+              );
+            }
+
+            if (targetNode && targetNode.type === 'imageComparer') {
+              const urls = buildImageComparerUrlsFromEdges(params.target!, updatedEdges, nds);
+              return nds.map((node) =>
+                node.id === params.target
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        imageAUrl: urls.imageAUrl,
+                        imageBUrl: urls.imageBUrl,
+                        imageASourceNodeId: urls.imageASourceNodeId,
+                        imageBSourceNodeId: urls.imageBSourceNodeId,
+                      },
+                    }
+                  : node,
+              );
+            }
+
             if (targetNode && targetNode.type === 'image') {
-              // Text/LLM/文本拆分/Image/角色 连接到 Image：收集 prompt + inputImages（角色以 avatar 作为参考图）
+              // Text/LLM/文本拆分/Image/角色/分镜脚本 连接到 Image：收集 prompt + inputImages
               if (
                 sourceNode &&
                 (sourceNode.type === 'minimalistText' ||
@@ -6360,12 +9246,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   sourceNode.type === 'llm' ||
                   sourceNode.type === 'textSplit' ||
                   sourceNode.type === 'image' ||
-                  sourceNode.type === 'character')
+                  sourceNode.type === 'character' ||
+                  sourceNode.type === 'storyboardScript')
               ) {
                 const textSourceEdges = updatedEdges.filter((e) => {
                   if (e.target !== params.target) return false;
                   const src = nds.find((n) => n.id === e.source);
-                  return src && (src.type === 'minimalistText' || src.type === 'text' || src.type === 'llm' || src.type === 'textSplit' || src.type === 'image');
+                  return (
+                    src &&
+                    (src.type === 'minimalistText' ||
+                      src.type === 'text' ||
+                      src.type === 'llm' ||
+                      src.type === 'textSplit' ||
+                      src.type === 'image' ||
+                      src.type === 'storyboardScript')
+                  );
                 });
                 const imageSourceEdges = updatedEdges.filter((e) => {
                   if (e.target !== params.target) return false;
@@ -6385,11 +9280,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     if (src.data?.text) parts.push(String(src.data.text).trim());
                   } else if (src.type === 'llm' && src.data?.outputText) {
                     parts.push(String(src.data.outputText).trim());
-                  } else if (src.type === 'textSplit' && src.data?.segments) {
-                    const sh = edge.sourceHandle || '';
-                    const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-                    const seg = src.data.segments as (string | number | boolean)[];
-                    if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+                  } else if (src.type === 'textSplit') {
+                    const segText = pickTextSplitSegmentText(src.data, 
+                      edge.sourceHandle,
+                    );
+                    if (segText) parts.push(segText);
+                  } else if (src.type === 'storyboardScript') {
+                    const sbPrompt = pickStoryboardScriptPromptsForDownstream(src, 'image');
+                    if (sbPrompt) parts.push(sbPrompt);
                   } else if (src.type === 'image') {
                     const pp = src.data?.prompt_payload as { qwen_instruction?: string; prompt_metadata?: { formatted_output?: string }; full_camera_prompt?: string; camera_tags?: string } | undefined;
                     const cameraPrompt = pp?.qwen_instruction || pp?.prompt_metadata?.formatted_output || pp?.full_camera_prompt || pp?.camera_tags || '';
@@ -6710,11 +9608,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }
 
               if (sourceNode && sourceNode.type === 'character') {
-                const newInputImages = collectVideoTargetInputImagesFromEdges(
+                const fromEdges = collectVideoTargetInputImagesFromEdges(
                   params.target!,
                   nds,
                   updatedEdges,
                 );
+                const cur =
+                  (nds.find((n) => n.id === params.target)?.data?.inputImages as string[] | undefined) || [];
+                const newInputImages = mergeInputImagesPreserveOrder(cur, fromEdges);
                 if (newInputImages.length === 0) return nds;
                 for (const imageUrl of newInputImages) {
                   const isLocalFile =
@@ -6781,18 +9682,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 (sourceNode.type === 'minimalistText' ||
                   sourceNode.type === 'text' ||
                   sourceNode.type === 'llm' ||
-                  sourceNode.type === 'textSplit')
+                  sourceNode.type === 'textSplit' ||
+                  sourceNode.type === 'storyboardScript')
               ) {
                 let textToPass = '';
                 if (sourceNode.type === 'minimalistText' || sourceNode.type === 'text') {
                   textToPass = sourceNode.data?.text || '';
                 } else if (sourceNode.type === 'llm') {
                   textToPass = sourceNode.data?.outputText || '';
-                } else if (sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-                  const sh = params.sourceHandle || '';
-                  const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : 0;
-                  const seg = sourceNode.data.segments as (string | number | boolean)[];
-                  if (Number.isInteger(idx) && seg[idx] !== undefined) textToPass = String(seg[idx]);
+                } else if (sourceNode.type === 'textSplit') {
+                  textToPass = pickTextSplitSegmentText(sourceNode.data, 
+                    params.sourceHandle,
+                  );
+                } else if (sourceNode.type === 'storyboardScript') {
+                  textToPass = pickStoryboardScriptPromptsForDownstream(sourceNode, 'video');
                 }
 
                 const updatedNodes = nds.map((node) => {
@@ -6901,14 +9804,147 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             }
 
             // 文本节点：接受文本拆分模块的输出，写入 data.text
-            if (targetNode && targetNode.type === 'minimalistText' && sourceNode && sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-              const sh = params.sourceHandle || '';
-              const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : 0;
-              const seg = sourceNode.data.segments as (string | number | boolean)[];
-              const textToPass = Number.isInteger(idx) && seg[idx] !== undefined ? String(seg[idx]) : '';
+            if (
+              targetNode &&
+              (targetNode.type === 'minimalistText' || targetNode.type === 'text') &&
+              sourceNode &&
+              sourceNode.type === 'textSplit'
+            ) {
+              const textToPass = pickTextSplitSegmentText(sourceNode.data, params.sourceHandle);
               return nds.map((node) =>
                 node.id === params.target ? { ...node, data: { ...node.data, text: textToPass } } : node
               );
+            }
+
+            // 剧本节点：上游文本灌入 text
+            if (
+              targetNode &&
+              targetNode.type === 'script' &&
+              (sourceNode?.type === 'minimalistText' ||
+                sourceNode?.type === 'text' ||
+                sourceNode?.type === 'llm' ||
+                sourceNode?.type === 'textSplit')
+            ) {
+              let textToPass = '';
+              if (sourceNode.type === 'minimalistText' || sourceNode.type === 'text') {
+                textToPass = String(sourceNode.data?.text || '').trim();
+              } else if (sourceNode.type === 'llm') {
+                textToPass = String(sourceNode.data?.outputText || sourceNode.data?.text || '').trim();
+              } else if (sourceNode.type === 'textSplit') {
+                textToPass = pickTextSplitSegmentText(sourceNode.data, params.sourceHandle);
+              }
+              if (textToPass) {
+                return nds.map((node) =>
+                  node.id === params.target ? { ...node, data: { ...node.data, text: textToPass } } : node,
+                );
+              }
+            }
+
+            // 导演节点：剧本 / 文本上游灌入 director.scriptText
+            if (
+              targetNode &&
+              targetNode.type === 'director' &&
+              (sourceNode?.type === 'script' ||
+                sourceNode?.type === 'minimalistText' ||
+                sourceNode?.type === 'text' ||
+                sourceNode?.type === 'llm' ||
+                sourceNode?.type === 'textSplit')
+            ) {
+              let textToPass = '';
+              if (sourceNode.type === 'script' || sourceNode.type === 'minimalistText' || sourceNode.type === 'text') {
+                textToPass = String(sourceNode.data?.text || '').trim();
+              } else if (sourceNode.type === 'llm') {
+                textToPass = String(sourceNode.data?.outputText || sourceNode.data?.text || '').trim();
+              } else if (sourceNode.type === 'textSplit') {
+                textToPass = pickTextSplitSegmentText(sourceNode.data, params.sourceHandle);
+              }
+              if (textToPass) {
+                if (selectedNode && selectedNode.id === params.target) {
+                  setDirectorInputPanelData((prev) =>
+                    prev && prev.nodeId === params.target
+                      ? { ...prev, scriptText: textToPass }
+                      : prev,
+                  );
+                }
+                return nds.map((node) => {
+                  if (node.id !== params.target) return node;
+                  const prev = createDefaultDirectorPipelineState(
+                    (node.data as { director?: DirectorPipelineState })?.director || {},
+                  );
+                  const next = createDefaultDirectorPipelineState({ ...prev, scriptText: textToPass });
+                  return {
+                    ...node,
+                    data: { ...node.data, director: next, title: next.title || node.data?.title },
+                  };
+                });
+              }
+            }
+
+            // 导演节点：音频上游灌入 mvMusic（接入后切到 MV）
+            // 注意：不在 setEdges 的 setNodes 嵌套里直接写死，改用 microtask 函数式合并，
+            // 避免与导演节点 onUpdate 旧包互相覆盖导致「闪一下又没了」
+            if (targetNode && targetNode.type === 'director' && sourceNode?.type === 'audio') {
+              const url = pickAudioOutputUrlFromAudioNodeData(
+                sourceNode.data as Record<string, unknown>,
+              );
+              if (url) {
+                const title = resolveAudioNodeDisplayTitle(
+                  sourceNode.data as Record<string, unknown>,
+                  'MV音乐',
+                );
+                const mediaDur = Number(sourceNode.data?.mediaDurationSec);
+                const durationSec =
+                  Number.isFinite(mediaDur) && mediaDur > 0 ? mediaDur : 0;
+                const targetId = params.target!;
+                const sourceId = sourceNode.id;
+                queueMicrotask(() => {
+                  applyDirectorMvMusicFromAudio(targetId, {
+                    url,
+                    title,
+                    durationSec,
+                    sourceNodeId: sourceId,
+                  });
+                  if (!(durationSec > 0)) {
+                    void probeHtmlAudioDurationSec(url).then((dur) => {
+                      if (!(dur > 0)) return;
+                      applyDirectorMvMusicFromAudio(targetId, {
+                        url,
+                        title,
+                        durationSec: dur,
+                        sourceNodeId: sourceId,
+                      });
+                    });
+                  }
+                });
+              }
+            }
+
+            // 导演 → 视频：灌入已合成的最终提示词（多镜拼接）与资产参考图
+            if (
+              targetNode &&
+              isVideoModuleNodeType(targetNode.type) &&
+              sourceNode?.type === 'director'
+            ) {
+              const director = createDefaultDirectorPipelineState(
+                (sourceNode.data as { director?: DirectorPipelineState })?.director || {},
+              );
+              const prompts = (director.shots || [])
+                .map((s) => String(s['最终提示词'] || '').trim())
+                .filter(Boolean);
+              const textToPass = prompts.join('\n\n');
+              const inputImages = getOrderedAssetsWithImages(director).map((a) => a.imageUrl).filter(Boolean);
+              return nds.map((node) => {
+                if (node.id !== params.target) return node;
+                return {
+                  ...node,
+                  data: {
+                    ...node.data,
+                    ...(textToPass ? { prompt: textToPass } : {}),
+                    ...(inputImages.length > 0 ? { inputImages } : {}),
+                    model: node.data?.model || 'seedance-2.0-fast',
+                  },
+                };
+              });
             }
 
             // LLM 节点：按连线顺序收集所有文本来源（Text/LLM/文本拆分），用逗号拼接后写入 inputText
@@ -6928,11 +9964,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   parts.push(String(src.data.outputText).trim());
                 } else if (src.type === 'audioTranscribe' && src.data?.text) {
                   parts.push(String(src.data.text).trim());
-                } else if (src.type === 'textSplit' && src.data?.segments) {
-                  const sh = edge.sourceHandle || '';
-                  const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-                  const seg = src.data.segments as (string | number | boolean)[];
-                  if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+                } else if (src.type === 'textSplit') {
+                  const segText = pickTextSplitSegmentText(src.data, edge.sourceHandle);
+                  if (segText) parts.push(segText);
                 }
               }
               const resolvedInputText = parts.join(',');
@@ -6940,8 +9974,34 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 node.id === params.target ? { ...node, data: { ...node.data, inputText: resolvedInputText } } : node
               );
               if (selectedNode && selectedNode.id === params.target) {
+                const hasSplitConnection = textSourceEdges.some((e) => {
+                  const src = nds.find((n) => n.id === e.source);
+                  return src?.type === 'textSplit';
+                });
+                const hasTextConnection = textSourceEdges.some((e) => {
+                  const src = nds.find((n) => n.id === e.source);
+                  return src && (src.type === 'minimalistText' || src.type === 'text');
+                });
+                const hasLLMConnection = textSourceEdges.some((e) => {
+                  const src = nds.find((n) => n.id === e.source);
+                  return src?.type === 'llm' && !!src.data?.outputText;
+                });
                 setLlmInputPanelData((prev) =>
-                  prev && prev.nodeId === params.target ? { ...prev, inputText: resolvedInputText } : prev
+                  prev && prev.nodeId === params.target
+                    ? {
+                        ...prev,
+                        inputText: resolvedInputText,
+                        isInputLocked: false,
+                        hasLinkedText:
+                          (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+                        linkedInputText: resolvedInputText,
+                        linkedTextTitle: collectLinkedTextTitlesForTarget(
+                          params.target,
+                          updatedNodes,
+                          updatedEdges,
+                        ),
+                      }
+                    : prev
                 );
               }
               return updatedNodes;
@@ -6964,11 +10024,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   textToPass = sourceNode.data?.outputText || '';
                 } else if (sourceNode.type === 'audioTranscribe') {
                   textToPass = sourceNode.data?.text || '';
-                } else if (sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-                  const sh = params.sourceHandle || '';
-                  const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : 0;
-                  const seg = sourceNode.data.segments as (string | number | boolean)[];
-                  if (Number.isInteger(idx) && seg[idx] !== undefined) textToPass = String(seg[idx]);
+                } else if (sourceNode.type === 'textSplit') {
+                  textToPass = pickTextSplitSegmentText(sourceNode.data, 
+                    params.sourceHandle,
+                  );
                 }
                 const isRhartSong = isAudioSongModel(targetNode.data?.model);
                 const updatedNodes = nds.map((node) => {
@@ -6986,7 +10045,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 if (selectedNode && selectedNode.id === params.target) {
                   setAudioInputPanelData((prev) => {
                     if (prev && prev.nodeId === params.target) {
-                      return isRhartSong ? { ...prev, lyrics: textToPass } : { ...prev, text: textToPass };
+                      return isRhartSong
+                        ? { ...prev, lyrics: textToPass, isTextConnected: true }
+                        : { ...prev, text: textToPass, isTextConnected: true };
                     }
                     return prev;
                   });
@@ -6994,39 +10055,109 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 return updatedNodes;
               }
               // video / 视频换人 -> audio：用 ffmpeg 提取音频，写入 outputAudio 供播放
+              // 注意：不可在 setNodes updater 内再嵌套 setNodes，否则 PROCESSING/SUCCESS 可能被覆盖
               if (sourceNode && isVideoReferenceOutputSource(sourceNode, params.sourceHandle)) {
                 const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
-                if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
-                  console.log('[AudioExtract] 识别到视频源，开始提取音频:', videoUrl);
-                  const targetId = params.target;
-                  setNodes((n) =>
-                    n.map((node) =>
-                      node.id === targetId ? { ...node, data: { ...node.data, aiStatus: 'PROCESSING', errorMessage: undefined } } : node
-                    )
+                const targetId = params.target!;
+                if (!videoUrl) {
+                  return nds.map((node) =>
+                    node.id === targetId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            aiStatus: 'ERROR',
+                            errorMessage: '视频节点没有可提取的视频文件（请等待生成完成或重新导入）',
+                          },
+                        }
+                      : node,
                   );
-                  window.electronAPI
-                    .extractAudioFromVideo(projectId || undefined, videoUrl)
-                    .then((res) => {
-                      if (res?.audioUrl) {
+                }
+                if (window.electronAPI?.extractAudioFromVideo) {
+                  console.log('[AudioExtract] 识别到视频源，开始提取音频:', videoUrl);
+                  const pid = projectId || undefined;
+                  queueMicrotask(() => {
+                    window.electronAPI!
+                      .extractAudioFromVideo(pid, videoUrl)
+                      .then((res) => {
+                        if (!res?.audioUrl) {
+                          setNodes((n) =>
+                            n.map((node) =>
+                              node.id === targetId
+                                ? {
+                                    ...node,
+                                    data: {
+                                      ...node.data,
+                                      errorMessage: '提取音频未返回结果',
+                                      aiStatus: 'ERROR',
+                                    },
+                                  }
+                                : node,
+                            ),
+                          );
+                          return;
+                        }
                         setNodes((n) =>
                           n.map((node) =>
                             node.id === targetId
-                              ? { ...node, data: { ...node.data, outputAudio: res.audioUrl, originalAudioUrl: res.audioUrl, aiStatus: 'SUCCESS', errorMessage: undefined, updatedAt: Date.now() } }
-                              : node
-                          )
+                              ? {
+                                  ...node,
+                                  data: {
+                                    ...node.data,
+                                    outputAudio: res.audioUrl,
+                                    originalAudioUrl: res.audioUrl,
+                                    aiStatus: 'SUCCESS',
+                                    errorMessage: undefined,
+                                    updatedAt: Date.now(),
+                                  },
+                                }
+                              : node,
+                          ),
                         );
-                      }
-                    })
-                    .catch((err) => {
-                      console.error('[AudioExtract] 提取失败:', err);
-                      setNodes((n) =>
-                        n.map((node) =>
-                          node.id === targetId ? { ...node, data: { ...node.data, errorMessage: err?.message || '提取失败', aiStatus: 'ERROR' } } : node
-                        )
-                      );
-                    });
+                      })
+                      .catch((err) => {
+                        console.error('[AudioExtract] 提取失败:', err);
+                        setNodes((n) =>
+                          n.map((node) =>
+                            node.id === targetId
+                              ? {
+                                  ...node,
+                                  data: {
+                                    ...node.data,
+                                    errorMessage: err?.message || '提取失败',
+                                    aiStatus: 'ERROR',
+                                  },
+                                }
+                              : node,
+                          ),
+                        );
+                      });
+                  });
+                  return nds.map((node) =>
+                    node.id === targetId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            aiStatus: 'PROCESSING',
+                            errorMessage: undefined,
+                          },
+                        }
+                      : node,
+                  );
                 }
-                return nds;
+                return nds.map((node) =>
+                  node.id === targetId
+                    ? {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          aiStatus: 'ERROR',
+                          errorMessage: '当前环境不支持提取音频',
+                        },
+                      }
+                    : node,
+                );
               }
               // audio -> audio：按全部 audio 入边重建参考音 / 翻唱双路输入
               if (sourceNode && sourceNode.type === 'audio') {
@@ -7042,7 +10173,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   );
                   if (selectedNode && selectedNode.id === params.target) {
                     setAudioInputPanelData((prev) =>
-                      prev && prev.nodeId === params.target ? { ...prev, ...patch } : prev,
+                      prev && prev.nodeId === params.target
+                        ? {
+                            ...prev,
+                            ...patch,
+                            isAudioConnected: !!(patch.referenceAudioUrl || '').trim(),
+                            isSourceSongConnected: !!(patch.sourceSongAudioUrl || '').trim(),
+                          }
+                        : prev,
                     );
                   }
                   const urlsToUpload = [patch.sourceSongAudioUrl, patch.referenceAudioUrl].filter(
@@ -7190,45 +10328,74 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }
               if (isVideoReferenceOutputSource(sourceNode, params.sourceHandle)) {
                 const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, params.sourceHandle);
-                if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
-                  const targetId = params.target;
-                  setNodes((n) =>
-                    n.map((node) =>
-                      node.id === targetId
-                        ? { ...node, data: { ...node.data, aiStatus: 'PROCESSING', errorMessage: undefined } }
-                        : node
-                    )
+                const targetId = params.target!;
+                if (!videoUrl) {
+                  return nds.map((node) =>
+                    node.id === targetId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            aiStatus: 'ERROR',
+                            errorMessage: '视频节点没有可提取的视频文件',
+                          },
+                        }
+                      : node,
                   );
-                  window.electronAPI
-                    .extractAudioFromVideo(projectId || undefined, videoUrl)
-                    .then((res) => {
-                      if (!res?.audioUrl) return;
-                      setNodes((n) =>
-                        n.map((node) =>
-                          node.id === targetId
-                            ? {
-                                ...node,
-                                data: {
-                                  ...node.data,
-                                  audioUrl: res.audioUrl,
-                                  aiStatus: 'SUCCESS',
-                                  errorMessage: undefined,
-                                  updatedAt: Date.now(),
-                                },
-                              }
-                            : node
-                        )
-                      );
-                    })
-                    .catch((err) => {
-                      setNodes((n) =>
-                        n.map((node) =>
-                          node.id === targetId
-                            ? { ...node, data: { ...node.data, aiStatus: 'ERROR', errorMessage: err?.message || '提取失败' } }
-                            : node
-                        )
-                      );
-                    });
+                }
+                if (window.electronAPI?.extractAudioFromVideo) {
+                  const pid = projectId || undefined;
+                  queueMicrotask(() => {
+                    window.electronAPI!
+                      .extractAudioFromVideo(pid, videoUrl)
+                      .then((res) => {
+                        if (!res?.audioUrl) return;
+                        setNodes((n) =>
+                          n.map((node) =>
+                            node.id === targetId
+                              ? {
+                                  ...node,
+                                  data: {
+                                    ...node.data,
+                                    audioUrl: res.audioUrl,
+                                    aiStatus: 'SUCCESS',
+                                    errorMessage: undefined,
+                                    updatedAt: Date.now(),
+                                  },
+                                }
+                              : node,
+                          ),
+                        );
+                      })
+                      .catch((err) => {
+                        setNodes((n) =>
+                          n.map((node) =>
+                            node.id === targetId
+                              ? {
+                                  ...node,
+                                  data: {
+                                    ...node.data,
+                                    aiStatus: 'ERROR',
+                                    errorMessage: err?.message || '提取失败',
+                                  },
+                                }
+                              : node,
+                          ),
+                        );
+                      });
+                  });
+                  return nds.map((node) =>
+                    node.id === targetId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            aiStatus: 'PROCESSING',
+                            errorMessage: undefined,
+                          },
+                        }
+                      : node,
+                  );
                 }
                 return nds;
               }
@@ -7393,6 +10560,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           });
         }
         
+        latestEdgesRef.current = updatedEdges;
         return updatedEdges;
       });
     },
@@ -7401,20 +10569,35 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   /** 超级连线/改线后：按全部入边重建剪辑轨道（视频轨 + 音频轨） */
   const finalizeVideoSpliceTimeline = useCallback(
-    (targetNodeId: string) => {
+    (targetNodeId: string, edgesOverride?: Edge[]) => {
       flushSync(() => {
         setNodes((nds) => {
           const target = nds.find((n) => n.id === targetNodeId);
           if (!target || target.type !== 'videoSplice') return nds;
+          const edgesNow = edgesOverride ?? (latestEdgesRef.current as Edge[]);
+          // 超级连线刚 flushSync 完 onConnect 时，ref 可能仍滞后；用传入 edges 或合并 ref
           const built = buildVideoSpliceClipsFromEdges(
             targetNodeId,
-            latestEdgesRef.current as Edge[],
+            edgesNow,
             nds,
             target.data as { videoClips?: TimelineClip[]; audioTracks?: TimelineClip[][] },
           );
+          const connectedIds = collectSpliceIncomingSourceIds(targetNodeId, edgesNow);
+          const blockDropOnly =
+            spliceRebuildWouldDropConnected(target.data, built, connectedIds) &&
+            !spliceBuiltHasNewConnectedSources(target.data, built);
+          if (blockDropOnly) {
+            return nds;
+          }
           return nds.map((n) =>
             n.id === targetNodeId
-              ? { ...n, data: { ...n.data, ...applyBuiltClipsToSpliceData(n.data, built) } }
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    ...applyBuiltClipsToSpliceData(n.data, built, connectedIds),
+                  },
+                }
               : n,
           );
         });
@@ -7449,12 +10632,73 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [setNodes, setEdges],
   );
 
+  /** 超级连线后：按入边一次性填充宫格空位 */
+  const finalizeGridMapCells = useCallback(
+    (targetNodeId: string) => {
+      flushSync(() => {
+        setEdges((eds) => {
+          setNodes((nds) => {
+            const target = nds.find((n) => n.id === targetNodeId);
+            if (!target || target.type !== 'gridMap') return nds;
+            const cols = Number(target.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+            const rows = Number(target.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+            const prevCells = ((target.data?.cells || []) as GridMapCell[]).slice();
+            const nextCells = buildGridMapCellsFromEdges(
+              targetNodeId,
+              eds as Edge[],
+              nds,
+              prevCells,
+              cols,
+              rows,
+            );
+            return nds.map((n) =>
+              n.id === targetNodeId ? { ...n, data: { ...n.data, cells: nextCells } } : n,
+            );
+          });
+          return eds;
+        });
+      });
+    },
+    [setNodes, setEdges],
+  );
+
+  /** 超级连线后：按入边一次性写入对比节点 A/B（最多两路） */
+  const finalizeImageComparerUrls = useCallback(
+    (targetNodeId: string) => {
+      flushSync(() => {
+        setEdges((eds) => {
+          setNodes((nds) => {
+            const target = nds.find((n) => n.id === targetNodeId);
+            if (!target || target.type !== 'imageComparer') return nds;
+            const urls = buildImageComparerUrlsFromEdges(targetNodeId, eds as Edge[], nds);
+            return nds.map((n) =>
+              n.id === targetNodeId
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      imageAUrl: urls.imageAUrl,
+                      imageBUrl: urls.imageBUrl,
+                      imageASourceNodeId: urls.imageASourceNodeId,
+                      imageBSourceNodeId: urls.imageBSourceNodeId,
+                    },
+                  }
+                : n,
+            );
+          });
+          return eds;
+        });
+      });
+    },
+    [setNodes, setEdges],
+  );
+
   // 超级连线：将选中模块的输出全部接入目标模块（依次调用 onConnect，保证状态正确）
   const handleSuperConnect = useCallback(
     (sourceNodeIds: string[], targetNodeId: string) => {
       const targetNode = nodes.find((n) => n.id === targetNodeId);
       if (!targetNode?.type) return;
-      const allowed = sourceNodeIds
+      let allowed = sourceNodeIds
         .filter((id) => id !== targetNodeId)
         .filter((id) => {
           const src = nodes.find((n) => n.id === id);
@@ -7462,6 +10706,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           if (targetNode.type === 'videoSplice' && !isTimelineMediaSourceNodeType(src.type)) return false;
           return true;
         });
+      // 图片对比仅两槽：超级连线最多接入前两张图
+      if (targetNode.type === 'imageComparer') {
+        allowed = allowed.slice(0, 2);
+      }
       if (allowed.length === 0) return;
       // 每条连线的 onConnect 会在 setEdges 回调里再调 setNodes；flushSync 保证逐条落盘。
       allowed.forEach((sourceId) => {
@@ -7470,12 +10718,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
       });
       if (targetNode.type === 'videoSplice') {
-        finalizeVideoSpliceTimeline(targetNodeId);
+        // 用最新 edges；若 ref 仍缺刚连上的源，补上，避免 finalize 把音频轨冲掉
+        let edgesNow = [...(latestEdgesRef.current as Edge[])];
+        for (const sourceId of allowed) {
+          if (!edgesNow.some((e) => e.source === sourceId && e.target === targetNodeId)) {
+            edgesNow.push({
+              id: `e-${sourceId}-${targetNodeId}-finalize`,
+              source: sourceId,
+              target: targetNodeId,
+              sourceHandle: null,
+              targetHandle: 'input',
+            } as Edge);
+          }
+        }
+        finalizeVideoSpliceTimeline(targetNodeId, edgesNow);
       } else if (targetNode.type === 'photoCollage') {
         finalizePhotoCollageLayers(targetNodeId);
+      } else if (targetNode.type === 'gridMap') {
+        finalizeGridMapCells(targetNodeId);
+      } else if (targetNode.type === 'imageComparer') {
+        finalizeImageComparerUrls(targetNodeId);
       }
     },
-    [nodes, onConnect, finalizeVideoSpliceTimeline, finalizePhotoCollageLayers],
+    [nodes, onConnect, finalizeVideoSpliceTimeline, finalizePhotoCollageLayers, finalizeGridMapCells, finalizeImageComparerUrls],
   );
 
   /** 反向超级连线：单一源模块输出 → 批量接入各选中目标（不含源） */
@@ -7496,8 +10761,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       allowed
         .filter((targetId) => nodes.find((n) => n.id === targetId)?.type === 'photoCollage')
         .forEach((targetId) => finalizePhotoCollageLayers(targetId));
+      allowed
+        .filter((targetId) => nodes.find((n) => n.id === targetId)?.type === 'gridMap')
+        .forEach((targetId) => finalizeGridMapCells(targetId));
+      allowed
+        .filter((targetId) => nodes.find((n) => n.id === targetId)?.type === 'imageComparer')
+        .forEach((targetId) => finalizeImageComparerUrls(targetId));
     },
-    [nodes, onConnect, finalizePhotoCollageLayers],
+    [nodes, onConnect, finalizePhotoCollageLayers, finalizeGridMapCells, finalizeImageComparerUrls],
   );
 
   // 选择节点：点击任意模块时取消连接线选中状态（绿线、剪刀一并清除）
@@ -7574,7 +10845,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
         const splitEdges = incomingEdges.filter((e) => {
           const sourceNode = nodes.find((n) => n.id === e.source);
-          return sourceNode && sourceNode.type === 'textSplit' && sourceNode.data?.segments;
+          return sourceNode && sourceNode.type === 'textSplit';
         });
         const imageEdges = incomingEdges.filter((e) => {
           const sourceNode = nodes.find((n) => n.id === e.source);
@@ -7604,11 +10875,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (src.data?.text) parts.push(String(src.data.text).trim());
           } else if (src.type === 'llm' && src.data?.outputText) {
             parts.push(String(src.data.outputText).trim());
-          } else if (src.type === 'textSplit' && src.data?.segments) {
-            const sh = edge.sourceHandle || '';
-            const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-            const seg = src.data.segments as (string | number | boolean)[];
-            if (Number.isInteger(idx) && seg[idx] !== undefined) parts.push(String(seg[idx]).trim());
+          } else if (src.type === 'textSplit') {
+            const segText = pickTextSplitSegmentText(src.data, 
+              edge.sourceHandle,
+            );
+            if (segText) parts.push(segText);
           }
         }
         const resolvedInputText = parts.length > 0 ? parts.join(',') : (node.data?.inputText || '');
@@ -7644,26 +10915,129 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
         }
 
+        const hasLinkedForPanel =
+          (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText;
+        const rawUserInput =
+          node.data?.userInput !== undefined
+            ? node.data.userInput
+            : (hasImageConnection ? '这张图片有什么？' : hasVideoConnection ? '这个视频有什么内容？' : '');
+        // 旧逻辑曾把上游正文锁进底栏；现底栏仅系统文，若与连线正文相同则清空
+        const cleanedUserInput =
+          hasLinkedForPanel && String(rawUserInput).trim() === String(resolvedInputText).trim()
+            ? ''
+            : rawUserInput;
+
         setLlmInputPanelData({
           nodeId: node.id,
           inputText: resolvedInputText,
           // 默认提示词仅在首次打开时填充；用户删除或修改后，以 node.data.userInput 为准（含空字符串）
-          userInput:
-            node.data?.userInput !== undefined
-              ? node.data.userInput
-              : (hasImageConnection ? '这张图片有什么？' : hasVideoConnection ? '这个视频有什么内容？' : ''),
+          userInput: cleanedUserInput,
           prompt: node.data?.prompt || node.data?.systemPrompt || '',
           savedPrompts: globalPersonas,
-          isInputLocked: (hasTextConnection || hasLLMConnection || hasSplitConnection) && !!resolvedInputText,
+          isInputLocked: false,
+          hasLinkedText: hasLinkedForPanel,
+          linkedInputText: resolvedInputText,
+          linkedTextTitle: collectLinkedTextTitlesForTarget(node.id, nodes, edges),
           isImageReverseMode: hasImageConnection && !!imageUrlForReverse,
           imageUrlForReverse,
           imageAssetForReverse,
           isVideoAnalysisMode: hasVideoConnection && !!videoUrlForAnalysis,
           videoUrlForAnalysis,
-          reverseCaptionModel: (node.data?.reverseCaptionModel as 'gpt-4o' | 'joy-caption-two') || 'gpt-4o',
+          reverseCaptionModel: normalizeImageReverseCaptionModel(
+            node.data?.reverseCaptionModel as string | undefined,
+          ),
+          chatModel: (node.data?.chatModel as string) || 'gpt-3.5-turbo',
+          personaExpanded: false,
         });
+        if (cleanedUserInput !== rawUserInput) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, userInput: cleanedUserInput } } : n,
+            ),
+          );
+        }
         setImageInputPanelData(null);
         setImageTo3dInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
+        setDirectorInputPanelData(null);
+      } else if (nodeType === 'storyboardScript') {
+        const { imageUrls, videoUrls, textParts } = collectStoryboardScriptMediaFromEdges(
+          node.id,
+          nodes,
+          edges,
+        );
+        const existingPrompt = String(node.data?.userPrompt || '').trim();
+        const linkedPrompt = textParts.length > 0 ? textParts.join(',') : '';
+        const userPrompt = existingPrompt || linkedPrompt;
+
+        if (linkedPrompt && !existingPrompt) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, userPrompt: linkedPrompt } } : n,
+            ),
+          );
+        }
+
+        setStoryboardScriptInputPanelData({
+          nodeId: node.id,
+          userPrompt,
+          chatModel: (node.data?.chatModel as string) || 'gpt-3.5-turbo',
+          storyboardScript: createDefaultStoryboardScriptState(node.data?.storyboardScript || {}),
+          imageUrls,
+          videoUrls,
+        });
+        setLlmInputPanelData(null);
+        setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+        setVideoInputPanelData(null);
+        setCharacterInputPanelData(null);
+        setAudioInputPanelData(null);
+        setRvcTrainInputPanelData(null);
+        setDirectorInputPanelData(null);
+      } else if (nodeType === 'director') {
+        const director = createDefaultDirectorPipelineState(
+          (node.data as { director?: DirectorPipelineState })?.director || {},
+        );
+        // 从入边剧本/文本收集 scriptText
+        const incoming = edges.filter((e) => e.target === node.id);
+        const textParts: string[] = [];
+        for (const edge of incoming) {
+          const src = nodes.find((n) => n.id === edge.source);
+          if (!src) continue;
+          if (src.type === 'script' || src.type === 'minimalistText' || src.type === 'text') {
+            const t = String(src.data?.text || '').trim();
+            if (t) textParts.push(t);
+          } else if (src.type === 'llm') {
+            const t = String(src.data?.outputText || src.data?.text || '').trim();
+            if (t) textParts.push(t);
+          } else if (src.type === 'textSplit') {
+            const t = pickTextSplitSegmentText(src.data, edge.sourceHandle);
+            if (t) textParts.push(t);
+          }
+        }
+        const linkedScript = textParts.join('\n\n');
+        const scriptText = director.scriptText?.trim() || linkedScript;
+        const nextDirector =
+          linkedScript && !director.scriptText?.trim()
+            ? createDefaultDirectorPipelineState({ ...director, scriptText: linkedScript })
+            : director;
+        if (linkedScript && !director.scriptText?.trim()) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === node.id ? { ...n, data: { ...n.data, director: nextDirector } } : n,
+            ),
+          );
+        }
+        // 镜头生成入口已收进导演主模块，不再挂底部输入面板
+        setDirectorInputPanelData(null);
+        setLlmInputPanelData(null);
+        setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+        setVideoInputPanelData(null);
+        setCharacterInputPanelData(null);
+        setAudioInputPanelData(null);
+        setRvcTrainInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
       } else if (nodeType === 'imageTo3d') {
         const inputUrl = resolveImageTo3dInputUrl(node, edges, nodes);
         const resultTextureUrl = (node.data?.resultTextureUrl as string) || '';
@@ -7711,7 +11085,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         // 检查是否有输入连接（区分图生图和文生图模式）
         // Image 只有一个 target Handle，按源节点类型区分：image→图生图，text/LLM→文生图
         // 收集输入参考图：角色卡（多槽勾选）+ 场景/图片节点，合并写入
-        let inputImages = collectImageTargetInputImagesFromEdges(node.id, nodes, edges);
+        let inputImages = mergeInputImagesPreserveOrder(
+          node.data?.inputImages as string[] | undefined,
+          collectImageTargetInputImagesFromEdges(node.id, nodes, edges),
+        );
         if (inputImages.length === 0 && node.data?.inputImages) {
           inputImages = (node.data.inputImages as string[]).slice(0, 10);
         } else {
@@ -7732,11 +11109,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (src.data?.text) promptParts.push(String(src.data.text).trim());
           } else if (src.type === 'llm' && src.data?.outputText) {
             promptParts.push(String(src.data.outputText).trim());
-          } else if (src.type === 'textSplit' && src.data?.segments) {
-            const sh = edge.sourceHandle || '';
-            const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : -1;
-            const seg = src.data.segments as (string | number | boolean)[];
-            if (Number.isInteger(idx) && seg[idx] !== undefined) promptParts.push(String(seg[idx]).trim());
+          } else if (src.type === 'textSplit') {
+            const segText = pickTextSplitSegmentText(src.data, 
+              edge.sourceHandle,
+            );
+            if (segText) promptParts.push(segText);
           } else if (src.type === 'image') {
             const pp = src.data?.prompt_payload as { qwen_instruction?: string; formatted_output?: string; full_camera_prompt?: string; camera_tags?: string } | undefined;
             const t = pp?.qwen_instruction || pp?.formatted_output || pp?.full_camera_prompt || pp?.camera_tags || '';
@@ -7765,7 +11142,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ),
           );
         }
-        const aspectRatioForImage = resolveAspectRatioFromNodeData(node.data as Record<string, unknown>, 'image');
+        // 面板比例优先用节点上用户选择的 aspectRatio，勿用成片像素比覆盖（否则生成后下拉被改掉）
+        const storedAspect = String(node.data?.aspectRatio || '').trim();
+        const aspectRatioForImage = storedAspect
+          ? storedAspect
+          : resolveAspectRatioFromNodeData(node.data as Record<string, unknown>, 'image');
+        const imageResolution = String(node.data?.resolution || '1k');
+        const imageQuality = String(node.data?.quality || 'low');
         const seedreamV45RatioToSize: Record<string, { width: number; height: number }> = {
           '1:1': { width: 2048, height: 2048 },
           '2:3': { width: 1664, height: 2496 },
@@ -7819,14 +11202,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setImageInputPanelData({
           nodeId: node.id,
           prompt: promptText,
-          resolution: node.data?.resolution || '1k',
+          resolution: imageResolution,
           aspectRatio: aspectRatioForImage,
           model: imageModel,
+          quality: imageQuality,
           seedreamWidth: seedreamW,
           seedreamHeight: seedreamH,
           inputImages, // 角色卡 + 场景图等全部入边参考图
         });
         setLlmInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
+        setDirectorInputPanelData(null);
         setImageTo3dInputPanelData(null);
       } else if (isVideoModuleNodeType(nodeType)) {
         // 视频 / 视频换人：构建输入面板数据（换人模块固定 model = wan-animate）
@@ -7834,7 +11220,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const isWanAnimateOnlyNode = nodeType === 'wanAnimate';
         const isHeyGemOnlyNode = nodeType === 'heyGem';
 
-        let inputImages: string[] = collectVideoTargetInputImagesFromEdges(node.id, nodes, edges);
+        let inputImages: string[] = mergeInputImagesPreserveOrder(
+          node.data?.inputImages as string[] | undefined,
+          collectVideoTargetInputImagesFromEdges(node.id, nodes, edges),
+        );
         let resolvedPrompt = node.data?.prompt || '';
 
         incomingEdges.forEach((edge) => {
@@ -7849,11 +11238,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               resolvedPrompt = sourceNode.data.text as string;
             } else if (sourceNode.type === 'llm' && sourceNode.data?.outputText) {
               resolvedPrompt = sourceNode.data.outputText as string;
-            } else if (sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-              const sh = edge.sourceHandle || '';
-              const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : 0;
-              const seg = sourceNode.data.segments as (string | number | boolean)[];
-              if (Number.isInteger(idx) && seg[idx] !== undefined) resolvedPrompt = String(seg[idx]);
+            } else if (sourceNode.type === 'textSplit') {
+              resolvedPrompt = pickTextSplitSegmentText(sourceNode.data, 
+                edge.sourceHandle,
+              );
             }
           }
         });
@@ -7865,37 +11253,45 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           inputImages = inputImages.slice(0, 10);
         }
         let ltx23HdrBackgroundImage = String(node.data?.ltx23HdrBackgroundImage || '').trim();
-        if (node.data?.model === 'ltx-2.3-hdr-multi') {
-          const split = splitLtx23HdrMultiImagesFromCollected(inputImages, ltx23HdrBackgroundImage);
-          inputImages = split.storyboard;
-          ltx23HdrBackgroundImage = split.background;
+        if (node.data?.model === 'ltx-2.3-hdr-multi' || node.data?.model === 'ltx-2.3-msr-av') {
+          const merged = mergeLtx23HdrMultiPreserveOrder(
+            ltx23HdrBackgroundImage,
+            (node.data?.inputImages as string[] | undefined) || inputImages,
+            inputImages,
+          );
+          inputImages = merged.storyboard;
+          ltx23HdrBackgroundImage = merged.background;
         }
 
         // 可灵参考生视频o1：从连线解析参考视频 URL（统一 input 把手，按源类型识别）
+        // 裁剪导出成片不写入 reference，避免播放回退到上游源片
         let referenceVideoUrl = '';
-        const refEdge = incomingEdges.find((e) => {
-          const src = nodes.find((n) => n.id === e.source);
-          if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
-          return isVideoTrackSourceNodeType(src?.type);
-        });
-        const refSource = refEdge ? nodes.find((n) => n.id === refEdge.source) : null;
-        if (refSource?.type === 'digitalHuman') {
-          referenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
-        } else if (isVideoTrackSourceNodeType(refSource?.type)) {
-          const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
-          const t = (url || '').trim();
-          if (
-            t &&
-            (t.startsWith('http://') ||
-              t.startsWith('https://') ||
-              t.startsWith('local-resource://') ||
-              t.startsWith('file://'))
-          ) {
-            referenceVideoUrl = t;
+        const isExportedMediaClip = !!(node.data as { exportedMediaClip?: boolean } | undefined)?.exportedMediaClip;
+        if (!isExportedMediaClip) {
+          const refEdge = incomingEdges.find((e) => {
+            const src = nodes.find((n) => n.id === e.source);
+            if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
+            return isVideoTrackSourceNodeType(src?.type);
+          });
+          const refSource = refEdge ? nodes.find((n) => n.id === refEdge.source) : null;
+          if (refSource?.type === 'digitalHuman') {
+            referenceVideoUrl = pickDigitalHumanVideoUrl(refSource.data as Record<string, unknown>);
+          } else if (isVideoTrackSourceNodeType(refSource?.type)) {
+            const url = (refSource.data?.originalVideoUrl || refSource.data?.outputVideo) as string | undefined;
+            const t = (url || '').trim();
+            if (
+              t &&
+              (t.startsWith('http://') ||
+                t.startsWith('https://') ||
+                t.startsWith('local-resource://') ||
+                t.startsWith('file://'))
+            ) {
+              referenceVideoUrl = t;
+            }
           }
         }
 
-        // 从连线解析输入音频 URL（音频→视频任意 targetHandle 均识别）
+        // 从连线解析输入音频；导演对口型写入的 data.inputAudioUrl（无音频连线）也必须保留
         let inputAudioUrl = '';
         const audioEdge = incomingEdges.find((e) => {
           const src = nodes.find((n) => n.id === e.source);
@@ -7908,6 +11304,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         } else if (audioSource?.type === 'audio') {
           const url = pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>);
           if (url) inputAudioUrl = url;
+        }
+        if (!String(inputAudioUrl || '').trim()) {
+          inputAudioUrl = String(node.data?.inputAudioUrl || '').trim();
         }
 
         let videoPanelModel = isWanAnimateOnlyNode
@@ -7927,16 +11326,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               | 'wan-animate'
               | 'hey-gem'
               | 'gemini-omni'
+              | 'gemini-omni-flash'
               | 'seedance-2.0-fast'
               | 'seedance-2.0-mini'
               | 'ltx-2.3-lipsync'
               | 'ltx-2.3-i2v'
               | 'ltx-2.3-t2v'
+              | 'ltx-2.3-hdr-multi'
+              | 'ltx-2.3-msr-av'
               | 'rhart-v3.1-fast'
               | 'rhart-v3.1-fast-se'
               | 'rhart-v3.1-pro'
               | 'rhart-v3.1-pro-se'
               | 'grok-3'
+              | 'rhart-video-x'
               | 'grok-3-stable'
               | 'rhart-v3.1-pro-official-i2v'
               | 'hailuo-02-t2v-standard'
@@ -7999,19 +11402,28 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
 
         const hasVideoMedia = hasVideoOutputMedia(node.data as Record<string, unknown>);
-        const resolvedVideoAspect = hasVideoMedia
+        /** 面板比例：用户为下次生成设置的值，不能用成片外形强制改回 */
+        const rawAspect = String(node.data?.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO);
+        const videoModelForAspect = String(node.data?.model || '');
+        const isSeedanceAspectModel =
+          videoModelForAspect === 'seedance-2.0-fast' || videoModelForAspect === 'seedance-2.0-mini';
+        const generationAspect = isSeedanceAspectModel
+          ? coerceSeedanceRatio(rawAspect)
+          : snapToVideoPanelAspectRatio(rawAspect);
+        const layoutAspect = hasVideoMedia
           ? resolveVideoPanelAspectRatioFromNodeData(node.data as Record<string, unknown>)
-          : snapToVideoPanelAspectRatio(String(node.data?.aspectRatio || DEFAULT_VIDEO_ASPECT_RATIO));
+          : generationAspect === 'adaptive'
+            ? '16:9'
+            : generationAspect;
         if (!node.data?.isUserResized && !node.data?.preserveExportLayout) {
           const layoutSize = hasVideoMedia
             ? resolveNodeSizeFromMediaData(node.data as Record<string, unknown>, 'video') ??
-              videoNodeSizeForAspectRatio(resolvedVideoAspect)
-            : videoNodeSizeForAspectRatio(resolvedVideoAspect);
+              videoNodeSizeForAspectRatio(layoutAspect)
+            : videoNodeSizeForAspectRatio(layoutAspect);
           if (layoutSize) {
             const curW = Number(node.data?.width);
             const curH = Number(node.data?.height);
-            const curAspect = String(node.data?.aspectRatio || '');
-            if (curW !== layoutSize.w || curH !== layoutSize.h || curAspect !== resolvedVideoAspect) {
+            if (curW !== layoutSize.w || curH !== layoutSize.h) {
               setNodes((nds) =>
                 nds.map((n) =>
                   n.id === node.id
@@ -8021,7 +11433,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ...n.data,
                           width: layoutSize.w,
                           height: layoutSize.h,
-                          aspectRatio: resolvedVideoAspect,
+                          // 保留 generationAspect，不写 layoutAspect
                         },
                         style: { ...(n.style as object), ...nodeStyleDimensions(layoutSize.w, layoutSize.h) },
                       }
@@ -8030,18 +11442,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               );
             }
           }
-        } else if (hasVideoMedia && node.data?.aspectRatio !== resolvedVideoAspect) {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === node.id ? { ...n, data: { ...n.data, aspectRatio: resolvedVideoAspect } } : n,
-            ),
-          );
         }
 
         setVideoInputPanelData({
           nodeId: node.id,
           prompt: resolvedPrompt,
-          aspectRatio: resolvedVideoAspect,
+          aspectRatio: generationAspect,
           model: videoPanelModel,
           hd: !!node.data?.hd,
           duration: (node.data?.duration as '5' | '10' | '15' | '25') || '10',
@@ -8167,7 +11573,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const incomingEdges = edges.filter((e) => e.target === node.id);
         
         let resolvedText = node.data?.text || '';
-        let isConnected = false;
+        let isTextConnected = false;
 
         let resolvedReferenceAudioUrl = node.data?.referenceAudioUrl || '';
         let resolvedSourceSongAudioUrl = (node.data?.sourceSongAudioUrl as string | undefined) ?? '';
@@ -8179,6 +11585,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         );
         if (edgePatch?.referenceAudioUrl) resolvedReferenceAudioUrl = edgePatch.referenceAudioUrl;
         if (edgePatch?.sourceSongAudioUrl) resolvedSourceSongAudioUrl = edgePatch.sourceSongAudioUrl;
+        const isAudioConnected = !!(edgePatch?.referenceAudioUrl || '').trim();
+        const isSourceSongConnected = !!(edgePatch?.sourceSongAudioUrl || '').trim();
 
         if (edgePatch?.model && edgePatch.model !== node.data?.model) {
           setNodes((nds) =>
@@ -8191,12 +11599,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         incomingEdges.forEach((edge) => {
           const sourceNode = nodes.find((n) => n.id === edge.source);
           if (sourceNode) {
-            if (sourceNode.type === 'minimalistText' || sourceNode.type === 'text') {
-              resolvedText = sourceNode.data?.text || resolvedText;
-              isConnected = true;
+            if (
+              sourceNode.type === 'minimalistText' ||
+              sourceNode.type === 'text' ||
+              sourceNode.type === 'textSplit' ||
+              sourceNode.type === 'audioTranscribe'
+            ) {
+              const t =
+                sourceNode.type === 'textSplit'
+                  ? pickTextSplitSegmentText(sourceNode.data, edge.sourceHandle)
+                  : sourceNode.data?.text || resolvedText;
+              if (t) resolvedText = t;
+              isTextConnected = true;
             } else if (sourceNode.type === 'llm') {
               resolvedText = sourceNode.data?.outputText || resolvedText;
-              isConnected = true;
+              isTextConnected = true;
             }
           }
         });
@@ -8227,6 +11644,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           volume: node.data?.volume ?? 1,
           pitch: node.data?.pitch ?? 0,
           emotion: node.data?.emotion,
+          isTextConnected,
+          isAudioConnected,
+          isSourceSongConnected,
           referenceAudioUrl: edgePatch?.referenceAudioUrl ?? resolvedReferenceAudioUrl,
           sourceSongAudioUrl: edgePatch?.sourceSongAudioUrl ?? resolvedSourceSongAudioUrl,
           coverPitch: clampCoverPitch(node.data?.coverPitch ?? 0),
@@ -8256,6 +11676,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           songName: node.data?.songName ?? '',
           styleDesc: node.data?.styleDesc ?? '',
           lyrics: resolvedLyrics,
+          speechRate: clampDoubaoSpeechRate(node.data?.speechRate ?? 0),
+          loudnessRate: clampDoubaoLoudnessRate(node.data?.loudnessRate ?? 0),
         });
         setLlmInputPanelData(null);
         setImageInputPanelData(null);
@@ -8270,6 +11692,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setVideoInputPanelData(null);
         setCharacterInputPanelData(null);
         setAudioInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
+        setDirectorInputPanelData(null);
       }
       } catch (err) {
         console.error('[Workspace] onNodeClick 设置面板时出错:', err);
@@ -8334,6 +11758,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setVideoInputPanelData(null);
         setCharacterInputPanelData(null);
         setAudioInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
+        setDirectorInputPanelData(null);
         return;
       }
       // 多选（框选等）：不显示底部单节点操作栏
@@ -8345,10 +11771,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setVideoInputPanelData(null);
         setCharacterInputPanelData(null);
         setAudioInputPanelData(null);
+        setStoryboardScriptInputPanelData(null);
+        setDirectorInputPanelData(null);
         return;
       }
       // 单选任意有操作框的节点：补开对应面板（兜底：框选、键盘切换、双击编辑等未触发 onNodeClick 的情况）
-      const HAS_PANEL_TYPES = ['video', 'character', 'image', 'imageTo3d', 'llm', 'audio'];
+      const HAS_PANEL_TYPES = ['video', 'character', 'image', 'imageTo3d', 'llm', 'audio', 'storyboardScript', 'director'];
       const sel = current.nodes[0];
       const nds = latestNodesRef.current as Node[];
       const node = (nds?.find((n) => n.id === sel?.id) ?? sel) as Node;
@@ -8368,6 +11796,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
         // 与 Image 一致：避免节点 data 每次更新触发 selection 回调时用旧快照 setLlmInputPanelData，导致底部 LLM 输入框受控值被覆盖、光标跳到末尾
         if (nodeType === 'llm' && llmInputPanelDataRef.current?.nodeId === node.id) {
+          return;
+        }
+        if (nodeType === 'storyboardScript' && storyboardScriptInputPanelDataRef.current?.nodeId === node.id) {
+          return;
+        }
+        if (nodeType === 'director' && directorInputPanelDataRef.current?.nodeId === node.id) {
           return;
         }
         // 与 Image/LLM 一致：避免改比例等 data 更新触发 selection 回调后重复 onNodeClick，外框反复重算抖动
@@ -8614,8 +12048,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             position,
             data: {
               label: '图片节点',
-              width: 369.46,
-              height: 211.12,
+              width: IMAGE_NODE_DEFAULT_W,
+              height: IMAGE_NODE_DEFAULT_H,
+              moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
               title: 'image',
               resolution: '1k',
               aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
@@ -8791,6 +12226,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [cancelCharacterCanvasPick, clearBottomModulePanelsForCanvasPick, scheduleCharacterCanvasPickArm],
   );
 
+  pickImageFromCanvasForGridMapRef.current = () => requestViewSlotPickFromCanvas(0);
+  pickVideoFromCanvasRef.current = () => requestDigitalHumanVideoPickFromCanvas();
+
   const requestSceneImagePickFromCanvas = useCallback(
     (role: 'normal' | 'display3d') => {
       return new Promise<string | null>((resolve) => {
@@ -8834,14 +12272,28 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   }, [cancelCharacterCanvasPick, clearBottomModulePanelsForCanvasPick, scheduleCharacterCanvasPickArm]);
 
   useEffect(() => {
+    if (!characterAvatarPickOverlay) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (!characterAvatarPickPendingRef.current) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cancelCharacterCanvasPick();
+    };
+    /** 点选模式：任意右键退出（不打开画布菜单） */
+    const onContextMenu = (e: MouseEvent) => {
+      if (!characterAvatarPickPendingRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
       cancelCharacterCanvasPick();
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }, [cancelCharacterCanvasPick]);
+    window.addEventListener('contextmenu', onContextMenu, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('contextmenu', onContextMenu, true);
+    };
+  }, [characterAvatarPickOverlay, cancelCharacterCanvasPick]);
 
   // 下载视频（本地/远程均弹出另存为，可改文件名与类型）
   const handleDownloadVideo = useCallback(async (task: Task) => {
@@ -8943,7 +12395,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const inputImages = nodeData.inputImages || [];
         const isImageToVideoMode = inputImages.length > 0;
 
-        if (videoModel === 'ltx-2.3-hdr-multi') {
+        if (videoModel === 'ltx-2.3-hdr-multi' || videoModel === 'ltx-2.3-msr-av') {
           const bg = String(nodeData.ltx23HdrBackgroundImage || '').trim();
           const sb = (nodeData.inputImages as string[] | undefined) || [];
           const hdrCheck = validateLtx23HdrMultiInputs(bg, sb);
@@ -8984,7 +12436,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
         }
 
-        if (videoModel === 'ltx-2.3-lipsync') {
+        if (videoModel === 'ltx-2.3-lipsync' || videoModel === 'ltx-2.3-msr-av') {
           const audioEdge = edges.find((e) => {
             if (e.target !== nodeId) return false;
             const src = nodes.find((n) => n.id === e.source);
@@ -8993,7 +12445,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           const audioSource = audioEdge ? nodes.find((n) => n.id === audioEdge.source) : null;
           const hasAudio = !!(audioSource?.type === 'audio' && pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>));
           if (!hasAudio && !nodeData.inputAudioUrl) {
-            console.warn(`[Workspace] 视频节点 ${nodeId} LTX2.3 对口型需连接音频节点，跳过`);
+            console.warn(
+              `[Workspace] 视频节点 ${nodeId} ${
+                videoModel === 'ltx-2.3-msr-av' ? 'LTX2.3-MSR 图像+声音' : 'LTX2.3 对口型'
+              }需连接音频节点，跳过`,
+            );
             continue;
           }
         }
@@ -9141,6 +12597,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (payload.model === 'seedance-2.0-fast' || payload.model === 'seedance-2.0-mini') {
           payload.resolutionSeedance = coerceVideoSeedanceResolution(nodeData.resolutionSeedance, payload.model);
           payload.durationSeedance = normalizeSeedanceDurationChoice(nodeData.durationSeedance, 10);
+          payload.aspect_ratio = coerceSeedanceRatio(nodeData.aspectRatio);
         }
 
         if (payload.model === 'seedance-2.0-mini') {
@@ -9171,9 +12628,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           if (inputAudioUrlSd) payload.inputAudioUrl = inputAudioUrlSd;
         }
 
-        if (payload.model === 'gemini-omni') {
+        if (payload.model === 'gemini-omni' || payload.model === 'gemini-omni-flash') {
           payload.resolutionGeminiOmni = coerceVideoGeminiOmniResolution(nodeData.resolutionGeminiOmni);
-          payload.durationGeminiOmni = normalizeGeminiOmniDurationChoice(nodeData.durationGeminiOmni, 6);
+          payload.durationGeminiOmni =
+            payload.model === 'gemini-omni-flash'
+              ? normalizeGeminiOmniFlashDurationChoice(nodeData.durationGeminiOmni, 6)
+              : normalizeGeminiOmniDurationChoice(nodeData.durationGeminiOmni, 6);
           payload.aspect_ratio =
             nodeData.aspectRatio === '9:16' ? '9:16' : '16:9';
         }
@@ -9182,13 +12642,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (
           payload.model !== 'hey-gem' &&
           payload.model !== 'ltx-2.3-hdr-multi' &&
+          payload.model !== 'ltx-2.3-msr-av' &&
           isImageToVideoMode &&
           inputImages.length > 0
         ) {
           payload.images =
             payload.model === 'ltx-2.3-lipsync' || payload.model === 'ltx-2.3-i2v' || payload.model === 'wan-animate'
               ? inputImages.slice(0, 1)
-              : payload.model === 'gemini-omni'
+              : payload.model === 'gemini-omni' || payload.model === 'gemini-omni-flash'
                 ? inputImages.filter((u) => String(u || '').trim()).slice(0, 3)
               : payload.model === 'seedance-2.0-fast' || payload.model === 'seedance-2.0-mini'
                 ? inputImages.slice(0, 9)
@@ -9206,13 +12667,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           payload.resolutionLtx23T2v = (nodeData.resolutionLtx23T2v as '720' | '1280' | '1920') || '720';
           payload.aspect_ratio = (nodeData.aspectRatio as '16:9' | '9:16') || '16:9';
         }
-        if (payload.model === 'ltx-2.3-hdr-multi') {
+        if (payload.model === 'ltx-2.3-hdr-multi' || payload.model === 'ltx-2.3-msr-av') {
           const bg = String(nodeData.ltx23HdrBackgroundImage || '').trim();
           const storyboard = (nodeData.inputImages as string[] | undefined) || inputImages;
           const built = buildLtx23HdrMultiPayload(bg, storyboard);
           payload.ltx23HdrBackgroundImage = built.background;
           payload.images = built.storyboardSlots;
-          payload.durationLtx23HdrMulti = normalizeLtx23DurationChoice(nodeData.durationLtx23HdrMulti, 15);
+          payload.durationLtx23HdrMulti = normalizeLtx23DurationChoice(
+            nodeData.durationLtx23HdrMulti,
+            payload.model === 'ltx-2.3-msr-av' ? 10 : 15,
+          );
           payload.resolutionLtx23HdrMulti = (() => {
             const r = String(nodeData.resolutionLtx23HdrMulti ?? '720');
             if (r === '1920' || r === '1080') return '1280' as const;
@@ -9240,6 +12704,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           const res = (nodeData.resolutionLtx23Lipsync ?? nodeData.resolutionWan22Lipsync) as string | undefined;
           payload.resolutionLtx23Lipsync = (res === '720' || res === '1280' || res === '1920' ? res : '720') as '720' | '1280' | '1920';
           payload.actionPrompt = (nodeData.prompt as string) || '';
+        }
+
+        // ltx-2.3-msr-av：背景+分镜已在上方组装；补音频
+        if (payload.model === 'ltx-2.3-msr-av') {
+          let inputAudioUrlMsr = nodeData.inputAudioUrl as string | undefined;
+          if (!inputAudioUrlMsr) {
+            const audioEdge = edges.find((e) => {
+              if (e.target !== nodeId) return false;
+              const src = nodes.find((n) => n.id === e.source);
+              return src?.type === 'audio';
+            });
+            const audioSource = audioEdge ? nodes.find((n) => n.id === audioEdge.source) : null;
+            if (audioSource?.type === 'audio') {
+              inputAudioUrlMsr = pickAudioOutputUrlFromAudioNodeData(audioSource.data as Record<string, unknown>);
+            }
+          }
+          payload.inputAudioUrl = inputAudioUrlMsr || '';
         }
 
         // 添加项目ID
@@ -9345,7 +12826,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         // 图像反推模式
         if (isImageReverseMode && resolvedImageUrlForReverse) {
           const question = inputText.trim() || '这张图片有什么？';
-          const reverseModel = (nodeData.reverseCaptionModel as 'gpt-4o' | 'joy-caption-two') || 'gpt-4o';
+          const reverseModel = normalizeImageReverseCaptionModel(
+            nodeData.reverseCaptionModel as string | undefined,
+          );
           payload = {
             model: reverseModel,
             messages: [
@@ -9389,7 +12872,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
           
           payload = {
-            model: 'gpt-3.5-turbo',
+            model: (node.data?.chatModel as string) || 'gpt-3.5-turbo',
             messages,
             temperature: 0.7,
             max_tokens: 2000,
@@ -9439,6 +12922,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         );
         const audioModel = nodeData.model || 'speech-2.8-hd';
         const isIndexTts2 = audioModel === 'index-tts2';
+        const isDoubaoSeedAudio = isDoubaoSeedAudioModel(audioModel);
         const isAudioCover = isAudioCoverModel(audioModel);
         const isRvcTrain = isRvcTrainModel(audioModel);
         const isRhartSong = isAudioSongModel(audioModel);
@@ -9473,7 +12957,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             console.warn(`[Workspace] 音频节点 ${nodeId} 缺少文本，跳过`);
             continue;
           }
-          if (!isIndexTts2 && !nodeData.voiceId) {
+          if (!isIndexTts2 && !isDoubaoSeedAudio && !nodeData.voiceId) {
             console.warn(`[Workspace] 音频节点 ${nodeId} 缺少音色，跳过`);
             continue;
           }
@@ -9560,6 +13044,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         } else if (isRvcTrain) {
           payload.referenceAudioUrl = referenceAudioUrl;
           payload.rvcTrainModelName = String(nodeData.rvcTrainModelName ?? nodeData.title ?? '').trim();
+        } else if (isDoubaoSeedAudio) {
+          payload.model = DOUBAO_SEED_AUDIO_MODEL_ID;
+          if (referenceAudioUrl) payload.referenceAudioUrl = referenceAudioUrl;
+          payload.speechRate = clampDoubaoSpeechRate(nodeData.speechRate ?? 0);
+          payload.loudnessRate = clampDoubaoLoudnessRate(nodeData.loudnessRate ?? 0);
+          payload.pitch = nodeData.pitch ?? 0;
+          payload.doubaoFormat = 'mp3';
+          payload.doubaoSampleRate = '24000';
         } else if (isIndexTts2) {
           payload.referenceAudioUrl = referenceAudioUrl;
         } else {
@@ -9845,7 +13337,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       );
       if (existingTask) {
         console.log('[Workspace] 音频任务已存在，跳过添加');
-        return prevTasks;
+        // 仍清理误标成 video 的 runtime 孤儿卡，避免侧栏出现同名「audio」视频预览
+        return prevTasks.filter((t) => t.id !== `runtime-${nodeId}`);
       }
 
       const node = nodes.find((n) => n.id === nodeId);
@@ -10282,6 +13775,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     setEdgeDeleteModeId(null);
     setContextMenu(null);
     setLlmInputPanelData(null); // 点击画布时关闭 LLM 输入面板
+    setStoryboardScriptInputPanelData(null);
+    setDirectorInputPanelData(null);
     setImageInputPanelData(null);
         setImageTo3dInputPanelData(null); // 点击画布时关闭 Image 输入面板
     setVideoInputPanelData(null); // 点击画布时关闭 Video 输入面板
@@ -10300,13 +13795,62 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         prev && prev.nodeId === nodeId ? { ...prev, prompt } : prev
       );
     };
+    const onScene360Preset = (
+      e: CustomEvent<{
+        nodeId: string;
+        prompt: string;
+        model: string;
+        aspectRatio: string;
+        resolution: string;
+      }>,
+    ) => {
+      const { nodeId, prompt, model, aspectRatio, resolution } = e.detail || {};
+      if (!nodeId) return;
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  prompt,
+                  model: model || 'banana-2.0',
+                  aspectRatio: aspectRatio || '21:9',
+                  resolution: resolution || '4k',
+                },
+              }
+            : node,
+        ),
+      );
+      setImageInputPanelData((prev) =>
+        prev && prev.nodeId === nodeId
+          ? {
+              ...prev,
+              prompt,
+              model: model || 'banana-2.0',
+              aspectRatio: aspectRatio || '21:9',
+              resolution: resolution || '4k',
+            }
+          : prev,
+      );
+    };
     window.addEventListener('nexflow-image-prompt-from-3d', onPromptFrom3D as EventListener);
-    return () => window.removeEventListener('nexflow-image-prompt-from-3d', onPromptFrom3D as EventListener);
-  }, []);
+    window.addEventListener('nexflow-image-scene360-preset', onScene360Preset as EventListener);
+    return () => {
+      window.removeEventListener('nexflow-image-prompt-from-3d', onPromptFrom3D as EventListener);
+      window.removeEventListener('nexflow-image-scene360-preset', onScene360Preset as EventListener);
+    };
+  }, [setNodes]);
 
   // 处理菜单项选择（connectFrom 存在时表示从连线拖到空白处弹出，创建节点后自动连边）
   const handleMenuSelect = useCallback((type: string, position: { x: number; y: number }, connectFrom?: { sourceNodeId: string; sourceHandleId: string | null; handleType: string | null }) => {
     console.log('[Workspace] handleMenuSelect 收到位置:', { type, position, connectFrom });
+
+    // 分镜脚本 / 剧本节点已由「导演」模块替代，禁止新建
+    if (type === 'storyboardScript' || type === 'script') {
+      setContextMenu(null);
+      return;
+    }
 
     // 画板工具：打开画板面板，完成时再创建 Image 节点
     if (type === 'canvas-tool') {
@@ -10326,6 +13870,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       type === 'audio-extract-background';
     const isVideoSpliceType = type === 'videoSplice';
     const isPhotoCollageType = type === 'photoCollage';
+    const isGridMapType = type === 'gridMap';
+    const isImageComparerType = type === 'imageComparer';
+    const isStoryboardScriptType = type === 'storyboardScript';
+    const isScriptType = type === 'script';
+    const isDirectorType = type === 'director';
     const isImageTo3dType = type === 'imageTo3d';
     const isRvcTrainType = type === 'rvcTrain';
     const isWanAnimateType = type === 'wanAnimate';
@@ -10333,52 +13882,72 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const isVideoLikeType = type === 'video' || isWanAnimateType || isHeyGemType;
     let defaultWidth =
       type === 'text'
-        ? 369.46
+        ? IMAGE_NODE_DEFAULT_W
         : type === 'llm'
-          ? 280  // 与 Text 模块相同的初始尺寸
+          ? AUDIO_NODE_WIDTH
           : type === 'textSplit'
-            ? 240
+            ? scaleModulePx(240)
             : isImageType
-              ? 369.46
+              ? IMAGE_NODE_DEFAULT_W
               : isVideoLikeType
-                ? 738.91
+                ? VIDEO_NODE_DEFAULT_W
                 : type === 'character'
-                  ? 624
+                  ? scaleModulePx(624)
                   : isAudioType
-                      ? 280  // 与 Text 模块相同的初始尺寸
+                      ? AUDIO_NODE_WIDTH
                     : isVideoSpliceType
-                      ? 800
+                      ? scaleModulePx(800)
                       : isPhotoCollageType
-                        ? 560
+                        ? scaleModulePx(560)
+                        : isGridMapType
+                          ? nodeOuterSizeForCanvas(DEFAULT_GRID_MAP_CANVAS_W, DEFAULT_GRID_MAP_CANVAS_H).w
+                        : isImageComparerType
+                          ? IMAGE_COMPARER_DEFAULT_W
+                        : isStoryboardScriptType
+                          ? scaleModulePx(1024)
+                        : isScriptType
+                          ? scaleModulePx(360)
+                        : isDirectorType
+                          ? DIRECTOR_DEFAULT_W
                         : isImageTo3dType
-                          ? 480
+                          ? IMAGE_TO_3D_WIDTH
                           : isRvcTrainType
                             ? RVC_TRAIN_WIDTH
-                          : 200;
+                          : scaleModulePx(200);
     let defaultHeight =
       type === 'text'
-        ? 211.12
+        ? IMAGE_NODE_DEFAULT_H
         : type === 'llm'
-          ? 160  // 与 Text 模块相同的初始尺寸
+          ? AUDIO_NODE_HEIGHT
           : type === 'textSplit'
-            ? 200
+            ? scaleModulePx(200)
             : isImageType
-              ? 211.12
+              ? IMAGE_NODE_DEFAULT_H
               : isVideoLikeType
-                ? 422.22
+                ? VIDEO_NODE_DEFAULT_H
                 : type === 'character'
-                  ? 468
+                  ? scaleModulePx(468)
                   : isAudioType
-                      ? 160  // 与 Text 模块相同的初始尺寸
+                      ? AUDIO_NODE_HEIGHT
                     : isVideoSpliceType
-                      ? 500
+                      ? scaleModulePx(500)
                       : isPhotoCollageType
-                        ? 480
+                        ? scaleModulePx(480)
+                        : isGridMapType
+                          ? nodeOuterSizeForCanvas(DEFAULT_GRID_MAP_CANVAS_W, DEFAULT_GRID_MAP_CANVAS_H).h
+                        : isImageComparerType
+                          ? IMAGE_COMPARER_DEFAULT_H
+                        : isStoryboardScriptType
+                          ? scaleModulePx(576)
+                        : isScriptType
+                          ? scaleModulePx(320)
+                        : isDirectorType
+                          ? DIRECTOR_DEFAULT_H
                         : isImageTo3dType
-                          ? 270
+                          ? IMAGE_TO_3D_HEIGHT
                           : isRvcTrainType
                             ? RVC_TRAIN_HEIGHT
-                          : 200;
+                          : scaleModulePx(200);
 
     if (isImageType) {
       const arSize = imageNodeSizeForAspectRatio(DEFAULT_IMAGE_ASPECT_RATIO);
@@ -10431,12 +14000,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ? 'videoSplice'
                           : isPhotoCollageType
                             ? 'photoCollage'
+                            : isGridMapType
+                              ? 'gridMap'
+                            : isImageComparerType
+                              ? 'imageComparer'
+                            : isStoryboardScriptType
+                              ? 'storyboardScript'
+                            : isScriptType
+                              ? 'script'
+                            : isDirectorType
+                              ? 'director'
                             : isImageTo3dType
                               ? 'imageTo3d'
                               : isRvcTrainType
                                 ? 'rvcTrain'
                               : 'custom',
       position: adjustedPosition,
+      ...(isGridMapType || isStoryboardScriptType || isDirectorType || isImageComparerType
+        ? {
+            style: nodeStyleDimensions(defaultWidth, defaultHeight),
+            width: defaultWidth,
+            height: defaultHeight,
+          }
+        : {}),
       data: {
         label:
           type === 'text'
@@ -10461,16 +14047,46 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                             ? '视频剪辑'
                             : isPhotoCollageType
                               ? '拼图'
+                              : isGridMapType
+                                ? '宫格图'
+                              : isImageComparerType
+                                ? '图片对比'
+                              : isStoryboardScriptType
+                                ? '分镜脚本'
+                              : isScriptType
+                                ? '剧本'
+                              : isDirectorType
+                                ? '导演'
                               : isImageTo3dType
                                 ? '图片转 3D'
                                 : isRvcTrainType
-                                  ? 'RVC 音色训练'
+                                  ? '音色训练'
                                 : '节点',
-        text: type === 'text' ? '' : isAudioType ? '' : undefined,
+        text: type === 'text' || isScriptType ? '' : isAudioType ? '' : undefined,
         width: defaultWidth,
         height: defaultHeight,
+        moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
         isUserResized: false, // 新创建的节点，用户尚未手动调整尺寸
         prompt: type === 'llm' || isImageType || isVideoLikeType ? '' : undefined,
+        ...(isStoryboardScriptType
+          ? {
+              storyboardScript: createDefaultStoryboardScriptState(),
+              userPrompt: '',
+              chatModel: 'gpt-3.5-turbo',
+              title: '分镜脚本',
+            }
+          : {}),
+        ...(isScriptType ? { title: '剧本', text: '' } : {}),
+        ...(isDirectorType
+          ? {
+              director: createDefaultDirectorPipelineState(),
+              userPrompt: '',
+              title: '导演',
+              width: DIRECTOR_DEFAULT_W,
+              height: DIRECTOR_DEFAULT_H,
+              isUserResized: true,
+            }
+          : {}),
         ...(isImageTo3dType ? { inputImageUrl: '', progress: 0 } : {}),
         ...(isRvcTrainType
           ? {
@@ -10504,11 +14120,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ? 'videoSplice'
                           : isPhotoCollageType
                             ? 'photoCollage'
+                            : isGridMapType
+                              ? 'gridMap'
+                            : isImageComparerType
+                              ? 'imageComparer'
+                            : isStoryboardScriptType
+                              ? '分镜脚本'
                             : isRvcTrainType
                               ? ''
                             : undefined,
         inputText: type === 'textSplit' ? '' : undefined,
-        separator: type === 'textSplit' ? '&&&' : undefined,
+        separator: type === 'textSplit' ? '\n' : undefined,
         trimAndFilterEmpty: type === 'textSplit' ? true : undefined,
         convertType: type === 'textSplit' ? 'string' : undefined,
         resolution: isImageType ? '1k' : undefined,
@@ -10560,6 +14182,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         collageCanvasW: isPhotoCollageType ? 800 : undefined,
         collageCanvasH: isPhotoCollageType ? 600 : undefined,
         layers: isPhotoCollageType ? [] : undefined,
+        gridCols: isGridMapType ? DEFAULT_GRID_MAP_COLS : undefined,
+        gridRows: isGridMapType ? DEFAULT_GRID_MAP_ROWS : undefined,
+        canvasW: isGridMapType ? DEFAULT_GRID_MAP_CANVAS_W : undefined,
+        canvasH: isGridMapType ? DEFAULT_GRID_MAP_CANVAS_H : undefined,
+        cells: isGridMapType ? emptyGridMapCells(DEFAULT_GRID_MAP_COLS, DEFAULT_GRID_MAP_ROWS) : undefined,
+        imageAUrl: isImageComparerType ? '' : undefined,
+        imageBUrl: isImageComparerType ? '' : undefined,
+        splitRatio: isImageComparerType ? 0.5 : undefined,
       },
     };
 
@@ -10666,32 +14296,107 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           };
         }
       }
+    } else if (isGridMapType && connectFrom?.sourceNodeId) {
+      const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
+      if (sourceNode && sourceNode.type === 'image') {
+        const url =
+          pickPreviewUrl(buildDualImageAssetFromNodeData(sourceNode.data)) ||
+          (sourceNode.data?.outputImage as string) ||
+          (sourceNode.data?.originalImageUrl as string) ||
+          (sourceNode.data?.inputImages as string[])?.[0] ||
+          '';
+        if (url) {
+          const cells = emptyGridMapCells(DEFAULT_GRID_MAP_COLS, DEFAULT_GRID_MAP_ROWS);
+          cells[0] = { src: url, sourceNodeId: connectFrom.sourceNodeId };
+          nodeToAdd = {
+            ...newNode,
+            data: {
+              ...newNode.data,
+              cells,
+            },
+          };
+        }
+      }
     } else if (type === 'audio-extract-from-video' && connectFrom?.sourceNodeId) {
       const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
       if (isVideoTrackSourceNodeType(sourceNode?.type)) {
-        const videoUrl = (sourceNode.data?.outputVideo || sourceNode.data?.originalVideoUrl) as string | undefined;
-        if (videoUrl && window.electronAPI?.extractAudioFromVideo) {
-          window.electronAPI
-            .extractAudioFromVideo(projectId || undefined, videoUrl)
-            .then((res) => {
-              if (res?.audioUrl) {
+        const videoUrl = pickReferenceVideoFromSourceNode(sourceNode, connectFrom.sourceHandle);
+        if (!videoUrl) {
+          nodeToAdd = {
+            ...nodeToAdd,
+            data: {
+              ...nodeToAdd.data,
+              aiStatus: 'ERROR',
+              errorMessage: '视频节点没有可提取的视频文件（请等待生成完成或重新导入）',
+            },
+          };
+        } else if (window.electronAPI?.extractAudioFromVideo) {
+          nodeToAdd = {
+            ...nodeToAdd,
+            data: {
+              ...nodeToAdd.data,
+              aiStatus: 'PROCESSING',
+              errorMessage: undefined,
+            },
+          };
+          const pid = projectId || undefined;
+          queueMicrotask(() => {
+            window.electronAPI!
+              .extractAudioFromVideo(pid, videoUrl)
+              .then((res) => {
+                if (res?.audioUrl) {
+                  setNodes((nds) =>
+                    nds.map((n) =>
+                      n.id === newNodeId
+                        ? {
+                            ...n,
+                            data: {
+                              ...n.data,
+                              outputAudio: res.audioUrl,
+                              originalAudioUrl: res.audioUrl,
+                              aiStatus: 'SUCCESS',
+                              errorMessage: undefined,
+                              updatedAt: Date.now(),
+                            },
+                          }
+                        : n,
+                    ),
+                  );
+                } else {
+                  setNodes((nds) =>
+                    nds.map((n) =>
+                      n.id === newNodeId
+                        ? {
+                            ...n,
+                            data: {
+                              ...n.data,
+                              aiStatus: 'ERROR',
+                              errorMessage: '提取音频未返回结果',
+                            },
+                          }
+                        : n,
+                    ),
+                  );
+                }
+              })
+              .catch((err) => {
+                console.error('[Workspace] 从视频提取音频失败:', err);
                 setNodes((nds) =>
                   nds.map((n) =>
-                    n.id === newNodeId ? { ...n, data: { ...n.data, outputAudio: res.audioUrl } } : n
-                  )
+                    n.id === newNodeId
+                      ? {
+                          ...n,
+                          data: {
+                            ...n.data,
+                            errorMessage: err?.message || '提取音频失败',
+                            aiStatus: 'ERROR',
+                          },
+                        }
+                      : n,
+                  ),
                 );
-              }
-            })
-            .catch((err) => {
-              console.error('[Workspace] 从视频提取音频失败:', err);
-              setNodes((nds) =>
-                nds.map((n) =>
-                  n.id === newNodeId
-                    ? { ...n, data: { ...n.data, errorMessage: err?.message || '提取音频失败' } }
-                    : n
-                )
-              );
-            });
+              });
+          });
         }
       }
     } else if ((type === 'audio' || type === 'audio-voice-cover') && connectFrom?.sourceNodeId) {
@@ -10785,17 +14490,29 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           textToSplit = (sourceNode.data?.text as string) || '';
         } else if (sourceNode.type === 'llm') {
           textToSplit = (sourceNode.data?.outputText as string) || '';
-        } else if (sourceNode.type === 'textSplit' && sourceNode.data?.segments) {
-          const sh = connectFrom.sourceHandleId || '';
-          const idx = sh.startsWith('output-') && sh !== 'output-null' ? parseInt(sh.replace('output-', ''), 10) : 0;
-          const seg = sourceNode.data.segments as (string | number | boolean)[];
-          if (Number.isInteger(idx) && seg[idx] !== undefined) {
-            textToSplit = String(seg[idx]);
-          }
+        } else if (sourceNode.type === 'textSplit') {
+          textToSplit = pickTextSplitSegmentText(sourceNode.data, connectFrom.sourceHandleId);
         }
       }
       if (textToSplit) {
         nodeToAdd = { ...newNode, data: { ...newNode.data, inputText: textToSplit } };
+      }
+    } else if (
+      connectFrom?.sourceNodeId &&
+      (type === 'llm' || isImageType || isVideoLikeType || type === 'text')
+    ) {
+      const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
+      if (sourceNode?.type === 'textSplit') {
+        const segText = pickTextSplitSegmentText(sourceNode.data, connectFrom.sourceHandleId);
+        if (segText) {
+          if (type === 'llm') {
+            nodeToAdd = { ...nodeToAdd, data: { ...nodeToAdd.data, inputText: segText } };
+          } else if (type === 'text') {
+            nodeToAdd = { ...nodeToAdd, data: { ...nodeToAdd.data, text: segText } };
+          } else {
+            nodeToAdd = { ...nodeToAdd, data: { ...nodeToAdd.data, prompt: segText } };
+          }
+        }
       }
     } else if (isRvcTrainType && connectFrom?.sourceNodeId) {
       const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
@@ -10807,6 +14524,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             data: {
               ...nodeToAdd.data,
               referenceAudioUrl: trainUrl,
+            },
+          };
+        }
+      }
+    } else if (isImageComparerType && connectFrom?.sourceNodeId) {
+      const sourceNode = nodes.find((n) => n.id === connectFrom.sourceNodeId);
+      if (sourceNode?.type === 'image') {
+        const url = pickImageUrlFromImageSourceNode(sourceNode);
+        if (url) {
+          nodeToAdd = {
+            ...nodeToAdd,
+            data: {
+              ...nodeToAdd.data,
+              imageAUrl: url,
+              imageASourceNodeId: connectFrom.sourceNodeId,
             },
           };
         }
@@ -10988,7 +14720,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         nodeId: nodeToAdd.id,
         prompt: (nodeToAdd.data?.prompt as string) || '',
         aspectRatio: (nodeToAdd.data?.aspectRatio as '16:9' | '9:16' | '1:1' | '2:3' | '3:2') || '16:9',
-        model: (isWanAnimateType ? 'wan-animate' : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
+        model: (isWanAnimateType ? 'wan-animate' : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
         hd: !!(nodeToAdd.data?.hd),
         duration: ((nodeToAdd.data?.duration as string) || '10') as '5' | '10' | '15' | '25',
         inputImages,
@@ -11033,17 +14765,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     }
 
     if (connectFrom?.sourceNodeId) {
+      const srcNodeForEdge = nodes.find((n) => n.id === connectFrom.sourceNodeId);
+      const resolvedSourceHandle =
+        srcNodeForEdge?.type === 'textSplit'
+          ? normalizeTextSplitSourceHandle(connectFrom.sourceHandleId)
+          : (connectFrom.sourceHandleId ?? undefined);
       const targetHandle =
         isImageType ? 'image-input'
         : (type === 'video' || isWanAnimateType) ? 'input'  // Video 节点 Handle id 为 'input'
         : isRvcTrainType ? 'input'
+        : isImageComparerType ? 'image_a'
         : isAudioType ? 'audio-input'
         : 'input';
       setEdges((eds) =>
         eds.concat({
           id: `e-${connectFrom.sourceNodeId}-${newNodeId}-${Date.now()}`,
           source: connectFrom.sourceNodeId,
-          sourceHandle: connectFrom.sourceHandleId ?? undefined,
+          sourceHandle: resolvedSourceHandle,
           target: newNodeId,
           targetHandle,
         })
@@ -11131,8 +14869,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       setCanvasToolPending(null);
       if (!pending) return;
 
-      const defaultWidth = 369.46;
-      const defaultHeight = 211.12;
+      const defaultWidth = IMAGE_NODE_DEFAULT_W;
+      const defaultHeight = IMAGE_NODE_DEFAULT_H;
       const adjustedPosition = {
         x: pending.position.x - defaultWidth / 2,
         y: pending.position.y - defaultHeight / 2,
@@ -11242,8 +14980,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         extraData: {
           outputImage: normalizedPath,
           title: 'image',
-          width: imageSize?.w ?? 369.46,
-          height: imageSize?.h ?? 211.12,
+          width: imageSize?.w ?? IMAGE_NODE_DEFAULT_W,
+          height: imageSize?.h ?? IMAGE_NODE_DEFAULT_H,
           resolution: '1k',
           aspectRatio: DEFAULT_IMAGE_ASPECT_RATIO,
           model: 'banana-2.0',
@@ -11260,8 +14998,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         extraData: {
           outputVideo: normalizedPath,
           title: 'video',
-          width: videoSize?.w ?? 738.91,
-          height: videoSize?.h ?? 422.22,
+          width: videoSize?.w ?? VIDEO_NODE_DEFAULT_W,
+          height: videoSize?.h ?? VIDEO_NODE_DEFAULT_H,
           prompt: '',
           aspectRatio: DEFAULT_VIDEO_ASPECT_RATIO,
           model: HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2',
@@ -11271,14 +15009,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       };
     }
     if (isAudio) {
+      const fileTitle = audioDisplayTitleFromFileName(file.name || path || '') || 'audio';
       return {
         type: 'audio',
         nodeType: 'audio',
         extraData: {
           outputAudio: normalizedPath,
-          title: 'audio',
-          width: 280,
-          height: 160,
+          title: fileTitle,
+          width: AUDIO_NODE_WIDTH,
+          height: AUDIO_NODE_HEIGHT,
           text: '',
           voiceId: 'Wise_Woman',
           speed: 1,
@@ -11296,8 +15035,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         extraData: {
           title: 'text',
           text: '', // 稍后异步填充
-          width: 369.46,
-          height: 211.12,
+          width: IMAGE_NODE_DEFAULT_W,
+          height: IMAGE_NODE_DEFAULT_H,
+          moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
         },
       };
     }
@@ -11359,8 +15099,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
       const displayName = (scene.nickname || scene.name || '场景').trim();
       const ts = Date.now();
-      const iw = 369.46;
-      const ih = 211.12;
+      const iw = IMAGE_NODE_DEFAULT_W;
+      const ih = IMAGE_NODE_DEFAULT_H;
       const gap = 24;
       const has3d = !!display3dUrl;
       const pairWidth = has3d ? iw * 2 + gap : iw;
@@ -11477,8 +15217,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(pixel.width, pixel.height))
             : '9:16';
         const fallbackSize = videoNodeSizeForAspectRatio(aspectRatio);
-        const nodeW = fallbackSize?.w ?? VIDEO_NODE_MIN_W;
-        const nodeH = fallbackSize?.h ?? VIDEO_NODE_MIN_H;
+        const nodeW = fallbackSize?.w ?? VIDEO_NODE_DEFAULT_W;
+        const nodeH = fallbackSize?.h ?? VIDEO_NODE_DEFAULT_H;
         const nodeId = `video-${Date.now()}`;
 
         let newNode: Node = {
@@ -11974,43 +15714,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             }
           }
 
-          // 视频：走本地资源管理
+          // 视频：优先直接挂源路径（避免主进程整文件复制卡死）；失败再回退
           if (fileInfo.type === 'video') {
-            let videoResource: {
-              originalPath: string;
-              originalUrl: string;
-              posterPath?: string;
-              posterUrl?: string;
-              ghostBase64?: string;
-              width?: number;
-              height?: number;
-            } | null = null;
-            if (file.path && api?.createVideoLocalResourceFromFile) {
-              try {
-                videoResource = await api.createVideoLocalResourceFromFile(pid, file.path);
-              } catch (e) {
-                console.warn('[onDrop] 视频按路径创建本地资源失败，回退 buffer 路径', e);
-              }
+            let videoUrl = '';
+            if (file.path) {
+              let p = String(file.path).replace(/\\/g, '/');
+              if (p.match(/^[a-zA-Z]:\//)) p = p[0].toUpperCase() + p.slice(1);
+              else if (p.match(/^[a-zA-Z]\//)) p = p[0].toUpperCase() + ':' + p.slice(1);
+              videoUrl = `local-resource://${p}`;
             }
-            if (!videoResource && api?.createVideoLocalResourceFromBuffer) {
-              try {
-                const buffer = await file.arrayBuffer();
-                videoResource = await api.createVideoLocalResourceFromBuffer(pid, file.name || 'dropped-video.mp4', buffer);
-              } catch (e) {
-                console.warn('[onDrop] 视频按 buffer 创建本地资源失败', e);
-              }
-            }
-            if (videoResource) {
+            if (videoUrl) {
               extraData = {
                 ...extraData,
-                outputVideo: videoResource.originalUrl,
+                outputVideo: videoUrl,
                 originalVideoUrl: '',
-                videoAsset: {
-                  poster: videoResource.posterUrl,
-                  ghost: videoResource.ghostBase64,
-                  width: videoResource.width,
-                  height: videoResource.height,
-                },
               };
             } else {
               extraData = { ...extraData, outputVideo: '' };
@@ -12040,10 +15757,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (!audioUrl) {
               audioUrl = (file.path ? `local-resource://${file.path.replace(/\\/g, '/')}` : '') || '';
             }
+            const fileTitle = audioDisplayTitleFromFileName(file.name || file.path || '') || 'audio';
             extraData = {
               ...extraData,
               outputAudio: audioUrl,
               originalAudioUrl: audioUrl || undefined,
+              title: fileTitle,
               text: '',
               voiceId: 'Wise_Woman',
               speed: 1,
@@ -12221,12 +15940,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
         }
 
-        // 批量导入后自动 fitView 使新节点在视口内
-        if (newNodes.length > 0) {
-          setTimeout(() => {
-            flowContentApiRef.current?.fitView?.({ duration: 600, padding: 0.2 });
-          }, 100);
-        }
+        // 拖入素材后保持当前视口，不自动一键归位
         return;
       }
 
@@ -12264,8 +15978,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 originalImageUrl: imageUrl,
                 title: nodeTitle,
                 prompt: taskPayload.prompt || '',
-                width: 369.46,
-                height: 211.12,
+                width: IMAGE_NODE_DEFAULT_W,
+                height: IMAGE_NODE_DEFAULT_H,
+                moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
               },
               selected: true,
               selectable: true,
@@ -12285,8 +16000,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 originalVideoUrl: videoUrl,
                 title: nodeTitle,
                 prompt: taskPayload.prompt || '',
-                width: 738.91,
-                height: 422.22,
+                width: VIDEO_NODE_DEFAULT_W,
+                height: VIDEO_NODE_DEFAULT_H,
+                moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
               },
               selected: true,
               selectable: true,
@@ -12392,8 +16108,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 label: 'llm',
                 title: taskPayload.nodeTitle || 'llm',
                 outputText: textContent,
-                width: 300,
-                height: 160,
+                width: scaleModulePx(300),
+                height: AUDIO_NODE_HEIGHT,
+                moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
                 isUserResized: false,
               },
               selected: true,
@@ -12415,9 +16132,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             (taskType === 'audio' && audioUrl) ||
             (taskType === 'text' && textContent)
           ) {
-            setTimeout(() => {
-              flowContentApiRef.current?.fitView?.({ duration: 600, padding: 0.2 });
-            }, 100);
+            // 拖入后保持当前视口，不自动一键归位
             return;
           }
         } catch (err) {
@@ -12462,13 +16177,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         height: data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
         data: {
           label: data.label,
-          width: data.type === 'text' ? 369.46 : data.type === 'llm' ? 280 : data.type === 'textSplit' ? 240 : data.type === 'image' ? 369.46 : (data.type === 'video' || data.type === 'wanAnimate') ? 738.91 : data.type === 'character' ? 624 : data.type === 'audio' ? 280 : undefined,
-          height: data.type === 'text' ? 211.12 : data.type === 'llm' ? 160 : data.type === 'textSplit' ? 200 : data.type === 'image' ? 211.12 : (data.type === 'video' || data.type === 'wanAnimate') ? 422.22 : data.type === 'character' ? 468 : data.type === 'audio' ? 160 : undefined,
+          width: data.type === 'text' ? IMAGE_NODE_DEFAULT_W : data.type === 'llm' ? AUDIO_NODE_WIDTH : data.type === 'textSplit' ? scaleModulePx(240) : data.type === 'image' ? IMAGE_NODE_DEFAULT_W : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_W : data.type === 'character' ? scaleModulePx(624) : data.type === 'audio' ? AUDIO_NODE_WIDTH : undefined,
+          height: data.type === 'text' ? IMAGE_NODE_DEFAULT_H : data.type === 'llm' ? AUDIO_NODE_HEIGHT : data.type === 'textSplit' ? scaleModulePx(200) : data.type === 'image' ? IMAGE_NODE_DEFAULT_H : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_H : data.type === 'character' ? scaleModulePx(468) : data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
+          moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
           prompt: data.type === 'llm' || data.type === 'image' || data.type === 'video' || data.type === 'wanAnimate' ? '' : undefined,
           title: data.type === 'llm' ? 'llm' : data.type === 'image' ? 'image' : data.type === 'video' ? 'video' : data.type === 'wanAnimate' ? 'wanAnimate' : data.type === 'character' ? 'character' : data.type === 'audio' ? 'audio' : data.type === 'textSplit' ? 'textSplit' : undefined,
           isUserResized: false,
           inputText: data.type === 'textSplit' ? '' : undefined,
-          separator: data.type === 'textSplit' ? '&&&' : undefined,
+          separator: data.type === 'textSplit' ? '\n' : undefined,
           trimAndFilterEmpty: data.type === 'textSplit' ? true : undefined,
           convertType: data.type === 'textSplit' ? 'string' : undefined,
           resolution: data.type === 'image' ? '1k' : undefined,
@@ -12496,10 +16212,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
       setNodes((nds) => nds.concat(newNode));
 
-      // 侧栏拖入节点后自动归位，确保新节点（含文本/LLM/音频等）在视口内
-      setTimeout(() => {
-        flowContentApiRef.current?.fitView?.({ duration: 600, padding: 0.2 });
-      }, 100);
+      // 侧栏拖入后保持当前视口，不自动一键归位
 
       // 侧栏拖入视频节点时自动选中并弹出下方操作框
       if (data.type === 'video' || data.type === 'wanAnimate') {
@@ -12671,6 +16384,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                       ...node.data,
                       aiStatus: 'START',
                       progress: 1,
+                      errorMessage: undefined,
+                    },
+                  }
+                : node
+            );
+          }
+          // 图片节点重新生成：立即挂上进度遮罩（保留已有 outputImage，仅显示生成动画）
+          if (targetNode && targetNode.type === 'image') {
+            return nds.map((node) =>
+              node.id === packet.nodeId
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      progress: 1,
+                      progressMessage: packet.payload?.text || '正在生成...',
                       errorMessage: undefined,
                     },
                   }
@@ -12979,12 +16708,35 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
       
       // 处理视频节点的 SUCCESS 状态（批量运行时，未选中的节点没有 VideoInputPanel，需要在这里更新）
-      if (packet.status === 'SUCCESS' && (packet.payload?.videoUrl || packet.payload?.url || packet.payload?.data?.output || packet.payload?.data?.results?.[0]?.url)) {
+      // 注意：音频 SUCCESS 也会带通用字段 url，必须先验节点类型，且排除「仅有 audioUrl」的包，否则会把音频历史误标成 video
+      {
         const nodeId = packet.nodeId;
-        const videoUrl = packet.payload.videoUrl || packet.payload.url || packet.payload?.data?.output || packet.payload?.data?.results?.[0]?.url;
+        const nVid = latestNodesRef.current.find((x) => x.id === nodeId);
+        const hasExplicitVideoUrl = !!(packet.payload?.videoUrl);
+        const hasAudioOnlyPayload =
+          !!(packet.payload?.audioUrl || (Array.isArray(packet.payload?.outputAudios) && packet.payload.outputAudios.length > 0)) &&
+          !hasExplicitVideoUrl;
+        const rawVideoCandidate =
+          packet.payload?.videoUrl ||
+          packet.payload?.url ||
+          packet.payload?.data?.output ||
+          packet.payload?.data?.results?.[0]?.url;
+        const videoUrlCandidate = String(rawVideoCandidate || '');
+        const shouldTreatAsVideoSuccess =
+          packet.status === 'SUCCESS' &&
+          isVideoModuleNodeType(nVid?.type) &&
+          !hasAudioOnlyPayload &&
+          !!videoUrlCandidate &&
+          !looksLikeAudioMediaUrl(videoUrlCandidate) &&
+          (hasExplicitVideoUrl ||
+            !!packet.payload?.url ||
+            !!packet.payload?.data?.output ||
+            !!packet.payload?.data?.results?.[0]?.url);
+
+      if (shouldTreatAsVideoSuccess) {
+        const videoUrl = videoUrlCandidate;
         const localPath = packet.payload.localPath;
         const originalVideoUrl = packet.payload.originalVideoUrl;
-        const nVid = latestNodesRef.current.find((x) => x.id === nodeId);
         const ybVid = estimateYuanbaoForTaskNodeStatic(nVid, cloudMapRef.current);
         upsertRuntimeTask(nodeId, {
           status: 'success',
@@ -13094,6 +16846,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           return updatedNodes;
         });
       }
+      }
       
       // 处理 LLM 和 Text 节点的 SUCCESS 状态（批量运行时，未选中的节点没有 InputPanel，需要在这里更新）
       if (packet.status === 'SUCCESS' && packet.payload?.text && !packet.payload?.imageUrl && !packet.payload?.videoUrl) {
@@ -13178,14 +16931,23 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
       
       // 处理图片节点的 SUCCESS 状态（批量运行时，未选中的节点没有 ImageInputPanel，需要在这里更新）
-      if (packet.status === 'SUCCESS' && (packet.payload?.imageUrl || (Array.isArray(packet.payload?.outputImages) && packet.payload.outputImages.length > 0))) {
+      if (
+        packet.status === 'SUCCESS' &&
+        (packet.payload?.imageUrl ||
+          packet.payload?.localPath ||
+          (Array.isArray(packet.payload?.outputImages) && packet.payload.outputImages.length > 0))
+      ) {
         const nodeId = packet.nodeId;
         const outputImagesRaw = Array.isArray(packet.payload?.outputImages)
           ? packet.payload.outputImages.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
           : [];
-        const imageUrl = String(packet.payload.imageUrl || outputImagesRaw[0] || '').trim();
+        const localPath =
+          typeof packet.payload.localPath === 'string' ? packet.payload.localPath.trim() : undefined;
+        let imageUrl = String(packet.payload.imageUrl || outputImagesRaw[0] || '').trim();
+        if (!imageUrl && localPath) {
+          imageUrl = formatImagePathSync(localPath);
+        }
         if (!imageUrl) return;
-        const localPath = packet.payload.localPath;
         const payloadOriginalForTask =
           typeof packet.payload.originalImageUrl === 'string'
             ? packet.payload.originalImageUrl.trim()
@@ -13198,6 +16960,82 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           ...(outputImagesRaw.length > 0 ? { outputImages: outputImagesRaw } : {}),
           ...(ybImg !== undefined ? { yuanbaoConsumed: ybImg } : {}),
         });
+
+        // 导演资产图：nodeId = `{directorId}-director-img-{assetId}`，任务列表有图但画布无 image 节点
+        const directorImgMatch = String(nodeId || '').match(/^(.+)-director-img-(.+)$/);
+        if (directorImgMatch) {
+          const directorNodeId = directorImgMatch[1];
+          const assetId = directorImgMatch[2];
+          const directorNode = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === 'director',
+          );
+          if (directorNode) {
+            let formattedImageUrl = imageUrl;
+            if (localPath) {
+              formattedImageUrl = formatImagePathSync(localPath);
+            } else if (
+              !formattedImageUrl.startsWith('http://') &&
+              !formattedImageUrl.startsWith('https://') &&
+              !formattedImageUrl.startsWith('data:') &&
+              !formattedImageUrl.startsWith('local-resource://')
+            ) {
+              formattedImageUrl = formatImagePathSync(formattedImageUrl);
+            }
+            const prev = createDefaultDirectorPipelineState(
+              (directorNode.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            const nextDirector = updateDirectorAsset(prev, assetId, {
+              imageUrl: formattedImageUrl,
+              status: 'ready',
+              error: undefined,
+            });
+            invokeDirectorNodeDataChange(directorNodeId, {
+              director: nextDirector,
+              title: nextDirector.title,
+              isGenerating: nextDirector.isGenerating,
+              error: nextDirector.error || undefined,
+            });
+          }
+          return;
+        }
+
+        // 导演分镜图：nodeId = `{directorId}-director-sb-{shotNo}`
+        const directorSbMatch = String(nodeId || '').match(/^(.+)-director-sb-(.+)$/);
+        if (directorSbMatch) {
+          const directorNodeId = directorSbMatch[1];
+          const shotNo = decodeURIComponent(directorSbMatch[2]);
+          const directorNode = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === 'director',
+          );
+          if (directorNode) {
+            let formattedImageUrl = imageUrl;
+            if (localPath) {
+              formattedImageUrl = formatImagePathSync(localPath);
+            } else if (
+              !formattedImageUrl.startsWith('http://') &&
+              !formattedImageUrl.startsWith('https://') &&
+              !formattedImageUrl.startsWith('data:') &&
+              !formattedImageUrl.startsWith('local-resource://')
+            ) {
+              formattedImageUrl = formatImagePathSync(formattedImageUrl);
+            }
+            const prev = createDefaultDirectorPipelineState(
+              (directorNode.data as { director?: DirectorPipelineState })?.director || {},
+            );
+            const nextDirector = updateDirectorShotStoryboard(prev, shotNo, {
+              imageUrl: formattedImageUrl,
+              status: 'ready',
+              error: undefined,
+            });
+            invokeDirectorNodeDataChange(directorNodeId, {
+              director: nextDirector,
+              title: nextDirector.title,
+              isGenerating: nextDirector.isGenerating,
+              error: nextDirector.error || undefined,
+            });
+          }
+          return;
+        }
         
         // 使用函数式更新，确保基于最新状态
         let layoutProbeUrl = '';
@@ -13442,7 +17280,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const ybAud = estimateYuanbaoForTaskNodeStatic(nAud, cloudMapRef.current);
         upsertRuntimeTask(nodeId, {
           status: 'success',
+          taskType: 'audio',
           audioUrl: String(audioUrl || ''),
+          videoUrl: undefined,
           ...(ybAud !== undefined ? { yuanbaoConsumed: ybAud } : {}),
         });
         console.log('[Workspace] 音频 SUCCESS:', { nodeId, hasOriginalAudioUrl: !!originalAudioUrl, audioUrlPrefix: (audioUrl || '').slice(0, 50) });
@@ -13539,7 +17379,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
       }
     };
-  }, [setNodes, selectedNode, previewImage, previewAudio, imageInputPanelData, videoInputPanelData, llmInputPanelData, handleVideoNodeDataChangeRef, handleAudioNodeDataChangeRef, handleAddVideoTask, handleAddAudioTask, upsertRuntimeTask, getNodeTaskType]);
+  }, [setNodes, selectedNode, previewImage, previewAudio, imageInputPanelData, videoInputPanelData, llmInputPanelData, handleVideoNodeDataChangeRef, handleAudioNodeDataChangeRef, handleAddVideoTask, handleAddAudioTask, upsertRuntimeTask, getNodeTaskType, invokeDirectorNodeDataChange]);
 
   // 强退/重启后：任务列表里仍有 runtime 视频任务且已带上 RunningHub taskId 时，主进程继续 /query 直至出片
   useEffect(() => {
@@ -13603,10 +17443,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     handleVideoSpliceNodeDataChangeRef.current = handleVideoSpliceNodeDataChange;
     handleVideoSpliceExportToCanvasRef.current = handleVideoSpliceExportToCanvas;
     handlePhotoCollageNodeDataChangeRef.current = handlePhotoCollageNodeDataChange;
+    handleGridMapNodeDataChangeRef.current = handleGridMapNodeDataChange;
+    handleImageComparerNodeDataChangeRef.current = handleImageComparerNodeDataChange;
     handleAddTaskRef.current = handleAddTask;
     handleCleanupSplitEdgesRef.current = handleCleanupSplitEdges;
     handleAuxImageTaskCompleteRef.current = handleAuxImageTaskComplete;
-  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, persistRvcVoiceToLibrary, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
+  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, persistRvcVoiceToLibrary, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleGridMapNodeDataChange, handleImageComparerNodeDataChange, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
 
   // 采集当前画布缩略图（仅负责生成，不负责落盘）
   const captureProjectCardThumbnail = useCallback(async () => {
@@ -13619,7 +17461,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     if (!target) return;
     try {
       const captured = await html2canvas(target, {
-        backgroundColor: isDarkMode ? '#000000' : '#ffffff',
+        backgroundColor: isDarkMode ? '#121212' : '#ffffff',
         useCORS: true,
         allowTaint: true,
         // 降低截图分辨率，减轻主线程压力
@@ -13781,584 +17623,66 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     });
   }, [nodes, edges, navigate, saveProjectNow, setNodes, setEdges]);
 
-  return (
-    <div
-      className={`fixed inset-0 w-full h-full ${isDarkMode ? 'bg-black dark-mode' : 'light-mode'} flex flex-col overflow-hidden`}
-      style={{
-        top: 0, left: 0, right: 0, bottom: 0,
-        backgroundColor: !isDarkMode ? lightCanvasBgColor : undefined,
-        filter: !isDarkMode ? `brightness(${lightBrightness})` : undefined,
-      }}
-    >
-      {/* 退出中：显示加载动画，停止渲染重型节点 */}
-      {isExiting && (
-        <div
-          className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/80 backdrop-blur-sm"
-          style={{ pointerEvents: 'none' }}
-        >
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
-            <span className="text-white/90 text-sm">正在返回项目列表...</span>
-          </div>
-        </div>
-      )}
-
-      {/* 画板工具：白板画画，完成后创建 Image 节点作为参考图 */}
-      {canvasToolPending && (
-        <CanvasToolPanel
-          isDarkMode={isDarkMode}
-          onConfirm={handleCanvasToolConfirm}
-          onCancel={() => setCanvasToolPending(null)}
-        />
-      )}
-
-      {/* 画板编辑：从 Image 节点画板按钮打开，画布显示当前图片供绘图标记 */}
-      {drawingBoardForImage && (
-        <CanvasToolPanel
-          key={`drawing-${drawingBoardForImage.nodeId}`}
-          isDarkMode={isDarkMode}
-          initialImageUrl={drawingBoardForImage.imageUrl}
-          localPath={drawingBoardForImage.localPath}
-          nodeId={drawingBoardForImage.nodeId}
-          onApplyToNode={async (nodeId, dataUrl) => {
-            setDrawingBoardForImage(null);
-            if (!dataUrl?.startsWith('data:image/')) {
-              handleImageNodeDataChangeRef.current?.(nodeId, { outputImage: dataUrl });
-              return;
-            }
-            if (projectId && window.electronAPI?.createImageLocalResourceFromBuffer) {
-              try {
-                const base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
-                const buffer = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
-                const result = await window.electronAPI.createImageLocalResourceFromBuffer(projectId, 'drawing-marked.png', buffer);
-                if (result?.originalUrl) {
-                  handleImageNodeDataChangeRef.current?.(nodeId, {
-                    outputImage: result.originalUrl,
-                    imageAsset: {
-                      preview: result.previewUrl,
-                      original: result.originalUrl,
-                      tiny: result.tinyUrl,
-                      avgColorHex: result.avgColorHex,
-                    },
-                  });
-                  return;
-                }
-              } catch (e) {
-                console.warn('[画板] 保存到项目资源失败，回退 data URL:', e);
-              }
-            }
-            handleImageNodeDataChangeRef.current?.(nodeId, { outputImage: dataUrl });
-          }}
-          onConfirm={() => setDrawingBoardForImage(null)}
-          onCancel={() => setDrawingBoardForImage(null)}
-        />
-      )}
-
-      {panoramaPlacementForImage &&
-        createPortal(
-          <div
-            className={`fixed inset-0 z-[9999] ${panoramaPlacementFillHost ? 'flex flex-col' : 'flex items-center justify-center'} ${
-              isDarkMode ? 'bg-black/70' : 'bg-black/50'
-            }`}
-            onClick={(e) => {
-              if (e.target === e.currentTarget) {
-                setPanoramaPlacementFillHost(false);
-                setPanoramaPlacementForImage(null);
-              }
-            }}
-          >
-            <div
-              className={
-                panoramaPlacementFillHost
-                  ? `flex h-full w-full min-h-0 flex-col overflow-hidden ${isDarkMode ? 'pano-collage-studio-bg text-white' : 'bg-white'}`
-                  : `flex h-[min(88vh,900px)] w-[min(96vw,1320px)] min-h-[560px] flex-col overflow-hidden rounded-2xl ring-1 ${
-                      isDarkMode
-                        ? 'pano-collage-studio-bg text-white ring-white/10 shadow-2xl shadow-black/50'
-                        : 'bg-white ring-gray-200'
-                    }`
-              }
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div
-                className={`flex flex-shrink-0 items-center justify-end border-b px-4 py-2.5 ${
-                  isDarkMode
-                    ? 'border-white/[0.08] bg-black/25 backdrop-blur-md'
-                    : 'border-gray-200 bg-gray-100'
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setPanoramaPlacementFillHost((f) => !f)}
-                    className={`rounded-lg border p-1.5 transition-colors ${
-                      isDarkMode
-                        ? 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
-                        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                    title={panoramaPlacementFillHost ? panoPlaceModalT.exitFullscreenHostTitle : panoPlaceModalT.fullscreenHostTitle}
-                    aria-label={panoramaPlacementFillHost ? panoPlaceModalT.exitFullscreenHostTitle : panoPlaceModalT.fullscreenHostTitle}
-                  >
-                    {panoramaPlacementFillHost ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPanoramaPlacementFillHost(false);
-                      setPanoramaPlacementForImage(null);
-                    }}
-                    className={`rounded-lg border p-1.5 transition-colors ${
-                      isDarkMode
-                        ? 'border-white/15 bg-white/5 text-white/85 hover:bg-white/10'
-                        : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                    title={panoPlaceModalT.modalCloseTitle}
-                    aria-label={panoPlaceModalT.modalCloseTitle}
-                  >
-                    <X className="h-5 w-5" />
-                  </button>
-                </div>
-              </div>
-              <div className={`flex min-h-0 flex-1 flex-col ${panoramaPlacementFillHost ? 'p-2' : 'overflow-hidden p-0'}`}>
-                <Panorama360PlacementPanel
-                  textureUrl={panoramaPlacementForImage.textureUrl}
-                  isDarkMode={isDarkMode}
-                  hostFullscreen={panoramaPlacementFillHost}
-                  onHostFullscreenChange={setPanoramaPlacementFillHost}
-                  onOutput={async (dataUrl) => {
-                    const sourceNodeId = panoramaPlacementForImage.nodeId;
-                    setPanoramaPlacementFillHost(false);
-                    setPanoramaPlacementForImage(null);
-                    if (!dataUrl) return;
-
-                    let outputImage = '';
-                    let originalImageUrl = '';
-                    let imageAsset:
-                      | {
-                          preview: string;
-                          original: string;
-                          tiny?: string;
-                          ghost?: string;
-                          avgColorHex?: string;
-                          width?: number;
-                          height?: number;
-                        }
-                      | undefined;
-                    let tinyThumbUrl = '';
-                    let avgColorHex = '';
-                    let localPath = '';
-                    let pixelW: number | undefined;
-                    let pixelH: number | undefined;
-
-                    if (!dataUrl.startsWith('data:image/')) {
-                      outputImage = dataUrl;
-                      originalImageUrl = dataUrl;
-                    } else if (projectId && window.electronAPI?.createImageLocalResourceFromBuffer) {
-                      try {
-                        const base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
-                        const buffer = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
-                        const result = await window.electronAPI.createImageLocalResourceFromBuffer(
-                          projectId,
-                          'panorama-vr-placement.png',
-                          buffer
-                        );
-                        if (result?.originalUrl) {
-                          outputImage = result.originalUrl;
-                          originalImageUrl = result.originalUrl;
-                          localPath = result.originalPath;
-                          tinyThumbUrl = result.tinyUrl || '';
-                          avgColorHex = result.avgColorHex || '';
-                          pixelW = result.width;
-                          pixelH = result.height;
-                          imageAsset = {
-                            preview: result.previewUrl,
-                            original: result.originalUrl,
-                            tiny: result.tinyUrl,
-                            ghost: result.ghostBase64,
-                            avgColorHex: result.avgColorHex,
-                            width: result.width,
-                            height: result.height,
-                          };
-                        }
-                      } catch (e) {
-                        console.warn('[VR全景摆放] 保存到项目资源失败，回退 data URL:', e);
-                      }
-                    }
-                    if (!outputImage) {
-                      outputImage = dataUrl;
-                      originalImageUrl = dataUrl;
-                    }
-
-                    const src = (latestNodesRef.current as Node[]).find((n) => n.id === sourceNodeId);
-                    const newId = `image-${Date.now()}`;
-                    const gap = 48;
-                    const defaultW = 369.46;
-                    const defaultH = 211.12;
-                    const srcData = (src?.data || {}) as Record<string, unknown>;
-                    const srcW =
-                      typeof srcData.width === 'number' && (srcData.width as number) > 0
-                        ? (srcData.width as number)
-                        : defaultW;
-                    const position = src
-                      ? { x: (src.position?.x ?? 0) + srcW + gap, y: src.position?.y ?? 0 }
-                      : { x: 100, y: 100 };
-
-                    const width =
-                      pixelW != null && pixelW > 0
-                        ? pixelW
-                        : typeof srcData.width === 'number' && (srcData.width as number) > 0
-                          ? (srcData.width as number)
-                          : defaultW;
-                    const height =
-                      pixelH != null && pixelH > 0
-                        ? pixelH
-                        : typeof srcData.height === 'number' && (srcData.height as number) > 0
-                          ? (srcData.height as number)
-                          : defaultH;
-
-                    const newNode: Node = {
-                      id: newId,
-                      type: 'image',
-                      position,
-                      selected: true,
-                      selectable: true,
-                      data: {
-                        label: (srcData.label as string) || '图片节点',
-                        title: (srcData.title as string) || 'image',
-                        width,
-                        height,
-                        resolution: (srcData.resolution as string) || '1k',
-                        aspectRatio: (srcData.aspectRatio as string) || DEFAULT_IMAGE_ASPECT_RATIO,
-                        model: (srcData.model as string) || 'banana-2.0',
-                        prompt: (srcData.prompt as string) || '',
-                        outputImage,
-                        originalImageUrl,
-                        ...(localPath ? { localPath } : {}),
-                        ...(tinyThumbUrl ? { tinyThumbUrl } : {}),
-                        ...(avgColorHex ? { avgColorHex } : {}),
-                        ...(imageAsset ? { imageAsset } : {}),
-                      },
-                    };
-
-                    setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNode));
-                    setSelectedNode(newNode);
-                  }}
-                />
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
-
-      {/* 顶部工具栏：直接放在布局内（非 Portal），确保画布不会重叠、点击始终有效 */}
-      <div
-        className="flex-shrink-0 relative z-[1000]"
-        data-nexflow-workspace-header
-        style={{ pointerEvents: 'auto' }}
-      >
-        <WorkspaceHeader
-          isDarkMode={isDarkMode}
-          setIsDarkMode={handleSetIsDarkMode}
-          lightBrightness={lightBrightness}
-          setLightBrightness={setLightBrightness}
-          lightCanvasBgColor={lightCanvasBgColor}
-          setLightCanvasBgColor={setLightCanvasBgColor}
-          lightDotsColor={lightDotsColor}
-          setLightDotsColor={setLightDotsColor}
-          lightDotSize={lightDotSize}
-          setLightDotSize={setLightDotSize}
-          darkDotSize={darkDotSize}
-          setDarkDotSize={setDarkDotSize}
-          edgeColor={edgeColor ?? undefined}
-          setEdgeColor={setEdgeColor}
-          onNavigateBack={handleNavigateBack}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          canUndo={undoRedoState.canUndo}
-          canRedo={undoRedoState.canRedo}
-          onOpenFolder={async () => {
-            if (!window.electronAPI || !projectId) return;
-            try {
-              const projectDir = await window.electronAPI.getProjectMappedPath(projectId);
-              if (projectDir) {
-                const sep = projectDir.includes('\\') ? '\\' : '/';
-                const assetsDir = `${projectDir.replace(/[/\\]+$/, '')}${sep}assets`;
-                await window.electronAPI.openPath(assetsDir);
-              } else {
-                console.warn('项目未找到，无法打开文件夹:', projectId);
-              }
-            } catch (error) {
-              console.error('打开项目文件夹失败:', error);
-            }
-          }}
-          onBackupProject={handleBackupProject}
-          onRestoreFromBackup={handleRestoreFromBackup}
-          edgePathStyle={edgePathStyle}
-          setEdgePathStyle={setEdgePathStyle}
-          projectId={projectId}
-          lafStatus={lafStatus}
-          lafBalance={lafBalance}
-          onLafClick={handleLafClick}
-        />
-      </div>
-
-      {/* 主内容区域（画布） */}
-      <div className="flex-1 flex overflow-hidden relative">
-        {/* 左侧角色列表 + 右侧任务列表（性能隔离：React.memo） */}
-        <WorkspaceSidebar
-          characterListCollapsed={characterListCollapsed}
-          onToggleCharacterList={() => setCharacterListCollapsed(!characterListCollapsed)}
-          characterListRefreshTrigger={characterListRefreshTrigger}
-          sceneListRefreshTrigger={sceneListRefreshTrigger}
-          digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
-          rvcVoiceListRefreshTrigger={rvcVoiceListRefreshTrigger}
-          onSelectCharacter={handleSelectCharacter}
-          requestVoicePickFromCanvas={requestVoicePickFromCanvas}
-          requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
-          requestSceneImagePickFromCanvas={requestSceneImagePickFromCanvas}
-          requestDigitalHumanVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
-          rightSidebarOpen={rightSidebarOpen}
-          onToggleRightSidebar={() => setRightSidebarOpen(!rightSidebarOpen)}
-          tasks={dedupedSortedTasks}
-          projectId={projectId}
-          isDarkMode={isDarkMode}
-          formatImagePath={formatImagePathSync}
-          mapProjectPath={mapProjectPath}
-          onPreviewImage={onPreviewImageFromTask}
-          onPreviewAudio={onPreviewAudioFromTask}
-          onDownloadLocalFile={handleDownloadLocalTaskFile}
-          onDeleteTask={handleDeleteTask}
-          onDownloadImage={handleDownloadImage}
-          onDownloadVideo={handleDownloadVideo}
-          onDownloadAudio={handleDownloadAudio}
-          onClearAllTasks={handleClearAllTasks}
-          onTaskPlaceToCanvas={handleTaskPlaceToCanvas}
-          onPlaceSceneToCanvas={handleScenePlaceToCanvas}
-          onPlaceDigitalHumanToCanvas={handleDigitalHumanPlaceToCanvas}
-          onPlaceRvcVoiceToCanvas={handleRvcVoicePlaceToCanvas}
-          onRvcVoiceUpdated={handleRvcVoiceLibraryUpdated}
-        />
-        
-        {/* 中间画布区域 - 覆盖整个区域，左侧边栏覆盖在上面 */}
-        <div 
-          className="flex-1 relative transition-all duration-300 ease-in-out"
-          style={{
-            width: '100%',
-            height: '100%',
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
-          <OptionalEngineDownloadBar isDarkMode={isDarkMode} />
-          {characterAvatarPickOverlay && (
-            <>
-              <div
-                className="absolute inset-0 z-[50] pointer-events-none bg-violet-400/20"
-                aria-hidden
-              />
-              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[55] pointer-events-auto flex flex-col items-center gap-3">
-                <p className="rounded-lg bg-black/55 px-4 py-2 text-sm text-white/90 shadow-lg backdrop-blur-sm">
-                  {characterCanvasPickTarget === 'voice'
-                    ? '点击画布上的音频模块以选取驱动音频'
-                    : characterCanvasPickTarget === 'digitalHumanVideo'
-                      ? '点击画布上的视频模块以选取参考视频'
-                      : characterCanvasPickTarget === 'sceneNormal' || characterCanvasPickTarget === 'sceneDisplay3d'
-                        ? '点击画布上的图片模块以选取场景图'
-                        : '点击画布上的图片模块以选取参考图'}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => cancelCharacterCanvasPick()}
-                  className="rounded-xl border border-violet-400/50 bg-violet-600 px-8 py-3.5 text-base font-semibold text-white shadow-xl shadow-violet-900/40 backdrop-blur-sm transition-colors hover:bg-violet-500 hover:border-violet-300/60 active:scale-[0.98]"
-                >
-                  取消
-                </button>
-              </div>
-            </>
-          )}
-          <CanvasThemeProvider isDarkMode={isDarkMode} performanceMode={isPerformanceMode}>
-          <ReactFlowProvider>
-            <FlowContent
-              characterAvatarPickActive={characterAvatarPickOverlay}
-              characterCanvasPickTarget={characterCanvasPickTarget}
-              nodes={nodes}
-              edges={edges}
-              selectedEdgeId={selectedEdge?.id ?? null}
-              edgeDeleteModeId={edgeDeleteModeId}
-              onEdgeDeleteRequest={onEdgeDeleteRequest}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onNodesDelete={onNodesDelete}
-              onConnect={onConnect}
-              onNodeClick={onNodeClickStable}
-              onSelectionChange={onSelectionChange}
-              onNodeDragStart={onNodeDragStart}
-              onNodeDrag={onNodeDrag}
-              onNodeDragStop={onNodeDragStop}
-              onPaneClick={onPaneClick}
-              onEdgeClick={onEdgeClick}
-              onEdgeCenterClick={onEdgeCenterClick}
-              onDrop={onDrop}
-              onDragOver={onDragOver}
-              nodeTypes={nodeTypes}
-              contextMenu={contextMenu}
-              setContextMenu={setContextMenu}
-              handleMenuSelect={handleMenuSelect}
-              reactFlowWrapper={reactFlowWrapper}
-              isDarkMode={isDarkMode}
-              lightCanvasBgColor={lightCanvasBgColor}
-              lightDotsColor={lightDotsColor}
-              lightDotSize={canvasDotSize}
-              moduleComponentColor={isDarkMode ? moduleComponentColor : undefined}
-              edgeColor={edgeColor ?? undefined}
-              characterListCollapsed={characterListCollapsed}
-              onBatchRun={handleBatchRun}
-              batchRunInProgress={batchRunInProgress}
-              onSuperConnect={handleSuperConnect}
-              onReverseSuperConnect={handleReverseSuperConnect}
-              setNodes={setNodes}
-              setEdges={setEdges}
-              flowContentApiRef={flowContentApiRef}
-              onPerformanceModeChange={setIsPerformanceMode}
-              onOpenProjects={() => void handleNavigateBack()}
-              edgePathStyle={edgePathStyle}
-              onFitViewComplete={() => persistProjectCardThumbnail(true)}
-              projectId={projectId}
-            />
-          </ReactFlowProvider>
-          </CanvasThemeProvider>
-        </div>
-
-        {/* 任务预览全屏查看（支持图片和视频；图片支持打标签工具） */}
-        {previewImage && (
-          previewShowVideoPlayer ? (
-            <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center">
-              <div className="flex flex-col items-center gap-4 px-4">
-                <VideoPreview
-                  src={previewImage}
-                  className="max-w-[90vw] max-h-[84vh] object-contain rounded-lg shadow-2xl"
-                  preload="auto"
-                  playsInline
-                />
-                <button
-                  onClick={() => {
-                    setPreviewImage(null);
-                    setPreviewImageNodeId(null);
-                    setSelectedNode(null);
-                    setImageInputPanelData(null);
-        setImageTo3dInputPanelData(null);
-                    setLlmInputPanelData(null);
-                    setVideoInputPanelData(null);
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-white hover:bg-white/90 text-black transition-colors z-[210]"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  返回
-                </button>
-              </div>
-            </div>
-          ) : (
-            <ImagePreviewWithTools
-              imageUrl={previewImage}
-              nodeId={previewImageNodeId ?? undefined}
-              localPath={previewImageNodeId ? (nodes.find((n) => n.id === previewImageNodeId)?.data?.localPath as string | undefined) : undefined}
-              isDarkMode={isDarkMode}
-              onApply={(nodeId, dataUrl) => {
-                handleImageNodeDataChange(nodeId, { outputImage: dataUrl });
-              }}
-              onClose={() => {
-                setPreviewImage(null);
-                setPreviewImageNodeId(null);
-                setSelectedNode(null);
-                setImageInputPanelData(null);
-        setImageTo3dInputPanelData(null);
-                setLlmInputPanelData(null);
-                setVideoInputPanelData(null);
-              }}
-              onImportToCanvas={
-                previewCanImportToCanvas ? () => void handleImportPreviewImageToCanvas() : undefined
-              }
-              importToCanvasLabel={imgc.importToCanvasButton}
-            />
-          )
-        )}
-
-        {/* 音频预览弹窗 */}
-        {previewAudio && (
-          <div className={`fixed inset-0 z-50 ${isDarkMode ? 'bg-black/90' : 'bg-gray-900/90'} flex items-center justify-center`}>
-            <button
-              onClick={() => {
-                setPreviewAudio(null);
-                setSelectedNode(null);
-                setImageInputPanelData(null);
-        setImageTo3dInputPanelData(null);
-                setLlmInputPanelData(null);
-                setVideoInputPanelData(null);
-                setAudioInputPanelData(null);
-              }}
-              className="absolute top-6 right-8 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
-            >
-              <ChevronLeft className="w-3 h-3" />
-              返回
-            </button>
-            <div className="w-full max-w-2xl px-8">
-              <audio
-                key={previewAudio}
-                src={previewAudio}
-                controls
-                className={`w-full ${isDarkMode ? 'audio-dark' : ''}`}
-                preload="none"
-                onCanPlay={(e) => {
-                  const audio = e.currentTarget;
-                  if (audio.currentTime > 0) {
-                    audio.currentTime = 0;
-                  }
-                }}
-                onLoadedMetadata={(e) => {
-                  const audio = e.currentTarget;
-                  audio.currentTime = 0;
-                }}
-                onPlay={(e) => {
-                  const audio = e.currentTarget;
-                  if (audio.currentTime > 0.1) {
-                    audio.currentTime = 0;
-                  }
-                }}
-                onError={(e) => {
-                  const audio = e.currentTarget;
-                  console.error('[音频预览] 加载失败:', {
-                    src: audio.currentSrc || previewAudio,
-                    error: audio.error?.code,
-                    message: audio.error?.message,
-                  });
-                }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* LLM 输入面板弹窗（底部显示，向上滑出动画） */}
-        {!previewImage && !previewAudio && !characterAvatarPickOverlay && llmInputPanelData && selectedNode && selectedNode.type === 'llm' && (
-          <div className="absolute z-50 animate-slide-up" style={{ width: '840px', height: '300px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>
+  const llmInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    llmInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'llm'
+      ? {
+          nodeId: llmInputPanelData.nodeId,
+          width:
+            llmInputPanelData.isImageReverseMode || llmInputPanelData.isVideoAnalysisMode
+              ? 840
+              : 780,
+          height: 'auto' as const,
+          panel: (
             <LLMInputPanel
               nodeId={llmInputPanelData.nodeId}
               isDarkMode={isDarkMode}
               inputText={llmInputPanelData.inputText}
               userInput={llmInputPanelData.userInput}
+              isInputLocked={false}
+              hasLinkedText={!!llmInputPanelData.hasLinkedText}
+              linkedInputText={llmInputPanelData.linkedInputText || llmInputPanelData.inputText || ''}
+              linkedTextTitle={llmInputPanelData.linkedTextTitle || ''}
               isImageReverseMode={llmInputPanelData.isImageReverseMode}
               imageUrlForReverse={llmInputPanelData.imageUrlForReverse}
               isVideoAnalysisMode={llmInputPanelData.isVideoAnalysisMode}
               videoUrlForAnalysis={llmInputPanelData.videoUrlForAnalysis}
-              reverseCaptionModel={llmInputPanelData.reverseCaptionModel ?? 'gpt-4o'}
+              reverseCaptionModel={
+                llmInputPanelData.reverseCaptionModel ?? IMAGE_REVERSE_DEFAULT_MODEL
+              }
               onReverseCaptionModelChange={(value) => {
+                const nid = llmInputPanelData.nodeId;
+                const next = normalizeImageReverseCaptionModel(value);
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === nid ? { ...node, data: { ...node.data, reverseCaptionModel: next } } : node
+                  )
+                );
+                setLlmInputPanelData((prev) =>
+                  prev && prev.nodeId === nid ? { ...prev, reverseCaptionModel: next } : prev,
+                );
+              }}
+              chatModel={llmInputPanelData.chatModel ?? 'gpt-3.5-turbo'}
+              onChatModelChange={(value) => {
                 const nid = llmInputPanelData.nodeId;
                 setNodes((nds) =>
                   nds.map((node) =>
-                    node.id === nid ? { ...node, data: { ...node.data, reverseCaptionModel: value } } : node
+                    node.id === nid ? { ...node, data: { ...node.data, chatModel: value } } : node
                   )
                 );
-                setLlmInputPanelData((prev) => (prev && prev.nodeId === nid ? { ...prev, reverseCaptionModel: value } : prev));
+                setLlmInputPanelData((prev) => (prev && prev.nodeId === nid ? { ...prev, chatModel: value } : prev));
               }}
-              isInputLocked={llmInputPanelData.isInputLocked}
+              onPersonaExpandedChange={(expanded) => {
+                const nid = llmInputPanelData.nodeId;
+                setLlmInputPanelData((prev) => {
+                  if (!prev || prev.nodeId !== nid || prev.personaExpanded === expanded) return prev;
+                  return { ...prev, personaExpanded: expanded };
+                });
+              }}
               savedPrompts={llmInputPanelData.savedPrompts}
               projectId={projectId}
               nodeTitle={selectedNode.data?.title || 'llm'}
@@ -14381,7 +17705,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 setLlmInputPanelData((prev) => (prev && prev.nodeId === nid ? { ...prev, inputText: value } : prev));
               }}
               onSavedPromptsChange={async (prompts) => {
-                // 更新全局人设列表
                 if (window.electronAPI) {
                   try {
                     await window.electronAPI.updateGlobalLLMPersonas(prompts);
@@ -14394,7 +17717,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 setLlmInputPanelData((prev) => (prev && prev.nodeId === nid ? { ...prev, savedPrompts: prompts } : prev));
               }}
               onPersonaChange={(personaName) => {
-                // 当选择不同人设时，同步更新 LLM 节点的小标题
                 setNodes((nds) =>
                   nds.map((node) =>
                     node.id === llmInputPanelData.nodeId
@@ -14447,8 +17769,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                       ? { ...node, data: { ...node.data, outputText: text } }
                       : node
                   );
-                  
-                  // 如果 LLM 节点连接到 Image 节点，同步更新 Image 节点的 prompt
+
                   const connectedEdges = edges.filter((e) => e.source === nid && e.target);
                   connectedEdges.forEach((edge) => {
                     const targetNode = updatedNodes.find((n) => n.id === edge.target);
@@ -14459,19 +17780,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ...updatedNodes[targetIndex],
                           data: {
                             ...updatedNodes[targetIndex].data,
-                            prompt: text, // 传递 LLM 输出文本到 Image 节点的 prompt
-                            // 不设置 inputImages，保持文生图模式
+                            prompt: text,
                           },
                         };
-                        
-                        // 如果目标 Image 节点当前被选中，更新输入面板数据
+
                         if (selectedNode && selectedNode.id === edge.target) {
                           setImageInputPanelData((prev) => {
                             if (prev && prev.nodeId === edge.target) {
                               return {
                                 ...prev,
                                 prompt: text,
-                                inputImages: [], // 确保是文生图模式
+                                inputImages: [],
                               };
                             }
                             return prev;
@@ -14480,345 +17799,131 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                       }
                     }
                   });
-                  
+
                   return updatedNodes;
                 });
               }}
             />
-          </div>
-        )}
+          ),
+        }
+      : null;
 
-        {/* Image 输入面板弹窗（底部显示，向上滑出动画） */}
-        {!previewImage && !previewAudio && !characterAvatarPickOverlay && imageInputPanelData && selectedNode && selectedNode.type === 'image' && (
-          <div className="absolute z-50 animate-slide-up" style={{ width: '840px', height: '242px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>
-            <ImageInputPanel
-              nodeId={imageInputPanelData.nodeId}
-              isDarkMode={isDarkMode}
-              prompt={imageInputPanelData.prompt}
-              resolution={imageInputPanelData.resolution}
-              aspectRatio={imageInputPanelData.aspectRatio}
-              model={imageInputPanelData.model}
-              seedreamWidth={imageInputPanelData.model === 'seedream-v5'
-                ? Math.max(1600, Math.min(4704, imageInputPanelData.seedreamWidth ?? 2048))
-                : Math.max(1024, Math.min(4096, imageInputPanelData.seedreamWidth ?? 2048))}
-              seedreamHeight={imageInputPanelData.model === 'seedream-v5'
-                ? Math.max(1344, Math.min(4096, imageInputPanelData.seedreamHeight ?? 2048))
-                : Math.max(1024, Math.min(4096, imageInputPanelData.seedreamHeight ?? 2048))}
-              isConnected={edges.some((e) => e.target === imageInputPanelData.nodeId && nodes.find((n) => n.id === e.source)?.type === 'image')}
-              inputImages={imageInputPanelData.inputImages || []}
-              onInputImagesChange={(images) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, inputImages: images } }
-                      : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, inputImages: images } : prev));
-              }}
+
+  const storyboardScriptInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    storyboardScriptInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'storyboardScript'
+      ? {
+          nodeId: storyboardScriptInputPanelData.nodeId,
+          width: Math.min(Number(selectedNode.data?.width) || 1024, 720),
+          height: 'auto' as const,
+          panel: (
+            <StoryboardScriptInputPanel
+              nodeId={storyboardScriptInputPanelData.nodeId}
               projectId={projectId}
-              onSeedreamWidthChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId ? { ...node, data: { ...node.data, seedreamWidth: value } } : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, seedreamWidth: value } : prev));
+              isDarkMode={isDarkMode}
+              userPrompt={storyboardScriptInputPanelData.userPrompt}
+              chatModel={storyboardScriptInputPanelData.chatModel ?? 'gpt-3.5-turbo'}
+              storyboardScript={storyboardScriptInputPanelData.storyboardScript}
+              imageUrls={storyboardScriptInputPanelData.imageUrls}
+              videoUrls={storyboardScriptInputPanelData.videoUrls}
+              onUserPromptChange={(value) => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { userPrompt: value });
               }}
-              onSeedreamHeightChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId ? { ...node, data: { ...node.data, seedreamHeight: value } } : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, seedreamHeight: value } : prev));
+              onChatModelChange={(value) => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { chatModel: value });
               }}
-              onPromptChange={(value) => {
-                const targetNodeId = imageInputPanelData.nodeId;
-                lastImagePromptUserEditRef.current = Date.now();
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === targetNodeId
-                      ? { ...node, data: { ...node.data, prompt: value } }
-                      : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev && prev.nodeId === targetNodeId ? { ...prev, prompt: value } : prev));
+              onScriptChange={(script) => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { storyboardScript: script, title: script.title });
               }}
-              onPromptFocus={() => {
-                lastImagePromptUserEditRef.current = Date.now();
+              onGeneratingChange={(v) => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { isGenerating: v });
               }}
-              onResolutionChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, resolution: value } }
-                      : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, resolution: value } : prev));
+              onErrorChange={(err) => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { error: err || undefined });
               }}
-              onAspectRatioChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId
-                      ? patchNodeWithAspectRatioLayout(node, value, 'image')
-                      : node,
-                  ),
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, aspectRatio: value } : prev));
-              }}
-              onModelChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === imageInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, model: value } }
-                      : node
-                  )
-                );
-                setImageInputPanelData((prev) => (prev ? { ...prev, model: value } : prev));
-              }}
-              onOutputImageChange={(imageUrl, originalImageUrlFromPayload, outputImagesFromPayload) => {
-                void (async () => {
-                  const targetNodeId = imageInputPanelData.nodeId;
-                  const promptToKeep = imageInputPanelData.prompt ?? '';
-                  const publicOrig =
-                    typeof originalImageUrlFromPayload === 'string' && /^https?:\/\//i.test(originalImageUrlFromPayload.trim())
-                      ? originalImageUrlFromPayload.trim()
-                      : undefined;
-                  const formattedImageUrl = formatImagePathSync(imageUrl);
-                  const formattedOutputImages =
-                    Array.isArray(outputImagesFromPayload) && outputImagesFromPayload.length > 0
-                      ? outputImagesFromPayload.map((u) => formatImagePathSync(String(u || ''))).filter(Boolean)
-                      : undefined;
-                  console.log('[Workspace] onOutputImageChange 被调用:', {
-                    targetNodeId,
-                    imageUrl: formattedImageUrl,
-                    publicOrig: publicOrig || '—',
-                    outputCount: formattedOutputImages?.length ?? 1,
-                  });
-
-                  const probeUrl = formattedOutputImages?.[0] || formattedImageUrl;
-                  const currentNodeSnapshot = latestNodesRef.current.find((n) => n.id === targetNodeId);
-                  let layoutPatchedNode: Node | undefined;
-                  if (currentNodeSnapshot && probeUrl && !currentNodeSnapshot.data?.isUserResized) {
-                    const baseNode: Node = {
-                      ...currentNodeSnapshot,
-                      data: {
-                        ...currentNodeSnapshot.data,
-                        outputImage: formattedImageUrl,
-                        ...(formattedOutputImages && formattedOutputImages.length > 0
-                          ? { outputImages: formattedOutputImages }
-                          : {}),
-                        ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
-                        prompt: (currentNodeSnapshot.data?.prompt as string | undefined) ?? promptToKeep,
-                      },
-                    };
-                    layoutPatchedNode = await patchImageNodeWithProbedLayout(baseNode, probeUrl);
-                  }
-
-                  setNodes((nds) => {
-                    const updatedNodes = nds.map((node) => {
-                      if (node.id !== targetNodeId) return node;
-                      if (layoutPatchedNode) {
-                        return {
-                          ...node,
-                          data: { ...node.data, ...layoutPatchedNode.data },
-                          style: layoutPatchedNode.style ?? node.style,
-                        };
-                      }
-                      return {
-                        ...node,
-                        data: {
-                          ...node.data,
-                          outputImage: formattedImageUrl,
-                          ...(formattedOutputImages && formattedOutputImages.length > 0
-                            ? { outputImages: formattedOutputImages }
-                            : {}),
-                          ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
-                          prompt: (node.data?.prompt as string | undefined) ?? promptToKeep,
-                        },
-                      };
-                    });
-
-                    handleImageNodeDataChange(targetNodeId, {
-                      outputImage: formattedImageUrl,
-                      ...(formattedOutputImages && formattedOutputImages.length > 0
-                        ? { outputImages: formattedOutputImages }
-                        : {}),
-                      originalImageUrl: publicOrig,
-                      ...(layoutPatchedNode
-                        ? {
-                            width: layoutPatchedNode.data?.width as number | undefined,
-                            height: layoutPatchedNode.data?.height as number | undefined,
-                          }
-                        : {}),
-                    });
-
-                    const currentNode = updatedNodes.find((n) => n.id === targetNodeId);
-                    if (currentNode && formattedImageUrl) {
-                      const panelOrig =
-                        publicOrig ||
-                        (typeof currentNode.data?.originalImageUrl === 'string'
-                          ? String(currentNode.data.originalImageUrl).trim()
-                          : undefined);
-                      handleAddTask(
-                        targetNodeId,
-                        formattedImageUrl,
-                        imageInputPanelData.prompt || currentNode.data?.prompt || '',
-                        panelOrig,
-                        formattedOutputImages,
-                      );
-                    }
-
-                    return updatedNodes;
-                  });
-                  setImageInputPanelData((prev) =>
-                    prev && prev.nodeId === targetNodeId
-                      ? { ...prev, prompt: prev.prompt ?? promptToKeep }
-                      : prev,
-                  );
-                })();
-              }}
-              onProgressChange={(progress) => {
-                const targetNodeId = imageInputPanelData.nodeId;
-                handleImageNodeDataChange(targetNodeId, { progress });
-              }}
-              onProgressMessageChange={(message) => {
-                const targetNodeId = imageInputPanelData.nodeId;
-                handleImageNodeDataChange(targetNodeId, { progressMessage: message });
-              }}
-              onErrorTask={(message) => {
-                // 创建失败任务记录（不更新图片，只记录错误信息）
-                const node = nodes.find((n) => n.id === imageInputPanelData.nodeId);
-                const nodeTitle = node?.data?.title || 'image';
-                const errorTask: Task = {
-                  id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                  nodeId: imageInputPanelData.nodeId,
-                  nodeTitle,
-                  imageUrl: undefined,
-                  prompt: imageInputPanelData.prompt || '',
-                  createdAt: Date.now(),
-                  status: 'error',
-                  errorMessage: message || '生成失败，请检查提示词或稍后重试',
-                };
-                setTasks((prev) => [errorTask, ...prev]);
+              onRunStart={() => {
+                const nid = storyboardScriptInputPanelData.nodeId;
+                invokeStoryboardScriptNodeDataChange(nid, { isGenerating: true, error: undefined });
               }}
             />
-          </div>
-        )}
+          ),
+        }
+      : null;
 
-        {/* 图片转 3D 控制面板（底部分离，与 Image 输入面板同位置） */}
-        {!previewImage &&
-          !previewAudio &&
-          !characterAvatarPickOverlay &&
-          imageTo3dInputPanelData &&
-          selectedNode &&
-          selectedNode.type === 'imageTo3d' && (
-            <div
-              className="absolute z-50 animate-slide-up"
-              style={{ width: '720px', height: '220px', left: 'calc(50% - 360px)', bottom: '21.25px', pointerEvents: 'auto' }}
-            >
-              <ImageTo3dInputPanel
-                nodeId={imageTo3dInputPanelData.nodeId}
-                isDarkMode={isDarkMode}
-                inputImageUrl={imageTo3dInputPanelData.inputImageUrl}
-                model={imageTo3dInputPanelData.model || DEFAULT_IMAGE_TO_3D_MODEL}
-                resultTextureUrl={imageTo3dInputPanelData.resultTextureUrl || ''}
-                projectId={projectId}
-                errorMessage={selectedNode.data?.errorMessage as string | undefined}
-                hasOutput={
-                  !!(
-                    selectedNode.data?.outputGlbUrl ||
-                    selectedNode.data?.localGlbUrl ||
-                    selectedNode.data?.remoteGlbUrl
-                  )
-                }
-                progress={(selectedNode.data?.progress as number) ?? 0}
-                progressMessage={selectedNode.data?.progressMessage as string | undefined}
-                onStart={() => {
-                  const nid = imageTo3dInputPanelData.nodeId;
-                  setNodes((nds) =>
-                    nds.map((node) =>
-                      node.id === nid
-                        ? {
-                            ...node,
-                            data: {
-                              ...node.data,
-                              progress: 5,
-                              progressMessage: '生成中…',
-                              errorMessage: undefined,
-                              resultTextureUrl: undefined,
-                              libraryCharacterId: undefined,
-                            },
-                          }
-                        : node,
-                    ),
-                  );
-                }}
-                onProgressChange={(progress, message) => {
-                  const nid = imageTo3dInputPanelData.nodeId;
-                  invokeImageTo3dNodeDataChange(nid, {
-                    progress,
-                    progressMessage: message ?? '',
-                  });
-                }}
-                onInputImageChange={(url) => {
-                  const nid = imageTo3dInputPanelData.nodeId;
-                  invokeImageTo3dNodeDataChange(nid, {
-                    inputImageUrl: url,
-                    errorMessage: undefined,
-                  });
-                  setImageTo3dInputPanelData((prev) =>
-                    prev && prev.nodeId === nid ? { ...prev, inputImageUrl: url } : prev,
-                  );
-                }}
-                onModelChange={(model) => {
-                  const nid = imageTo3dInputPanelData.nodeId;
-                  invokeImageTo3dNodeDataChange(nid, { model });
-                  setImageTo3dInputPanelData((prev) =>
-                    prev && prev.nodeId === nid ? { ...prev, model } : prev,
-                  );
-                }}
-                onComplete={(payload) => {
-                  const nid = imageTo3dInputPanelData.nodeId;
-                  const tex = payload.resultTextureUrl || '';
-                  invokeImageTo3dNodeDataChange(nid, {
-                    inputImageUrl: payload.inputImageUrl,
-                    outputGlbUrl: payload.outputGlbUrl,
-                    remoteGlbUrl: payload.remoteGlbUrl,
-                    localGlbPath: payload.localGlbPath,
-                    localGlbUrl: payload.localGlbUrl,
-                    localTexturePath: payload.localTexturePath,
-                    resultTextureUrl: tex || undefined,
-                    resultTextureRemoteUrl: payload.resultTextureRemoteUrl,
-                    previewSnapshotUrl: undefined,
-                    progress: 0,
-                    progressMessage: '',
-                    errorMessage: undefined,
-                    libraryCharacterId: payload.libraryCharacterId,
-                  });
-                  setImageTo3dInputPanelData((prev) =>
-                    prev && prev.nodeId === nid ? { ...prev, resultTextureUrl: tex } : prev,
-                  );
-                  if (payload.libraryCharacterId) {
-                    handleImageTo3dLibrarySaved();
-                  }
-                }}
-                onError={(message) => {
-                  invokeImageTo3dNodeDataChange(imageTo3dInputPanelData.nodeId, {
-                    progress: 0,
-                    progressMessage: '',
-                    errorMessage: message,
-                  });
-                }}
-              />
-            </div>
-          )}
+  const directorInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    directorInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'director'
+      ? {
+          nodeId: directorInputPanelData.nodeId,
+          width: 720,
+          height: 'auto' as const,
+          panel: (
+            <DirectorInputPanel
+              nodeId={directorInputPanelData.nodeId}
+              projectId={projectId}
+              isDarkMode={isDarkMode}
+              userPrompt={directorInputPanelData.userPrompt}
+              scriptText={directorInputPanelData.scriptText}
+              chatModel={directorInputPanelData.chatModel ?? 'gpt-3.5-turbo'}
+              director={directorInputPanelData.director}
+              onUserPromptChange={(value) => {
+                const nid = directorInputPanelData.nodeId;
+                invokeDirectorNodeDataChange(nid, { userPrompt: value });
+              }}
+              onChatModelChange={(value) => {
+                const nid = directorInputPanelData.nodeId;
+                const prev = createDefaultDirectorPipelineState(directorInputPanelData.director || {});
+                invokeDirectorNodeDataChange(nid, {
+                  director: createDefaultDirectorPipelineState({ ...prev, chatModel: value }),
+                });
+              }}
+              onDirectorChange={(director) => {
+                const nid = directorInputPanelData.nodeId;
+                invokeDirectorNodeDataChange(nid, { director, title: director.title });
+              }}
+              onGeneratingChange={(v) => {
+                const nid = directorInputPanelData.nodeId;
+                invokeDirectorNodeDataChange(nid, { isGenerating: v });
+              }}
+              onErrorChange={(err) => {
+                const nid = directorInputPanelData.nodeId;
+                invokeDirectorNodeDataChange(nid, { error: err || undefined });
+              }}
+              onRunStart={() => {
+                const nid = directorInputPanelData.nodeId;
+                invokeDirectorNodeDataChange(nid, { isGenerating: true, error: undefined });
+              }}
+            />
+          ),
+        }
+      : null;
 
-        {/* Video 输入面板弹窗（底部显示，向上滑出动画） */}
-        {!previewImage && !previewAudio && !characterAvatarPickOverlay && videoInputPanelData && selectedNode && isVideoModuleNodeType(selectedNode.type) && (
-          <div className="absolute z-50 animate-slide-up" style={{ width: '840px', height: '242px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>
+
+  const videoInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    videoInputPanelData &&
+    selectedNode &&
+    isVideoModuleNodeType(selectedNode.type)
+      ? {
+          nodeId: videoInputPanelData.nodeId,
+          width: 840,
+          height: 'auto' as const,
+          panel: (
             <VideoInputPanel
               nodeId={videoInputPanelData.nodeId}
               isDarkMode={isDarkMode}
@@ -14999,24 +18104,105 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 setVideoInputPanelData({ ...videoInputPanelData, resolutionLtx23T2v: value });
               }}
               onLtx23HdrBackgroundImageChange={(value) => {
+                const panelNodeId = videoInputPanelData.nodeId;
                 setNodes((nds) =>
                   nds.map((node) =>
-                    node.id === videoInputPanelData.nodeId
+                    node.id === panelNodeId
                       ? { ...node, data: { ...node.data, ltx23HdrBackgroundImage: value || undefined } }
                       : node
                   )
                 );
-                setVideoInputPanelData({ ...videoInputPanelData, ltx23HdrBackgroundImage: value || undefined });
+                setVideoInputPanelData((prev) =>
+                  prev && prev.nodeId === panelNodeId
+                    ? { ...prev, ltx23HdrBackgroundImage: value || undefined }
+                    : prev,
+                );
               }}
               onInputImagesOrderChange={(images) => {
+                const panelNodeId = videoInputPanelData.nodeId;
                 setNodes((nds) =>
                   nds.map((node) =>
-                    node.id === videoInputPanelData.nodeId
+                    node.id === panelNodeId
                       ? { ...node, data: { ...node.data, inputImages: images } }
                       : node
                   )
                 );
-                setVideoInputPanelData({ ...videoInputPanelData, inputImages: images });
+                setVideoInputPanelData((prev) =>
+                  prev && prev.nodeId === panelNodeId ? { ...prev, inputImages: images } : prev,
+                );
+              }}
+              onDisconnectHdrSlotImage={(imageUrl) => {
+                const videoId = videoInputPanelData.nodeId;
+                const want = String(imageUrl || '').trim();
+                if (!videoId || !want) return;
+                const urlsEqual = (a: string, b: string) => {
+                  const x = String(a || '').trim();
+                  const y = String(b || '').trim();
+                  if (!x || !y) return false;
+                  if (x === y) return true;
+                  try {
+                    return decodeURIComponent(x) === decodeURIComponent(y);
+                  } catch {
+                    return false;
+                  }
+                };
+                const nds = latestNodesRef.current || nodes;
+                const eds = latestEdgesRef.current || edges;
+
+                // 角色节点：取消对应视图传出勾选（不断整条边，避免误删其它分镜）
+                for (const edge of eds) {
+                  if (edge.target !== videoId) continue;
+                  const th = edge.targetHandle || 'input';
+                  if (th !== 'input' && th !== 'video-input') continue;
+                  const src = nds.find((n) => n.id === edge.source);
+                  if (!src || src.type !== 'character') continue;
+                  const sh = edge.sourceHandle || '';
+                  if (sh === CHARACTER_OUTPUT_AUDIO_HANDLE || sh === 'output-audio') continue;
+                  const vi = Array.isArray(src.data?.viewImages) ? (src.data.viewImages as string[]) : [];
+                  const mask = resolveReferenceTransmitSlots(src.data?.referenceTransmitSlots);
+                  let hit = -1;
+                  for (let i = 0; i < 4; i++) {
+                    const u = typeof vi[i] === 'string' ? vi[i].trim() : '';
+                    if (u && mask[i] && urlsEqual(u, want)) {
+                      hit = i;
+                      break;
+                    }
+                  }
+                  if (hit < 0) continue;
+                  const nextMask = [...mask];
+                  nextMask[hit] = false;
+                  if (nextMask.every((x) => !x)) {
+                    setEdges((prev) => prev.filter((e) => e.id !== edge.id));
+                  } else {
+                    setNodes((prev) =>
+                      prev.map((n) =>
+                        n.id === src.id
+                          ? { ...n, data: { ...n.data, referenceTransmitSlots: nextMask } }
+                          : n,
+                      ),
+                    );
+                  }
+                  return;
+                }
+
+                // 图片节点：删除提供该 URL 的入边
+                setEdges((prev) =>
+                  prev.filter((edge) => {
+                    if (edge.target !== videoId) return true;
+                    const th = edge.targetHandle || 'input';
+                    if (th !== 'input' && th !== 'video-input') return true;
+                    const src = nds.find((n) => n.id === edge.source);
+                    if (!src || src.type !== 'image') return true;
+                    const u =
+                      pickPreviewFromEdgeOrNode(edge, src.data) ||
+                      (src.data?.outputImage as string) ||
+                      (typeof src.data?.avatar === 'string' ? src.data.avatar.trim() : '') ||
+                      (src.data?.originalImageUrl as string) ||
+                      (src.data?.inputImages as string[])?.[0] ||
+                      '';
+                    return !urlsEqual(String(u), want);
+                  }),
+                );
               }}
               onDurationLtx23HdrMultiChange={(value) => {
                 setNodes((nds) =>
@@ -15210,11 +18396,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }}
               onAspectRatioChange={(value) => {
                 setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === videoInputPanelData.nodeId
-                      ? patchNodeWithAspectRatioLayout(node, value, 'video')
-                      : node,
-                  ),
+                  nds.map((node) => {
+                    if (node.id !== videoInputPanelData.nodeId) return node;
+                    // 已有成片：只改下次生成比例，不强制改节点壳尺寸
+                    if (hasVideoOutputMedia(node.data as Record<string, unknown>)) {
+                      return { ...node, data: { ...node.data, aspectRatio: value } };
+                    }
+                    // Seedance「自适应」无固定宽高比，外壳按 16:9 占位，但 data 仍存 adaptive
+                    if (value === 'adaptive') {
+                      const patched = patchNodeWithAspectRatioLayout(node, '16:9', 'video');
+                      return { ...patched, data: { ...patched.data, aspectRatio: 'adaptive' } };
+                    }
+                    return patchNodeWithAspectRatioLayout(node, value, 'video');
+                  }),
                 );
                 setVideoInputPanelData({ ...videoInputPanelData, aspectRatio: value });
               }}
@@ -15397,8 +18591,1129 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 handleVideoNodeDataChange(videoInputPanelData.nodeId, { progress: 0, errorMessage: message || '视频生成失败' });
               }}
             />
+          ),
+        }
+      : null;
+
+  const imageInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    imageInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'image'
+      ? {
+          nodeId: imageInputPanelData.nodeId,
+          // 固定比例（与视频底栏一致），不与主模块同宽；选框尺寸由 data.width/height 校正，不受底栏影响
+          width: 840,
+          height: 'auto' as const,
+          panel: (
+            <ImageInputPanel
+              nodeId={imageInputPanelData.nodeId}
+              isDarkMode={isDarkMode}
+              prompt={imageInputPanelData.prompt}
+              resolution={imageInputPanelData.resolution}
+              aspectRatio={imageInputPanelData.aspectRatio}
+              model={imageInputPanelData.model}
+              quality={imageInputPanelData.quality || 'low'}
+              seedreamWidth={imageInputPanelData.model === 'seedream-v5'
+                ? Math.max(1600, Math.min(4704, imageInputPanelData.seedreamWidth ?? 2048))
+                : Math.max(1024, Math.min(4096, imageInputPanelData.seedreamWidth ?? 2048))}
+              seedreamHeight={imageInputPanelData.model === 'seedream-v5'
+                ? Math.max(1344, Math.min(4096, imageInputPanelData.seedreamHeight ?? 2048))
+                : Math.max(1024, Math.min(4096, imageInputPanelData.seedreamHeight ?? 2048))}
+              isConnected={edges.some((e) => e.target === imageInputPanelData.nodeId && nodes.find((n) => n.id === e.source)?.type === 'image')}
+              inputImages={imageInputPanelData.inputImages || []}
+              onInputImagesChange={(images) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, inputImages: images } }
+                      : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, inputImages: images } : prev));
+              }}
+              projectId={projectId}
+              onSeedreamWidthChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId ? { ...node, data: { ...node.data, seedreamWidth: value } } : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, seedreamWidth: value } : prev));
+              }}
+              onSeedreamHeightChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId ? { ...node, data: { ...node.data, seedreamHeight: value } } : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, seedreamHeight: value } : prev));
+              }}
+              onPromptChange={(value) => {
+                const targetNodeId = imageInputPanelData.nodeId;
+                lastImagePromptUserEditRef.current = Date.now();
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === targetNodeId
+                      ? { ...node, data: { ...node.data, prompt: value } }
+                      : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev && prev.nodeId === targetNodeId ? { ...prev, prompt: value } : prev));
+              }}
+              onPromptFocus={() => {
+                lastImagePromptUserEditRef.current = Date.now();
+              }}
+              onResolutionChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, resolution: value } }
+                      : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, resolution: value } : prev));
+              }}
+              onAspectRatioChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId
+                      ? patchImageNodeAspectRatio(node, value)
+                      : node,
+                  ),
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, aspectRatio: value } : prev));
+              }}
+              onQualityChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, quality: value } }
+                      : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, quality: value } : prev));
+              }}
+              onModelChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === imageInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, model: value } }
+                      : node
+                  )
+                );
+                setImageInputPanelData((prev) => (prev ? { ...prev, model: value } : prev));
+              }}
+              onOutputImageChange={(imageUrl, originalImageUrlFromPayload, outputImagesFromPayload) => {
+                void (async () => {
+                  const targetNodeId = imageInputPanelData.nodeId;
+                  const promptToKeep = imageInputPanelData.prompt ?? '';
+                  const publicOrig =
+                    typeof originalImageUrlFromPayload === 'string' && /^https?:\/\//i.test(originalImageUrlFromPayload.trim())
+                      ? originalImageUrlFromPayload.trim()
+                      : undefined;
+                  const formattedImageUrl = formatImagePathSync(imageUrl);
+                  const formattedOutputImages =
+                    Array.isArray(outputImagesFromPayload) && outputImagesFromPayload.length > 0
+                      ? outputImagesFromPayload.map((u) => formatImagePathSync(String(u || ''))).filter(Boolean)
+                      : undefined;
+                  console.log('[Workspace] onOutputImageChange 被调用:', {
+                    targetNodeId,
+                    imageUrl: formattedImageUrl,
+                    publicOrig: publicOrig || '—',
+                    outputCount: formattedOutputImages?.length ?? 1,
+                  });
+
+                  const probeUrl = formattedOutputImages?.[0] || formattedImageUrl;
+                  const currentNodeSnapshot = latestNodesRef.current.find((n) => n.id === targetNodeId);
+                  let layoutPatchedNode: Node | undefined;
+                  if (currentNodeSnapshot && probeUrl && !currentNodeSnapshot.data?.isUserResized) {
+                    const baseNode: Node = {
+                      ...currentNodeSnapshot,
+                      data: {
+                        ...currentNodeSnapshot.data,
+                        outputImage: formattedImageUrl,
+                        ...(formattedOutputImages && formattedOutputImages.length > 0
+                          ? { outputImages: formattedOutputImages }
+                          : {}),
+                        ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
+                        prompt: (currentNodeSnapshot.data?.prompt as string | undefined) ?? promptToKeep,
+                      },
+                    };
+                    layoutPatchedNode = await patchImageNodeWithProbedLayout(baseNode, probeUrl);
+                  }
+
+                  setNodes((nds) => {
+                    const updatedNodes = nds.map((node) => {
+                      if (node.id !== targetNodeId) return node;
+                      if (layoutPatchedNode) {
+                        return {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            ...layoutPatchedNode.data,
+                            progress: 0,
+                            progressMessage: undefined,
+                            errorMessage: undefined,
+                          },
+                          style: layoutPatchedNode.style ?? node.style,
+                        };
+                      }
+                      return {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          outputImage: formattedImageUrl,
+                          ...(formattedOutputImages && formattedOutputImages.length > 0
+                            ? { outputImages: formattedOutputImages }
+                            : {}),
+                          ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
+                          prompt: (node.data?.prompt as string | undefined) ?? promptToKeep,
+                          progress: 0,
+                          progressMessage: undefined,
+                          errorMessage: undefined,
+                        },
+                      };
+                    });
+
+                    handleImageNodeDataChange(targetNodeId, {
+                      outputImage: formattedImageUrl,
+                      ...(formattedOutputImages && formattedOutputImages.length > 0
+                        ? { outputImages: formattedOutputImages }
+                        : {}),
+                      originalImageUrl: publicOrig,
+                      progress: 0,
+                      progressMessage: undefined,
+                      errorMessage: undefined,
+                      ...(layoutPatchedNode
+                        ? {
+                            width: layoutPatchedNode.data?.width as number | undefined,
+                            height: layoutPatchedNode.data?.height as number | undefined,
+                          }
+                        : {}),
+                    });
+
+                    const currentNode = updatedNodes.find((n) => n.id === targetNodeId);
+                    if (currentNode && formattedImageUrl) {
+                      const panelOrig =
+                        publicOrig ||
+                        (typeof currentNode.data?.originalImageUrl === 'string'
+                          ? String(currentNode.data.originalImageUrl).trim()
+                          : undefined);
+                      handleAddTask(
+                        targetNodeId,
+                        formattedImageUrl,
+                        imageInputPanelData.prompt || currentNode.data?.prompt || '',
+                        panelOrig,
+                        formattedOutputImages,
+                      );
+                    }
+
+                    return updatedNodes;
+                  });
+                  setImageInputPanelData((prev) =>
+                    prev && prev.nodeId === targetNodeId
+                      ? {
+                          ...prev,
+                          prompt: prev.prompt ?? promptToKeep,
+                          // 成片后明确保留生成参数，避免后续刷新/重开面板时丢模型、比例、分辨率
+                          model: prev.model,
+                          aspectRatio: prev.aspectRatio,
+                          resolution: prev.resolution,
+                          quality: prev.quality,
+                        }
+                      : prev,
+                  );
+                })();
+              }}
+              onProgressChange={(progress) => {
+                const targetNodeId = imageInputPanelData.nodeId;
+                handleImageNodeDataChange(targetNodeId, { progress });
+              }}
+              onProgressMessageChange={(message) => {
+                const targetNodeId = imageInputPanelData.nodeId;
+                handleImageNodeDataChange(targetNodeId, { progressMessage: message });
+              }}
+              onErrorTask={(message) => {
+                // 创建失败任务记录（不更新图片，只记录错误信息）
+                const node = nodes.find((n) => n.id === imageInputPanelData.nodeId);
+                const nodeTitle = node?.data?.title || 'image';
+                const errorTask: Task = {
+                  id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                  nodeId: imageInputPanelData.nodeId,
+                  nodeTitle,
+                  imageUrl: undefined,
+                  prompt: imageInputPanelData.prompt || '',
+                  createdAt: Date.now(),
+                  status: 'error',
+                  errorMessage: message || '生成失败，请检查提示词或稍后重试',
+                };
+                setTasks((prev) => [errorTask, ...prev]);
+              }}
+            />
+          ),
+        }
+      : null;
+
+
+  const audioInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    audioInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'audio'
+      ? {
+          nodeId: audioInputPanelData.nodeId,
+          width: 840,
+          height: 'auto' as const,
+          panel: (
+            <AudioInputPanel
+              nodeId={audioInputPanelData.nodeId}
+              isDarkMode={isDarkMode}
+              onStart={() => handleAudioNodeDataChange(audioInputPanelData.nodeId, { aiStatus: 'START', progress: 1, errorMessage: undefined })}
+              text={audioInputPanelData.text}
+              model={audioInputPanelData.model || 'speech-2.8-hd'}
+              voiceId={audioInputPanelData.voiceId}
+              speed={audioInputPanelData.speed}
+              volume={audioInputPanelData.volume}
+              pitch={audioInputPanelData.pitch}
+              emotion={audioInputPanelData.emotion}
+              isTextConnected={!!audioInputPanelData.isTextConnected}
+              isAudioConnected={!!audioInputPanelData.isAudioConnected}
+              isSourceSongConnected={!!audioInputPanelData.isSourceSongConnected}
+              referenceAudioUrl={audioInputPanelData.referenceAudioUrl || ''}
+              sourceSongAudioUrl={audioInputPanelData.sourceSongAudioUrl || ''}
+              coverRhVolume={audioInputPanelData.coverRhVolume ?? 5}
+              coverPitch={clampCoverPitch(audioInputPanelData.coverPitch ?? 0)}
+              coverIndexRate={clampCoverIndexRate(audioInputPanelData.coverIndexRate)}
+              coverVocalMixPct={clampCoverVocalMixPct(audioInputPanelData.coverVocalMixPct)}
+              coverAccompanimentMixPct={resolveCoverAccompanimentMixPct(
+                audioInputPanelData.coverAccompanimentMixPct,
+                audioInputPanelData.coverOutputMode,
+              )}
+              rvcTrainModelName={audioInputPanelData.rvcTrainModelName ?? ''}
+              rvcCoverModelName={audioInputPanelData.rvcCoverModelName ?? ''}
+              outputModelUrl={(audioInputPanelData as { outputModelUrl?: string }).outputModelUrl ?? ''}
+              outputModelRemoteUrl={(audioInputPanelData as { outputModelRemoteUrl?: string }).outputModelRemoteUrl ?? ''}
+              coverReferenceAudioUrl={(audioInputPanelData as { coverReferenceAudioUrl?: string }).coverReferenceAudioUrl ?? ''}
+              libraryRvcVoiceId={(audioInputPanelData as { libraryRvcVoiceId?: string }).libraryRvcVoiceId ?? ''}
+              songName={audioInputPanelData.songName ?? ''}
+              styleDesc={audioInputPanelData.styleDesc ?? ''}
+              lyrics={audioInputPanelData.lyrics ?? ''}
+              speechRate={audioInputPanelData.speechRate ?? 0}
+              loudnessRate={audioInputPanelData.loudnessRate ?? 0}
+              projectId={projectId}
+              onSongNameChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, songName: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, songName: value });
+              }}
+              onStyleDescChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, styleDesc: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, styleDesc: value });
+              }}
+              onLyricsChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, lyrics: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, lyrics: value });
+              }}
+              onSpeechRateChange={(value) => {
+                const v = clampDoubaoSpeechRate(value);
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, speechRate: v } }
+                      : node,
+                  ),
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, speechRate: v });
+              }}
+              onLoudnessRateChange={(value) => {
+                const v = clampDoubaoLoudnessRate(value);
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, loudnessRate: v } }
+                      : node,
+                  ),
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, loudnessRate: v });
+              }}
+              onModelChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, model: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, model: value });
+              }}
+              onReferenceAudioUrlChange={(value) => {
+                const targetId = audioInputPanelData.nodeId;
+                const ref = (value || '').trim();
+                let outputAudioForNode: string | undefined;
+                let networkUrl: string | undefined;
+                if (ref) {
+                  if (ref.startsWith('http://') || ref.startsWith('https://')) {
+                    outputAudioForNode = ref;
+                    networkUrl = ref;
+                  } else if (!ref.startsWith('data:')) {
+                    const cleanPath = ref.replace(/^(file:\/\/|local-resource:\/\/)+/i, '');
+                    let filePath = cleanPath.replace(/\\/g, '/');
+                    if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+                    if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+                    else if (filePath.match(/^[a-zA-Z]:\//)) filePath = filePath[0].toUpperCase() + filePath.substring(1);
+                    outputAudioForNode = `local-resource://${filePath}`;
+                  }
+                }
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === targetId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            referenceAudioUrl: ref,
+                            ...(outputAudioForNode
+                              ? {
+                                  outputAudio: outputAudioForNode,
+                                  originalAudioUrl: networkUrl,
+                                  errorMessage: undefined,
+                                }
+                              : {}),
+                          },
+                        }
+                      : node,
+                  ),
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, referenceAudioUrl: ref });
+                if (outputAudioForNode) {
+                  handleAudioNodeDataChange(targetId, {
+                    outputAudio: outputAudioForNode,
+                    originalAudioUrl: networkUrl,
+                    errorMessage: undefined,
+                  });
+                }
+              }}
+              onCoverRhVolumeChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverRhVolume: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverRhVolume: value });
+              }}
+              onCoverPitchChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverPitch: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverPitch: value });
+              }}
+              onCoverIndexRateChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverIndexRate: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverIndexRate: value });
+              }}
+              onCoverVocalMixPctChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverVocalMixPct: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverVocalMixPct: value });
+              }}
+              onCoverAccompanimentMixPctChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, coverAccompanimentMixPct: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, coverAccompanimentMixPct: value });
+              }}
+              onRvcTrainModelNameChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcTrainModelName: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, rvcTrainModelName: value });
+              }}
+              onRvcCoverModelNameChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcCoverModelName: value } } : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, rvcCoverModelName: value });
+              }}
+              onTextChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, text: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, text: value });
+              }}
+              onVoiceIdChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, voiceId: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, voiceId: value });
+              }}
+              onSpeedChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, speed: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, speed: value });
+              }}
+              onVolumeChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, volume: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, volume: value });
+              }}
+              onPitchChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, pitch: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, pitch: value });
+              }}
+              onEmotionChange={(value) => {
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, emotion: value } }
+                      : node
+                  )
+                );
+                setAudioInputPanelData({ ...audioInputPanelData, emotion: value });
+              }}
+              onOutputAudioChange={(audioUrl, originalUrl, outputAudiosFromPayload, originalOutputAudiosFromPayload) => {
+                if (!audioUrl) return;
+                
+                const targetNodeId = audioInputPanelData.nodeId;
+                const formatOne = (u: string): string => {
+                  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:')) return u;
+                  const cleanPath = u.replace(/^(file:\/\/|local-resource:\/\/)/, '');
+                  let filePath = cleanPath.replace(/\\/g, '/');
+                  if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+                  return `local-resource://${filePath}`;
+                };
+                let formattedAudioUrl = formatOne(audioUrl);
+                const networkUrl = (originalUrl && (originalUrl.startsWith('http://') || originalUrl.startsWith('https://'))) ? originalUrl : (formattedAudioUrl.startsWith('http') ? formattedAudioUrl : undefined);
+                const outputAudioForNode = networkUrl || formattedAudioUrl;
+                const formattedOutputAudios =
+                  Array.isArray(outputAudiosFromPayload) && outputAudiosFromPayload.length > 1
+                    ? outputAudiosFromPayload.map((u, i) => {
+                        const orig = originalOutputAudiosFromPayload?.[i];
+                        const net = orig && (orig.startsWith('http://') || orig.startsWith('https://')) ? orig : undefined;
+                        return net || formatOne(String(u || ''));
+                      })
+                    : undefined;
+                
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === targetNodeId
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            outputAudio: outputAudioForNode,
+                            ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
+                            ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
+                              ? { originalOutputAudios: originalOutputAudiosFromPayload }
+                              : {}),
+                            originalAudioUrl: networkUrl,
+                            errorMessage: undefined,
+                          },
+                        }
+                      : node
+                  )
+                );
+                handleAudioNodeDataChange(targetNodeId, {
+                  outputAudio: outputAudioForNode,
+                  ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
+                  ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
+                    ? { originalOutputAudios: originalOutputAudiosFromPayload }
+                    : {}),
+                  originalAudioUrl: networkUrl,
+                  errorMessage: undefined,
+                });
+              }}
+              onErrorTask={(message) => {
+                // 创建失败任务记录并更新 AudioNode
+                const node = nodes.find((n) => n.id === audioInputPanelData.nodeId);
+                const nodeTitle = node?.data?.title || 'audio';
+                const errorTask: Task = {
+                  id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                  nodeId: audioInputPanelData.nodeId,
+                  nodeTitle,
+                  imageUrl: undefined,
+                  prompt: audioInputPanelData.text || '',
+                  createdAt: Date.now(),
+                  status: 'error',
+                  errorMessage: message || '音频生成失败，请检查提示词或稍后重试',
+                };
+                setTasks((prev) => [errorTask, ...prev]);
+                
+                // 更新 AudioNode：显示错误信息
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === audioInputPanelData.nodeId
+                      ? { ...node, data: { ...node.data, errorMessage: message || '音频生成失败' } }
+                      : node
+                  )
+                );
+                handleAudioNodeDataChange(audioInputPanelData.nodeId, { errorMessage: message || '音频生成失败' });
+              }}
+            />
+          ),
+        }
+      : null;
+
+  const imageTo3dInputPanelAnchor =
+    !previewImage &&
+    !previewAudio &&
+    !characterAvatarPickOverlay &&
+    imageTo3dInputPanelData &&
+    selectedNode &&
+    selectedNode.type === 'imageTo3d'
+      ? {
+          nodeId: imageTo3dInputPanelData.nodeId,
+          width: 720,
+          height: 'auto' as const,
+          panel: (
+            <ImageTo3dInputPanel
+              nodeId={imageTo3dInputPanelData.nodeId}
+              isDarkMode={isDarkMode}
+              inputImageUrl={imageTo3dInputPanelData.inputImageUrl}
+              model={imageTo3dInputPanelData.model || DEFAULT_IMAGE_TO_3D_MODEL}
+              resultTextureUrl={imageTo3dInputPanelData.resultTextureUrl || ''}
+              projectId={projectId}
+              errorMessage={selectedNode.data?.errorMessage as string | undefined}
+              hasOutput={
+                !!(
+                  selectedNode.data?.outputGlbUrl ||
+                  selectedNode.data?.localGlbUrl ||
+                  selectedNode.data?.remoteGlbUrl
+                )
+              }
+              progress={(selectedNode.data?.progress as number) ?? 0}
+              progressMessage={selectedNode.data?.progressMessage as string | undefined}
+              onStart={() => {
+                const nid = imageTo3dInputPanelData.nodeId;
+                setNodes((nds) =>
+                  nds.map((node) =>
+                    node.id === nid
+                      ? {
+                          ...node,
+                          data: {
+                            ...node.data,
+                            progress: 5,
+                            progressMessage: '生成中…',
+                            errorMessage: undefined,
+                            resultTextureUrl: undefined,
+                            libraryCharacterId: undefined,
+                          },
+                        }
+                      : node,
+                  ),
+                );
+              }}
+              onProgressChange={(progress, message) => {
+                const nid = imageTo3dInputPanelData.nodeId;
+                invokeImageTo3dNodeDataChange(nid, {
+                  progress,
+                  progressMessage: message ?? '',
+                });
+              }}
+              onInputImageChange={(url) => {
+                const nid = imageTo3dInputPanelData.nodeId;
+                invokeImageTo3dNodeDataChange(nid, {
+                  inputImageUrl: url,
+                  errorMessage: undefined,
+                });
+                setImageTo3dInputPanelData((prev) =>
+                  prev && prev.nodeId === nid ? { ...prev, inputImageUrl: url } : prev,
+                );
+              }}
+              onModelChange={(model) => {
+                const nid = imageTo3dInputPanelData.nodeId;
+                invokeImageTo3dNodeDataChange(nid, { model });
+                setImageTo3dInputPanelData((prev) =>
+                  prev && prev.nodeId === nid ? { ...prev, model } : prev,
+                );
+              }}
+              onComplete={(payload) => {
+                const nid = imageTo3dInputPanelData.nodeId;
+                const tex = payload.resultTextureUrl || '';
+                invokeImageTo3dNodeDataChange(nid, {
+                  inputImageUrl: payload.inputImageUrl,
+                  outputGlbUrl: payload.outputGlbUrl,
+                  remoteGlbUrl: payload.remoteGlbUrl,
+                  localGlbPath: payload.localGlbPath,
+                  localGlbUrl: payload.localGlbUrl,
+                  localTexturePath: payload.localTexturePath,
+                  resultTextureUrl: tex || undefined,
+                  resultTextureRemoteUrl: payload.resultTextureRemoteUrl,
+                  previewSnapshotUrl: undefined,
+                  progress: 0,
+                  progressMessage: '',
+                  errorMessage: undefined,
+                  libraryCharacterId: payload.libraryCharacterId,
+                });
+                setImageTo3dInputPanelData((prev) =>
+                  prev && prev.nodeId === nid ? { ...prev, resultTextureUrl: tex } : prev,
+                );
+                if (payload.libraryCharacterId) {
+                  handleImageTo3dLibrarySaved();
+                }
+              }}
+              onError={(message) => {
+                invokeImageTo3dNodeDataChange(imageTo3dInputPanelData.nodeId, {
+                  progress: 0,
+                  progressMessage: '',
+                  errorMessage: message,
+                });
+              }}
+            />
+          ),
+        }
+      : null;
+
+  return (
+    <div
+      className={`fixed inset-0 w-full h-full ${isDarkMode ? 'bg-[#121212] dark-mode' : 'light-mode'} flex flex-col overflow-hidden`}
+      style={{
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: !isDarkMode ? lightCanvasBgColor : '#121212',
+        filter: !isDarkMode ? `brightness(${lightBrightness})` : undefined,
+      }}
+    >
+      {/* 退出中：显示加载动画，停止渲染重型节点 */}
+      {isExiting && (
+        <div
+          className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          style={{ pointerEvents: 'none' }}
+        >
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-4 border-white/30 border-t-white rounded-full animate-spin" />
+            <span className="text-white/90 text-sm">正在返回项目列表...</span>
+          </div>
+        </div>
+      )}
+
+      {/* 画板工具：白板画画，完成后创建 Image 节点作为参考图 */}
+      {canvasToolPending && (
+        <CanvasToolPanel
+          isDarkMode={isDarkMode}
+          onConfirm={handleCanvasToolConfirm}
+          onCancel={() => setCanvasToolPending(null)}
+        />
+      )}
+
+      {/* 画板编辑：从 Image 节点画板按钮打开，画布显示当前图片供绘图标记 */}
+      {drawingBoardForImage && (
+        <CanvasToolPanel
+          key={`drawing-${drawingBoardForImage.nodeId}`}
+          isDarkMode={isDarkMode}
+          initialImageUrl={drawingBoardForImage.imageUrl}
+          localPath={drawingBoardForImage.localPath}
+          nodeId={drawingBoardForImage.nodeId}
+          onApplyToNode={async (nodeId, dataUrl) => {
+            setDrawingBoardForImage(null);
+            if (!dataUrl?.startsWith('data:image/')) {
+              handleImageNodeDataChangeRef.current?.(nodeId, { outputImage: dataUrl });
+              return;
+            }
+            if (projectId && window.electronAPI?.createImageLocalResourceFromBuffer) {
+              try {
+                const base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
+                const buffer = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
+                const result = await window.electronAPI.createImageLocalResourceFromBuffer(projectId, 'drawing-marked.png', buffer);
+                if (result?.originalUrl) {
+                  handleImageNodeDataChangeRef.current?.(nodeId, {
+                    outputImage: result.originalUrl,
+                    imageAsset: {
+                      preview: result.previewUrl,
+                      original: result.originalUrl,
+                      tiny: result.tinyUrl,
+                      avgColorHex: result.avgColorHex,
+                    },
+                  });
+                  return;
+                }
+              } catch (e) {
+                console.warn('[画板] 保存到项目资源失败，回退 data URL:', e);
+              }
+            }
+            handleImageNodeDataChangeRef.current?.(nodeId, { outputImage: dataUrl });
+          }}
+          onConfirm={() => setDrawingBoardForImage(null)}
+          onCancel={() => setDrawingBoardForImage(null)}
+        />
+      )}
+
+      {/* 顶部工具栏：直接放在布局内（非 Portal），确保画布不会重叠、点击始终有效 */}
+      <div
+        className="flex-shrink-0 relative z-[1000]"
+        data-nexflow-workspace-header
+        style={{ pointerEvents: 'auto' }}
+      >
+        <WorkspaceHeader
+          isDarkMode={isDarkMode}
+          setIsDarkMode={handleSetIsDarkMode}
+          lightBrightness={lightBrightness}
+          setLightBrightness={setLightBrightness}
+          lightCanvasBgColor={lightCanvasBgColor}
+          setLightCanvasBgColor={setLightCanvasBgColor}
+          lightDotsColor={lightDotsColor}
+          setLightDotsColor={setLightDotsColor}
+          lightDotSize={lightDotSize}
+          setLightDotSize={setLightDotSize}
+          darkDotSize={darkDotSize}
+          setDarkDotSize={setDarkDotSize}
+          canvasDotGap={canvasDotGap}
+          setCanvasDotGap={setCanvasDotGap}
+          edgeColor={edgeColor ?? undefined}
+          setEdgeColor={setEdgeColor}
+          onNavigateBack={handleNavigateBack}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          canUndo={undoRedoState.canUndo}
+          canRedo={undoRedoState.canRedo}
+          onOpenFolder={async () => {
+            if (!window.electronAPI || !projectId) return;
+            try {
+              const projectDir = await window.electronAPI.getProjectMappedPath(projectId);
+              if (projectDir) {
+                const sep = projectDir.includes('\\') ? '\\' : '/';
+                const assetsDir = `${projectDir.replace(/[/\\]+$/, '')}${sep}assets`;
+                await window.electronAPI.openPath(assetsDir);
+              } else {
+                console.warn('项目未找到，无法打开文件夹:', projectId);
+              }
+            } catch (error) {
+              console.error('打开项目文件夹失败:', error);
+            }
+          }}
+          onBackupProject={handleBackupProject}
+          onRestoreFromBackup={handleRestoreFromBackup}
+          edgePathStyle={edgePathStyle}
+          setEdgePathStyle={setEdgePathStyle}
+          projectId={projectId}
+          lafStatus={lafStatus}
+          lafBalance={lafBalance}
+          onLafClick={handleLafClick}
+        />
+      </div>
+
+      {/* 主内容区域（画布） */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* 左侧角色列表 + 右侧任务列表（性能隔离：React.memo） */}
+        <WorkspaceSidebar
+          characterListCollapsed={characterListCollapsed}
+          onToggleCharacterList={() => setCharacterListCollapsed(!characterListCollapsed)}
+          characterListRefreshTrigger={characterListRefreshTrigger}
+          sceneListRefreshTrigger={sceneListRefreshTrigger}
+          digitalHumanListRefreshTrigger={digitalHumanListRefreshTrigger}
+          rvcVoiceListRefreshTrigger={rvcVoiceListRefreshTrigger}
+          onSelectCharacter={handleSelectCharacter}
+          requestVoicePickFromCanvas={requestVoicePickFromCanvas}
+          requestViewSlotPickFromCanvas={requestViewSlotPickFromCanvas}
+          requestSceneImagePickFromCanvas={requestSceneImagePickFromCanvas}
+          requestDigitalHumanVideoPickFromCanvas={requestDigitalHumanVideoPickFromCanvas}
+          rightSidebarOpen={rightSidebarOpen}
+          onToggleRightSidebar={() => setRightSidebarOpen(!rightSidebarOpen)}
+          tasks={dedupedSortedTasks}
+          projectId={projectId}
+          isDarkMode={isDarkMode}
+          formatImagePath={formatImagePathSync}
+          mapProjectPath={mapProjectPath}
+          onPreviewImage={onPreviewImageFromTask}
+          onPreviewAudio={onPreviewAudioFromTask}
+          onDownloadLocalFile={handleDownloadLocalTaskFile}
+          onDeleteTask={handleDeleteTask}
+          onDownloadImage={handleDownloadImage}
+          onDownloadVideo={handleDownloadVideo}
+          onDownloadAudio={handleDownloadAudio}
+          onClearAllTasks={handleClearAllTasks}
+          onTaskPlaceToCanvas={handleTaskPlaceToCanvas}
+          onPlaceSceneToCanvas={handleScenePlaceToCanvas}
+          onPlaceDigitalHumanToCanvas={handleDigitalHumanPlaceToCanvas}
+          onPlaceRvcVoiceToCanvas={handleRvcVoicePlaceToCanvas}
+          onRvcVoiceUpdated={handleRvcVoiceLibraryUpdated}
+        />
+        
+        {/* 中间画布区域 - 覆盖整个区域，左侧边栏覆盖在上面 */}
+        <div 
+          className="flex-1 relative transition-all duration-300 ease-in-out"
+          style={{
+            width: '100%',
+            height: '100%',
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
+          <OptionalEngineDownloadBar isDarkMode={isDarkMode} />
+          {characterAvatarPickOverlay && (
+            <>
+              <div
+                className="absolute inset-0 z-[50] pointer-events-none bg-violet-400/20"
+                aria-hidden
+              />
+              <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[55] pointer-events-auto flex flex-col items-center gap-3">
+                <p className="rounded-lg bg-black/55 px-4 py-2 text-sm text-white/90 shadow-lg backdrop-blur-sm">
+                  {characterCanvasPickTarget === 'voice'
+                    ? '点击画布上的音频模块以选取驱动音频（Esc / 右键取消）'
+                    : characterCanvasPickTarget === 'digitalHumanVideo'
+                      ? '点击画布上的视频模块以选取参考视频（Esc / 右键取消）'
+                      : characterCanvasPickTarget === 'sceneNormal' || characterCanvasPickTarget === 'sceneDisplay3d'
+                        ? '点击画布上的图片模块以选取场景图（Esc / 右键取消）'
+                        : '点击画布上的图片模块以选取参考图（Esc / 右键取消）'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => cancelCharacterCanvasPick()}
+                  className="rounded-xl border border-violet-400/50 bg-violet-600 px-8 py-3.5 text-base font-semibold text-white shadow-xl shadow-violet-900/40 backdrop-blur-sm transition-colors hover:bg-violet-500 hover:border-violet-300/60 active:scale-[0.98]"
+                >
+                  取消
+                </button>
+              </div>
+            </>
+          )}
+          <LlmInputPanelProvider value={llmInputPanelAnchor}>
+          <StoryboardScriptInputPanelProvider value={storyboardScriptInputPanelAnchor}>
+          <DirectorInputPanelProvider value={directorInputPanelAnchor}>
+          <ImageInputPanelProvider value={imageInputPanelAnchor}>
+          <VideoInputPanelProvider value={videoInputPanelAnchor}>
+          <AudioInputPanelProvider value={audioInputPanelAnchor}>
+          <ImageTo3dInputPanelProvider value={imageTo3dInputPanelAnchor}>
+          <CanvasThemeProvider isDarkMode={isDarkMode} performanceMode={isPerformanceMode}>
+          <ReactFlowProvider>
+            <FlowContent
+              characterAvatarPickActive={characterAvatarPickOverlay}
+              characterCanvasPickTarget={characterCanvasPickTarget}
+              nodes={nodes}
+              edges={edges}
+              selectedEdgeId={selectedEdge?.id ?? null}
+              edgeDeleteModeId={edgeDeleteModeId}
+              onEdgeDeleteRequest={onEdgeDeleteRequest}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onNodesDelete={onNodesDelete}
+              onConnect={onConnect}
+              onNodeClick={onNodeClickStable}
+              onSelectionChange={onSelectionChange}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDrag={onNodeDrag}
+              onNodeDragStop={onNodeDragStop}
+              onPaneClick={onPaneClick}
+              onEdgeClick={onEdgeClick}
+              onEdgeCenterClick={onEdgeCenterClick}
+              onDrop={onDrop}
+              onDragOver={onDragOver}
+              nodeTypes={nodeTypes}
+              contextMenu={contextMenu}
+              setContextMenu={setContextMenu}
+              handleMenuSelect={handleMenuSelect}
+              reactFlowWrapper={reactFlowWrapper}
+              isDarkMode={isDarkMode}
+              lightCanvasBgColor={lightCanvasBgColor}
+              lightDotsColor={lightDotsColor}
+              lightDotSize={canvasDotSize}
+              canvasDotGap={canvasDotGap}
+              moduleComponentColor={isDarkMode ? moduleComponentColor : undefined}
+              edgeColor={edgeColor ?? undefined}
+              characterListCollapsed={characterListCollapsed}
+              onBatchRun={handleBatchRun}
+              batchRunInProgress={batchRunInProgress}
+              onSuperConnect={handleSuperConnect}
+              onReverseSuperConnect={handleReverseSuperConnect}
+              onJoinSelectedVideos={handleJoinSelectedVideos}
+              videoJoinBusy={videoJoinBusy}
+              setNodes={setNodes}
+              setEdges={setEdges}
+              flowContentApiRef={flowContentApiRef}
+              onPerformanceModeChange={setIsPerformanceMode}
+              onOpenProjects={() => void handleNavigateBack()}
+              edgePathStyle={edgePathStyle}
+              onFitViewComplete={() => persistProjectCardThumbnail(true)}
+              projectId={projectId}
+            />
+          </ReactFlowProvider>
+          </CanvasThemeProvider>
+          </ImageTo3dInputPanelProvider>
+          </AudioInputPanelProvider>
+          </VideoInputPanelProvider>
+          </ImageInputPanelProvider>
+          </DirectorInputPanelProvider>
+          </StoryboardScriptInputPanelProvider>
+          </LlmInputPanelProvider>
+        </div>
+
+        {/* 任务预览全屏查看（支持图片和视频；图片支持打标签工具） */}
+        {previewImage && (
+          previewShowVideoPlayer ? (
+            <div
+              className="fixed inset-0 z-[200] cursor-zoom-out bg-black/90 flex items-center justify-center"
+              onClick={() => {
+                setPreviewImage(null);
+                setPreviewImageNodeId(null);
+                setSelectedNode(null);
+                setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+                setLlmInputPanelData(null);
+                setVideoInputPanelData(null);
+              }}
+              role="presentation"
+              title="点击任意处关闭"
+            >
+              <div
+                className="flex flex-col items-center gap-4 px-4"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <VideoPreview
+                  src={previewImage}
+                  className="max-w-[90vw] max-h-[84vh] object-contain rounded-lg shadow-2xl"
+                  preload="auto"
+                  playsInline
+                />
+                <button
+                  onClick={() => {
+                    setPreviewImage(null);
+                    setPreviewImageNodeId(null);
+                    setSelectedNode(null);
+                    setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+                    setLlmInputPanelData(null);
+                    setVideoInputPanelData(null);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium bg-white hover:bg-white/90 text-black transition-colors z-[210]"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  返回
+                </button>
+              </div>
+            </div>
+          ) : (
+            <ImagePreviewWithTools
+              imageUrl={previewImage}
+              nodeId={previewImageNodeId ?? undefined}
+              localPath={previewImageNodeId ? (nodes.find((n) => n.id === previewImageNodeId)?.data?.localPath as string | undefined) : undefined}
+              isDarkMode={isDarkMode}
+              onApply={(nodeId, dataUrl) => {
+                handleImageNodeDataChange(nodeId, { outputImage: dataUrl });
+              }}
+              onClose={() => {
+                setPreviewImage(null);
+                setPreviewImageNodeId(null);
+                setSelectedNode(null);
+                setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+                setLlmInputPanelData(null);
+                setVideoInputPanelData(null);
+              }}
+              onImportToCanvas={
+                previewCanImportToCanvas ? () => void handleImportPreviewImageToCanvas() : undefined
+              }
+              importToCanvasLabel={imgc.importToCanvasButton}
+            />
+          )
+        )}
+
+        {/* 音频预览弹窗 */}
+        {previewAudio && (
+          <div className={`fixed inset-0 z-50 ${isDarkMode ? 'bg-black/90' : 'bg-gray-900/90'} flex items-center justify-center`}>
+            <button
+              onClick={() => {
+                setPreviewAudio(null);
+                setSelectedNode(null);
+                setImageInputPanelData(null);
+        setImageTo3dInputPanelData(null);
+                setLlmInputPanelData(null);
+                setVideoInputPanelData(null);
+                setAudioInputPanelData(null);
+              }}
+              className="absolute top-6 right-8 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-white/10 hover:bg-white/20 text-white transition-colors z-10"
+            >
+              <ChevronLeft className="w-3 h-3" />
+              返回
+            </button>
+            <div className="w-full max-w-2xl px-8">
+              <audio
+                key={previewAudio}
+                src={previewAudio}
+                controls
+                className={`w-full ${isDarkMode ? 'audio-dark' : ''}`}
+                preload="none"
+                onCanPlay={(e) => {
+                  const audio = e.currentTarget;
+                  if (audio.currentTime > 0) {
+                    audio.currentTime = 0;
+                  }
+                }}
+                onLoadedMetadata={(e) => {
+                  const audio = e.currentTarget;
+                  audio.currentTime = 0;
+                }}
+                onPlay={(e) => {
+                  const audio = e.currentTarget;
+                  if (audio.currentTime > 0.1) {
+                    audio.currentTime = 0;
+                  }
+                }}
+                onError={(e) => {
+                  const audio = e.currentTarget;
+                  console.error('[音频预览] 加载失败:', {
+                    src: audio.currentSrc || previewAudio,
+                    error: audio.error?.code,
+                    message: audio.error?.message,
+                  });
+                }}
+              />
+            </div>
           </div>
         )}
+
+
 
         {/* Character 输入面板弹窗（底部显示，向上滑出动画） */}
         {!previewImage && !previewAudio && !characterAvatarPickOverlay && characterInputPanelData && selectedNode && selectedNode.type === 'character' && !HIDE_SORA2_AND_SORA_CHARACTER_UI && (
@@ -15783,318 +20098,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           </div>
         )}
 
-        {/* Audio 输入面板弹窗（底部显示，向上滑出动画） */}
-        {!previewImage && !previewAudio && !characterAvatarPickOverlay && audioInputPanelData && selectedNode && selectedNode.type === 'audio' && (
-          <div className="nodrag nopan absolute z-50 animate-slide-up" style={{ width: '840px', height: '242px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>
-            <AudioInputPanel
-              nodeId={audioInputPanelData.nodeId}
-              isDarkMode={isDarkMode}
-              onStart={() => handleAudioNodeDataChange(audioInputPanelData.nodeId, { aiStatus: 'START', progress: 1, errorMessage: undefined })}
-              text={audioInputPanelData.text}
-              model={audioInputPanelData.model || 'speech-2.8-hd'}
-              voiceId={audioInputPanelData.voiceId}
-              speed={audioInputPanelData.speed}
-              volume={audioInputPanelData.volume}
-              pitch={audioInputPanelData.pitch}
-              emotion={audioInputPanelData.emotion}
-              referenceAudioUrl={audioInputPanelData.referenceAudioUrl || ''}
-              sourceSongAudioUrl={audioInputPanelData.sourceSongAudioUrl || ''}
-              coverRhVolume={audioInputPanelData.coverRhVolume ?? 5}
-              coverPitch={clampCoverPitch(audioInputPanelData.coverPitch ?? 0)}
-              coverIndexRate={clampCoverIndexRate(audioInputPanelData.coverIndexRate)}
-              coverVocalMixPct={clampCoverVocalMixPct(audioInputPanelData.coverVocalMixPct)}
-              coverAccompanimentMixPct={resolveCoverAccompanimentMixPct(
-                audioInputPanelData.coverAccompanimentMixPct,
-                audioInputPanelData.coverOutputMode,
-              )}
-              rvcTrainModelName={audioInputPanelData.rvcTrainModelName ?? ''}
-              rvcCoverModelName={audioInputPanelData.rvcCoverModelName ?? ''}
-              outputModelUrl={(audioInputPanelData as { outputModelUrl?: string }).outputModelUrl ?? ''}
-              outputModelRemoteUrl={(audioInputPanelData as { outputModelRemoteUrl?: string }).outputModelRemoteUrl ?? ''}
-              coverReferenceAudioUrl={(audioInputPanelData as { coverReferenceAudioUrl?: string }).coverReferenceAudioUrl ?? ''}
-              libraryRvcVoiceId={(audioInputPanelData as { libraryRvcVoiceId?: string }).libraryRvcVoiceId ?? ''}
-              songName={audioInputPanelData.songName ?? ''}
-              styleDesc={audioInputPanelData.styleDesc ?? ''}
-              lyrics={audioInputPanelData.lyrics ?? ''}
-              projectId={projectId}
-              onSongNameChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, songName: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, songName: value });
-              }}
-              onStyleDescChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, styleDesc: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, styleDesc: value });
-              }}
-              onLyricsChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, lyrics: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, lyrics: value });
-              }}
-              onModelChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, model: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, model: value });
-              }}
-              onReferenceAudioUrlChange={(value) => {
-                const targetId = audioInputPanelData.nodeId;
-                const ref = (value || '').trim();
-                let outputAudioForNode: string | undefined;
-                let networkUrl: string | undefined;
-                if (ref) {
-                  if (ref.startsWith('http://') || ref.startsWith('https://')) {
-                    outputAudioForNode = ref;
-                    networkUrl = ref;
-                  } else if (!ref.startsWith('data:')) {
-                    const cleanPath = ref.replace(/^(file:\/\/|local-resource:\/\/)+/i, '');
-                    let filePath = cleanPath.replace(/\\/g, '/');
-                    if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
-                    if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
-                    else if (filePath.match(/^[a-zA-Z]:\//)) filePath = filePath[0].toUpperCase() + filePath.substring(1);
-                    outputAudioForNode = `local-resource://${filePath}`;
-                  }
-                }
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === targetId
-                      ? {
-                          ...node,
-                          data: {
-                            ...node.data,
-                            referenceAudioUrl: ref,
-                            ...(outputAudioForNode
-                              ? {
-                                  outputAudio: outputAudioForNode,
-                                  originalAudioUrl: networkUrl,
-                                  errorMessage: undefined,
-                                }
-                              : {}),
-                          },
-                        }
-                      : node,
-                  ),
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, referenceAudioUrl: ref });
-                if (outputAudioForNode) {
-                  handleAudioNodeDataChange(targetId, {
-                    outputAudio: outputAudioForNode,
-                    originalAudioUrl: networkUrl,
-                    errorMessage: undefined,
-                  });
-                }
-              }}
-              onCoverRhVolumeChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverRhVolume: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, coverRhVolume: value });
-              }}
-              onCoverPitchChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverPitch: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, coverPitch: value });
-              }}
-              onCoverIndexRateChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverIndexRate: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, coverIndexRate: value });
-              }}
-              onCoverVocalMixPctChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, coverVocalMixPct: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, coverVocalMixPct: value });
-              }}
-              onCoverAccompanimentMixPctChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, coverAccompanimentMixPct: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, coverAccompanimentMixPct: value });
-              }}
-              onRvcTrainModelNameChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcTrainModelName: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, rvcTrainModelName: value });
-              }}
-              onRvcCoverModelNameChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId ? { ...node, data: { ...node.data, rvcCoverModelName: value } } : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, rvcCoverModelName: value });
-              }}
-              onTextChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, text: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, text: value });
-              }}
-              onVoiceIdChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, voiceId: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, voiceId: value });
-              }}
-              onSpeedChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, speed: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, speed: value });
-              }}
-              onVolumeChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, volume: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, volume: value });
-              }}
-              onPitchChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, pitch: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, pitch: value });
-              }}
-              onEmotionChange={(value) => {
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, emotion: value } }
-                      : node
-                  )
-                );
-                setAudioInputPanelData({ ...audioInputPanelData, emotion: value });
-              }}
-              onOutputAudioChange={(audioUrl, originalUrl, outputAudiosFromPayload, originalOutputAudiosFromPayload) => {
-                if (!audioUrl) return;
-                
-                const targetNodeId = audioInputPanelData.nodeId;
-                const formatOne = (u: string): string => {
-                  if (u.startsWith('http://') || u.startsWith('https://') || u.startsWith('data:')) return u;
-                  const cleanPath = u.replace(/^(file:\/\/|local-resource:\/\/)/, '');
-                  let filePath = cleanPath.replace(/\\/g, '/');
-                  if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
-                  return `local-resource://${filePath}`;
-                };
-                let formattedAudioUrl = formatOne(audioUrl);
-                const networkUrl = (originalUrl && (originalUrl.startsWith('http://') || originalUrl.startsWith('https://'))) ? originalUrl : (formattedAudioUrl.startsWith('http') ? formattedAudioUrl : undefined);
-                const outputAudioForNode = networkUrl || formattedAudioUrl;
-                const formattedOutputAudios =
-                  Array.isArray(outputAudiosFromPayload) && outputAudiosFromPayload.length > 1
-                    ? outputAudiosFromPayload.map((u, i) => {
-                        const orig = originalOutputAudiosFromPayload?.[i];
-                        const net = orig && (orig.startsWith('http://') || orig.startsWith('https://')) ? orig : undefined;
-                        return net || formatOne(String(u || ''));
-                      })
-                    : undefined;
-                
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === targetNodeId
-                      ? {
-                          ...node,
-                          data: {
-                            ...node.data,
-                            outputAudio: outputAudioForNode,
-                            ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
-                            ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
-                              ? { originalOutputAudios: originalOutputAudiosFromPayload }
-                              : {}),
-                            originalAudioUrl: networkUrl,
-                            errorMessage: undefined,
-                          },
-                        }
-                      : node
-                  )
-                );
-                handleAudioNodeDataChange(targetNodeId, {
-                  outputAudio: outputAudioForNode,
-                  ...(formattedOutputAudios ? { outputAudios: formattedOutputAudios } : {}),
-                  ...(Array.isArray(originalOutputAudiosFromPayload) && originalOutputAudiosFromPayload.length > 0
-                    ? { originalOutputAudios: originalOutputAudiosFromPayload }
-                    : {}),
-                  originalAudioUrl: networkUrl,
-                  errorMessage: undefined,
-                });
-              }}
-              onErrorTask={(message) => {
-                // 创建失败任务记录并更新 AudioNode
-                const node = nodes.find((n) => n.id === audioInputPanelData.nodeId);
-                const nodeTitle = node?.data?.title || 'audio';
-                const errorTask: Task = {
-                  id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                  nodeId: audioInputPanelData.nodeId,
-                  nodeTitle,
-                  imageUrl: undefined,
-                  prompt: audioInputPanelData.text || '',
-                  createdAt: Date.now(),
-                  status: 'error',
-                  errorMessage: message || '音频生成失败，请检查提示词或稍后重试',
-                };
-                setTasks((prev) => [errorTask, ...prev]);
-                
-                // 更新 AudioNode：显示错误信息
-                setNodes((nds) =>
-                  nds.map((node) =>
-                    node.id === audioInputPanelData.nodeId
-                      ? { ...node, data: { ...node.data, errorMessage: message || '音频生成失败' } }
-                      : node
-                  )
-                );
-                handleAudioNodeDataChange(audioInputPanelData.nodeId, { errorMessage: message || '音频生成失败' });
-              }}
-            />
-          </div>
-        )}
+
 
         {!previewImage && !previewAudio && !characterAvatarPickOverlay && rvcTrainInputPanelData && selectedNode && selectedNode.type === 'rvcTrain' && (
           <div className="nodrag nopan absolute z-50 animate-slide-up" style={{ width: '840px', height: '242px', left: 'calc(50% - 420px)', bottom: '21.25px', pointerEvents: 'auto' }}>

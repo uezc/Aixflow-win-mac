@@ -15,6 +15,8 @@ import {
 
 export const MATTING_AI_APP_ID = '2021955919764000770';
 export const WATERMARK_REMOVAL_AI_APP_ID = '2022127885233950721';
+/** 图像超分放大（RunningHub AI App，国内站） */
+export const IMAGE_UPSCALE_V3_AI_APP_ID = '2082378062234214401';
 export const IMAGE_CHARACTER_MULTI_ANGLE_AI_APP_ID = '1990056102572290049';
 /** LLM「视频分析」RunningHub AI 应用（与 VideoAnalysisProvider、cloudModelPricing 一致） */
 export const VIDEO_ANALYSIS_AI_APP_ID = '2033537159944212482';
@@ -22,6 +24,8 @@ export const VIDEO_ANALYSIS_AI_APP_ID = '2033537159944212482';
 export const JOY_CAPTION_TWO_AI_APP_ID = '2021821541272526850';
 /** 视频去水印 RunningHub AI 应用（node 46=video, node 45=强度） */
 export const VIDEO_WATERMARK_REMOVAL_AI_APP_ID = '2049450731266121729';
+/** 视频深度转换 RunningHub AI 应用（node 21=video，default 实例） */
+export const VIDEO_DEPTH_CONVERT_AI_APP_ID = '2082392424818757633';
 /** 图片转 3D 模型（输出 GLB） */
 export const IMAGE_TO_3D_AI_APP_ID = '2059618241806430209';
 export { TRELLIS2_IMAGE_TO_3D_APP_ID, IMAGE_TO_3D_HY3D_APP_ID } from '../../shared/imageTo3dModels.js';
@@ -148,7 +152,11 @@ async function submitAndPollAiApp(
       const normalized = normalizeRunningHubPollStatus(rawSt);
 
       if (normalized === 'SUCCESS') {
-        const imageUrls = extractAllRunningHubImageUrlsFromPoll(qd, { relaxed: accumulate });
+        let imageUrls = extractAllRunningHubImageUrlsFromPoll(qd, { relaxed: accumulate });
+        if (imageUrls.length === 0) {
+          /** 严格模式未命中时放宽再滤 zip（超分等会同时返回 png + zip） */
+          imageUrls = extractAllRunningHubImageUrlsFromPoll(qd, { relaxed: true });
+        }
         if (imageUrls.length > bestImageUrls.length) {
           bestImageUrls = imageUrls;
           stableSuccessRounds = 0;
@@ -1031,6 +1039,35 @@ export async function runWatermarkRemovalViaFc(imageInputUrl: string): Promise<W
   );
 }
 
+export type ImageUpscaleV3Result = MattingResult;
+export type ImageUpscaleV3Error = MattingError;
+
+/** 超分放大：node 6=image，PLUS 48G 实例 */
+export async function runImageUpscaleV3ViaFc(
+  imageInputUrl: string,
+): Promise<ImageUpscaleV3Result | ImageUpscaleV3Error> {
+  const u = imageInputUrl?.trim();
+  if (!u) return { success: false, message: '图片地址为空' };
+  const body: Record<string, unknown> = {
+    nodeInfoList: [
+      {
+        nodeId: '6',
+        fieldName: 'image',
+        fieldValue: u,
+        description: 'image',
+      },
+    ],
+    instanceType: 'plus',
+    usePersonalQueue: 'false',
+  };
+  return submitAndPollAiApp(
+    IMAGE_UPSCALE_V3_AI_APP_ID,
+    `/run/ai-app/${IMAGE_UPSCALE_V3_AI_APP_ID}`,
+    body,
+    '超分放大',
+  );
+}
+
 export async function runCharacterMultiAngleViaFc(
   imageInputUrl: string,
   width = 720,
@@ -1427,6 +1464,152 @@ export async function runVideoWatermarkRemovalViaFc(
   } catch (e: unknown) {
     const { error } = buildFcErrorPayload(e, '视频去水印失败');
     console.error('[视频去水印] FC', e);
+    return { success: false, message: error };
+  }
+}
+
+export interface VideoDepthConvertFcOk {
+  success: true;
+  /** 优先视频；RH 成功样例常为深度图 png */
+  kind: 'video' | 'image';
+  url: string;
+}
+
+export type VideoDepthConvertFcErr = VideoWatermarkRemovalFcErr;
+
+/** 深度转换结果：优先 mp4/webm/mov，其次 png/jpg/webp；忽略 zip，不把模糊 http 当视频 */
+function pickDepthConvertOutputFromResults(
+  results: unknown,
+): { kind: 'video' | 'image'; url: string } | null {
+  if (!Array.isArray(results) || results.length === 0) return null;
+
+  const pickUrl = (item: { url?: unknown; outputType?: unknown } | undefined): string => {
+    if (!item) return '';
+    let u = '';
+    if (typeof item.url === 'string') u = item.url;
+    else if (item.url && typeof item.url === 'object') {
+      const o = item.url as { url?: string; href?: string };
+      u = (typeof o.url === 'string' && o.url) || (typeof o.href === 'string' && o.href) || '';
+    }
+    return u.trim();
+  };
+
+  const VIDEO_TYPES = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'video']);
+  const IMAGE_TYPES = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'image', 'img', 'picture', 'photo']);
+
+  let bestVideo: { url: string; score: number } | null = null;
+  let bestImage: { url: string; score: number } | null = null;
+
+  for (const r of results) {
+    const item = r as { url?: unknown; outputType?: unknown };
+    const u = pickUrl(item);
+    if (!u) continue;
+    const out = String(item?.outputType ?? '').trim().toLowerCase();
+    const low = u.toLowerCase();
+
+    if (out === 'zip' || /\.zip(?:$|[?#])/i.test(low)) continue;
+
+    if (VIDEO_TYPES.has(out) || /\.(mp4|webm|mov|avi|mkv)(?:$|[?#])/i.test(low)) {
+      let score = 1;
+      if (out === 'mp4' || low.endsWith('.mp4') || low.includes('.mp4?')) score += 10;
+      else if (out === 'webm' || low.includes('.webm')) score += 8;
+      else if (out === 'mov' || low.includes('.mov')) score += 6;
+      else score += 4;
+      if (!bestVideo || score > bestVideo.score) bestVideo = { url: u, score };
+      continue;
+    }
+
+    if (IMAGE_TYPES.has(out) || /\.(png|jpe?g|webp|bmp)(?:$|[?#])/i.test(low)) {
+      let score = 1;
+      if (out === 'png' || low.includes('.png')) score += 8;
+      else if (out === 'webp' || low.includes('.webp')) score += 6;
+      else if (out === 'jpg' || out === 'jpeg' || /\.jpe?g(?:$|[?#])/i.test(low)) score += 6;
+      else score += 4;
+      if (!bestImage || score > bestImage.score) bestImage = { url: u, score };
+    }
+  }
+
+  if (bestVideo?.url) return { kind: 'video', url: bestVideo.url };
+  if (bestImage?.url) return { kind: 'image', url: bestImage.url };
+  return null;
+}
+
+/**
+ * 视频深度转换：经 FC 转发 RunningHub AI 应用 2082392424818757633（node 21=video）。
+ * Query 成功结果可能是视频或深度图（png 等）。
+ */
+export async function runVideoDepthConvertViaFc(
+  videoInputUrl: string,
+): Promise<VideoDepthConvertFcOk | VideoDepthConvertFcErr> {
+  const u = videoInputUrl?.trim();
+  if (!u) return { success: false, message: '视频地址为空' };
+
+  const appId = VIDEO_DEPTH_CONVERT_AI_APP_ID;
+  const body: Record<string, unknown> = {
+    nodeInfoList: [
+      { nodeId: '21', fieldName: 'video', fieldValue: u, description: 'video' },
+    ],
+    instanceType: 'default',
+    usePersonalQueue: 'false',
+  };
+
+  const fcSubmitId = randomUUID();
+  const path = `/run/ai-app/${appId}`;
+
+  try {
+    const { data: rawSubmit } = await fcForwardRequest(
+      fcSubmitId,
+      'video',
+      'charge',
+      { provider: 'runninghub', path, method: 'POST', body },
+      { billingModelId: appId },
+    );
+    const data = unwrapRunningHubForwardBody(rawSubmit as Record<string, unknown>);
+
+    const rhTaskId = extractRhTaskId(data);
+    if (!rhTaskId) {
+      const msg =
+        (typeof data.errorMessage === 'string' && data.errorMessage) ||
+        (typeof data.error === 'string' && data.error) ||
+        (typeof data.message === 'string' && data.message) ||
+        (typeof data.msg === 'string' && data.msg) ||
+        (data.code !== undefined && data.code !== 0 ? `错误码 ${String(data.code)}` : '') ||
+        '未返回 taskId';
+      console.error('[视频深度转换] FC 提交响应', data);
+      return { success: false, message: `视频深度转换提交失败：${msg}` };
+    }
+
+    const deadline = Date.now() + POLL_DEADLINE_VIDEO_WATERMARK_MS;
+    let poll = 0;
+    while (Date.now() < deadline) {
+      await sleep(POLL_INTERVAL_MS);
+      const { data: rawQ } = await fcForwardRequest(`${fcSubmitId}:poll:${poll}`, 'video', 'none', {
+        provider: 'runninghub',
+        path: '/query',
+        method: 'POST',
+        body: { taskId: rhTaskId },
+      });
+      poll += 1;
+
+      const qd = unwrapRunningHubForwardBody(rawQ as Record<string, unknown>);
+      const status = qd.status as string | undefined;
+      if (status === 'SUCCESS') {
+        const picked = pickDepthConvertOutputFromResults(qd.results);
+        if (picked) return { success: true, kind: picked.kind, url: picked.url };
+        return { success: false, message: '视频深度转换成功但未返回可用结果（已忽略 zip / 非视频非图片）' };
+      }
+      if (status === 'FAILED' || status === 'FAILURE') {
+        const msg =
+          (typeof qd.errorMessage === 'string' && qd.errorMessage) ||
+          (typeof qd.error === 'string' && qd.error) ||
+          '视频深度转换失败';
+        return { success: false, message: String(msg) };
+      }
+    }
+    return { success: false, message: '视频深度转换轮询超时' };
+  } catch (e: unknown) {
+    const { error } = buildFcErrorPayload(e, '视频深度转换失败');
+    console.error('[视频深度转换] FC', e);
     return { success: false, message: error };
   }
 }

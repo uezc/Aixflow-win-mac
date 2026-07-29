@@ -21,6 +21,11 @@ export const MENU_TYPE_TO_NODE_TYPE: Record<string, string> = {
   heyGem: 'heyGem',
   videoSplice: 'videoSplice',
   photoCollage: 'photoCollage',
+  gridMap: 'gridMap',
+  imageComparer: 'imageComparer',
+  storyboardScript: 'storyboardScript',
+  script: 'script',
+  director: 'director',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -38,6 +43,11 @@ export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
   heyGem: 'heyGem',
   videoSplice: 'videoSplice',
   photoCollage: 'photoCollage',
+  gridMap: 'gridMap',
+  imageComparer: 'imageComparer',
+  storyboardScript: 'storyboardScript',
+  script: 'script',
+  director: 'director',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -56,33 +66,40 @@ export const CHARACTER_SOURCE_OUTPUT_HANDLE = 'output';
 
 /** 从源节点类型看：不能作为“新建目标”的菜单类型（拖线创建菜单中要隐藏） */
 const FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE: Record<string, string[]> = {
-  text: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  minimalistText: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  llm: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  textSplit: ['text', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  image: ['text', 'textSplit', 'character', 'audio', 'heyGem'],
-  video: ['textSplit'], // 允许 video -> text（转写）、image、audio、videoSplice、llm 等
-  wanAnimate: ['textSplit'],
-  heyGem: ['textSplit'],
-  videoSplice: ['text', 'llm', 'textSplit', 'character'],
+  text: ['text', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  minimalistText: ['text', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  llm: ['text', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  textSplit: ['character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  image: ['text', 'textSplit', 'character', 'audio', 'heyGem', 'rvcTrain', 'script'],
+  video: ['textSplit', 'rvcTrain', 'script'], // 允许 video -> text（转写）、image、audio、videoSplice、llm、storyboardScript 等
+  wanAnimate: ['textSplit', 'rvcTrain', 'script'],
+  heyGem: ['textSplit', 'rvcTrain', 'script'],
+  videoSplice: ['text', 'llm', 'textSplit', 'character', 'rvcTrain', 'storyboardScript', 'script', 'director'],
   // 角色模块：仅连到 图片 / 视频 / 视频换人 / 声音（由目标类型决定传参）
-  character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool'],
-  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage'], // 允许 audio -> minimalistText（转写）；拼图仅接受图片入边
-  rvcTrain: ['text', 'llm', 'textSplit', 'image', 'character', 'videoSplice', 'photoCollage', 'canvas-tool', 'heyGem'],
-  digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'canvas-tool', 'imageTo3d'],
+  character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'rvcTrain', 'storyboardScript', 'script', 'director'],
+  // audio → director 允许（MV 吸收音乐）；其余保持禁止
+  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage', 'gridMap', 'imageComparer', 'storyboardScript', 'script'],
+  rvcTrain: ['text', 'llm', 'textSplit', 'image', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'heyGem', 'storyboardScript', 'script', 'director'],
+  digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'rvcTrain', 'storyboardScript', 'script', 'director'],
+  // 分镜脚本：可拖线创建/连到 图片、视频、文本、LLM 等下游模型
+  storyboardScript: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'storyboardScript', 'script', 'director'],
+  // 剧本：主要连到导演 / 文本 / LLM
+  script: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'image', 'video', 'wanAnimate', 'storyboardScript'],
+  // 导演：可连到图片、视频、剪辑、文本、LLM
+  director: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director'],
 };
 
 /** 从源节点类型看：不能连到的目标节点 type（用于 isValidConnection） */
 const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
-  minimalistText: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  text: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  llm: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  textSplit: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'heyGem'],
-  image: ['minimalistText', 'textSplit', 'character', 'audio', 'heyGem'],
-  video: ['textSplit'], // 允许 video -> minimalistText（转写）、image、audio、videoSplice、llm
-  wanAnimate: ['textSplit'],
-  heyGem: ['textSplit'],
-  videoSplice: ['minimalistText', 'llm', 'textSplit', 'character', 'photoCollage'],
+  minimalistText: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  text: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  llm: ['minimalistText', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  textSplit: ['character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'heyGem', 'rvcTrain'],
+  image: ['minimalistText', 'textSplit', 'character', 'audio', 'heyGem', 'rvcTrain'],
+  video: ['textSplit', 'rvcTrain'], // 允许 video -> minimalistText（转写）、image、audio、videoSplice、llm、storyboardScript
+  wanAnimate: ['textSplit', 'rvcTrain'],
+  heyGem: ['textSplit', 'rvcTrain'],
+  videoSplice: ['minimalistText', 'llm', 'textSplit', 'character', 'photoCollage', 'gridMap', 'imageComparer', 'rvcTrain', 'storyboardScript'],
   character: [
     'minimalistText',
     'text',
@@ -91,10 +108,14 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'character',
     'videoSplice',
     'photoCollage',
+    'gridMap',
+    'imageComparer',
     'audioTranscribe',
     'cameraControl',
+    'rvcTrain',
+    'storyboardScript',
   ],
-  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage'], // 允许 audio -> minimalistText（转写）
+  audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage', 'gridMap', 'imageComparer', 'storyboardScript'],
   rvcTrain: [
     'minimalistText',
     'text',
@@ -107,10 +128,13 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'heyGem',
     'videoSplice',
     'photoCollage',
+    'gridMap',
+    'imageComparer',
     'audioTranscribe',
     'cameraControl',
     'imageTo3d',
     'rvcTrain',
+    'storyboardScript',
   ],
   digitalHuman: [
     'minimalistText',
@@ -120,14 +144,66 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'character',
     'videoSplice',
     'photoCollage',
+    'gridMap',
+    'imageComparer',
     'audioTranscribe',
     'cameraControl',
     'imageTo3d',
+    'rvcTrain',
+    'storyboardScript',
+  ],
+  storyboardScript: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'imageTo3d',
+    'videoSplice',
+    'audioTranscribe',
+    'cameraControl',
+    'storyboardScript',
+    'script',
+    'director',
+  ],
+  script: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'imageTo3d',
+    'videoSplice',
+    'image',
+    'video',
+    'wanAnimate',
+    'audioTranscribe',
+    'cameraControl',
+    'storyboardScript',
+  ],
+  director: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'imageTo3d',
+    'audioTranscribe',
+    'cameraControl',
+    'storyboardScript',
+    'script',
+    'director',
   ],
   cameraControl: ['minimalistText', 'text', 'llm', 'textSplit', 'video', 'character', 'audio', 'cameraControl'], // 旧项目兼容：3D 只能连到 image
 };
 
-const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
+const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'director', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
 
 /** 四视图勾选：显式 boolean[4]；缺省视为旧数据「未存勾选」 */
 export function parseReferenceTransmitSlots(raw: unknown): boolean[] | null {
@@ -214,7 +290,6 @@ function filterHeyGemFromMenuTypes(sourceNodeType: string, types: string[]): str
 
 /**
  * 拖线创建菜单：根据源节点 type 返回允许创建的菜单类型；null 表示全部展示
- * 当源为 video 时，将 'image' 替换为首帧/当前帧/末帧选项，供用户选择
  */
 export function getAllowedMenuTypes(
   sourceNodeType: string | null,
@@ -231,24 +306,15 @@ export function getAllowedMenuTypes(
     }
     if (isDigitalHumanVideoOutputHandle(sourceHandleId)) {
       let types = ALL_MENU_TYPES.filter((t) => !getForbiddenMenuTypesBySourceNodeType('video').includes(t));
-      if (types.includes('image')) {
-        types = types.filter((t) => t !== 'image').concat(['image-first-frame', 'image-current-frame', 'image-last-frame']);
-      }
+      // 视频→图片帧（首/当前/末）已下线，改用智能剪辑抽关键帧
+      types = types.filter((t) => t !== 'image');
       if (types.includes('audio')) {
         types = types.filter((t) => t !== 'audio').concat(['audio-extract-from-video']);
-      }
-      if (
-        types.includes('image') ||
-        types.includes('image-first-frame') ||
-        types.includes('image-current-frame') ||
-        types.includes('image-last-frame')
-      ) {
-        if (!types.includes('canvas-tool')) types = types.concat(['canvas-tool']);
       }
       if (HIDE_SORA2_AND_SORA_CHARACTER_UI) {
         types = types.filter((t) => t !== 'character');
       }
-      types = types.filter((t) => t !== 'imageTo3d');
+      types = types.filter((t) => t !== 'imageTo3d' && t !== 'imageComparer');
       return filterHeyGemFromMenuTypes(sourceNodeType, types);
     }
     return [];
@@ -265,30 +331,38 @@ export function getAllowedMenuTypes(
   const forbidden = getForbiddenMenuTypesBySourceNodeType(sourceNodeType);
   let types = ALL_MENU_TYPES.filter((t) => !forbidden.includes(t));
   if (sourceNodeType === 'video' || sourceNodeType === 'wanAnimate' || sourceNodeType === 'heyGem') {
-    if (types.includes('image')) {
-      types = types.filter((t) => t !== 'image').concat(['image-first-frame', 'image-current-frame', 'image-last-frame']);
-    }
+    // 视频→图片帧（首/当前/末）已下线，改用智能剪辑抽关键帧
+    types = types.filter((t) => t !== 'image');
     // 添加「从视频提取音频」选项
     if (types.includes('audio')) {
       types = types.filter((t) => t !== 'audio').concat(['audio-extract-from-video']);
     }
   }
-  // 从音频节点拖线：保留「声音」选项（创建新音频节点），并添加「提取人声」「提取背景音」
+  // 从音频节点拖线：保留「声音」选项，并添加翻唱/提取人声/提取背景音/音色训练子菜单
   if (sourceNodeType === 'audio') {
-    if (types.includes('audio')) {
-      types = types.filter((t) => t !== 'audio').concat(['audio', 'audio-voice-cover', 'audio-extract-vocals', 'audio-extract-background']);
-    }
+    types = types.filter((t) => t !== 'audio' && t !== 'rvcTrain');
+    types = types.concat([
+      'audio',
+      'audio-voice-cover',
+      'audio-extract-vocals',
+      'audio-extract-background',
+      'rvcTrain',
+    ]);
   }
-  // canvas-tool 在允许 image 时也显示（video 时为帧导出选项）
-  if (types.includes('image') || types.includes('image-first-frame') || types.includes('image-current-frame') || types.includes('image-last-frame')) {
+  // 音色训练：仅声音模块拖线子菜单（非 audio 源一律不展示）
+  if (sourceNodeType !== 'audio') {
+    types = types.filter((t) => t !== 'rvcTrain');
+  }
+  // canvas-tool 在允许 image 时也显示
+  if (types.includes('image')) {
     if (!types.includes('canvas-tool')) types = types.concat(['canvas-tool']);
   }
   if (HIDE_SORA2_AND_SORA_CHARACTER_UI) {
     types = types.filter((t) => t !== 'character');
   }
-  // 图片转 3D：仅允许从图片节点拖线创建
+  // 图片转 3D / 图片对比：仅允许从图片节点拖线创建
   if (sourceNodeType !== 'image') {
-    types = types.filter((t) => t !== 'imageTo3d');
+    types = types.filter((t) => t !== 'imageTo3d' && t !== 'imageComparer');
   }
   return filterHeyGemFromMenuTypes(sourceNodeType, types);
 }
@@ -337,7 +411,7 @@ export function isConnectionAllowed(
     }
     return false;
   }
-  if (tgt === 'imageTo3d') {
+  if (tgt === 'imageTo3d' || tgt === 'imageComparer') {
     return src === 'image';
   }
   if (tgt === 'rvcTrain') {
@@ -348,6 +422,52 @@ export function isConnectionAllowed(
   }
   if (src === 'videoSplice') {
     return tgt === 'video';
+  }
+  if (src === 'storyboardScript') {
+    return (
+      tgt === 'image' ||
+      tgt === 'video' ||
+      tgt === 'wanAnimate' ||
+      tgt === 'llm' ||
+      tgt === 'minimalistText' ||
+      tgt === 'text' ||
+      tgt === 'textSplit'
+    );
+  }
+  if (src === 'script') {
+    return (
+      tgt === 'director' ||
+      tgt === 'llm' ||
+      tgt === 'minimalistText' ||
+      tgt === 'text' ||
+      tgt === 'textSplit' ||
+      tgt === 'storyboardScript'
+    );
+  }
+  if (src === 'director') {
+    return (
+      tgt === 'image' ||
+      tgt === 'video' ||
+      tgt === 'wanAnimate' ||
+      tgt === 'llm' ||
+      tgt === 'minimalistText' ||
+      tgt === 'text' ||
+      tgt === 'textSplit' ||
+      tgt === 'videoSplice'
+    );
+  }
+  if (tgt === 'script') {
+    return src === 'minimalistText' || src === 'text' || src === 'llm' || src === 'textSplit';
+  }
+  if (tgt === 'director') {
+    return (
+      src === 'script' ||
+      src === 'minimalistText' ||
+      src === 'text' ||
+      src === 'llm' ||
+      src === 'textSplit' ||
+      src === 'audio'
+    );
   }
   const forbidden = FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE[src];
   if (!forbidden) return true;

@@ -9,13 +9,21 @@ import { getAliyunFcInitUserUrl } from '../config/aliyunConfig.js';
 import { normalizeRunningHubPollStatus } from './runningHubVideoQueryResume.js';
 
 const IMAGE_OUTPUT_TYPES = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'image', 'img', 'picture', 'photo']);
-const NON_IMAGE_OUTPUT_TYPES = new Set(['txt', 'text', 'json', 'mp4', 'webm', 'mov', 'avi', 'zip']);
+const NON_IMAGE_OUTPUT_TYPES = new Set(['txt', 'text', 'json', 'mp4', 'webm', 'mov', 'avi', 'zip', 'glb', 'gltf']);
+const IMAGE_URL_EXT_RE = /\.(png|jpg|jpeg|webp|bmp|gif)(?:$|[?#])/i;
+const NON_IMAGE_URL_EXT_RE = /\.(zip|mp4|webm|mov|avi|txt|json|glb|gltf|obj|fbx)(?:$|[?#])/i;
+
+function isExplicitNonImageUrl(u: string): boolean {
+  return NON_IMAGE_URL_EXT_RE.test(u.trim());
+}
 
 function isLikelyImageHttpUrl(u: string): boolean {
   const s = u.trim();
   if (!/^https?:\/\//i.test(s)) return false;
-  if (/\.(png|jpg|jpeg|webp|bmp|gif)(?:$|[?#])/i.test(s)) return true;
-  if (/runninghub|aliyuncs|oss-|rh-artifacts|rhcdn/i.test(s)) return true;
+  /** zip/视频等即使挂在 RH/OSS 域名上也绝不当图片 */
+  if (isExplicitNonImageUrl(s)) return false;
+  if (IMAGE_URL_EXT_RE.test(s)) return true;
+  if (/runninghub|aliyuncs|oss-|rh-artifacts|rhcdn|rh-images/i.test(s)) return true;
   return false;
 }
 
@@ -23,6 +31,22 @@ function pushImageUrl(urls: string[], raw: string): void {
   const u = raw.trim();
   if (!u || !isLikelyImageHttpUrl(u)) return;
   if (!urls.includes(u)) urls.push(u);
+}
+
+/** 结果条目：优先 png/jpg 等图片，zip 永远排到最后（且通常已被过滤） */
+function scoreImageUrlCandidate(u: string, outputType?: string): number {
+  const lower = u.toLowerCase();
+  const out = String(outputType || '')
+    .trim()
+    .toLowerCase();
+  if (out === 'zip' || /\.zip(?:$|[?#])/i.test(lower)) return -1000;
+  if (NON_IMAGE_OUTPUT_TYPES.has(out) && !IMAGE_OUTPUT_TYPES.has(out)) return -500;
+  let score = 0;
+  if (IMAGE_OUTPUT_TYPES.has(out)) score += 80;
+  if (/\.png(?:$|[?#])/i.test(lower)) score += 40;
+  else if (/\.(jpe?g|webp|bmp|gif)(?:$|[?#])/i.test(lower)) score += 30;
+  if (/comfyui_/i.test(lower) && !/comfyui_zip/i.test(lower)) score += 10;
+  return score;
 }
 
 function splitUrlListString(s: string): string[] {
@@ -34,13 +58,23 @@ function splitUrlListString(s: string): string[] {
 function urlFromRhResultItem(item: unknown, relaxed: boolean): string {
   if (!item || typeof item !== 'object') return '';
   const o = item as Record<string, unknown>;
+  const out = String(o.outputType ?? o.type ?? '').trim().toLowerCase();
+  if (out && NON_IMAGE_OUTPUT_TYPES.has(out) && !IMAGE_OUTPUT_TYPES.has(out)) return '';
+
   for (const k of ['url', 'fileUrl', 'imageUrl', 'image_url', 'output', 'href']) {
     const v = o[k];
-    if (typeof v === 'string') {
-      const pieces = splitUrlListString(v);
-      if (pieces.length > 1) return pieces[0] ?? '';
-      if (isLikelyImageHttpUrl(v)) return v.trim();
+    if (typeof v !== 'string') continue;
+    const pieces = splitUrlListString(v);
+    if (pieces.length > 1) {
+      const preferred = pieces.find((p) => isLikelyImageHttpUrl(p) && !isExplicitNonImageUrl(p));
+      if (preferred) return preferred;
+      continue;
     }
+    const trimmed = v.trim();
+    if (!/^https?:\/\//i.test(trimmed) || isExplicitNonImageUrl(trimmed)) continue;
+    /** outputType=png/jpg 时即使无扩展名（签名下载链）也采纳 */
+    if (IMAGE_OUTPUT_TYPES.has(out)) return trimmed;
+    if (isLikelyImageHttpUrl(trimmed)) return trimmed;
   }
   const nested = o.url;
   if (nested && typeof nested === 'object') {
@@ -49,7 +83,6 @@ function urlFromRhResultItem(item: unknown, relaxed: boolean): string {
     if (typeof n.href === 'string' && isLikelyImageHttpUrl(n.href)) return n.href.trim();
   }
   if (relaxed) {
-    const out = String(o.outputType ?? o.type ?? '').trim().toLowerCase();
     if (out && NON_IMAGE_OUTPUT_TYPES.has(out)) return '';
   }
   return '';
@@ -69,9 +102,12 @@ function collectUrlsFromResultItem(item: unknown, urls: string[], relaxed: boole
     }
   }
   const out = String(o.outputType ?? o.type ?? '').trim().toLowerCase();
+  /** 明确非图（zip 等）直接跳过，避免 results[0] 误取压缩包 */
+  if (out && NON_IMAGE_OUTPUT_TYPES.has(out) && !IMAGE_OUTPUT_TYPES.has(out)) return;
+
   const u = urlFromRhResultItem(item, relaxed);
   if (u) {
-    if (!out || relaxed || IMAGE_OUTPUT_TYPES.has(out) || /\.(png|jpg|jpeg|webp|bmp)(?:$|[?#])/i.test(u)) {
+    if (!out || relaxed || IMAGE_OUTPUT_TYPES.has(out) || IMAGE_URL_EXT_RE.test(u)) {
       pushImageUrl(urls, u);
     }
   }
@@ -98,7 +134,7 @@ function deepCollectImageUrls(value: unknown, urls: string[], relaxed: boolean, 
     const tr = o.task_result;
     if (tr && typeof tr === 'object') {
       const tro = tr as Record<string, unknown>;
-      for (const k of ['images', 'image', 'outputs', 'files']) {
+      for (const k of ['images', 'image', 'outputs', 'files', 'results']) {
         const v = tro[k];
         if (Array.isArray(v)) for (const el of v) collectUrlsFromResultItem(el, urls, relaxed);
         else collectUrlsFromResultItem(v, urls, relaxed);
@@ -111,7 +147,7 @@ function deepCollectImageUrls(value: unknown, urls: string[], relaxed: boolean, 
   }
 }
 
-/** 从 /query 提取全部图片 URL（人物多角度等多图任务） */
+/** 从 /query 提取全部图片 URL（人物多角度等多图任务）；始终排除 zip 等非图输出 */
 export function extractAllRunningHubImageUrlsFromPoll(
   pollData: Record<string, unknown>,
   options?: { relaxed?: boolean },
@@ -119,7 +155,34 @@ export function extractAllRunningHubImageUrlsFromPoll(
   const relaxed = options?.relaxed ?? false;
   const urls: string[] = [];
   deepCollectImageUrls(pollData, urls, relaxed, 0);
-  return urls;
+
+  /** 顶层 results 再扫一遍：按 outputType 明确挑图，防止深搜漏掉或混入 zip */
+  const results = Array.isArray(pollData.results)
+    ? pollData.results
+    : Array.isArray((pollData as { data?: { results?: unknown } }).data?.results)
+      ? ((pollData as { data: { results: unknown[] } }).data.results as unknown[])
+      : [];
+  if (results.length > 0) {
+    const scored: { url: string; score: number }[] = [];
+    for (const item of results) {
+      if (!item || typeof item !== 'object') continue;
+      const rec = item as Record<string, unknown>;
+      const out = String(rec.outputType ?? rec.type ?? '').trim().toLowerCase();
+      if (out && NON_IMAGE_OUTPUT_TYPES.has(out) && !IMAGE_OUTPUT_TYPES.has(out)) continue;
+      const u = urlFromRhResultItem(item, true);
+      if (!u || isExplicitNonImageUrl(u)) continue;
+      scored.push({ url: u, score: scoreImageUrlCandidate(u, out) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    for (const s of scored) {
+      if (s.score < 0) continue;
+      pushImageUrl(urls, s.url);
+    }
+  }
+
+  const filtered = urls.filter((u) => !isExplicitNonImageUrl(u));
+  filtered.sort((a, b) => scoreImageUrlCandidate(b) - scoreImageUrlCandidate(a));
+  return filtered;
 }
 
 async function tryExpandJsonManifest(url: string): Promise<string[]> {
@@ -191,14 +254,18 @@ export async function finalizeCharacterMultiAngleImageUrls(urls: string[]): Prom
 function firstRhImageUrlFromResultItem(item: unknown): string | undefined {
   if (!item || typeof item !== 'object') return undefined;
   const o = item as Record<string, unknown>;
+  const out = String(o.outputType ?? o.type ?? '').trim().toLowerCase();
+  if (out && NON_IMAGE_OUTPUT_TYPES.has(out) && !IMAGE_OUTPUT_TYPES.has(out)) return undefined;
   for (const k of ['url', 'fileUrl', 'imageUrl', 'image_url', 'videoUrl', 'video_url']) {
     const v = o[k];
-    if (typeof v === 'string' && /^https?:\/\//i.test(v)) return v;
+    if (typeof v === 'string' && /^https?:\/\//i.test(v) && !isExplicitNonImageUrl(v)) {
+      if (IMAGE_OUTPUT_TYPES.has(out) || isLikelyImageHttpUrl(v)) return v;
+    }
   }
   const nested = o.url;
   if (nested && typeof nested === 'object' && 'url' in nested && typeof (nested as { url?: string }).url === 'string') {
     const inner = (nested as { url: string }).url;
-    if (/^https?:\/\//i.test(inner)) return inner;
+    if (/^https?:\/\//i.test(inner) && !isExplicitNonImageUrl(inner) && isLikelyImageHttpUrl(inner)) return inner;
   }
   return undefined;
 }
@@ -210,8 +277,10 @@ export function extractRunningHubImageUrlFromPoll(pollData: Record<string, unkno
   const d = pollData as Record<string, any>;
   const resultsArray = Array.isArray(d.results) ? d.results : d.data?.results;
   if (resultsArray && resultsArray.length > 0) {
-    const u = firstRhImageUrlFromResultItem(resultsArray[0]);
-    if (u) return u;
+    for (const item of resultsArray) {
+      const u = firstRhImageUrlFromResultItem(item);
+      if (u) return u;
+    }
   }
   const tr = d.data?.task_result;
   const images = tr?.images;
@@ -226,21 +295,24 @@ export function extractRunningHubImageUrlFromPoll(pollData: Record<string, unkno
     if (u) return u;
   }
   const topImage =
-    typeof d.image_url === 'string' && /^https?:\/\//i.test(d.image_url)
+    typeof d.image_url === 'string' && /^https?:\/\//i.test(d.image_url) && !isExplicitNonImageUrl(d.image_url)
       ? d.image_url
-      : typeof d.imageUrl === 'string' && /^https?:\/\//i.test(d.imageUrl)
+      : typeof d.imageUrl === 'string' && /^https?:\/\//i.test(d.imageUrl) && !isExplicitNonImageUrl(d.imageUrl)
         ? d.imageUrl
         : undefined;
   if (topImage) return topImage;
 
-  return (
+  const fallback =
     d.data?.output ||
     d.data?.data?.output ||
     d.output ||
     d.url ||
     d.data?.url ||
-    undefined
-  );
+    undefined;
+  if (typeof fallback === 'string' && /^https?:\/\//i.test(fallback) && !isExplicitNonImageUrl(fallback)) {
+    return fallback;
+  }
+  return undefined;
 }
 
 export type RunningHubImageResumeResult =

@@ -33,6 +33,73 @@ import FormData from 'form-data';
 import express from 'express';
 import AdmZip from 'adm-zip';
 import { store } from './services/store.js';
+
+/**
+ * Node Readable.toWeb 在 end+close 双事件时会二次 close controller，触发
+ * ERR_INVALID_STATE（视频 Range 预览时尤甚）。此处自行桥接并吞掉重复 close。
+ */
+function fsReadStreamToWebBody(fileStream: fs.ReadStream): ReadableStream<Uint8Array> {
+  let closed = false;
+  const safeClose = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (closed) return;
+    closed = true;
+    try {
+      controller.close();
+    } catch {
+      /* already closed */
+    }
+  };
+  const safeError = (controller: ReadableStreamDefaultController<Uint8Array>, err: Error) => {
+    if (closed) return;
+    closed = true;
+    try {
+      controller.error(err);
+    } catch {
+      /* already closed */
+    }
+  };
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      // 仅用 end 关闭 controller；close 在 abort/destroy 且未 end 时兜底，且必须幂等
+      fileStream.pause();
+      fileStream.on('data', (chunk: string | Buffer) => {
+        if (closed) return;
+        try {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          // 拷贝一份，避免底层 Buffer pool 被复用后污染已入队数据
+          controller.enqueue(new Uint8Array(buf));
+          if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+            fileStream.pause();
+          }
+        } catch {
+          closed = true;
+          try {
+            fileStream.destroy();
+          } catch {
+            /* ignore */
+          }
+        }
+      });
+      fileStream.once('end', () => safeClose(controller));
+      fileStream.once('close', () => {
+        // destroy()/abort 可能不触发 end，仍需结束 web stream
+        if (!closed) safeClose(controller);
+      });
+      fileStream.on('error', (err) => safeError(controller, err instanceof Error ? err : new Error(String(err))));
+    },
+    pull() {
+      if (!closed) fileStream.resume();
+    },
+    cancel() {
+      closed = true;
+      try {
+        fileStream.destroy();
+      } catch {
+        /* ignore */
+      }
+    },
+  });
+}
 import {
   buildDefaultSavePath,
   fileNameFromUrl,
@@ -58,9 +125,19 @@ import {
   mediaOssRegionToFcRoute,
 } from './services/ossUploadSession.js';
 import { getBLTCYBalance, getRHBalance } from './services/balance.js';
-import { activateLicense, checkLicenseStatus, generateActivationCode } from './services/licenseManager.js';
+import {
+  activateLicense,
+  checkLicenseStatus,
+  generateActivationCode,
+  isActivationSkipped,
+} from './services/licenseManager.js';
 import { runMattingViaFc } from './services/matting.js';
-import { runWatermarkRemovalViaFc } from './services/watermarkRemoval.js';
+import {
+  runWatermarkRemovalViaFc,
+  runVideoWatermarkRemovalViaFc,
+  runVideoDepthConvertViaFc,
+} from './services/watermarkRemoval.js';
+import { runImageUpscaleV3ViaFc } from './services/imageUpscaleV3.js';
 import {
   runCharacterMultiAngleViaFc,
   runImageTo3dModelViaFc,
@@ -693,19 +770,13 @@ function registerLocalResourceProtocol() {
         }
       }
 
-      let fileBuffer: Buffer;
+      let fileStream: fs.ReadStream;
       try {
         if (isRangeRequest) {
-          const length = end - start + 1;
-          const fd = fs.openSync(normalizedPath, 'r');
-          try {
-            fileBuffer = Buffer.alloc(length);
-            fs.readSync(fd, fileBuffer, 0, length, start);
-          } finally {
-            fs.closeSync(fd);
-          }
+          fileStream = fs.createReadStream(normalizedPath, { start, end });
         } else {
-          fileBuffer = fs.readFileSync(normalizedPath);
+          // 禁止 readFileSync 整文件进内存：大视频会直接卡死主进程（上传后预览即冻住）
+          fileStream = fs.createReadStream(normalizedPath);
         }
       } catch (readError: any) {
         console.error('[local-resource] 读取文件失败:', {
@@ -716,18 +787,33 @@ function registerLocalResourceProtocol() {
         return new Response('Read Error', { status: 500 });
       }
 
-      const uint8Array = new Uint8Array(fileBuffer);
-      const contentLength = fileBuffer.length;
+      const contentLength = isRangeRequest ? end - start + 1 : fileSize;
       const headers: Record<string, string> = {
         'Content-Type': mimeType,
         'Content-Length': contentLength.toString(),
         'Accept-Ranges': 'bytes',
       };
+      if (mimeType.startsWith('image/')) {
+        headers['Cache-Control'] = 'private, max-age=86400';
+      }
+      // 勿用 Readable.toWeb：Range/seek 时 end+close 会二次 close，主进程弹 ERR_INVALID_STATE
+      request.signal?.addEventListener(
+        'abort',
+        () => {
+          try {
+            fileStream.destroy();
+          } catch {
+            /* ignore */
+          }
+        },
+        { once: true },
+      );
+      const body = fsReadStreamToWebBody(fileStream) as any;
       if (isRangeRequest) {
         headers['Content-Range'] = `bytes ${start}-${end}/${fileSize}`;
-        return new Response(uint8Array, { status: 206, headers });
+        return new Response(body, { status: 206, headers });
       }
-      return new Response(uint8Array, { status: 200, headers });
+      return new Response(body, { status: 200, headers });
     } catch (error: any) {
       console.error('[local-resource] 处理请求失败:', {
         error: error.message,
@@ -1139,10 +1225,12 @@ ipcMain.handle('validate-activation', async (_, activationCode: string) => {
 });
 
 ipcMain.handle('check-activation', () => {
+  const skipped = isActivationSkipped();
   const check = checkLicenseStatus(getUserDataPath());
-  const activated = check.status === 'VALID';
+  const activated = skipped || check.status === 'VALID';
   return {
     activated,
+    skipped,
     status: check.status,
     activationCode: check.activationCode ?? '',
     expireAt: check.expireAt,
@@ -1163,6 +1251,27 @@ ipcMain.handle('generate-activation-code', (_, days: number) => {
   clipboard.writeText(code);
   return { code };
 });
+
+/** MV 人声时间轴：尽早注册，避免主进程未重启时前端已调用却报 No handler */
+ipcMain.handle(
+  'transcribe-speech-from-audio-url',
+  async (_, projectId: string | undefined, audioUrl: string, language?: string) =>
+    localResourceManager.transcribeSpeechFromAudioUrl(projectId, audioUrl, language),
+);
+ipcMain.handle(
+  'transcribe-speech-segments-from-audio-url',
+  async (_, projectId: string | undefined, audioUrl: string, language?: string) =>
+    localResourceManager.transcribeSpeechSegmentsFromAudioUrl(projectId, audioUrl, language),
+);
+ipcMain.handle(
+  'separate-vocals-from-audio',
+  async (
+    _,
+    projectId: string | undefined,
+    audioUrl: string,
+    mode: 'vocals' | 'accompaniment',
+  ) => localResourceManager.separateVocalsFromAudio(projectId, audioUrl, mode),
+);
 
 // 片头视频：开发时用项目下的 splash-videos，打包后优先用 userData/splash-videos，为空则从安装包内复制默认资源
 const SPLASH_VIDEO_EXT = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
@@ -2755,6 +2864,24 @@ ipcMain.handle('show-open-audio-dialog', async () => {
   return { success: true, filePath };
 });
 
+// 选择参考图片（Doubao 音频等）
+ipcMain.handle('show-open-image-dialog', async () => {
+  const mainWindow = BrowserWindow.getAllWindows()[0];
+  if (!mainWindow) return { success: false, filePath: undefined, error: '窗口未就绪' };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: '选择参考图片',
+    properties: ['openFile'],
+    filters: [
+      { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePaths?.length) return { success: false, filePath: undefined };
+  let filePath = path.normalize(result.filePaths[0]).replace(/\\/g, '/');
+  if (process.platform === 'win32' && filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+  return { success: true, filePath };
+});
+
 // 选择视频文件（与 AudioNode 上传参考音一致的 IPC 方案）
 ipcMain.handle('show-open-video-dialog', async () => {
   const mainWindow = BrowserWindow.getAllWindows()[0];
@@ -3617,12 +3744,13 @@ ipcMain.handle('upload-video-to-oss', async (_, videoUrl: string) => {
   }
 });
 
-// 上传角色视频
+// 上传角色视频（经 FC 转发 RunningHub 国内站，不再直连 .cn）
 ipcMain.handle('upload-character-video', async (_, videoUrl: string, timestamp?: string) => {
-  const runningHubApiKey = store.get('runningHubApiKey') as string;
-  if (!runningHubApiKey) {
-    throw new Error('插件算力 API Key 未配置，请在设置中配置插件算力 API KEY');
-  }
+  const { fcForwardRequest } = await import('./utils/fcForwardTask.js');
+  const {
+    unwrapRunningHubForwardBody,
+    extractRhTaskIdFromForward,
+  } = await import('./utils/runningHubFcHelpers.js');
 
   // 专门处理 Electron 传过来的各种奇葩路径格式
   function sanitizePath(inputPath: string) {
@@ -3705,31 +3833,25 @@ ipcMain.handle('upload-character-video', async (_, videoUrl: string, timestamp?:
     console.log('[角色视频上传] 最终提交给API的URL:', finalVideoUrl);
     console.log('[角色视频上传] 请求体:', JSON.stringify(requestBody, null, 2));
 
-    // 提交上传任务
-    const submitResponse = await axios.post(
-      'https://www.runninghub.cn/openapi/v2/rhart-video-s/sora-upload-character',
-      requestBody,
+    const submitRaw = await fcForwardRequest(
+      `sora-char:${randomUUID()}`,
+      'video',
+      'none',
       {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${runningHubApiKey}`,
-        },
-      }
+        provider: 'runninghub',
+        path: '/rhart-video-s/sora-upload-character',
+        method: 'POST',
+        body: requestBody,
+        rhRegion: 'cn',
+      },
     );
-
-    if (submitResponse.status !== 200) {
-      throw new Error(`提交失败: ${submitResponse.status} - ${submitResponse.statusText}`);
-    }
-
-    const submitResult = submitResponse.data;
-    const taskId = submitResult.taskId;
+    const submitResult = unwrapRunningHubForwardBody(submitRaw.data as Record<string, unknown>);
+    const taskId = extractRhTaskIdFromForward(submitResult as Record<string, unknown>);
 
     if (!taskId) {
       throw new Error('未获取到任务ID');
     }
 
-    // 轮询任务状态
-    const queryUrl = 'https://www.runninghub.cn/openapi/v2/query';
     const startTime = Date.now();
     const timeout = 10 * 60 * 1000;
 
@@ -3739,22 +3861,21 @@ ipcMain.handle('upload-character-video', async (_, videoUrl: string, timestamp?:
       }
 
       try {
-        const queryResponse = await axios.post(
-          queryUrl,
-          { taskId },
+        const queryRaw = await fcForwardRequest(
+          `sora-char-poll:${randomUUID()}`,
+          'video',
+          'none',
           {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${runningHubApiKey}`,
-            },
-          }
+            provider: 'runninghub',
+            path: '/query',
+            method: 'POST',
+            body: { taskId },
+            rhRegion: 'cn',
+          },
         );
-
-        if (queryResponse.status !== 200) {
-          throw new Error(`查询失败: ${queryResponse.status}`);
-        }
-
-        const queryResult = queryResponse.data;
+        const queryResult = unwrapRunningHubForwardBody(
+          queryRaw.data as Record<string, unknown>,
+        ) as Record<string, any>;
         const status = queryResult.status;
 
         // 添加调试日志
@@ -3832,12 +3953,6 @@ ipcMain.handle('upload-character-video', async (_, videoUrl: string, timestamp?:
             return { success: true, url: directUrl, roleId: roleId || undefined };
           }
           
-          // 如果 queryResult 本身就是一个 URL 字符串
-          if (typeof queryResult === 'string' && (queryResult.startsWith('http://') || queryResult.startsWith('https://'))) {
-            console.log('[角色视频上传] queryResult 本身就是 URL:', queryResult);
-            return { success: true, url: queryResult, roleId: roleId || undefined };
-          }
-          
           // 如果只有 roleId 没有 URL，也返回成功
           if (roleId) {
             console.log('[角色视频上传] 找到 roleId 但未找到 URL，返回 roleId:', roleId);
@@ -3872,16 +3987,17 @@ ipcMain.handle('upload-character-video', async (_, videoUrl: string, timestamp?:
   }
 });
 
-// 上传图片到 runninghub 并获取 view URL（用于 sora-2 图生视频）
+// 上传图片到 runninghub 并获取 view URL（用于 sora-2 图生视频；经 FC，国内站）
 ipcMain.handle('upload-image-to-runninghub', async (_, imageUrl: string) => {
-  const runningHubApiKey = store.get('runningHubApiKey') as string;
-  if (!runningHubApiKey) {
-    throw new Error('插件算力 API Key 未配置，请在设置中配置插件算力 API KEY');
-  }
+  const { fcForwardRequest } = await import('./utils/fcForwardTask.js');
+  const {
+    unwrapRunningHubForwardBody,
+    extractRhTaskIdFromForward,
+  } = await import('./utils/runningHubFcHelpers.js');
 
   try {
     // 如果已经是 runninghub view URL，直接返回
-    if (imageUrl.includes('www.runninghub.cn/view')) {
+    if (imageUrl.includes('www.runninghub.cn/view') || imageUrl.includes('www.runninghub.ai/view')) {
       return { success: true, url: imageUrl };
     }
 
@@ -3962,59 +4078,41 @@ ipcMain.handle('upload-image-to-runninghub', async (_, imageUrl: string) => {
       throw new Error(`不支持的图片 URL 格式: ${imageUrl.substring(0, 50)}`);
     }
 
-    // 完善上传逻辑：使用 FormData 封装图片 Buffer
-    const form = new FormData();
-    form.append('file', imageBuffer, {
-      filename: filename,
-      contentType: mimeType,
-    });
+    console.log('[图片上传] 开始经 FC 提交上传任务，文件大小:', imageBuffer.length, 'bytes');
 
-    // 检查并确保上传的 API 完整路径
-    const uploadEndpoint = 'https://www.runninghub.cn/openapi/v2/rhart-video-s/upload-image';
-    
-    // 必须在 Header 中携带正确的 Rh-Comfy-Auth 和 Rh-Identify
-    // 注意：这些参数可能需要从 API Key 或其他来源获取
-    // 目前先使用 API Key 作为 Authorization
-    const headers: any = {
-      ...form.getHeaders(),
-      'Authorization': `Bearer ${runningHubApiKey}`,
-    };
-    
-    // TODO: 如果 API 需要 Rh-Comfy-Auth 和 Rh-Identify，需要从 API Key 或其他来源获取
-    // 暂时先不添加，等待实际 API 响应确认
-
-    console.log('[图片上传] 开始提交上传任务，使用 FormData，文件大小:', imageBuffer.length, 'bytes');
-    
-    let submitResponse;
+    let submitResult: Record<string, any>;
     try {
-      submitResponse = await axios.post(uploadEndpoint, form, { headers });
-      console.log('[图片上传] 提交响应状态:', submitResponse.status);
-      console.log('[图片上传] 提交响应数据:', JSON.stringify(submitResponse.data, null, 2));
+      const submitRaw = await fcForwardRequest(
+        `sora-img:${randomUUID()}`,
+        'video',
+        'none',
+        {
+          provider: 'runninghub',
+          path: '/rhart-video-s/upload-image',
+          method: 'POST',
+          uploadMultipart: {
+            fieldName: 'file',
+            filename,
+            contentType: mimeType,
+            base64: imageBuffer.toString('base64'),
+          },
+          rhRegion: 'cn',
+        },
+      );
+      submitResult = unwrapRunningHubForwardBody(submitRaw.data as Record<string, unknown>) as Record<
+        string,
+        any
+      >;
+      console.log('[图片上传] 提交响应数据:', JSON.stringify(submitResult, null, 2));
     } catch (error: any) {
-      // 增加容错：如果接口返回失败，打印出 response.data 的全文
-      console.error('[图片上传] 提交请求失败');
-      console.error('[图片上传] 错误状态码:', error.response?.status);
-      console.error('[图片上传] 错误响应数据全文:', JSON.stringify(error.response?.data || error.message, null, 2));
-      console.error('[图片上传] 错误响应 headers:', JSON.stringify(error.response?.headers, null, 2));
-      
-      if (error.response?.status === 404) {
-        throw new Error('图片上传 API 端点不存在（404）。请检查 API 文档确认正确的端点路径。');
-      } else if (error.response?.status === 401 || error.response?.status === 403) {
-        throw new Error('API Key 无效或已过期，请检查插件算力 API Key 配置');
-      } else {
-        const errorData = error.response?.data || {};
-        const errorMsg = errorData.message || errorData.error || errorData.errorMessage || error.message || '未知错误';
-        throw new Error(`图片上传失败: ${error.response?.status || error.code || '未知错误'} - ${errorMsg}`);
+      console.error('[图片上传] 提交请求失败', error?.message || error);
+      const msg = error?.message || '未知错误';
+      if (/401|鉴权/i.test(msg)) {
+        throw new Error('云端 RunningHub 鉴权失败，请检查 FC 的 RUNNINGHUB_API_KEY');
       }
+      throw new Error(`图片上传失败: ${msg}`);
     }
 
-    if (submitResponse.status !== 200) {
-      // 增加容错：打印非 200 响应数据
-      console.error('[图片上传] 非 200 状态码，响应数据:', JSON.stringify(submitResponse.data, null, 2));
-      throw new Error(`提交失败: ${submitResponse.status} - ${submitResponse.statusText}`);
-    }
-
-    const submitResult = submitResponse.data;
     // 增加容错：打印完整的响应数据
     console.log('[图片上传] 完整响应数据（用于调试）:', JSON.stringify(submitResult, null, 2));
     
@@ -4026,12 +4124,14 @@ ipcMain.handle('upload-image-to-runninghub', async (_, imageUrl: string) => {
     }
     
     // 尝试多种可能的字段名获取 taskId
-    const taskId = submitResult.taskId || 
-                   submitResult.task_id || 
-                   submitResult.data?.taskId ||
-                   submitResult.data?.task_id ||
-                   submitResult.result?.taskId ||
-                   submitResult.result?.task_id;
+    const taskId =
+      extractRhTaskIdFromForward(submitResult as Record<string, unknown>) ||
+      submitResult.taskId ||
+      submitResult.task_id ||
+      submitResult.data?.taskId ||
+      submitResult.data?.task_id ||
+      submitResult.result?.taskId ||
+      submitResult.result?.task_id;
 
     if (!taskId) {
       // 增加容错：打印完整的响应数据（错误路径）
@@ -4054,7 +4154,6 @@ ipcMain.handle('upload-image-to-runninghub', async (_, imageUrl: string) => {
     }
 
     // 轮询任务状态
-    const queryUrl = 'https://www.runninghub.cn/openapi/v2/query';
     const startTime = Date.now();
     const timeout = 10 * 60 * 1000; // 10分钟超时
 
@@ -4064,22 +4163,21 @@ ipcMain.handle('upload-image-to-runninghub', async (_, imageUrl: string) => {
       }
 
       try {
-        const queryResponse = await axios.post(
-          queryUrl,
-          { taskId },
+        const queryRaw = await fcForwardRequest(
+          `sora-img-poll:${randomUUID()}`,
+          'video',
+          'none',
           {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${runningHubApiKey}`,
-            },
-          }
+            provider: 'runninghub',
+            path: '/query',
+            method: 'POST',
+            body: { taskId },
+            rhRegion: 'cn',
+          },
         );
-
-        if (queryResponse.status !== 200) {
-          throw new Error(`查询失败: ${queryResponse.status}`);
-        }
-
-        const queryResult = queryResponse.data;
+        const queryResult = unwrapRunningHubForwardBody(
+          queryRaw.data as Record<string, unknown>,
+        ) as Record<string, any>;
         const status = queryResult.status;
 
         if (status === 'SUCCESS') {
@@ -5179,6 +5277,15 @@ ipcMain.handle(
       if (poster?.url) {
         posterUrl = poster.url;
         localPosterPath = poster.localPath;
+      }
+    }
+    if (!posterUrl && video.localPath) {
+      try {
+        const auto = await localResourceManager.ensureDigitalHumanVideoPoster(video.localPath, itemId);
+        posterUrl = auto.posterUrl;
+        localPosterPath = auto.localPosterPath;
+      } catch (e) {
+        console.warn('[数字人] 自动生成列表头像失败:', e);
       }
     }
 
@@ -6346,6 +6453,83 @@ ipcMain.handle('image-watermark-removal', async (_, imageUrl: string) => {
   }
 });
 
+// 超分放大：先上传 OSS，再经 FC 调 RunningHub AI App
+ipcMain.handle('image-upscale-v3', async (_, imageUrl: string) => {
+  const check = checkLicenseStatus(getUserDataPath());
+  if (check.status !== 'VALID') {
+    throw new Error('超分放大需要有效授权，请先激活');
+  }
+
+  if (!getNxAccessToken()) {
+    throw new Error('请先登录云端账号');
+  }
+
+  try {
+    const { buffer, mimeType } = await resolveImageToBufferForOSS(imageUrl);
+    const videoProvider = new VideoProvider();
+    const publicImageUrl = await videoProvider.uploadImageToOSS(buffer, mimeType);
+    const result = await runImageUpscaleV3ViaFc(publicImageUrl);
+    if (result.success) {
+      return { success: true, imageUrl: result.imageUrl };
+    }
+    throw new Error(result.message);
+  } catch (err: any) {
+    console.error('[超分放大]', err);
+    throw err;
+  }
+});
+
+// 视频去水印：转码上传 OSS 后经 FC 调 RunningHub AI App
+ipcMain.handle('video-watermark-removal', async (_, videoUrl: string, strength?: number) => {
+  const check = checkLicenseStatus(getUserDataPath());
+  if (check.status !== 'VALID') {
+    throw new Error('视频去水印功能需要有效授权，请先激活');
+  }
+  if (!getNxAccessToken()) {
+    throw new Error('请先登录云端账号');
+  }
+  try {
+    const videoProvider = new VideoProvider();
+    const publicVideoUrl = await videoProvider.prepareVideoForWatermarkRemovalRemoteUrl(String(videoUrl || ''));
+    const result = await runVideoWatermarkRemovalViaFc(publicVideoUrl, strength);
+    if (result.success) {
+      return { success: true, videoUrl: result.videoUrl };
+    }
+    throw new Error(result.message);
+  } catch (err: any) {
+    console.error('[视频去水印]', err);
+    throw err;
+  }
+});
+
+// 视频深度转换：上传 OSS 后经 FC 调 RunningHub AI App 2082392424818757633
+ipcMain.handle('video-depth-convert', async (_, videoUrl: string) => {
+  const check = checkLicenseStatus(getUserDataPath());
+  if (check.status !== 'VALID') {
+    throw new Error('视频深度转换需要有效授权，请先激活');
+  }
+  if (!getNxAccessToken()) {
+    throw new Error('请先登录云端账号');
+  }
+  try {
+    const videoProvider = new VideoProvider();
+    const publicVideoUrl = await videoProvider.prepareVideoForWatermarkRemovalRemoteUrl(String(videoUrl || ''));
+    const result = await runVideoDepthConvertViaFc(publicVideoUrl);
+    if (result.success) {
+      return {
+        success: true,
+        kind: result.kind,
+        url: result.url,
+        ...(result.kind === 'video' ? { videoUrl: result.url } : { imageUrl: result.url }),
+      };
+    }
+    throw new Error(result.message);
+  } catch (err: any) {
+    console.error('[视频深度转换]', err);
+    throw err;
+  }
+});
+
 // 人物多角度：先上传 OSS 得公网 URL，再经 FC 调用 RunningHub AI 应用；与抠图/去水印一致
 ipcMain.handle('image-character-multi-angle', async (_, imageUrl: string) => {
   const check = checkLicenseStatus(getUserDataPath());
@@ -6685,28 +6869,74 @@ ipcMain.handle('local-resource:set-sharp-queue-paused', async (_, paused: boolea
   return { success: true, paused: Boolean(paused) };
 });
 
-ipcMain.handle('local-resource:get-sharp-queue-stats', async () => getSharpQueueStats());
+ipcMain.handle('local-resource:ensure-library-list-thumb', async (_, sourceUrlOrPath: string, maxEdge?: number) => {
+  try {
+    const r = await localResourceManager.ensureLibraryListThumb(sourceUrlOrPath, maxEdge);
+    return { success: true, ...r };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
 
-ipcMain.handle(
-  'transcribe-speech-from-audio-url',
-  async (_, projectId: string | undefined, audioUrl: string, language?: string) =>
-    localResourceManager.transcribeSpeechFromAudioUrl(projectId, audioUrl, language),
-);
+ipcMain.handle('ensure-digital-human-list-poster', async (_, itemId: string) => {
+  try {
+    const id = String(itemId || '').trim();
+    if (!id) throw new Error('条目 ID 为空');
+    const items = (store.get('digitalHumanLibrary') || []) as Array<Record<string, unknown>>;
+    const idx = items.findIndex((s) => String(s.id || '') === id);
+    if (idx < 0) throw new Error('数字人条目不存在');
+    const item = { ...items[idx] };
+    const existingPoster = String(item.localPosterPath || item.poster || '').trim();
+    if (existingPoster) {
+      const p = existingPoster.startsWith('local-resource://')
+        ? existingPoster
+        : existingPoster.includes('://')
+          ? existingPoster
+          : `local-resource://${String(existingPoster).replace(/\\/g, '/')}`;
+      // 若本地 poster 文件仍在，直接返回
+      try {
+        let fsPath = existingPoster;
+        if (fsPath.startsWith('local-resource://')) {
+          fsPath = decodeURIComponent(fsPath.slice('local-resource://'.length));
+          if (/^\/[A-Za-z]:/.test(fsPath)) fsPath = fsPath.slice(1);
+        }
+        if (fs.existsSync(fsPath) && fs.statSync(fsPath).isFile()) {
+          return {
+            success: true,
+            posterUrl: p.startsWith('local-resource://') ? p : `local-resource://${fsPath.replace(/\\/g, '/')}`,
+            localPosterPath: fsPath.replace(/\\/g, '/'),
+            cached: true,
+          };
+        }
+      } catch {
+        /* regenerate */
+      }
+    }
+    const videoSrc = String(item.localVideoPath || item.videoUrl || '').trim();
+    if (!videoSrc) throw new Error('无参考视频');
+    const r = await localResourceManager.ensureDigitalHumanVideoPoster(videoSrc, id);
+    item.poster = r.posterUrl;
+    item.localPosterPath = r.localPosterPath;
+    items[idx] = item;
+    store.set('digitalHumanLibrary', items);
+    return { success: true, posterUrl: r.posterUrl, localPosterPath: r.localPosterPath, cached: r.cached };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+});
+
+ipcMain.handle('local-resource:get-sharp-queue-stats', async () => getSharpQueueStats());
 
 ipcMain.handle(
   'extract-audio-from-video',
   async (_, projectId: string | undefined, videoUrl: string) =>
     localResourceManager.extractAudioFromVideo(projectId, videoUrl),
-);
-
-ipcMain.handle(
-  'separate-vocals-from-audio',
-  async (
-    _,
-    projectId: string | undefined,
-    audioUrl: string,
-    mode: 'vocals' | 'accompaniment',
-  ) => localResourceManager.separateVocalsFromAudio(projectId, audioUrl, mode),
 );
 
 ipcMain.handle(
@@ -6719,6 +6949,48 @@ ipcMain.handle(
   'trim-video',
   async (_, projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) =>
     localResourceManager.trimVideo(projectId, videoUrl, startSec, endSec),
+);
+
+ipcMain.handle(
+  'smart-analyze-video-shots',
+  async (
+    _,
+    projectId: string | undefined,
+    videoUrl: string,
+    options?: {
+      mode?: 'stable' | 'balanced' | 'sensitive';
+      maxClips?: number;
+      minClipSec?: number;
+      withPosters?: boolean;
+    },
+  ) => localResourceManager.smartAnalyzeVideoShots(projectId, videoUrl, options),
+);
+
+ipcMain.handle(
+  'smart-extract-video-clips',
+  async (
+    _,
+    projectId: string | undefined,
+    videoUrl: string,
+    options?: {
+      mode?: 'stable' | 'balanced' | 'sensitive';
+      maxClips?: number;
+      minClipSec?: number;
+      output?: 'clips' | 'keyframes';
+    },
+  ) => localResourceManager.smartExtractVideoClips(projectId, videoUrl, options),
+);
+
+ipcMain.handle(
+  'crop-video',
+  async (
+    _,
+    projectId: string | undefined,
+    videoUrl: string,
+    rect: { x: number; y: number; w: number; h: number },
+    sourceWidth: number,
+    sourceHeight: number,
+  ) => localResourceManager.cropVideo(projectId, videoUrl, rect, sourceWidth, sourceHeight),
 );
 
 ipcMain.handle('get-media-duration', async (_, url: string, projectId?: string) =>

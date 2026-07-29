@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from '
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Handle, Position, NodeProps, Node, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
-import { Loader2, Scissors, Upload, Video, Download, Play, Pause, Film, Eraser, X, Check, ChevronDown, LayoutGrid, Maximize2, Volume2 } from 'lucide-react';
+import { Loader2, Scissors, Upload, Video, Download, Play, Pause, Film, Eraser, X, Check, ChevronDown, LayoutGrid, Maximize2, Volume2, Layers2 } from 'lucide-react';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { ModuleProgressBar } from './ModuleProgressBar';
@@ -16,6 +16,12 @@ import {
   IMAGE_NODE_MIN_H,
   IMAGE_NODE_MAX_W,
   IMAGE_NODE_MAX_H,
+  VIDEO_NODE_MIN_W,
+  VIDEO_NODE_MIN_H,
+  VIDEO_NODE_DEFAULT_W,
+  VIDEO_NODE_DEFAULT_H,
+  VIDEO_NODE_MAX_W,
+  VIDEO_NODE_MAX_H,
   nodeStyleDimensions,
   NODE_SIZE_TRANSITION,
   snapToVideoPanelAspectRatio,
@@ -26,6 +32,7 @@ import {
 } from '../../utils/videoPlaybackTimeRegistry';
 import { enqueueImageLoad, calcViewportPriority, isImageLoadedInSession, markImageLoadedInSession } from '../../utils/imageLoadPriorityQueue';
 import { useGlobalInteraction, useGlobalInteractionSelector, setHoveredVideoNodeId, setActiveVideoNodeId, scheduleClearActiveVideoNodeId } from '../../utils/globalInteractionStore';
+import { useVideoInputPanelAnchor } from '../../contexts/VideoInputPanelContext';
 import { FAR_PLACEHOLDER_HYSTERESIS, LOD_HYSTERESIS, MAX_DECODERS } from '../../config/renderPerfConstants';
 import { VIEWPORT_UNMOUNT_DELAY_MS, VIEWPORT_REDUNDANT_PADDING, LOD_HYSTERESIS_LARGE } from '../../config/videoVisualConstants';
 import { TAPNOW_INTERACTION_SUSPEND } from '../../config/perfPolicy';
@@ -46,7 +53,7 @@ import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { dispatchCanvasPickNode, isCanvasPickDigitalHumanVideoTarget } from '../../utils/canvasPickStore';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
-import { getVideoWatermarkRemovalDisplayPrice } from '../../utils/cloudModelPricing';
+import { getVideoWatermarkRemovalDisplayPrice, getVideoDepthConvertDisplayPrice } from '../../utils/cloudModelPricing';
 import { assetLibBtnPrimary, assetLibBtnSecondary, nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import {
   VIDEO_FRAME_SPLIT_INTERVALS,
@@ -885,7 +892,7 @@ interface VideoNodeData {
   title?: string;
   prompt?: string;
   aspectRatio?: '16:9' | '9:16';
-  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'rh-video-start-end';
+  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'rh-video-start-end';
   hd?: boolean;
   duration?: '5' | '10' | '15' | '25';
   shotType?: 'single' | 'multi';
@@ -926,6 +933,8 @@ interface VideoNodeProps extends NodeProps<VideoNodeData> {
   onDataChange?: (nodeId: string, updates: Partial<VideoNodeData>) => void;
   /** 拆帧生成的图片节点须写入 Workspace 状态（勿仅用 useReactFlow().setNodes） */
   onAddFrameSplitNodes?: (nodes: Node[]) => void;
+  /** 视频深度转换等：右侧新建视频/图片模块 + 连线 */
+  onAddVideoClipNodes?: (payload: { nodes: Node[]; edges: import('reactflow').Edge[] }) => void;
   interactionSettings?: {
     ultraNearZoomThreshold?: number;
     fpsDropThreshold?: number;
@@ -945,6 +954,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     performanceMode = false,
     onDataChange,
     onAddFrameSplitNodes,
+    onAddVideoClipNodes,
     interactionSettings,
     // 过滤 React Flow 内部属性，避免透传到 DOM
     xPos = 0,
@@ -963,14 +973,16 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   } = props as any;
 
   // 视频节点采用“最小尺寸下限 + 按素材比例自适应”的外框策略。
-  // preserveExportLayout（库拖入/拆帧等）：与 Image 模块同尺度，允许小于 738px 的竖屏外框
-  const useCompactLayout = !!data?.preserveExportLayout;
+  // preserveExportLayout（库拖入/拆帧等）：与 Image 模块同尺度；裁剪导出成片除外（须与源模块同大）
+  const useCompactLayout = !!data?.preserveExportLayout && !data?.exportedMediaClip;
   /** 资产库拖入的参考成片：默认静帧 poster，仅悬停时挂载解码/播放 */
   const isLibraryReferenceVideo = useCompactLayout;
-  const layoutMinW = useCompactLayout ? IMAGE_NODE_MIN_W : 738.91;
-  const layoutMinH = useCompactLayout ? IMAGE_NODE_MIN_H : 422.22;
-  const layoutMaxW = useCompactLayout ? IMAGE_NODE_MAX_W : 4096;
-  const layoutMaxH = useCompactLayout ? IMAGE_NODE_MAX_H : 4096;
+  const layoutMinW = useCompactLayout ? IMAGE_NODE_MIN_W : VIDEO_NODE_MIN_W;
+  const layoutMinH = useCompactLayout ? IMAGE_NODE_MIN_H : VIDEO_NODE_MIN_H;
+  const layoutMaxW = useCompactLayout ? IMAGE_NODE_MAX_W : VIDEO_NODE_MAX_W;
+  const layoutMaxH = useCompactLayout ? IMAGE_NODE_MAX_H : VIDEO_NODE_MAX_H;
+  const layoutDefaultW = useCompactLayout ? IMAGE_NODE_MIN_W : VIDEO_NODE_DEFAULT_W;
+  const layoutDefaultH = useCompactLayout ? IMAGE_NODE_MIN_H : VIDEO_NODE_DEFAULT_H;
   const clampW = useCallback(
     (v: number) => Math.max(layoutMinW, Math.min(layoutMaxW, v)),
     [layoutMinW, layoutMaxW],
@@ -982,23 +994,25 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const computeAdaptiveVideoSize = useCallback(
     (videoW?: number, videoH?: number) => {
       if (!videoW || !videoH || videoW <= 0 || videoH <= 0) {
-        return { w: layoutMinW, h: layoutMinH };
+        return { w: layoutDefaultW, h: layoutDefaultH };
       }
-      if (useCompactLayout) {
-        return computeNodeSizeFromMedia(videoW, videoH, layoutMinW, layoutMinH, layoutMaxW, layoutMaxH);
-      }
-      const scale = Math.max(layoutMinW / videoW, layoutMinH / videoH);
-      return {
-        w: clampW(Math.round(videoW * scale)),
-        h: clampH(Math.round(videoH * scale)),
-      };
+      return computeNodeSizeFromMedia(
+        videoW,
+        videoH,
+        layoutMinW,
+        layoutMinH,
+        layoutMaxW,
+        layoutMaxH,
+        layoutDefaultW,
+        layoutDefaultH,
+      );
     },
-    [useCompactLayout, layoutMinW, layoutMinH, layoutMaxW, layoutMaxH, clampW, clampH],
+    [layoutMinW, layoutMinH, layoutMaxW, layoutMaxH, layoutDefaultW, layoutDefaultH],
   );
 
   const [size, setSize] = useState(() => ({
-    w: Math.max(layoutMinW, Math.min(layoutMaxW, data?.width ?? layoutMinW)),
-    h: Math.max(layoutMinH, Math.min(layoutMaxH, data?.height ?? layoutMinH)),
+    w: Math.max(layoutMinW, Math.min(layoutMaxW, data?.width ?? layoutDefaultW)),
+    h: Math.max(layoutMinH, Math.min(layoutMaxH, data?.height ?? layoutDefaultH)),
   }));
   // 验证视频 URL 是否是有效的视频文件，并将 file:// 格式转换为 local-resource://
   const isValidVideoUrl = (url: string): boolean => {
@@ -1057,8 +1071,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const updateNodeInternals = useUpdateNodeInternals();
   const { cloudMap } = useNxModelPricing();
   const videoWatermarkDisplayYuanbao = useMemo(() => getVideoWatermarkRemovalDisplayPrice(cloudMap, 1), [cloudMap]);
+  const videoDepthConvertDisplayYuanbao = useMemo(() => getVideoDepthConvertDisplayPrice(cloudMap, 1), [cloudMap]);
   const [isVideoWatermarkLoading, setIsVideoWatermarkLoading] = useState(false);
+  const [isVideoDepthConvertLoading, setIsVideoDepthConvertLoading] = useState(false);
   const [videoWatermarkPriceHover, setVideoWatermarkPriceHover] = useState(false);
+  const [videoDepthConvertPriceHover, setVideoDepthConvertPriceHover] = useState(false);
   const [splitFramesMenuHover, setSplitFramesMenuHover] = useState(false);
   const [splitFramesMenuOpen, setSplitFramesMenuOpen] = useState(false);
   const [isSplitFramesBusy, setIsSplitFramesBusy] = useState(false);
@@ -1381,8 +1398,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       const nodeData = (node as any).data || {};
       const hasVideo = !!(nodeData.outputVideo || nodeData.originalVideoUrl);
       if (!hasVideo) return;
-      const w = Number(nodeData.width || 738.91);
-      const h = Number(nodeData.height || 422.22);
+      const w = Number(nodeData.width || VIDEO_NODE_DEFAULT_W);
+      const h = Number(nodeData.height || VIDEO_NODE_DEFAULT_H);
       const pos = (node as any).positionAbsolute || node.position;
       const centerX = pos.x + w / 2;
       const centerY = pos.y + h / 2;
@@ -2472,6 +2489,23 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const showBottomActionRow =
     showNodeChrome &&
     (canUseBilibiliGrab || outputVideo || hasIncomingReferenceVideo || hasIncomingVideoModuleEdge);
+  // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
+  const zoomInv = Math.min(1, 1 / Math.max(zoom || 1, 0.01));
+  const videoPromptAnchor = useVideoInputPanelAnchor();
+  const showVideoPromptPanel =
+    !!videoPromptAnchor &&
+    videoPromptAnchor.nodeId === id &&
+    !!selected &&
+    !showTrimModal &&
+    !showBilibiliModal;
+  const videoPromptTop =
+    showExternalPlayerControls && showBottomActionRow
+      ? 'calc(100% + 84px)'
+      : showExternalPlayerControls
+        ? 'calc(100% + 48px)'
+        : showBottomActionRow
+          ? 'calc(100% + 40px)'
+          : 'calc(100% + 8px)';
 
   const spaceKeyboardActive =
     selected &&
@@ -2903,6 +2937,233 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           >
             <Upload className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
           </button>
+          {hasIncomingReferenceVideo || hasIncomingVideoModuleEdge || outputVideo ? (
+            <div
+              className="relative inline-flex flex-col items-center"
+              onMouseEnter={() => setVideoDepthConvertPriceHover(true)}
+              onMouseLeave={() => setVideoDepthConvertPriceHover(false)}
+            >
+              <button
+                type="button"
+                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading}
+                title={`${vt.videoDepthConvertTitle} · ${locale === 'en' ? `${videoDepthConvertDisplayYuanbao} ${vt.creditsSuffix}` : `${videoDepthConvertDisplayYuanbao}${vt.creditsSuffix}`}`}
+                aria-label={vt.videoDepthConvertTitle}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading) return;
+                  const ref = ((data?.referenceVideoUrl || '') as string).trim();
+                  const selfRaw = (outputVideo || data?.originalVideoUrl || '').trim();
+                  const edges = getEdges();
+                  const nodes = getNodes();
+                  let urlFromUpstreamEdge = '';
+                  for (const ed of edges) {
+                    if (ed.target !== id) continue;
+                    const src = nodes.find((n) => n.id === ed.source);
+                    if (!src || (src.type !== 'video' && src.type !== 'wanAnimate')) continue;
+                    const sd = src.data as { outputVideo?: string; originalVideoUrl?: string } | undefined;
+                    const u = ((sd?.originalVideoUrl || sd?.outputVideo) || '').trim();
+                    if (u) {
+                      urlFromUpstreamEdge = normalizeVideoUrlForNode(u);
+                      break;
+                    }
+                  }
+                  const urlToProcess =
+                    (ref && normalizeVideoUrlForNode(ref)) ||
+                    urlFromUpstreamEdge ||
+                    (selfRaw ? normalizeVideoUrlForNode(selfRaw) : '');
+                  if (!urlToProcess) {
+                    showAlert(vt.videoDepthConvertNeedVideo);
+                    return;
+                  }
+                  if (!window.electronAPI?.videoDepthConvert || !onAddVideoClipNodes) {
+                    showAlert(vt.videoDepthConvertNotSupported);
+                    return;
+                  }
+
+                  const GAP_CM = 37.8;
+                  const srcNode = nodes.find((n) => n.id === id);
+                  const srcW =
+                    Number(srcNode?.width) ||
+                    Number((srcNode as { measured?: { width?: number } } | undefined)?.measured?.width) ||
+                    Number(srcNode?.data?.width) ||
+                    size.w;
+                  const srcH =
+                    Number(srcNode?.height) ||
+                    Number((srcNode as { measured?: { height?: number } } | undefined)?.measured?.height) ||
+                    Number(srcNode?.data?.height) ||
+                    size.h;
+                  const newX = (typeof xPos === 'number' ? xPos : 0) + srcW + GAP_CM;
+                  const newY = typeof yPos === 'number' ? yPos : 0;
+                  const progressText = vt.videoDepthConvertProgress(String(videoDepthConvertDisplayYuanbao));
+
+                  void (async () => {
+                    setIsVideoDepthConvertLoading(true);
+                    setErrorMessage('');
+                    let spawnedId: string | null = null;
+                    try {
+                      const result = await window.electronAPI.videoDepthConvert(urlToProcess);
+                      const resultUrl = (result?.url || result?.videoUrl || result?.imageUrl || '').trim();
+                      if (!result?.success || !resultUrl) {
+                        throw new Error(vt.videoDepthConvertFailed);
+                      }
+
+                      const kind: 'video' | 'image' =
+                        result.kind === 'image' || result.kind === 'video'
+                          ? result.kind
+                          : /\.(png|jpe?g|webp|bmp)(?:$|[?#])/i.test(resultUrl)
+                            ? 'image'
+                            : 'video';
+
+                      if (kind === 'image') {
+                        const imgW = IMAGE_NODE_MIN_W;
+                        const imgH = IMAGE_NODE_MIN_H;
+                        const newId = `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                        spawnedId = newId;
+                        const styleDims = nodeStyleDimensions(imgW, imgH);
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: newId,
+                              type: 'image',
+                              position: { x: newX, y: newY + Math.max(0, (srcH - imgH) / 2) },
+                              data: {
+                                label: vt.videoDepthConvertTitle,
+                                title: vt.videoDepthConvertTitle,
+                                width: imgW,
+                                height: imgH,
+                                isUserResized: false,
+                                preserveExportLayout: true,
+                                resolution: '1k',
+                                aspectRatio: '1:1',
+                                model: 'banana-2.0',
+                                prompt: '',
+                                outputImage: resultUrl,
+                                outputImages: [resultUrl],
+                                originalImageUrl: resultUrl,
+                                imageAsset: { preview: resultUrl, original: resultUrl },
+                                progress: 100,
+                                progressMessage: '',
+                                errorMessage: undefined,
+                              },
+                              style: {
+                                ...styleDims,
+                                minWidth: `${IMAGE_NODE_MIN_W}px`,
+                                minHeight: `${IMAGE_NODE_MIN_H}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${newId}-depth-convert`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: newId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
+                      } else {
+                        if (!window.electronAPI?.createVideoLocalResourceFromUrl) {
+                          throw new Error(vt.videoDepthConvertNotSupported);
+                        }
+                        const newId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                        spawnedId = newId;
+                        const styleDims = nodeStyleDimensions(size.w, size.h);
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: newId,
+                              type: 'video',
+                              position: { x: newX, y: newY },
+                              data: {
+                                width: size.w,
+                                height: size.h,
+                                progress: 6,
+                                progressMessage: progressText,
+                                preserveExportLayout: true,
+                              },
+                              style: {
+                                ...styleDims,
+                                minWidth: `${layoutMinW}px`,
+                                minHeight: `${layoutMinH}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${newId}-depth-convert`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: newId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
+                        onDataChange?.(newId, {
+                          progress: 72,
+                          progressMessage: locale === 'en' ? 'Finalizing…' : '正在整理结果…',
+                          errorMessage: undefined,
+                        });
+                        const local = await window.electronAPI.createVideoLocalResourceFromUrl(
+                          projectId || undefined,
+                          resultUrl,
+                        );
+                        onDataChange?.(newId, {
+                          outputVideo: local.originalUrl,
+                          originalVideoUrl: resultUrl,
+                          errorMessage: undefined,
+                          videoAsset: {
+                            poster: local.posterUrl,
+                            ghost: local.ghostBase64,
+                            width: local.width,
+                            height: local.height,
+                          },
+                          progress: 100,
+                          progressMessage: '',
+                        });
+                      }
+                    } catch (err: unknown) {
+                      const msg = err instanceof Error ? err.message : vt.videoDepthConvertFailed;
+                      setErrorMessage(msg);
+                      if (spawnedId) {
+                        onDataChange?.(spawnedId, { errorMessage: msg, progress: 0, progressMessage: '' });
+                      }
+                    } finally {
+                      setIsVideoDepthConvertLoading(false);
+                    }
+                  })();
+                }}
+                className={floatTopPillBtn(
+                  bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading
+                    ? 'opacity-50 cursor-not-allowed'
+                    : '',
+                )}
+              >
+                {isVideoDepthConvertLoading ? (
+                  <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                ) : (
+                  <Layers2 className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                )}
+              </button>
+              <span
+                className={`absolute left-1/2 top-full z-20 mt-1 w-max max-w-[220px] -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                } ${
+                  videoDepthConvertPriceHover
+                    ? 'pointer-events-none translate-y-0 opacity-100'
+                    : 'pointer-events-none translate-y-2 opacity-0'
+                }`}
+                title={vt.videoDepthConvertPriceTitle}
+              >
+                {locale === 'en'
+                  ? `${videoDepthConvertDisplayYuanbao} ${vt.creditsSuffix}`
+                  : `${videoDepthConvertDisplayYuanbao}${vt.creditsSuffix}`}
+              </span>
+            </div>
+          ) : null}
           {hasRenderableVideo && videoDisplayUrl ? (
             <button
               type="button"
@@ -2973,12 +3234,12 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
             >
               <button
                 type="button"
-                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading}
+                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading}
                 title={vt.videoWatermarkTitle}
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading) return;
+                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading) return;
                   /** 上游传入的参考视频（Workspace 写入 data.referenceVideoUrl）；结果始终落在当前模块 outputVideo */
                   const ref = ((data?.referenceVideoUrl || '') as string).trim();
                   const selfRaw = (outputVideo || data?.originalVideoUrl || '').trim();
@@ -3215,6 +3476,28 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           okLabel={vt.grabProxyGuideOk}
           onDismiss={() => setShowGrabProxyGuide(false)}
         />
+      ) : null}
+
+      {/* 对齐 Image/Audio：操作台贴主模块下方，随节点平移/缩放 */}
+      {showVideoPromptPanel && videoPromptAnchor ? (
+        <div
+          className="video-text-prompt-panel nodrag nopan absolute z-[60]"
+          style={{
+            top: videoPromptTop,
+            left: '50%',
+            width: videoPromptAnchor.width,
+            height: videoPromptAnchor.height === 'auto' ? 'auto' : videoPromptAnchor.height,
+            transform: `translateX(-50%) scale(${zoomInv})`,
+            transformOrigin: 'top center',
+            pointerEvents: 'auto',
+            transition: 'none',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          {videoPromptAnchor.panel}
+        </div>
       ) : null}
 
       {/* 全屏背景虚化的视频裁剪弹窗 */}

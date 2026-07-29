@@ -30,11 +30,20 @@ export const LLM_DEFAULT_CHAT_MODEL = 'gpt-3.5-turbo';
  * key 为 modelId；值为标量或 { resolutionKey: cost }
  */
 export const IMAGE_MODEL_CNY = {
+  /** 全能图片 V2（OpenAPI /rhart-image-n-g31-flash，海外站；计费 id banana-2.0） */
   'banana-2.0': {
     default: 0.05,
     '2k': 0.08,
     '4k': 0.08,
   },
+  /** 全能图片 G-2：图生图 /rhart-image-g-2；文生图 /rhart-image-g-2-official（海外站） */
+  'rhart-image-g-2': {
+    default: 0.05,
+    '2k': 0.08,
+    '4k': 0.08,
+  },
+  /** 全能图片 X 文生图（OpenAPI /rhart-image-g/text-to-image，海外站；型号 g-3/g-4/g-4.1/g-4.2） */
+  'rhart-image-g': 0.05,
   'nano-banana': {
     default: 0.2,
     '2k': 0.2,
@@ -47,6 +56,11 @@ export const IMAGE_MODEL_CNY = {
   /** GPT image 2（RunningHub AI App 2048342525672427521，与 billingModelId / nx_model_config 可对齐） */
   'gpt-image-2': 0.2,
   'youchuan-text-to-image-v7': 0.54,
+  /** 悠船文生图 v8.1（OpenAPI /youchuan/text-to-image-v81，海外站）；hd=原生2K 约 1.5× */
+  'youchuan-text-to-image-v81': {
+    default: 0.54,
+    hd: 0.81,
+  },
   'seedream-v4.5': 0.2,
   'seedream-v5': 0.2,
   /** Z-image 文生图（RunningHub AI App 2059599553522921474）；后台主键 z-image-720p / z-image-1080p */
@@ -70,6 +84,8 @@ export const IMAGE_MODEL_CNY = {
   /** RunningHub 抠图 / 去水印（billingModelId=应用 ID，与 nx_model_config / 前端展示一致） */
   '2021955919764000770': 0.01,
   '2022127885233950721': 0.01,
+  /** 图像超分放大 V3（RunningHub AI App 2082378062234214401） */
+  '2082378062234214401': 0.05,
   /** 人物多角度一键生成（billingModelId=应用 ID 1990056102572290049） */
   '1990056102572290049': 0.3,
   /** 图片转 3D 模型 GLB（RunningHub AI App 2059618241806430209） */
@@ -87,6 +103,9 @@ export const REVERSE_CAPTION_CNY = {
   'joy-caption-two': 0.036,
   'gpt-4o-image-reverse': 0.002422,
   'joy-caption-two-image-reverse': 0.036,
+  /** GPT-5.6 Terra 反推：与对话同模型，本地回退价（优先 nx / yuanbao 表） */
+  'openai/gpt-5.6-terra': 0.02,
+  'openai/gpt-5.6-terra-image-reverse': 0.02,
 };
 
 /** 音频（CNY/次）；与节点 data.model、FC billingModelId 一致 */
@@ -98,6 +117,8 @@ export const AUDIO_MODEL_CNY = {
   'speech-2.8-hd': 0.15,
   /** Index-TTS 2.0（路径为 run/ai-app/…，须显式 billingModelId） */
   'index-tts2': 0.2,
+  /** Doubao 音频生成 1.0（路径首段 bytedance，须显式 billingModelId） */
+  'doubao-seed-audio-1.0': 0.2,
   /** RVC 翻唱：RVC 模型 + 原曲（run/ai-app/2073040724471406593） */
   'ai-voice-cover': 0.3,
   /** RVC 音色模型训练（run/ai-app/2072990640429953025） */
@@ -144,6 +165,7 @@ export const VIDEO_GROK_3_PER_SEC_CNY = {
 };
 
 const GROK3_DURATION_SEC = [6, 10, 15, 30];
+const RHART_VIDEO_X_DURATION_SEC = [6, 8, 10, 15, 30];
 const GROK3_STABLE_DURATION_SEC = [6, 10];
 
 /** @param {unknown} raw @param {number} [fallback] */
@@ -180,6 +202,23 @@ export function normalizeGrok3DurationSec(raw, fallback = 10) {
   return best;
 }
 
+/** @param {unknown} raw @param {number} [fallback] */
+export function normalizeRhartVideoXDurationSec(raw, fallback = 10) {
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if (RHART_VIDEO_X_DURATION_SEC.includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best = fallback;
+  let minDist = Infinity;
+  for (const v of RHART_VIDEO_X_DURATION_SEC) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
 /** LTX2.3 图生/文生可选时长（秒） */
 export const LTX23_DURATION_SEC = [5, 10, 15];
 
@@ -207,6 +246,9 @@ export const SEEDANCE_DURATION_SEC = [5, 10, 15];
 /** Gemini Omni 图生视频可选时长（秒） */
 export const GEMINI_OMNI_DURATION_SEC = [6, 8, 10];
 
+/** 全能视频 Omni Flash 图生视频可选时长（秒） */
+export const GEMINI_OMNI_FLASH_DURATION_SEC = [6, 8, 10];
+
 /** @param {unknown} raw @param {number} [fallback] */
 export function normalizeGeminiOmniDurationSec(raw, fallback = 6) {
   const n = parseInt(String(raw ?? '').trim(), 10);
@@ -215,6 +257,23 @@ export function normalizeGeminiOmniDurationSec(raw, fallback = 6) {
   let best = fallback;
   let minDist = Infinity;
   for (const v of GEMINI_OMNI_DURATION_SEC) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+/** @param {unknown} raw @param {number} [fallback] */
+export function normalizeGeminiOmniFlashDurationSec(raw, fallback = 6) {
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if (GEMINI_OMNI_FLASH_DURATION_SEC.includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best = fallback;
+  let minDist = Infinity;
+  for (const v of GEMINI_OMNI_FLASH_DURATION_SEC) {
     const d = Math.abs(v - n);
     if (d < minDist) {
       minDist = d;
@@ -311,6 +370,13 @@ export const VIDEO_GEMINI_OMNI_CNY = {
   '4k': { 6: 0.5, 8: 0.65, 10: 0.8 },
 };
 
+/** 全能视频 Omni Flash：分辨率 × 时长（6/8/10，对齐 Omni） */
+export const VIDEO_GEMINI_OMNI_FLASH_CNY = {
+  '720p': { 6: 0.2, 8: 0.26, 10: 0.32 },
+  '1080p': { 6: 0.25, 8: 0.32, 10: 0.4 },
+  '4k': { 6: 0.5, 8: 0.65, 10: 0.8 },
+};
+
 /** 固定单价视频模型（CNY/次） */
 export const VIDEO_FLAT_CNY = {
   'sora-2': 1.5,
@@ -318,7 +384,12 @@ export const VIDEO_FLAT_CNY = {
   'ltx-2.3-i2v': 1.5,
   'ltx-2.3-t2v': 1.5,
   'ltx-2.3-hdr-multi': 1.5,
+  'ltx-2.3-msr-av': 1.5,
   'sora-2-pro': 2,
+  /** 视频去水印 RunningHub AI App */
+  '2049450731266121729': 0.05,
+  /** 视频深度转换 RunningHub AI App */
+  '2082392424818757633': 0.15,
 };
 
 /** Veo 3.1 Pro 官方图生：秒 × 是否生成音频 */
@@ -416,6 +487,10 @@ export function tryComputeRawVideoCny(merged) {
     if (durationKlingO1 === '5') base = table[5];
     else if (durationKlingO1 === '10') base = table[10];
     else base = null;
+  } else if (model === 'rhart-video-x') {
+    const sec = normalizeRhartVideoXDurationSec(durationGrok3, 10);
+    const rate = VIDEO_GROK_3_PER_SEC_CNY['720p'];
+    base = sec * rate;
   } else if (model === 'grok-3') {
     const sec = normalizeGrok3DurationSec(durationGrok3, 10);
     const rate = VIDEO_GROK_3_PER_SEC_CNY['720p'];
@@ -486,13 +561,22 @@ export function tryComputeRawVideoCny(merged) {
     const sec = normalizeGeminiOmniDurationSec(durationGeminiOmni, 6);
     const row = VIDEO_GEMINI_OMNI_CNY[resKey] || VIDEO_GEMINI_OMNI_CNY['720p'];
     base = row[sec] ?? row[6];
+  } else if (model === 'gemini-omni-flash') {
+    const r = String(resolutionGeminiOmni || '').trim().toLowerCase();
+    const resKey = r === '1080p' ? '1080p' : r === '4k' ? '4k' : '720p';
+    const sec = normalizeGeminiOmniFlashDurationSec(durationGeminiOmni, 6);
+    const row = VIDEO_GEMINI_OMNI_FLASH_CNY[resKey] || VIDEO_GEMINI_OMNI_FLASH_CNY['720p'];
+    base = row[sec] ?? row[6];
   } else if (model === 'sora-2') base = VIDEO_FLAT_CNY['sora-2'];
   else if (model === 'ltx-2.3-lipsync') base = VIDEO_FLAT_CNY['ltx-2.3-lipsync'];
   else if (model === 'ltx-2.3-i2v') base = VIDEO_FLAT_CNY['ltx-2.3-i2v'];
   else if (model === 'ltx-2.3-t2v') base = VIDEO_FLAT_CNY['ltx-2.3-t2v'];
   else if (model === 'ltx-2.3-hdr-multi') base = VIDEO_FLAT_CNY['ltx-2.3-hdr-multi'];
+  else if (model === 'ltx-2.3-msr-av') base = VIDEO_FLAT_CNY['ltx-2.3-msr-av'];
   else if (model === 'sora-2-pro') base = VIDEO_FLAT_CNY['sora-2-pro'];
-  else if (model === 'rhart-v3.1-pro-official-i2v') {
+  else if (Object.prototype.hasOwnProperty.call(VIDEO_FLAT_CNY, model)) {
+    base = VIDEO_FLAT_CNY[model];
+  } else if (model === 'rhart-v3.1-pro-official-i2v') {
     const d = durationVeo31ProOfficial;
     const withAudio = generateAudioVeo31ProOfficial === true;
     const key = d === '4' ? 4 : d === '6' ? 6 : 8;
@@ -594,6 +678,14 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
       }
       continue;
     }
+    if (model === 'gemini-omni-flash') {
+      for (const resolutionGeminiOmni of ['720p', '1080p', '4k']) {
+        for (const durationGeminiOmni of ['6', '8', '10']) {
+          out.push({ model, input: { resolutionGeminiOmni, durationGeminiOmni } });
+        }
+      }
+      continue;
+    }
     if (model === 'kling-v2.6-pro') {
       for (const sound of klingSound) {
         for (const duration of klingDur) {
@@ -612,6 +704,12 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
         for (const durationKlingO1 of klingDur) {
           out.push({ model, input: { modeKlingO1, durationKlingO1 } });
         }
+      }
+      continue;
+    }
+    if (model === 'rhart-video-x') {
+      for (const durationGrok3 of ['6', '8', '10', '15', '30']) {
+        out.push({ model, input: { resolutionGrok3: '720p', durationGrok3 } });
       }
       continue;
     }
@@ -652,7 +750,7 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
       }
       continue;
     }
-    if (model === 'ltx-2.3-i2v' || model === 'ltx-2.3-t2v' || model === 'ltx-2.3-hdr-multi') {
+    if (model === 'ltx-2.3-i2v' || model === 'ltx-2.3-t2v' || model === 'ltx-2.3-hdr-multi' || model === 'ltx-2.3-msr-av') {
       for (const mid of ltxRes) {
         for (const d of ltxDur) {
           const key =
@@ -692,6 +790,7 @@ function buildVideoBillingSkuCnyTable() {
     'kling-video-o1-ref',
     'kling-video-o1-start-end',
     'grok-3',
+    'rhart-video-x',
     'grok-3-stable',
     'rhart-v3.1-fast',
     'rhart-v3.1-fast-se',
@@ -703,6 +802,7 @@ function buildVideoBillingSkuCnyTable() {
     'seedance-2.0-fast',
     'seedance-2.0-mini',
     'gemini-omni',
+    'gemini-omni-flash',
     'rhart-v3.1-pro-official-i2v',
   ];
 
@@ -742,6 +842,7 @@ export const MODEL_INDEX = {
     'kling-video-o1-ref',
     'kling-video-o1-start-end',
     'grok-3',
+    'rhart-video-x',
     'grok-3-stable',
     'rhart-v3.1-fast',
     'rhart-v3.1-fast-se',
@@ -753,6 +854,7 @@ export const MODEL_INDEX = {
     'seedance-2.0-fast',
     'seedance-2.0-mini',
     'gemini-omni',
+    'gemini-omni-flash',
     'rhart-v3.1-pro-official-i2v',
   ],
   /** 视频复合计费 Key（自动生成，与 VIDEO_BILLING_SKU_CNY 同步） */

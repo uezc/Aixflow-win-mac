@@ -3,6 +3,15 @@ import type { Edge, Node } from 'reactflow';
 import { currentActivePositionsMap } from '../../utils/nativeNodePositionSync';
 import { setGlobalCanvasDrawFps } from '../../utils/globalInteractionStore';
 import type { CanvasEngine } from '../../utils/CanvasEngine';
+import {
+  IMAGE_NODE_DEFAULT_H,
+  IMAGE_NODE_DEFAULT_W,
+  VIDEO_NODE_DEFAULT_H,
+  VIDEO_NODE_DEFAULT_W,
+} from '../../utils/nodeSizeFromAspectRatio';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
+import { GRID_MAP_MAX_SIDE } from './GridMapNode';
+import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../../constants/rvcTrainLayout';
 
 export interface EdgeCanvasLayerHandle {
   redraw: (activeNodeId?: string | null) => void;
@@ -41,16 +50,21 @@ const TEXTSPLIT_RIGHT_OFFSET = 8;
 
 /** 各模块默认尺寸（与 Workspace.handleMenuSelect / 节点 MIN 一致），避免 fallback 300×200 导致连线错位 */
 const NODE_DEFAULT_FLOW_SIZE: Record<string, { w: number; h: number }> = {
-  video: { w: 738.91, h: 422.22 },
-  wanAnimate: { w: 738.91, h: 422.22 },
-  heyGem: { w: 738.91, h: 422.22 },
-  image: { w: 369.46, h: 211.12 },
-  text: { w: 369.46, h: 211.12 },
-  llm: { w: 280, h: 160 },
-  textSplit: { w: 240, h: 200 },
-  character: { w: 624, h: 468 },
-  digitalHuman: { w: 624, h: 468 },
-  audio: { w: 280, h: 160 },
+  video: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
+  wanAnimate: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
+  heyGem: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
+  image: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
+  text: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
+  llm: { w: scaleModulePx(280), h: scaleModulePx(160) },
+  textSplit: { w: scaleModulePx(240), h: scaleModulePx(200) },
+  character: { w: scaleModulePx(624), h: scaleModulePx(468) },
+  digitalHuman: { w: scaleModulePx(624), h: scaleModulePx(468) },
+  audio: { w: scaleModulePx(280), h: scaleModulePx(160) },
+  gridMap: { w: GRID_MAP_MAX_SIDE, h: GRID_MAP_MAX_SIDE },
+  storyboardScript: { w: scaleModulePx(1024), h: scaleModulePx(576) },
+  photoCollage: { w: scaleModulePx(560), h: scaleModulePx(480) },
+  imageComparer: { w: Math.round(scaleModulePx(420) * 1.5), h: Math.round(scaleModulePx(280) * 1.5) },
+  rvcTrain: { w: RVC_TRAIN_WIDTH, h: RVC_TRAIN_HEIGHT },
 };
 
 function parseFlowNum(v: unknown, fallback: number): number {
@@ -62,6 +76,12 @@ function getNodeFlowSize(node: Node | undefined): { w: number; h: number } {
   const typeDefault = node?.type ? NODE_DEFAULT_FLOW_SIZE[node.type] : undefined;
   const fbW = typeDefault?.w ?? 300;
   const fbH = typeDefault?.h ?? 200;
+  // 优先 RF 实测 width/height（放大后会随 updateNodeInternals 更新）
+  const measuredW = parseFlowNum((node as Node & { width?: unknown })?.width, 0);
+  const measuredH = parseFlowNum((node as Node & { height?: unknown })?.height, 0);
+  if (measuredW > 0 && measuredH > 0) {
+    return { w: measuredW, h: measuredH };
+  }
   return {
     w: parseFlowNum(node?.data?.width ?? (node?.style as { width?: unknown })?.width, fbW),
     h: parseFlowNum(node?.data?.height ?? (node?.style as { height?: unknown })?.height, fbH),
@@ -70,6 +90,22 @@ function getNodeFlowSize(node: Node | undefined): { w: number; h: number } {
 
 /** ComfyUI/LiteGraph SPLINE_LINK：控制点从端点延展，offset = dist * 0.25 */
 const COMFYUI_OFFSET_FACTOR = 0.25;
+
+/** 图片对比：A/B 在左侧；连线锚点落在左边对应高度 */
+function imageComparerLeftAnchor(
+  node: Node | undefined,
+  handleId: string | null | undefined,
+  originX: number,
+  originY: number,
+  w: number,
+  h: number,
+): { x: number; y: number } | null {
+  if (node?.type !== 'imageComparer') return null;
+  if (handleId !== 'image_a' && handleId !== 'image_b') return null;
+  if (!(w > 0 && h > 0)) return null;
+  const frac = handleId === 'image_a' ? 0.35 : 0.65;
+  return { x: originX, y: originY + h * frac };
+}
 
 function distance(sx: number, sy: number, tx: number, ty: number): number {
   return Math.sqrt((tx - sx) ** 2 + (ty - sy) ** 2);
@@ -122,6 +158,45 @@ function strokeComfyUILink(
   ctx.stroke();
 }
 
+/** 选中态：先画略宽半透明底衬再画主线，减轻高对比白线的锯齿感 */
+function strokeComfyUILinkSelected(
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  ex: number,
+  ey: number,
+  lineWidthFlow: number,
+  dark: boolean,
+) {
+  strokeComfyUILink(
+    ctx,
+    sx,
+    sy,
+    ex,
+    ey,
+    lineWidthFlow * 2.1,
+    dark ? 'rgba(255,255,255,0.2)' : 'rgba(31,41,55,0.18)',
+  );
+  strokeComfyUILink(
+    ctx,
+    sx,
+    sy,
+    ex,
+    ey,
+    lineWidthFlow * 1.35,
+    dark ? 'rgba(255,255,255,0.42)' : 'rgba(31,41,55,0.35)',
+  );
+  strokeComfyUILink(
+    ctx,
+    sx,
+    sy,
+    ex,
+    ey,
+    lineWidthFlow,
+    dark ? 'rgba(255,255,255,0.92)' : 'rgba(31,41,55,0.92)',
+  );
+}
+
 /** 拖拽节点覆盖：用于连接线实时跟随 */
 type DraggingNodeOverride = { nodeId: string; x: number; y: number; width: number; height: number } | null;
 
@@ -139,9 +214,18 @@ export function getNodeHandle(
   draggingOverride?: DraggingNodeOverride,
 ): { x: number; y: number } | null {
   if (draggingOverride && draggingOverride.nodeId === nodeId) {
+    const node = nodesMap?.get(nodeId);
+    const comparer = imageComparerLeftAnchor(
+      node,
+      handleId,
+      draggingOverride.x,
+      draggingOverride.y,
+      draggingOverride.width,
+      draggingOverride.height,
+    );
+    if (comparer) return comparer;
     let x = side === 'right' ? draggingOverride.x + draggingOverride.width : draggingOverride.x;
     let y = draggingOverride.y + draggingOverride.height / 2;
-    const node = nodesMap?.get(nodeId);
     if (side === 'right' && node?.type === 'textSplit' && handleId && String(handleId).startsWith('output-')) {
       x += TEXTSPLIT_RIGHT_OFFSET;
       if (handleId !== 'output-null') {
@@ -160,13 +244,18 @@ export function getNodeHandle(
   if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
     let { w, h } = getNodeFlowSize(node);
     if (el) {
-      const rect = el.getBoundingClientRect();
+      // 优先量内容容器，避免 overflow:visible 的顶栏等把节点外包络量偏
+      const contentEl =
+        (el.querySelector('.custom-node-container') as HTMLElement | null) || el;
+      const rect = contentEl.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         w = rect.width / zoom;
         h = rect.height / zoom;
       }
     }
     if (w > 0 && h > 0) {
+      const comparer = imageComparerLeftAnchor(node, handleId, pos.x, pos.y, w, h);
+      if (comparer) return comparer;
       let x = side === 'right' ? pos.x + w : pos.x;
       let y = pos.y + h / 2;
       if (side === 'right' && node?.type === 'textSplit' && handleId && String(handleId).startsWith('output-')) {
@@ -191,6 +280,8 @@ export function getNodeHandle(
     const rect = el.getBoundingClientRect();
     const flowW = rect.width / zoom;
     const flowH = rect.height / zoom;
+    const comparer = imageComparerLeftAnchor(node, handleId, cached.x, cached.y, flowW, flowH);
+    if (comparer) return comparer;
     let x = side === 'right' ? cached.x + flowW : cached.x;
     let y = cached.y + flowH / 2;
     if (side === 'right' && node?.type === 'textSplit' && handleId && String(handleId).startsWith('output-')) {
@@ -210,6 +301,8 @@ export function getNodeHandle(
   const flowY = (rect.top - viewportRect.top - ty) / zoom;
   const flowW = rect.width / zoom;
   const flowH = rect.height / zoom;
+  const comparer = imageComparerLeftAnchor(node, handleId, flowX, flowY, flowW, flowH);
+  if (comparer) return comparer;
   let x = side === 'right' ? flowX + flowW : flowX;
   let y = flowY + flowH / 2;
   if (side === 'right' && node?.type === 'textSplit' && handleId && String(handleId).startsWith('output-')) {
@@ -298,8 +391,12 @@ const EdgeCanvasLayer = forwardRef<EdgeCanvasLayerHandle, EdgeCanvasLayerProps>(
     const dpr = window.devicePixelRatio || 1;
     dprRef.current = dpr;
     const rect = container.getBoundingClientRect();
-    canvas.width = Math.max(1, Math.ceil(rect.width * dpr));
-    canvas.height = Math.max(1, Math.ceil(rect.height * dpr));
+    const cssW = Math.max(1, Math.floor(rect.width));
+    const cssH = Math.max(1, Math.floor(rect.height));
+    canvas.style.width = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
+    canvas.width = Math.max(1, Math.ceil(cssW * dpr));
+    canvas.height = Math.max(1, Math.ceil(cssH * dpr));
   }, [viewportWidth, viewportHeight, containerRef]);
 
   const drawFrame = useCallback(() => {
@@ -327,6 +424,10 @@ const EdgeCanvasLayer = forwardRef<EdgeCanvasLayerHandle, EdgeCanvasLayerProps>(
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.miterLimit = 10;
+    ctx.imageSmoothingEnabled = true;
+    if ('imageSmoothingQuality' in ctx) {
+      (ctx as CanvasRenderingContext2D).imageSmoothingQuality = 'high';
+    }
     ctx.setLineDash([]);
 
     const viewport = containerRef.current?.querySelector('.react-flow__viewport') as HTMLElement | null;
@@ -370,11 +471,18 @@ const EdgeCanvasLayer = forwardRef<EdgeCanvasLayerHandle, EdgeCanvasLayerProps>(
       const gradientEdge = (edge.className || '').includes('rf-edge-gradient') || edge.type === 'animatedGradient';
       const isTaskEdge = executing?.has(edge.target) ?? false;
       const lineWidthFlow = selected ? SELECTED_FLOW_STROKE : FLOW_STROKE_WIDTH;
+      const sx = src.x - EDGE_ATTACH_OVERLAP;
+      const sy = src.y;
+      const ex = tgt.x + EDGE_ATTACH_OVERLAP;
+      const ey = tgt.y;
+
+      if (selected) {
+        strokeComfyUILinkSelected(ctx, sx, sy, ex, ey, lineWidthFlow, dark);
+        continue;
+      }
 
       let strokeStyle: string;
-      if (selected) {
-        strokeStyle = 'rgba(34,197,94,0.98)';
-      } else if (isTaskEdge || gradientEdge) {
+      if (isTaskEdge || gradientEdge) {
         strokeStyle = dark ? 'rgba(220,220,220,0.85)' : 'rgba(70,70,70,0.88)';
       } else if (strokeColor) {
         strokeStyle = toRgbaWithAlpha(strokeColor);
@@ -382,15 +490,7 @@ const EdgeCanvasLayer = forwardRef<EdgeCanvasLayerHandle, EdgeCanvasLayerProps>(
         strokeStyle = dark ? 'rgba(255,255,255,0.35)' : 'rgba(156,163,175,0.96)';
       }
 
-      strokeComfyUILink(
-        ctx,
-        src.x - EDGE_ATTACH_OVERLAP,
-        src.y,
-        tgt.x + EDGE_ATTACH_OVERLAP,
-        tgt.y,
-        lineWidthFlow,
-        strokeStyle,
-      );
+      strokeComfyUILink(ctx, sx, sy, ex, ey, lineWidthFlow, strokeStyle);
     }
 
     const dragNode = canvasEngine.getDraggingNode();

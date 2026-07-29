@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
 
+declare module '*.md?raw' {
+  const content: string;
+  export default content;
+}
+
 interface ImportMetaEnv {
   /** 可选：与主进程 OSS_PUBLIC_BASE_URL 同值的 CDN 根，用于场景 web 静态资源拼接（需重新构建） */
   readonly VITE_OSS_PUBLIC_BASE?: string;
@@ -14,7 +19,16 @@ interface Window {
   electronAPI: {
     // 激活码管理（双重时限版：NXF-SERIAL-ENCODED_GEN-DAYS-SIGN）
     validateActivation: (activationCode: string) => Promise<{ valid: boolean; message?: string; expireAt?: number; errorCode?: 'ERR_CODE_EXPIRED' | 'ERR_TIME_ROLLBACK'; level?: 'PRO' }>;
-    checkActivation: () => Promise<{ activated: boolean; status?: string; activationCode: string; expireAt?: number; message?: string; level?: 'PRO' }>;
+    checkActivation: () => Promise<{
+      activated: boolean;
+      /** 产品关闭激活流程时为 true，前端应直接进主界面 */
+      skipped?: boolean;
+      status?: string;
+      activationCode: string;
+      expireAt?: number;
+      message?: string;
+      level?: 'PRO';
+    }>;
     getLicenseInfo: () => Promise<{ level: 'PRO' | null }>;
     generateActivationCode: (days: number) => Promise<{ code: string }>;
     /** 运营控制台（需本机 NX_ADMIN_ISSUE_COUPON_SECRET） */
@@ -447,8 +461,57 @@ interface Window {
     extractAudioFromVideo: (projectId: string | undefined, videoUrl: string) => Promise<{ audioUrl: string }>;
     separateVocalsFromAudio: (projectId: string | undefined, audioUrl: string, mode: 'vocals' | 'accompaniment') => Promise<{ audioUrl: string }>;
     transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) => Promise<{ text: string }>;
+    transcribeSpeechSegmentsFromAudioUrl: (
+      projectId: string | undefined,
+      audioUrl: string,
+      language?: string,
+    ) => Promise<{ text: string; segments: Array<{ text: string; startSec: number; endSec: number }> }>;
     trimAudio: (projectId: string | undefined, audioUrl: string, startSec: number, endSec: number) => Promise<{ audioUrl: string }>;
-    trimVideo: (projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) => Promise<{ videoUrl: string }>;
+    trimVideo: (projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) => Promise<{ videoUrl: string; durationSec?: number }>;
+    smartAnalyzeVideoShots: (
+      projectId: string | undefined,
+      videoUrl: string,
+      options?: {
+        mode?: 'stable' | 'balanced' | 'sensitive';
+        maxClips?: number;
+        minClipSec?: number;
+        withPosters?: boolean;
+      },
+    ) => Promise<{
+      segments: Array<{ startSec: number; endSec: number; score: number; posterUrl?: string }>;
+      cutPoints: number[];
+      durationSec: number;
+      downgraded: boolean;
+    }>;
+    smartExtractVideoClips: (
+      projectId: string | undefined,
+      videoUrl: string,
+      options?: {
+        mode?: 'stable' | 'balanced' | 'sensitive';
+        maxClips?: number;
+        minClipSec?: number;
+        output?: 'clips' | 'keyframes';
+      },
+    ) => Promise<{
+      clips: Array<{ videoUrl: string; startSec: number; endSec: number; posterUrl?: string }>;
+      keyframes?: Array<{ imageUrl: string; timeSec: number }>;
+      cutPoints: number[];
+      durationSec: number;
+      downgraded: boolean;
+    }>;
+    cropVideo: (
+      projectId: string | undefined,
+      videoUrl: string,
+      rect: { x: number; y: number; w: number; h: number },
+      sourceWidth: number,
+      sourceHeight: number,
+    ) => Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+    }>;
     getMediaDuration: (url: string, projectId?: string) => Promise<number>;
     exportTimelineVideo: (
       projectId: string | undefined,
@@ -480,6 +543,23 @@ interface Window {
       paused: boolean;
       throughputPerSec: number;
       pauseTotalMs: number;
+    }>;
+    ensureLibraryListThumb: (
+      sourceUrlOrPath: string,
+      maxEdge?: number,
+    ) => Promise<{
+      success: boolean;
+      thumbUrl?: string;
+      thumbPath?: string;
+      cached?: boolean;
+      error?: string;
+    }>;
+    ensureDigitalHumanListPoster: (itemId: string) => Promise<{
+      success: boolean;
+      posterUrl?: string;
+      localPosterPath?: string;
+      cached?: boolean;
+      error?: string;
     }>;
 
     setScreenshotSnipArmed: (armed: boolean, projectId?: string) => Promise<{ ok: boolean; armed: boolean }>;
@@ -593,6 +673,8 @@ interface Window {
     
     // 选择参考音文件（Index-TTS2.0 等）
     showOpenAudioDialog: () => Promise<{ success: boolean; filePath?: string; error?: string }>;
+    // 选择参考图片（Doubao 音频等）
+    showOpenImageDialog: () => Promise<{ success: boolean; filePath?: string; error?: string }>;
     // 选择视频文件（与 AudioNode 一致的 IPC 方案）
     showOpenVideoDialog: () => Promise<{ success: boolean; filePath?: string; error?: string }>;
     // 在文件管理器中显示文件（打开文件所在的文件夹并选中文件）
@@ -813,7 +895,15 @@ interface Window {
     uploadImageToRunningHub: (imageUrl: string) => Promise<{ success: boolean; url: string }>;
     imageMatting: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string }>;
     imageWatermarkRemoval: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string }>;
+    imageUpscaleV3: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string }>;
     videoWatermarkRemoval: (videoUrl: string, strength?: number) => Promise<{ success: boolean; videoUrl: string }>;
+    videoDepthConvert: (videoUrl: string) => Promise<{
+      success: boolean;
+      kind: 'video' | 'image';
+      url: string;
+      videoUrl?: string;
+      imageUrl?: string;
+    }>;
     imageCharacterMultiAngle: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string; imageUrls?: string[] }>;
     imageTo3d: (
       imageUrl: string,

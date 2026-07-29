@@ -11,6 +11,11 @@ export type ContextMenuStrings = {
   heyGem: string;
   videoSplice: string;
   photoCollage: string;
+  gridMap: string;
+  imageComparer: string;
+  storyboardScript: string;
+  script: string;
+  director: string;
   imageTo3d: string;
   character: string;
   audio: string;
@@ -36,10 +41,15 @@ const zh: ContextMenuStrings = {
   heyGem: 'HeyGem 数字人',
   videoSplice: '视频剪辑',
   photoCollage: '拼图',
+  gridMap: '宫格图',
+  imageComparer: '图片对比',
+  storyboardScript: '分镜脚本',
+  script: '剧本',
+  director: '导演',
   imageTo3d: '图片转 3D',
   character: '角色',
   audio: '声音',
-  rvcTrain: 'RVC 音色训练',
+  rvcTrain: '音色训练',
   audioTranscribe: '语音转文字',
   imageFirstFrame: '图片（第一帧）',
   imageCurrentFrame: '图片(当前帧)',
@@ -61,10 +71,15 @@ const en: ContextMenuStrings = {
   heyGem: 'HeyGem',
   videoSplice: 'Video edit',
   photoCollage: 'Photo collage',
+  gridMap: 'Grid map',
+  imageComparer: 'Image Compare',
+  storyboardScript: 'Storyboard Script',
+  script: 'Script',
+  director: 'Director',
   imageTo3d: 'Image to 3D',
   character: 'Character',
   audio: 'Audio',
-  rvcTrain: 'RVC voice train',
+  rvcTrain: 'Voice training',
   audioTranscribe: 'Speech to text',
   imageFirstFrame: 'Image (first frame)',
   imageCurrentFrame: 'Image (current frame)',
@@ -92,6 +107,11 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     heyGem: 'heyGem',
     videoSplice: 'videoSplice',
     photoCollage: 'photoCollage',
+    gridMap: 'gridMap',
+    imageComparer: 'imageComparer',
+    storyboardScript: 'storyboardScript',
+    script: 'script',
+    director: 'director',
     imageTo3d: 'imageTo3d',
     character: 'character',
     audio: 'audio',

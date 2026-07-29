@@ -12,6 +12,7 @@ import {
 } from './priceCalc';
 import type { VideoPriceParams } from './priceCalc';
 import { buildVideoBillingModelId, getVideoBillingQuantity } from './videoBillingSku';
+import { resolveModelYuanbao } from '../../shared/yuanbaoModelBilling';
 
 /**
  * 运营公式（与 Tablestore nx_model_config 一致）：
@@ -89,7 +90,8 @@ function effectiveImageResolutionForFallback(model: string, resolution: string |
   const m = String(model || '').trim();
   const r = String(resolution ?? '').trim();
   if (r) return r;
-  if (m === 'banana-2.0' || m === 'nano-banana') return '1k';
+  if (m === 'banana-2.0' || m === 'nano-banana' || m === 'rhart-image-g-2' || m === 'rhart-image-g') return '1k';
+  if (m === 'youchuan-text-to-image-v81') return '1k';
   if (m === 'z-image' || m === 'lens' || m === 'flux2-klein') return '1080p';
   return undefined;
 }
@@ -150,33 +152,76 @@ export function getAudioDisplayPrice(
   return localRetailCnyToYuanbao(getAudioPrice(m), qty);
 }
 
+/** 与 LLMInputPanel / FC 默认对话模型一致（sync_to_tablestore nx_model_config） */
+export const LLM_CHAT_DISPLAY_MODEL_ID = 'gpt-3.5-turbo';
+
+/** RunningHub LLM（llm.runninghub.ai） */
+export const LLM_CHAT_MODEL_GPT56_TERRA = 'openai/gpt-5.6-terra';
+
+/** 图像反推可选模型（gpt-4o 为旧工程兼容） */
+export type ImageReverseCaptionModel =
+  | typeof LLM_CHAT_MODEL_GPT56_TERRA
+  | 'joy-caption-two'
+  | 'gpt-4o';
+
+/** 反推默认：智能分析 = GPT-5.6 Terra（RunningHub LLM 多模态） */
+export const IMAGE_REVERSE_DEFAULT_MODEL: ImageReverseCaptionModel = LLM_CHAT_MODEL_GPT56_TERRA;
+
+/** 将节点上存的反推模型规范为当前可选值（旧 gpt-4o → Terra） */
+export function normalizeImageReverseCaptionModel(
+  model: string | null | undefined,
+): ImageReverseCaptionModel {
+  const m = String(model || '').trim();
+  if (m === 'joy-caption-two') return 'joy-caption-two';
+  if (m === LLM_CHAT_MODEL_GPT56_TERRA) return LLM_CHAT_MODEL_GPT56_TERRA;
+  if (m === 'gpt-4o') return LLM_CHAT_MODEL_GPT56_TERRA;
+  return IMAGE_REVERSE_DEFAULT_MODEL;
+}
+
 export function getImageReverseDisplayPrice(
-  model: 'gpt-4o' | 'joy-caption-two',
+  model: ImageReverseCaptionModel | string,
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
 ): number {
   const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, model), qty);
+  const id = normalizeImageReverseCaptionModel(model);
+  if (id === LLM_CHAT_MODEL_GPT56_TERRA) {
+    return getLlmChatDisplayPrice(cloudMap, qty, LLM_CHAT_MODEL_GPT56_TERRA);
+  }
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
   if (y != null) return y;
-  return localRetailCnyToYuanbao(getImageReversePrice(model), qty);
+  return localRetailCnyToYuanbao(getImageReversePrice(id), qty);
 }
 
-/** 与 LLMInputPanel / FC 默认对话模型一致（sync_to_tablestore nx_model_config） */
-export const LLM_CHAT_DISPLAY_MODEL_ID = 'gpt-3.5-turbo';
+/** 普通对话可选模型 */
+export const LLM_CHAT_MODEL_IDS = [
+  LLM_CHAT_DISPLAY_MODEL_ID,
+  'gpt-4o',
+  LLM_CHAT_MODEL_GPT56_TERRA,
+] as const;
 
 /** RunningHub 视频分析应用 ID（与 VideoAnalysisProvider、sync_to_tablestore 一致） */
 const VIDEO_ANALYSIS_APP_ID = '2033537159944212482';
 
 /**
- * 普通对话单次运行预估元宝：优先 nx_model_config 行 gpt-3.5-turbo，否则按种子 base 0.01 元 × 折算率。
+ * 普通对话单次运行预估元宝：优先 nx_model_config 行（可指定任意聊天模型 id），
+ * 否则回退本地 MODEL_YUANBAO_RATES / 种子 base 0.01 元 × 折算率。
  */
 export function getLlmChatDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
+  modelId: string = LLM_CHAT_DISPLAY_MODEL_ID,
 ): number {
   const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, LLM_CHAT_DISPLAY_MODEL_ID), qty);
+  const id = String(modelId || '').trim() || LLM_CHAT_DISPLAY_MODEL_ID;
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
   if (y != null) return y;
+  if (id !== LLM_CHAT_DISPLAY_MODEL_ID) {
+    const yDefault = yuanbaoCostFromCloudRow(pickRow(cloudMap, LLM_CHAT_DISPLAY_MODEL_ID), qty);
+    if (yDefault != null) return yDefault;
+  }
+  const rate = resolveModelYuanbao(id, 0);
+  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
   return localRetailCnyToYuanbao(0.01, qty);
 }
 
@@ -218,8 +263,12 @@ export function getSora2CharacterDisplayPrice(
 export const MATTING_AI_APP_ID = '2021955919764000770';
 /** RunningHub 去水印应用 ID（与 watermarkRemoval.ts、sync_to_tablestore 一致） */
 export const WATERMARK_REMOVAL_AI_APP_ID = '2022127885233950721';
+/** 超分放大 RunningHub AI 应用 ID（与 runningHubAiAppFc 一致） */
+export const IMAGE_UPSCALE_V3_AI_APP_ID = '2082378062234214401';
 /** RunningHub 视频去水印 AI 应用 ID（与 runningHubAiAppFc、FC billing 一致） */
 export const VIDEO_WATERMARK_REMOVAL_AI_APP_ID = '2049450731266121729';
+/** 视频深度转换 RunningHub AI 应用 ID */
+export const VIDEO_DEPTH_CONVERT_AI_APP_ID = '2082392424818757633';
 /** 人物多角度 RunningHub AI 应用 ID（与 runningHubAiAppFc、FC billingModelId 一致） */
 export const CHARACTER_MULTI_ANGLE_AI_APP_ID = '1990056102572290049';
 /** 图片转 3D（GLB）RunningHub AI App — Hy3D 经典 */
@@ -264,11 +313,31 @@ export function getWatermarkRemovalDisplayPrice(
   return getRunningHubImageAuxDisplayPrice(WATERMARK_REMOVAL_AI_APP_ID, cloudMap, quantity);
 }
 
+export function getImageUpscaleV3DisplayPrice(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  quantity = 1,
+): number {
+  const qty = Math.max(1, Number(quantity) || 1);
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, IMAGE_UPSCALE_V3_AI_APP_ID), qty);
+  if (y != null) return y;
+  return localRetailCnyToYuanbao(0.05, qty);
+}
+
 export function getVideoWatermarkRemovalDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
 ): number {
   return getRunningHubImageAuxDisplayPrice(VIDEO_WATERMARK_REMOVAL_AI_APP_ID, cloudMap, quantity);
+}
+
+export function getVideoDepthConvertDisplayPrice(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  quantity = 1,
+): number {
+  const qty = Math.max(1, Number(quantity) || 1);
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, VIDEO_DEPTH_CONVERT_AI_APP_ID), qty);
+  if (y != null) return y;
+  return localRetailCnyToYuanbao(0.15, qty);
 }
 
 /**
@@ -300,9 +369,13 @@ export function getNodeDisplayPrice(
 
   if (nodeType === 'llm') {
     const reverseModel = data.reverseCaptionModel;
-    if (reverseModel === 'gpt-4o' || reverseModel === 'joy-caption-two') {
+    if (
+      reverseModel === 'gpt-4o' ||
+      reverseModel === 'joy-caption-two' ||
+      reverseModel === LLM_CHAT_MODEL_GPT56_TERRA
+    ) {
       try {
-        return getImageReverseDisplayPrice(reverseModel, cloudMap, 1);
+        return getImageReverseDisplayPrice(String(reverseModel), cloudMap, 1);
       } catch (e) {
         if (isModelNotPricedError(e)) return null;
         throw e;

@@ -1,37 +1,48 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo, startTransition } from 'react';
-import { createPortal } from 'react-dom';
-import { Handle, Position, NodeProps, Node, useReactFlow, useViewport, useStore, useUpdateNodeInternals } from 'reactflow';
+import { createPortal, flushSync } from 'react-dom';
+import { Handle, Position, NodeProps, Node, addEdge, useReactFlow, useViewport, useStore, useStoreApi, useUpdateNodeInternals } from 'reactflow';
 import { motion } from 'framer-motion';
 import {
   Upload,
   Loader2,
   Scissors,
-  Eraser,
+  Stamp,
   RotateCcw,
-  Cuboid,
+  Box,
   X,
   Image as ImageIcon,
   PenTool,
   Download,
-  Sparkles,
   Globe,
   LayoutGrid,
   ChevronDown,
   FlipHorizontal2,
   FlipVertical2,
   Crop,
+  Maximize2,
+  ArrowUp,
+  Check,
+  ZoomIn,
 } from 'lucide-react';
 import { ModuleProgressBar } from './ModuleProgressBar';
+import { AiGeneratedBadge } from '../legal/AiGeneratedBadge';
+import { useImageInputPanelAnchor } from '../../contexts/ImageInputPanelContext';
+import { PanelOptionDropdown } from './PanelOptionDropdown';
+import { useAI } from '../../hooks/useAI';
 import {
   computeNodeSizeFromMedia,
   DEFAULT_IMAGE_ASPECT_RATIO,
+  IMAGE_NODE_DEFAULT_H,
+  IMAGE_NODE_DEFAULT_W,
   IMAGE_NODE_MAX_H,
   IMAGE_NODE_MAX_W,
   IMAGE_NODE_MIN_H,
   IMAGE_NODE_MIN_W,
   NODE_SIZE_TRANSITION,
   aspectRatioLabelFromPixelSize,
+  imageNodeSizeForAspectRatio,
   nodeStyleDimensions,
+  parseAspectRatioValue,
   probeImagePixelSize,
 } from '../../utils/nodeSizeFromAspectRatio';
 import {
@@ -45,9 +56,11 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { imageNodeChromeT, imageNodeCameraPresetLabel } from '../../i18n/imageNodeI18n';
+import { imageInputPanelT } from '../../i18n/imageInputPanelI18n';
 import { mapProjectPath } from '../../utils/pathMapper';
 import CubeCameraController, { CameraControlValue } from './CubeCameraController';
-import ImageCropModal from './ImageCropModal';
+import Panorama360Viewer from './Panorama360Viewer';
+import ImageCropOverlay, { type ImageCropOverlayHandle } from './ImageCropModal';
 import { cropImageToPngBuffer, type NormalizedCropRect } from '../../utils/imageCropUtils';
 import {
   getPhotographyPrompt,
@@ -56,6 +69,7 @@ import {
   SCALE_MEDIUM,
   SCALE_WIDE,
   CAMERA_PRESETS,
+  MAX_SCALE,
 } from '../../utils/cameraControlUtils';
 import { PERF_POLICY, TAPNOW_INTERACTION_SUSPEND } from '../../config/perfPolicy';
 import {
@@ -73,15 +87,22 @@ import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import {
   getMattingDisplayPrice,
   getWatermarkRemovalDisplayPrice,
-  getCharacterMultiAngleDisplayPrice,
+  getImageUpscaleV3DisplayPrice,
+  getImageDisplayPrice,
 } from '../../utils/cloudModelPricing';
+import { isModelNotPricedError } from '../../utils/priceCalc';
+import { filterImageModelsForMode, DEFAULT_IMAGE_MODEL } from '../../config/imageModelUiPolicy';
+import {
+  Z_IMAGE_ASPECT_RATIOS,
+  normalizeZImageResolutionTier,
+  zImageDimensionsForAspect,
+} from '../../../common/zImageDimensions';
 import {
   userFacingErrorMessage,
   refundHintForLocale,
   messageContainsRefundHint,
 } from '../../utils/userErrorMessageCn';
-import { nodeFloatPillBtn } from '../../utils/assetLibraryChrome';
-import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
+import { type ScratchColorId } from '../../theme/scratchColors';
 
 interface ImageNodeData {
   width?: number;
@@ -108,6 +129,8 @@ interface ImageNodeData {
   inputImages?: string[]; // 输入的参考图数组（最多10张）
   progress?: number; // 图片生成进度 0-100
   progressMessage?: string; // 进度状态文案
+  /** 最近一次生成耗时（秒），用于标题旁标签展示 */
+  lastElapsedSec?: number;
   errorMessage?: string; // 错误信息
   /** 参考图标记笔画（图生图时便于模型理解意图），归一化坐标 0-1 */
   imageDrawStrokes?: { color: string; points: { x: number; y: number }[] }[];
@@ -121,6 +144,17 @@ interface ImageNodeData {
   flipV?: boolean;
   /** 拆帧/导出等已写入目标外框时，避免被面板或 onLoad 覆盖比例 */
   preserveExportLayout?: boolean;
+  /** 新建视角模块后自动打开 3D 控制器（一次性） */
+  open3DPopover?: boolean;
+  /** 由「3D 视角」从原图派生的视角模块：点击立方体仅开关本模块控制器 */
+  isCameraViewModule?: boolean;
+  /** 模块内预览：平面图 / 360° 球幕环视（不打开全景摆放弹窗） */
+  viewMode?: 'flat' | 'panorama360';
+  /** 场景库 3D 展示图（等距柱状）；有则优先作为 360 纹理 */
+  sceneDisplay3dUrl?: string;
+  /** 进入 360 前的模块尺寸，退出时还原 */
+  panorama360BaseWidth?: number;
+  panorama360BaseHeight?: number;
 }
 
 interface ImageNodeProps extends NodeProps<ImageNodeData> {
@@ -129,18 +163,15 @@ interface ImageNodeProps extends NodeProps<ImageNodeData> {
   prefetchScreenFactor?: number;
   projectId?: string; // 项目ID，用于路径映射
   /** 抠图/去水印完成后回调，用于将结果加入任务列表 */
-  onAuxImageTaskComplete?: (params: { nodeId: string; type: 'matting' | 'watermark' | 'multi-angle'; imageUrl: string; imageUrls?: string[] }) => void;
+  onAuxImageTaskComplete?: (params: {
+    nodeId: string;
+    type: 'matting' | 'watermark' | 'multi-angle' | 'upscale-v3';
+    imageUrl: string;
+    imageUrls?: string[];
+  }) => void;
   onPreviewImage?: (url: string, nodeId?: string) => void;
   /** 画板：在画板工具中打开当前图片进行绘图标记 */
   onOpenDrawingBoard?: (url: string, nodeId: string, localPath?: string) => void;
-  /** VR 全景 + 3D 道具摆放：独立弹窗，输出写入当前图片节点 */
-  onOpenPanoramaPlacement?: (params: {
-    nodeId: string;
-    imageUrl: string;
-    localPath?: string;
-    pixelWidth?: number;
-    pixelHeight?: number;
-  }) => void;
   /** 一键拆分等：将新图片节点写入 Workspace 画布状态 */
   onAddCanvasImageNodes?: (nodes: Node[]) => void;
 }
@@ -164,6 +195,55 @@ function isAbortLikeError(err: unknown): boolean {
   if (err == null || typeof err !== 'object') return false;
   const name = 'name' in err && typeof (err as { name: unknown }).name === 'string' ? (err as { name: string }).name : '';
   return name === 'AbortError';
+}
+
+/** 全能图片 V2 图生图支持的比例 */
+const CAMERA_BANANA_ASPECTS = [
+  '1:1',
+  '16:9',
+  '9:16',
+  '4:3',
+  '3:4',
+  '3:2',
+  '2:3',
+  '5:4',
+  '4:5',
+  '21:9',
+  '1:4',
+  '4:1',
+  '1:8',
+  '8:1',
+] as const;
+/** Seedream v5 图生图支持的比例与像素 */
+const CAMERA_SEEDREAM_V5_RATIO_MAP: Record<string, { width: number; height: number }> = {
+  '1:1': { width: 2048, height: 2048 },
+  '2:3': { width: 1664, height: 2496 },
+  '3:2': { width: 2496, height: 1664 },
+  '3:4': { width: 1728, height: 2304 },
+  '4:3': { width: 2304, height: 1728 },
+  '9:16': { width: 1600, height: 2845 },
+  '16:9': { width: 2560, height: 1440 },
+  '21:9': { width: 3136, height: 1344 },
+};
+const CAMERA_SEEDREAM_ASPECTS = Object.keys(CAMERA_SEEDREAM_V5_RATIO_MAP);
+
+function snapAspectToAllowed(label: string, allowed: readonly string[]): string {
+  if (allowed.includes(label)) return label;
+  const parsed = parseAspectRatioValue(label);
+  if (!parsed) return allowed[0] || '1:1';
+  const target = parsed.w / parsed.h;
+  let best = allowed[0] || '1:1';
+  let bestDiff = Infinity;
+  for (const opt of allowed) {
+    const p = parseAspectRatioValue(opt);
+    if (!p) continue;
+    const diff = Math.abs(Math.log(target / (p.w / p.h)));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = opt;
+    }
+  }
+  return best;
 }
 
 // 格式化图片路径：统一转换为 local-resource:// 协议
@@ -355,26 +435,37 @@ function getObjectContainContentRect(
   };
 }
 
+function getGridScreenRectsFromObjectContain(
+  containerEl: HTMLElement | null,
+  naturalW: number,
+  naturalH: number,
+  cols: number,
+  rows: number,
+): { left: number; top: number; width: number; height: number }[] {
+  if (!containerEl || cols < 1 || rows < 1 || naturalW < cols || naturalH < rows) return [];
+  const c = containerEl.getBoundingClientRect();
+  const content = getObjectContainContentRect(c, naturalW, naturalH);
+  const out: { left: number; top: number; width: number; height: number }[] = [];
+  const total = cols * rows;
+  for (let i = 0; i < total; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    out.push({
+      left: content.left + (col * content.width) / cols,
+      top: content.top + (row * content.height) / rows,
+      width: content.width / cols,
+      height: content.height / rows,
+    });
+  }
+  return out;
+}
+
 function getNineScreenRectsFromObjectContain(
   containerEl: HTMLElement | null,
   naturalW: number,
   naturalH: number,
 ): { left: number; top: number; width: number; height: number }[] {
-  if (!containerEl || naturalW < 3 || naturalH < 3) return [];
-  const c = containerEl.getBoundingClientRect();
-  const content = getObjectContainContentRect(c, naturalW, naturalH);
-  const out: { left: number; top: number; width: number; height: number }[] = [];
-  for (let i = 0; i < 9; i++) {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    out.push({
-      left: content.left + (col * content.width) / 3,
-      top: content.top + (row * content.height) / 3,
-      width: content.width / 3,
-      height: content.height / 3,
-    });
-  }
-  return out;
+  return getGridScreenRectsFromObjectContain(containerEl, naturalW, naturalH, 3, 3);
 }
 
 async function loadImageForCanvasDecode(primaryUrl: string, nodeData: ImageNodeData | undefined): Promise<HTMLImageElement> {
@@ -405,67 +496,11 @@ function getFourScreenRectsFromObjectContain(
   naturalW: number,
   naturalH: number,
 ): { left: number; top: number; width: number; height: number }[] {
-  if (!containerEl || naturalW < 2 || naturalH < 2) return [];
-  const c = containerEl.getBoundingClientRect();
-  const content = getObjectContainContentRect(c, naturalW, naturalH);
-  const out: { left: number; top: number; width: number; height: number }[] = [];
-  for (let i = 0; i < 4; i++) {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    out.push({
-      left: content.left + (col * content.width) / 2,
-      top: content.top + (row * content.height) / 2,
-      width: content.width / 2,
-      height: content.height / 2,
-    });
-  }
-  return out;
+  return getGridScreenRectsFromObjectContain(containerEl, naturalW, naturalH, 2, 2);
 }
 
 async function cropFourTilesToPngBuffers(img: HTMLImageElement): Promise<{ sw: number; sh: number; buffers: ArrayBuffer[] }> {
-  const nw = img.naturalWidth;
-  const nh = img.naturalHeight;
-  const halfW = nw / 2;
-  const halfH = nh / 2;
-  const buffers: ArrayBuffer[] = [];
-  for (let i = 0; i < 4; i++) {
-    const col = i % 2;
-    const row = Math.floor(i / 2);
-    const sx = Math.round(col * halfW);
-    const sy = Math.round(row * halfH);
-    const sx2 = Math.round((col + 1) * halfW);
-    const sy2 = Math.round((row + 1) * halfH);
-    const sw = Math.max(1, sx2 - sx);
-    const sh = Math.max(1, sy2 - sy);
-    const canvas = document.createElement('canvas');
-    canvas.width = sw;
-    canvas.height = sh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas 2d');
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const ab = await new Promise<ArrayBuffer>((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) reject(new Error('toBlob'));
-          else blob.arrayBuffer().then(resolve, reject);
-        },
-        'image/png',
-      );
-    });
-    buffers.push(ab);
-  }
-  return { sw: Math.round(halfW), sh: Math.round(halfH), buffers };
-}
-
-function detectMultiAngleCompositeGrid(
-  nw: number,
-  nh: number,
-): { cols: number; rows: number } | null {
-  if (nw < 256 || nh < 256) return null;
-  if (nw % 3 === 0 && nh % 4 === 0) return { cols: 3, rows: 4 };
-  if (nw % 4 === 0 && nh % 3 === 0) return { cols: 4, rows: 3 };
-  if (nw % 3 === 0 && nh % 3 === 0 && (nw / 3) * (nh / 3) >= 9) return { cols: 3, rows: 3 };
-  return null;
+  return cropGridTilesToPngBuffers(img, 2, 2);
 }
 
 async function cropGridToPngBuffers(
@@ -507,79 +542,46 @@ async function cropGridToPngBuffers(
   return buffers;
 }
 
-/** 人物多角度若返回单张拼图，按 3×4 / 4×3 / 3×3 自动拆成多张本地图 */
-async function expandMultiAngleCompositeIfNeeded(
-  singleUrl: string,
-  nodeData: ImageNodeData | undefined,
-  projectId: string | undefined,
-): Promise<string[] | null> {
-  if (!window.electronAPI?.createImageLocalResourceFromBuffer) return null;
-  let img: HTMLImageElement;
-  try {
-    img = await loadImageForCanvasDecode(singleUrl, nodeData);
-  } catch {
-    return null;
-  }
-  const grid = detectMultiAngleCompositeGrid(img.naturalWidth, img.naturalHeight);
-  if (!grid) return null;
-  const total = grid.cols * grid.rows;
-  if (total < 4) return null;
-  let buffers: ArrayBuffer[];
-  try {
-    buffers = await cropGridToPngBuffers(img, grid.cols, grid.rows);
-  } catch {
-    return null;
-  }
-  const ts = Date.now();
-  const urls: string[] = [];
-  for (let i = 0; i < buffers.length; i++) {
-    const result = await window.electronAPI.createImageLocalResourceFromBuffer(
-      projectId ?? undefined,
-      `multi-angle-${ts}-${i + 1}.png`,
-      buffers[i],
-    );
-    const u = formatImagePath(result.previewUrl);
-    if (u) urls.push(u);
-  }
-  return urls.length >= 2 ? urls : null;
+async function cropGridTilesToPngBuffers(
+  img: HTMLImageElement,
+  cols: number,
+  rows: number,
+): Promise<{ sw: number; sh: number; buffers: ArrayBuffer[] }> {
+  const buffers = await cropGridToPngBuffers(img, cols, rows);
+  return {
+    sw: Math.max(1, Math.round(img.naturalWidth / cols)),
+    sh: Math.max(1, Math.round(img.naturalHeight / rows)),
+    buffers,
+  };
 }
 
 async function cropNineTilesToPngBuffers(img: HTMLImageElement): Promise<{ sw: number; sh: number; buffers: ArrayBuffer[] }> {
-  const nw = img.naturalWidth;
-  const nh = img.naturalHeight;
-  const thirdW = nw / 3;
-  const thirdH = nh / 3;
-  const buffers: ArrayBuffer[] = [];
-  for (let i = 0; i < 9; i++) {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    const sx = Math.round(col * thirdW);
-    const sy = Math.round(row * thirdH);
-    const sx2 = Math.round((col + 1) * thirdW);
-    const sy2 = Math.round((row + 1) * thirdH);
-    const sw = Math.max(1, sx2 - sx);
-    const sh = Math.max(1, sy2 - sy);
-    const canvas = document.createElement('canvas');
-    canvas.width = sw;
-    canvas.height = sh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas 2d');
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const ab = await new Promise<ArrayBuffer>((resolve, reject) => {
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) reject(new Error('toBlob'));
-          else blob.arrayBuffer().then(resolve, reject);
-        },
-        'image/png',
-      );
-    });
-    buffers.push(ab);
-  }
-  return { sw: Math.round(thirdW), sh: Math.round(thirdH), buffers };
+  return cropGridTilesToPngBuffers(img, 3, 3);
 }
 
-type GridSplitMode = 'four' | 'nine';
+type GridSplitMode = 'four' | 'nine' | '2x3' | '3x2' | { cols: number; rows: number };
+
+const GRID_SPLIT_MAX_AXIS = 8;
+const GRID_SPLIT_MAX_CELLS = 36;
+
+function gridSplitLayout(mode: GridSplitMode): { cols: number; rows: number; cells: number } {
+  if (typeof mode === 'object') {
+    const cols = Math.max(1, Math.min(GRID_SPLIT_MAX_AXIS, Math.floor(mode.cols)));
+    const rows = Math.max(1, Math.min(GRID_SPLIT_MAX_AXIS, Math.floor(mode.rows)));
+    return { cols, rows, cells: cols * rows };
+  }
+  switch (mode) {
+    case 'four':
+      return { cols: 2, rows: 2, cells: 4 };
+    case '2x3':
+      return { cols: 2, rows: 3, cells: 6 };
+    case '3x2':
+      return { cols: 3, rows: 2, cells: 6 };
+    case 'nine':
+    default:
+      return { cols: 3, rows: 3, cells: 9 };
+  }
+}
 
 type NineSplitAnimState = {
   urls: string[];
@@ -632,7 +634,6 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     onAuxImageTaskComplete,
     onPreviewImage,
     onOpenDrawingBoard,
-    onOpenPanoramaPlacement,
     onAddCanvasImageNodes,
     projectId,
     // React Flow 专有属性，不应传递给 DOM（显式解构以过滤）
@@ -648,7 +649,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     position: _position,
     // 确保不会透传任何其他 React Flow 内部属性
   } = props as any;
-  const { setNodes, getNodes, getEdges, flowToScreenPosition } = useReactFlow();
+  const { setNodes, setEdges, getNodes, getEdges, flowToScreenPosition, getZoom } = useReactFlow();
+  const storeApi = useStoreApi();
   const updateNodeInternals = useUpdateNodeInternals();
   const hasIncomingImageSource = useStore(
     useCallback(
@@ -679,13 +681,20 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   }, []);
 
   const [size, setSize] = useState({
-    w: clampW(data?.width ?? IMAGE_NODE_MIN_W),
-    h: clampH(data?.height ?? IMAGE_NODE_MIN_H),
+    w: clampW(data?.width ?? IMAGE_NODE_DEFAULT_W),
+    h: clampH(data?.height ?? IMAGE_NODE_DEFAULT_H),
   });
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => updateNodeInternals(id));
-    return () => cancelAnimationFrame(raf);
+    // 尺寸 CSS 过渡约 0.32s：结束后再刷一次，避免锚点停在过渡中途高度
+    const t = window.setTimeout(() => updateNodeInternals(id), 360);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+    };
   }, [id, size.w, size.h, updateNodeInternals]);
 
   const isResizing = false;
@@ -718,34 +727,195 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const [isHovered, setIsHovered] = useState(false);
   const [progress, setProgress] = useState(data?.progress || 0);
   const [progressMessage, setProgressMessage] = useState(data?.progressMessage || '');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const genStartAtRef = useRef<number | null>(null);
+  const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [errorMessage, setErrorMessage] = useState(data?.errorMessage || '');
   const [isMattingLoading, setIsMattingLoading] = useState(false);
   const [isWatermarkRemovalLoading, setIsWatermarkRemovalLoading] = useState(false);
-  const [isMultiAngleLoading, setIsMultiAngleLoading] = useState(false);
+  const [isUpscaleV3Loading, setIsUpscaleV3Loading] = useState(false);
   const [showAllOutputImages, setShowAllOutputImages] = useState(false);
   const [nineSplitAnim, setNineSplitAnim] = useState<NineSplitAnimState | null>(null);
   const nineSplitPayloadRef = useRef<NineSplitPayload | null>(null);
   const [isSplitNineBusy, setIsSplitNineBusy] = useState(false);
   const [mattingPriceHover, setMattingPriceHover] = useState(false);
+  const [upscaleV3PriceHover, setUpscaleV3PriceHover] = useState(false);
+  const [inspectZoom, setInspectZoom] = useState(1);
+  const [inspectPan, setInspectPan] = useState({ x: 0, y: 0 });
+  const inspectZoomRef = useRef(1);
+  const inspectPanDragRef = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
   const [splitGridMenuHover, setSplitGridMenuHover] = useState(false);
+  const [customSplitCols, setCustomSplitCols] = useState('4');
+  const [customSplitRows, setCustomSplitRows] = useState('2');
   const [flipMenuHover, setFlipMenuHover] = useState(false);
   const flipMenuLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const splitMenuLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showCropModal, setShowCropModal] = useState(false);
   const [cropBusy, setCropBusy] = useState(false);
+  const cropOverlayRef = useRef<ImageCropOverlayHandle>(null);
+  /** 裁剪时临时放大模块；结束后还原 */
+  const cropSizeBackupRef = useRef<{ w: number; h: number } | null>(null);
+
+  const applyCropNodeBox = useCallback(
+    (nextW: number, nextH: number) => {
+      const styleDims = nodeStyleDimensions(nextW, nextH);
+      setSize({ w: nextW, h: nextH });
+      if (nodeRef.current) {
+        nodeRef.current.style.width = `${nextW}px`;
+        nodeRef.current.style.height = `${nextH}px`;
+        nodeRef.current.style.minWidth = `${nextW}px`;
+        nodeRef.current.style.minHeight = `${nextH}px`;
+        const rfNode = nodeRef.current.closest('.react-flow__node') as HTMLElement | null;
+        if (rfNode) {
+          rfNode.style.width = `${nextW}px`;
+          rfNode.style.height = `${nextH}px`;
+        }
+      }
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === id
+            ? {
+                ...node,
+                width: nextW,
+                height: nextH,
+                style: {
+                  ...(node.style as object),
+                  ...styleDims,
+                  width: nextW,
+                  height: nextH,
+                },
+                data: {
+                  ...node.data,
+                  width: nextW,
+                  height: nextH,
+                },
+              }
+            : node,
+        ),
+      );
+      requestAnimationFrame(() => {
+        updateNodeInternals(id);
+        requestAnimationFrame(() => updateNodeInternals(id));
+      });
+    },
+    [id, setNodes, updateNodeInternals],
+  );
+
+  /** 无论原图多小，裁剪时都放大到接近视口的固定超大窗口 */
+  const computeLargeCropNodeSize = useCallback(
+    (aspect: number, zoom: number) => {
+      const z = Math.max(zoom, 0.2);
+      const maxFlowW = (window.innerWidth * 0.82) / z;
+      const maxFlowH = (window.innerHeight * 0.7) / z;
+      let w = maxFlowW;
+      let h = w / Math.max(aspect, 0.05);
+      if (h > maxFlowH) {
+        h = maxFlowH;
+        w = h * aspect;
+      }
+      return {
+        w: clampW(Math.round(w)),
+        h: clampH(Math.round(h)),
+      };
+    },
+    [],
+  );
+
+  /** 模块内 360 环视：本地态保证点击立刻切换（外层 memo 可能漏比 viewMode） */
+  const [panorama360Active, setPanorama360Active] = useState(() => data?.viewMode === 'panorama360');
+  /** 悬停小地球时在上方显示「转换」；再悬停「转换」展开 21:9 图生图模型 */
+  const [panoramaConvertHover, setPanoramaConvertHover] = useState(false);
+  const [scene360ModelMenuOpen, setScene360ModelMenuOpen] = useState(false);
+  const [scene360PriceHoverModel, setScene360PriceHoverModel] = useState<string | null>(null);
+  const panoramaConvertLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 进入/退出 360 时跳过尺寸 CSS 过渡，避免 WebGL 量到旧宽高后黑边 */
+  const [suppressSizeTransition, setSuppressSizeTransition] = useState(false);
+  const panoSizeBackupRef = useRef<{ w: number; h: number } | null>(null);
+  /** 360 游览中锁定的展示尺寸；未退出前禁止被 data/onLoad/RO 改小 */
+  const panoLockedSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const panoControlsRef = useRef<{
+    toggleFullscreen: () => Promise<void>;
+    isFullscreen: () => boolean;
+  } | null>(null);
+  /** 连续全景截图时，在 getNodes 尚未跟上前用游标避免新节点叠在一起 */
+  const panoCaptureSpawnXRef = useRef<number | null>(null);
+  const registerPanoControls = useCallback(
+    (
+      api: {
+        toggleFullscreen: () => Promise<void>;
+        isFullscreen: () => boolean;
+      } | null,
+    ) => {
+      panoControlsRef.current = api;
+    },
+    [],
+  );
   /** 预览翻转：先写 DOM，再低优先级持久化，避免 setNodes 卡住主线程 */
   const flipLiveRef = useRef({ h: !!data?.flipH, v: !!data?.flipV });
   const [watermarkPriceHover, setWatermarkPriceHover] = useState(false);
-  const [multiAnglePriceHover, setMultiAnglePriceHover] = useState(false);
   /** 3D 视角控制器弹窗：仅选中时显示，未选中时收起 */
   const [is3DPopoverOpen, setIs3DPopoverOpen] = useState(false);
   const [webglAvailable, setWebglAvailable] = useState<boolean | null>(null);
+  const [cameraGenModel, setCameraGenModel] = useState<string>(DEFAULT_IMAGE_MODEL);
+  /** original = 跟随当前图比例；其余为固定档位 */
+  const [cameraGenAspect, setCameraGenAspect] = useState<string>('original');
+  /** 清晰度：banana/gpt/seedream 用 1k/2k/4k；flux2-klein 用 720p/1080p */
+  const [cameraGenResolution, setCameraGenResolution] = useState<string>('1k');
+  const cameraGenMetaRef = useRef<{ aspect: string; model: string }>({
+    aspect: '1:1',
+    model: DEFAULT_IMAGE_MODEL,
+  });
   const threeDTriggerRef = useRef<HTMLButtonElement>(null);
   const [threeDPopoverPosition, setThreeDPopoverPosition] = useState<{ left: number; top: number } | null>(null);
   /** 打开 3D 弹窗时的基础提示词，调整时用「基础 + 最新相机指令」替换，避免不断累加 */
   const basePromptFor3DRef = useRef<string | null>(null);
+  /** 重置视角缓动动画 RAF */
+  const cameraResetRafRef = useRef<number | null>(null);
 
   const nodeRef = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // 外框实际像素变化时持续刷新 Handle；同时把 RF 节点宽高钉死为 size，防止底栏撑大选框
+  useEffect(() => {
+    const el = nodeRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let raf = 0;
+    const pinAndRefresh = () => {
+      const w = sizeRef.current?.w ?? size.w;
+      const h = sizeRef.current?.h ?? size.h;
+      if (w > 0 && h > 0) {
+        el.style.width = `${w}px`;
+        el.style.height = `${h}px`;
+        el.style.minWidth = `${w}px`;
+        el.style.minHeight = `${h}px`;
+        const rfNode = el.closest('.react-flow__node') as HTMLElement | null;
+        if (rfNode) {
+          rfNode.style.width = `${w}px`;
+          rfNode.style.height = `${h}px`;
+          rfNode.style.minWidth = `${w}px`;
+          rfNode.style.minHeight = `${h}px`;
+        }
+      }
+      updateNodeInternals(id);
+    };
+    const ro = new ResizeObserver(() => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(pinAndRefresh);
+    });
+    ro.observe(el);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [id, updateNodeInternals, size.w, size.h]);
+
   /** 避免 onLoad 触发的 updateNodeData/updateNodeInternals 导致重复调整尺寸、形成死循环 */
   const lastOnLoadSrcRef = useRef<string | null>(null);
   /** 尺寸对比锁：已对该 src 应用过的 (w,h)，避免重渲染后再次 onLoad 时重复调用 updateNodeData */
@@ -783,6 +953,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const { locale } = useAppLocale();
   const wc = workspaceChromeT(locale);
   const imgc = useMemo(() => imageNodeChromeT(locale), [locale]);
+  const imagePanelT = useMemo(() => imageInputPanelT(locale), [locale]);
   const imageLoadFailPlaceholder = useMemo(
     () =>
       'data:image/svg+xml,' +
@@ -794,7 +965,32 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const { cloudMap } = useNxModelPricing();
   const mattingDisplayYuanbao = useMemo(() => getMattingDisplayPrice(cloudMap), [cloudMap]);
   const watermarkDisplayYuanbao = useMemo(() => getWatermarkRemovalDisplayPrice(cloudMap), [cloudMap]);
-  const multiAngleDisplayYuanbao = useMemo(() => getCharacterMultiAngleDisplayPrice(cloudMap), [cloudMap]);
+  const upscaleV3DisplayYuanbao = useMemo(() => getImageUpscaleV3DisplayPrice(cloudMap), [cloudMap]);
+  /** 场景转换360：图生图可用模型（同源目录） */
+  const scene360ConvertModelOptions = useMemo(
+    () =>
+      filterImageModelsForMode({ hasRefs: true, refCount: 1 }).map(({ value, label }) => ({
+        value,
+        label,
+      })),
+    [],
+  );
+  const scene360ResolutionForModel = useCallback((model: string) => {
+    return model === 'flux2-klein' ? '1080p' : '4k';
+  }, []);
+  const scene360PriceLabelForModel = useCallback(
+    (model: string) => {
+      try {
+        const resolution = scene360ResolutionForModel(model);
+        const y = getImageDisplayPrice({ model, resolution, quantity: 1 }, cloudMap);
+        return locale === 'en' ? `${y} ${imgc.creditsSuffix}` : `${y}${imgc.creditsSuffix}`;
+      } catch (e) {
+        if (isModelNotPricedError(e)) return null;
+        return null;
+      }
+    },
+    [cloudMap, imgc.creditsSuffix, locale, scene360ResolutionForModel],
+  );
   // 仅在视口本身移动时（平移/缩放）才启用图像过渡抑制。
   const isViewportMoving = Math.hypot(velocityX, velocityY) > 1;
   /** 画布平移/缩放或拖拽节点时：多图改用缓存的合并图，静止时仍显示宫格 */
@@ -854,6 +1050,19 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     fov: Math.max(30, Math.min(95, v.fov)),
   }), []);
 
+  const cancelCameraResetAnimation = useCallback(() => {
+    if (cameraResetRafRef.current != null) {
+      cancelAnimationFrame(cameraResetRafRef.current);
+      cameraResetRafRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!is3DPopoverOpen) cancelCameraResetAnimation();
+  }, [is3DPopoverOpen, cancelCameraResetAnimation]);
+
+  useEffect(() => () => cancelCameraResetAnimation(), [cancelCameraResetAnimation]);
+
   // 更新节点数据（需在 persistCameraValue 之前定义）
   const updateNodeData = useCallback((updates: Partial<ImageNodeData>) => {
     setNodes((nds) =>
@@ -882,6 +1091,108 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
       });
     }
   }, [id, setNodes, onDataChange]);
+
+  const restoreCropNodeSize = useCallback(() => {
+    const backup = cropSizeBackupRef.current;
+    cropSizeBackupRef.current = null;
+    if (!backup) return;
+    setSuppressSizeTransition(true);
+    applyCropNodeBox(backup.w, backup.h);
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+  }, [applyCropNodeBox]);
+
+  /** 裁剪时抬到画布最上层，避免被其它模块压住选框 */
+  const CROP_LAYER_Z = 10000;
+  const elevateCropNodeLayer = useCallback(
+    (elevate: boolean) => {
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== id) return n;
+          if (elevate) {
+            return {
+              ...n,
+              selected: true,
+              zIndex: CROP_LAYER_Z,
+              style: {
+                ...(n.style as object),
+                zIndex: CROP_LAYER_Z,
+              },
+            };
+          }
+          const nextStyle = { ...(n.style as Record<string, unknown>) };
+          delete nextStyle.zIndex;
+          return {
+            ...n,
+            zIndex: undefined,
+            style: nextStyle,
+          };
+        }),
+      );
+      const rfNode = nodeRef.current?.closest('.react-flow__node') as HTMLElement | null;
+      if (rfNode) {
+        if (elevate) {
+          rfNode.style.zIndex = String(CROP_LAYER_Z);
+          rfNode.classList.add('nexflow-crop-top-layer');
+        } else {
+          rfNode.style.zIndex = '';
+          rfNode.classList.remove('nexflow-crop-top-layer');
+        }
+      }
+    },
+    [id, setNodes],
+  );
+
+  const closeCropSession = useCallback(() => {
+    setShowCropModal(false);
+    elevateCropNodeLayer(false);
+    restoreCropNodeSize();
+  }, [elevateCropNodeLayer, restoreCropNodeSize]);
+
+  const openCropSession = useCallback(() => {
+    if (panorama360Active) {
+      setPanorama360Active(false);
+      updateNodeData({ viewMode: 'flat' });
+    }
+    if (!cropSizeBackupRef.current) {
+      cropSizeBackupRef.current = { w: size.w, h: size.h };
+    }
+    const aspect = size.w > 0 && size.h > 0 ? size.w / size.h : DEFAULT_IMAGE_ASPECT_RATIO;
+    const z = getZoom?.() ?? viewport.zoom ?? 1;
+    const large = computeLargeCropNodeSize(aspect, z);
+    setSuppressSizeTransition(true);
+    applyCropNodeBox(large.w, large.h);
+    setShowCropModal(true);
+    elevateCropNodeLayer(true);
+
+    /** 与画布「一键归位」同款 fitView 动画，把裁剪模块放到屏幕正中 */
+    const focusCropModule = () => {
+      elevateCropNodeLayer(true);
+      window.dispatchEvent(
+        new CustomEvent('nexflow-canvas-focus-nodes', {
+          detail: {
+            nodes: [{ id, width: large.w, height: large.h }],
+          },
+        }),
+      );
+    };
+    // 等放大尺寸写入 RF 后再对焦
+    requestAnimationFrame(() => {
+      requestAnimationFrame(focusCropModule);
+    });
+    window.setTimeout(focusCropModule, 120);
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+  }, [
+    panorama360Active,
+    updateNodeData,
+    size.w,
+    size.h,
+    getZoom,
+    viewport.zoom,
+    computeLargeCropNodeSize,
+    applyCropNodeBox,
+    elevateCropNodeLayer,
+    id,
+  ]);
 
   const persistCameraValue = useCallback(
     (next: CameraControlValue) => {
@@ -926,15 +1237,60 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     [id, normalizeCameraValue, setNodes, getNodes]
   );
 
+  /** 重置视角：立方体与滑条缓动回到默认位 */
+  const animateCameraResetToDefault = useCallback(() => {
+    cancelCameraResetAnimation();
+    const start = { ...cameraValue };
+    const target = normalizeCameraValue(DEFAULT_CAMERA_VALUE);
+    const yawDelta = ((target.rotationY - start.rotationY + 540) % 360) - 180;
+    const startTs = performance.now();
+    const durationMs = 420;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - startTs) / durationMs);
+      const eased = 1 - (1 - t) ** 3;
+      const next = normalizeCameraValue({
+        rotationX: start.rotationX + (target.rotationX - start.rotationX) * eased,
+        rotationY: start.rotationY + yawDelta * eased,
+        scale: start.scale + (target.scale - start.scale) * eased,
+        fov: start.fov + (target.fov - start.fov) * eased,
+      });
+      setCameraValue(next);
+      if (t < 1) {
+        cameraResetRafRef.current = requestAnimationFrame(tick);
+      } else {
+        cameraResetRafRef.current = null;
+        persistCameraValue(target);
+      }
+    };
+    cameraResetRafRef.current = requestAnimationFrame(tick);
+  }, [cameraValue, cancelCameraResetAnimation, normalizeCameraValue, persistCameraValue]);
+
   // 同步外部数据变化
   useEffect(() => {
     if (typeof data?.width === 'number' && data.width > 0 && typeof data?.height === 'number' && data.height > 0) {
       const nextW = clampW(data.width);
       const nextH = clampH(data.height);
-      setSize((prev) => (prev.w === nextW && prev.h === nextH ? prev : { w: nextW, h: nextH }));
-      if (nodeRef.current) {
-        nodeRef.current.style.width = `${nextW}px`;
-        nodeRef.current.style.height = `${nextH}px`;
+      // 360 游览中：只允许维持/放大到锁定尺寸，禁止被旧 data 改小
+      if (panorama360Active || data?.viewMode === 'panorama360') {
+        const locked = panoLockedSizeRef.current;
+        if (locked) {
+          setSize((prev) =>
+            prev.w === locked.w && prev.h === locked.h ? prev : { w: locked.w, h: locked.h },
+          );
+          if (nodeRef.current) {
+            nodeRef.current.style.width = `${locked.w}px`;
+            nodeRef.current.style.height = `${locked.h}px`;
+          }
+        } else if (nextW >= size.w * 0.95 && nextH >= size.h * 0.95) {
+          setSize((prev) => (prev.w === nextW && prev.h === nextH ? prev : { w: nextW, h: nextH }));
+        }
+      } else {
+        setSize((prev) => (prev.w === nextW && prev.h === nextH ? prev : { w: nextW, h: nextH }));
+        if (nodeRef.current) {
+          nodeRef.current.style.width = `${nextW}px`;
+          nodeRef.current.style.height = `${nextH}px`;
+        }
+        requestAnimationFrame(() => updateNodeInternals(id));
       }
     }
     if (data?.outputImage !== undefined || data?.originalImageUrl !== undefined || data?.outputImages !== undefined) {
@@ -965,7 +1321,56 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     if (data?.errorMessage !== undefined) {
       setErrorMessage(data.errorMessage);
     }
-  }, [data?.width, data?.height, data?.outputImage, data?.outputImages, data?.originalImageUrl, data?.title, data?.progress, data?.progressMessage, data?.errorMessage, outputImage]);
+  }, [data?.width, data?.height, data?.outputImage, data?.outputImages, data?.originalImageUrl, data?.title, data?.progress, data?.progressMessage, data?.errorMessage, data?.viewMode, outputImage, id, updateNodeInternals, panorama360Active, size.w, size.h]);
+
+  // 生成耗时：进度进行中计时，结束写入 lastElapsedSec（标题旁仅展示标签）
+  useEffect(() => {
+    const running = progress > 0 && progress < 100;
+    if (running) {
+      if (!isTimerRunning) {
+        genStartAtRef.current = Date.now();
+        setIsTimerRunning(true);
+        setElapsedSeconds(0);
+      }
+      return;
+    }
+    if (isTimerRunning) {
+      const start = genStartAtRef.current ?? Date.now();
+      const elapsed = Math.round(((Date.now() - start) / 1000) * 10) / 10;
+      setIsTimerRunning(false);
+      genStartAtRef.current = null;
+      setElapsedSeconds(elapsed);
+      if (elapsed > 0) {
+        updateNodeData({ lastElapsedSec: elapsed });
+      }
+    }
+  }, [progress, isTimerRunning, updateNodeData]);
+
+  useEffect(() => {
+    if (!isTimerRunning) return;
+    timerIntervalRef.current = setInterval(() => {
+      const start = genStartAtRef.current ?? Date.now();
+      setElapsedSeconds(Math.round(((Date.now() - start) / 1000) * 10) / 10);
+    }, 100);
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+        timerIntervalRef.current = null;
+      }
+    };
+  }, [isTimerRunning]);
+
+  const displayElapsedSec = isTimerRunning
+    ? elapsedSeconds
+    : typeof data?.lastElapsedSec === 'number' && data.lastElapsedSec > 0
+      ? data.lastElapsedSec
+      : null;
+
+  const displayTitleLabel = useMemo(() => {
+    const raw = (title || '').trim() || 'image';
+    if (raw.length <= 22) return raw;
+    return `${raw.slice(0, 18)}...`;
+  }, [title]);
 
   // Image 未被选中时收起 3D 弹窗
   useEffect(() => {
@@ -973,6 +1378,39 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
       setIs3DPopoverOpen(false);
     }
   }, [selected]);
+
+  // 清理历史残留的 open3DPopover（曾写入节点数据，缩放/重挂载会反复自动打开）
+  useEffect(() => {
+    if (!data?.open3DPopover) return;
+    updateNodeData({ open3DPopover: false });
+  }, [data?.open3DPopover, updateNodeData]);
+
+  // 仅响应「新建视角模块」发出的一次性打开事件，不跟缩放/选中挂钩
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent<{ nodeId?: string }>).detail;
+      if (!detail?.nodeId || detail.nodeId !== id) return;
+      const skipUntil = (window as Window & { __nexflowSkipClose3dUntil?: number }).__nexflowSkipClose3dUntil || 0;
+      // 给新建落点一点时间，避免被同一次点击关掉
+      const delay = Math.max(0, skipUntil - Date.now());
+      window.setTimeout(() => {
+        setIs3DPopoverOpen(true);
+        requestAnimationFrame(() => {
+          if (!nodeRef.current) return;
+          const nodeRect = nodeRef.current.getBoundingClientRect();
+          const popoverW = 440;
+          const centerLeft = nodeRect.left + nodeRect.width / 2 - popoverW / 2;
+          const left = Math.max(8, Math.min(centerLeft, window.innerWidth - popoverW - 8));
+          setThreeDPopoverPosition({ left, top: nodeRect.bottom + 8 });
+        });
+      }, delay);
+    };
+    window.addEventListener('nexflow-open-3d-popover', onOpen as EventListener);
+    return () => window.removeEventListener('nexflow-open-3d-popover', onOpen as EventListener);
+  }, [id]);
+
+  // 画布缩放/平移时：若弹窗开着只更新位置，绝不因缩放而自动打开
+  // （打开仅来自上方事件或用户点击立方按钮）
 
   // 弹窗打开时检测 WebGL 可用性
   useEffect(() => {
@@ -987,15 +1425,22 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     }
   }, [is3DPopoverOpen]);
 
-  // 3D 弹窗定位：在 Image 节点下方，相对整个 Image 节点水平居中
+  // 3D 弹窗定位：贴在当前视角生成模块正下方，相对模块水平居中
   const POPOVER_WIDTH = 440;
+  const POPOVER_SIDE_GAP = 8;
   const updateThreeDPopoverPosition = useCallback(() => {
     if (!is3DPopoverOpen || !nodeRef.current) return;
     const nodeRect = nodeRef.current.getBoundingClientRect();
-    // 以 Image 节点中心水平居中
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
     const centerLeft = nodeRect.left + nodeRect.width / 2 - POPOVER_WIDTH / 2;
-    const left = Math.max(8, Math.min(centerLeft, window.innerWidth - POPOVER_WIDTH - 8));
-    setThreeDPopoverPosition({ left, top: nodeRect.bottom + 8 });
+    const left = Math.max(8, Math.min(centerLeft, vw - POPOVER_WIDTH - 8));
+    let top = nodeRect.bottom + POPOVER_SIDE_GAP;
+    // 下方空间不足时仍尽量贴模块底边，仅钳制到视口内
+    top = Math.max(8, Math.min(top, vh - 120));
+
+    setThreeDPopoverPosition({ left, top });
   }, [is3DPopoverOpen]);
 
   useEffect(() => {
@@ -1019,9 +1464,11 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     };
   }, [is3DPopoverOpen, updateThreeDPopoverPosition]);
 
-  /* 3D 弹窗：Image 取消选中时自动关闭；点击画布空白处（onPaneClick）或其它节点也关闭；或通过右上角 X 关闭 */
+  /* 3D 弹窗：全局事件 / 点空白关闭；打开后短延迟再挂监听，避免同一次点击立刻关掉 */
   useEffect(() => {
     const onClose = () => {
+      const skipUntil = (window as Window & { __nexflowSkipClose3dUntil?: number }).__nexflowSkipClose3dUntil || 0;
+      if (Date.now() < skipUntil) return;
       setIs3DPopoverOpen(false);
     };
     window.addEventListener('nexflow-close-3d-popover', onClose);
@@ -1029,19 +1476,27 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   }, []);
   useEffect(() => {
     if (!is3DPopoverOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      const popover = document.getElementById(`image-3d-popover-${id}`);
-      const trigger = threeDTriggerRef.current;
-      if (popover?.contains(target) || trigger?.contains(target)) return;
-      const pane = target?.closest('.react-flow__pane');
-      const viewportEl = target?.closest('.react-flow__viewport');
-      const otherNode = target?.closest('.react-flow__node');
-      const isOurNode = nodeRef.current?.contains(target);
-      if (pane || (viewportEl && !otherNode) || (otherNode && !isOurNode)) setIs3DPopoverOpen(false);
+    const isInsideKeepOpen = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return false;
+      if (target.closest(`#image-3d-popover-${id}`)) return true;
+      if (target.closest('.panel-option-dropdown-menu')) return true;
+      if (threeDTriggerRef.current?.contains(target)) return true;
+      return false;
     };
-    document.addEventListener('mousedown', handler, true);
-    return () => document.removeEventListener('mousedown', handler, true);
+    const handler = (e: PointerEvent) => {
+      const skipUntil = (window as Window & { __nexflowSkipClose3dUntil?: number }).__nexflowSkipClose3dUntil || 0;
+      if (Date.now() < skipUntil) return;
+      if (isInsideKeepOpen(e.target)) return;
+      setIs3DPopoverOpen(false);
+    };
+    // 延后挂载，避免打开按钮的 pointerdown 冒泡把刚打开的窗立刻关掉
+    const timer = window.setTimeout(() => {
+      document.addEventListener('pointerdown', handler, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('pointerdown', handler, true);
+    };
   }, [is3DPopoverOpen, id]);
 
   // 双击标题进入编辑模式
@@ -1169,13 +1624,12 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   );
 
   const handleSplitGridToCanvas = useCallback(
-    async (mode: GridSplitMode, e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
+    async (mode: GridSplitMode, e?: React.SyntheticEvent) => {
+      e?.stopPropagation();
+      e?.preventDefault();
       if (nineSplitAnim || isSplitNineBusy) return;
 
-      const cells = mode === 'four' ? 4 : 9;
-      const flowCols = mode === 'four' ? 2 : 3;
+      const { cols: flowCols, rows: flowRows, cells } = gridSplitLayout(mode);
       const multi = outputImages.length > 1;
       const singleSrc = outputImage || outputImages[0] || '';
       if (!singleSrc && !multi) return;
@@ -1210,6 +1664,15 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         return { flowPositions, toRects };
       };
 
+      const labelForIndex = (i: number) => {
+        if (flowCols === 2 && flowRows === 2) return imgc.splitFourNodeLabel(i);
+        if (flowCols === 3 && flowRows === 3) return imgc.splitNineNodeLabel(i);
+        if ((flowCols === 2 && flowRows === 3) || (flowCols === 3 && flowRows === 2)) {
+          return imgc.splitSixNodeLabel(i);
+        }
+        return imgc.splitCustomNodeLabel(i);
+      };
+
       setIsSplitNineBusy(true);
       try {
         let urls: string[];
@@ -1228,9 +1691,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             .filter(Boolean);
           const n = urls.length;
           if (n < 2) return;
-          const gridLayout = getOutputImageGridLayout(outputImages.length);
-          const domCols = mode === 'four' ? 2 : gridLayout.cols;
-          const domRows = mode === 'four' ? 2 : gridLayout.rows;
+          const domCols = flowCols;
+          const domRows = flowRows;
           splitW = clampW(Math.round(size.w / domCols));
           splitH = clampH(Math.round(size.h / domRows));
           const ft = makeFlowAndTo(n, splitW, splitH, flowCols);
@@ -1258,141 +1720,84 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           const nw = imgBitmap.naturalWidth;
           const nh = imgBitmap.naturalHeight;
 
-          if (mode === 'four') {
-            if (nw < 2 || nh < 2) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            const fromRects = getFourScreenRectsFromObjectContain(imgContainerRef.current, nw, nh);
-            if (fromRects.length !== 4) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            let buffers: ArrayBuffer[];
-            let sw0: number;
-            let sh0: number;
-            try {
-              const cropped = await cropFourTilesToPngBuffers(imgBitmap);
-              buffers = cropped.buffers;
-              sw0 = cropped.sw;
-              sh0 = cropped.sh;
-            } catch (err) {
-              console.error('[ImageNode] four-split crop', err);
-              showAlert(userFacingErrorMessage(err instanceof Error ? err.message : imgc.splitNineCropFailed, locale));
-              return;
-            }
-            const adapted = computeAdaptiveNodeSize(sw0, sh0);
-            splitW = adapted.w;
-            splitH = adapted.h;
-            const ft = makeFlowAndTo(4, splitW, splitH, 2);
-            flowPositions = ft.flowPositions;
-            to = ft.toRects;
-            from = fromRects;
-            const ts = Date.now();
-            const results: {
-              previewUrl: string;
-              originalUrl: string;
-              tinyUrl?: string;
-              originalPath?: string;
-              avgColorHex?: string;
-              width?: number;
-              height?: number;
-            }[] = [];
-            for (let i = 0; i < 4; i++) {
-              const result = await window.electronAPI.createImageLocalResourceFromBuffer(
-                projectId ?? undefined,
-                `four-grid-${ts}-${i}.png`,
-                buffers[i],
-              );
-              results.push(result);
-            }
-            urls = results.map((r) => formatImagePath(r.previewUrl)).filter(Boolean);
-            if (urls.length !== 4) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            tileAssets = results.map((r) => ({
-              outputImage: formatImagePath(r.previewUrl),
-              originalImageUrl: formatImagePath(r.originalUrl),
-              tinyThumbUrl: r.tinyUrl || '',
-              localPath: r.originalPath,
-              imageAsset: {
-                preview: formatImagePath(r.previewUrl),
-                original: formatImagePath(r.originalUrl),
-                tiny: r.tinyUrl || '',
-                avgColorHex: r.avgColorHex,
-                width: r.width,
-                height: r.height,
-              },
-            }));
-          } else {
-            if (nw < 3 || nh < 3) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            const fromRects = getNineScreenRectsFromObjectContain(imgContainerRef.current, nw, nh);
-            if (fromRects.length !== 9) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            let buffers: ArrayBuffer[];
-            let sw0: number;
-            let sh0: number;
-            try {
-              const cropped = await cropNineTilesToPngBuffers(imgBitmap);
-              buffers = cropped.buffers;
-              sw0 = cropped.sw;
-              sh0 = cropped.sh;
-            } catch (err) {
-              console.error('[ImageNode] nine-split crop', err);
-              showAlert(userFacingErrorMessage(err instanceof Error ? err.message : imgc.splitNineCropFailed, locale));
-              return;
-            }
-            const adapted = computeAdaptiveNodeSize(sw0, sh0);
-            splitW = adapted.w;
-            splitH = adapted.h;
-            const ft = makeFlowAndTo(9, splitW, splitH, 3);
-            flowPositions = ft.flowPositions;
-            to = ft.toRects;
-            from = fromRects;
-            const ts = Date.now();
-            const results: {
-              previewUrl: string;
-              originalUrl: string;
-              tinyUrl?: string;
-              originalPath?: string;
-              avgColorHex?: string;
-              width?: number;
-              height?: number;
-            }[] = [];
-            for (let i = 0; i < 9; i++) {
-              const result = await window.electronAPI.createImageLocalResourceFromBuffer(
-                projectId ?? undefined,
-                `nine-split-${ts}-${i}.png`,
-                buffers[i],
-              );
-              results.push(result);
-            }
-            urls = results.map((r) => formatImagePath(r.previewUrl)).filter(Boolean);
-            if (urls.length !== 9) {
-              showAlert(imgc.splitNineCropFailed);
-              return;
-            }
-            tileAssets = results.map((r) => ({
-              outputImage: formatImagePath(r.previewUrl),
-              originalImageUrl: formatImagePath(r.originalUrl),
-              tinyThumbUrl: r.tinyUrl || '',
-              localPath: r.originalPath,
-              imageAsset: {
-                preview: formatImagePath(r.previewUrl),
-                original: formatImagePath(r.originalUrl),
-                tiny: r.tinyUrl || '',
-                avgColorHex: r.avgColorHex,
-                width: r.width,
-                height: r.height,
-              },
-            }));
+          if (nw < flowCols || nh < flowRows) {
+            showAlert(imgc.splitNineCropFailed);
+            return;
           }
+          const fromRects = getGridScreenRectsFromObjectContain(
+            imgContainerRef.current,
+            nw,
+            nh,
+            flowCols,
+            flowRows,
+          );
+          if (fromRects.length !== cells) {
+            showAlert(imgc.splitNineCropFailed);
+            return;
+          }
+          let buffers: ArrayBuffer[];
+          let sw0: number;
+          let sh0: number;
+          try {
+            const cropped = await cropGridTilesToPngBuffers(imgBitmap, flowCols, flowRows);
+            buffers = cropped.buffers;
+            sw0 = cropped.sw;
+            sh0 = cropped.sh;
+          } catch (err) {
+            console.error('[ImageNode] grid-split crop', err);
+            showAlert(userFacingErrorMessage(err instanceof Error ? err.message : imgc.splitNineCropFailed, locale));
+            return;
+          }
+          const adapted = computeAdaptiveNodeSize(sw0, sh0);
+          splitW = adapted.w;
+          splitH = adapted.h;
+          const ft = makeFlowAndTo(cells, splitW, splitH, flowCols);
+          flowPositions = ft.flowPositions;
+          to = ft.toRects;
+          from = fromRects;
+          const ts = Date.now();
+          const filePrefix =
+            flowCols === 2 && flowRows === 2
+              ? 'four-grid'
+              : flowCols === 3 && flowRows === 3
+                ? 'nine-split'
+                : `grid-${flowCols}x${flowRows}`;
+          const results: {
+            previewUrl: string;
+            originalUrl: string;
+            tinyUrl?: string;
+            originalPath?: string;
+            avgColorHex?: string;
+            width?: number;
+            height?: number;
+          }[] = [];
+          for (let i = 0; i < cells; i++) {
+            const result = await window.electronAPI.createImageLocalResourceFromBuffer(
+              projectId ?? undefined,
+              `${filePrefix}-${ts}-${i}.png`,
+              buffers[i],
+            );
+            results.push(result);
+          }
+          urls = results.map((r) => formatImagePath(r.previewUrl)).filter(Boolean);
+          if (urls.length !== cells) {
+            showAlert(imgc.splitNineCropFailed);
+            return;
+          }
+          tileAssets = results.map((r) => ({
+            outputImage: formatImagePath(r.previewUrl),
+            originalImageUrl: formatImagePath(r.originalUrl),
+            tinyThumbUrl: r.tinyUrl || '',
+            localPath: r.originalPath,
+            imageAsset: {
+              preview: formatImagePath(r.previewUrl),
+              original: formatImagePath(r.originalUrl),
+              tiny: r.tinyUrl || '',
+              avgColorHex: r.avgColorHex,
+              width: r.width,
+              height: r.height,
+            },
+          }));
         }
 
         const n = urls.length;
@@ -1402,9 +1807,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           flowPositions,
           splitW,
           splitH,
-          labels: urls.map((_, i) =>
-            mode === 'four' ? imgc.splitFourNodeLabel(i) : imgc.splitNineNodeLabel(i),
-          ),
+          labels: urls.map((_, i) => labelForIndex(i)),
           resolution: data?.resolution ?? '1k',
           aspectRatio: data?.aspectRatio ?? DEFAULT_IMAGE_ASPECT_RATIO,
           model: data?.model ?? 'banana-2.0',
@@ -1569,13 +1972,30 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     userSelect: isResizing ? 'none' : 'auto',
     willChange: isResizing ? 'transform, width, height' : dragging ? 'transform' : 'auto',
     backfaceVisibility: isResizing ? 'hidden' : 'visible',
-    transition: isResizing || dragging
-      ? 'none'
-      : `${NODE_SIZE_TRANSITION}, background-color 0.2s, border-color 0.2s`,
+    transition:
+      suppressSizeTransition || panorama360Active || isResizing || dragging
+        ? 'none'
+        : `${NODE_SIZE_TRANSITION}, background-color 0.2s, border-color 0.2s`,
   };
   const combinedStyle: React.CSSProperties = baseStyle;
 
   const zoom = viewport.zoom ?? 1;
+  // 工具栏反缩放：量化步进，避免 liveZoom 微抖动导致按钮「发抖」
+  const liveZoom = useStore((s) => s.transform?.[2] ?? zoom);
+  // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
+  const zoomInv = useMemo(() => {
+    const z = Math.max(liveZoom || zoom || 1, 0.01);
+    const raw = Math.min(1, 1 / z);
+    return Math.round(raw * 50) / 50;
+  }, [liveZoom, zoom]);
+  const imagePromptAnchor = useImageInputPanelAnchor();
+  const showImagePromptPanel =
+    !!imagePromptAnchor &&
+    imagePromptAnchor.nodeId === id &&
+    !!selected &&
+    !is3DPopoverOpen &&
+    !panorama360Active &&
+    !showCropModal;
   const vx = viewport.x ?? 0;
   const vy = viewport.y ?? 0;
   const effectivePrefetchScreenFactor = 2.0;
@@ -1624,6 +2044,522 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
       ),
     [mergedPrimaryOutput, data?.outputImage, data?.outputImages, inputReferenceKeySet, hasIncomingImageSource],
   );
+
+  /** 视角立方体 / 生成用图：优先本节点输出，否则用上游参考图 */
+  const cameraSourceImageUrl = useMemo(() => {
+    const fromOutput = primaryOutputImage || tinyImagePath || '';
+    if (fromOutput) return fromOutput;
+    const inputs = Array.isArray(data?.inputImages) ? data.inputImages : [];
+    for (const u of inputs) {
+      const s = String(u || '').trim();
+      if (s) return s;
+    }
+    return '';
+  }, [primaryOutputImage, tinyImagePath, data?.inputImages]);
+
+  const { status: cameraAiStatus, execute: executeCameraAI } = useAI({
+    nodeId: id,
+    modelId: 'image',
+    onStatusUpdate: (packet) => {
+      if (packet.status === 'START') {
+        setProgress(1);
+        setProgressMessage(wc.progressImage);
+      } else if (packet.status === 'PROCESSING' && packet.payload?.progress !== undefined) {
+        setProgress(packet.payload.progress);
+        const t = (packet.payload.text || wc.progressImage).replace(/\s*\d+%$/, '').trim();
+        setProgressMessage(t || wc.progressImage);
+      } else if (packet.status === 'SUCCESS' || packet.status === 'ERROR') {
+        setProgress(0);
+        setProgressMessage('');
+      }
+    },
+    onComplete: (result) => {
+      const localPath = result?.localPath;
+      let imageUrl = result?.imageUrl;
+      if (localPath) {
+        let filePath = localPath.replace(/\\/g, '/');
+        if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+        imageUrl = `local-resource://${filePath}`;
+      }
+      if (!imageUrl) return;
+      // 写回当前视角模块（原图节点不变）
+      setOutputImage(imageUrl);
+      setOutputImages([imageUrl]);
+      updateNodeData({
+        outputImage: imageUrl,
+        outputImages: [imageUrl],
+        errorMessage: undefined,
+        progress: 0,
+        imageAsset: buildImageAssetAfterAuxUrl(data?.imageAsset, imageUrl),
+      });
+      setProgress(0);
+      setProgressMessage('');
+    },
+    onError: (error) => {
+      const msg = typeof error === 'string' ? error : String(error || imgc.needImageFirst);
+      setErrorMessage(msg);
+      updateNodeData({ errorMessage: msg, progress: 0 });
+      setProgress(0);
+      setProgressMessage('');
+    },
+  });
+
+  const cameraGenModelOptions = useMemo(
+    () =>
+      filterImageModelsForMode({ hasRefs: true, refCount: 1 }).map(({ value, label }) => ({
+        value,
+        label,
+      })),
+    [],
+  );
+
+  const cameraGenUsesTierResolution = cameraGenModel === 'flux2-klein';
+  const cameraGenResolutionOptions = useMemo(() => {
+    if (cameraGenUsesTierResolution) {
+      return [
+        { value: '720p', label: '720P' },
+        { value: '1080p', label: '1080P' },
+      ];
+    }
+    return [
+      { value: '1k', label: '1k' },
+      { value: '2k', label: '2k' },
+      { value: '4k', label: '4k' },
+    ];
+  }, [cameraGenUsesTierResolution]);
+
+  const cameraGenAspectOptions = useMemo(() => {
+    const presets =
+      cameraGenModel === 'seedream-v5'
+        ? CAMERA_SEEDREAM_ASPECTS
+        : cameraGenUsesTierResolution
+          ? [...Z_IMAGE_ASPECT_RATIOS]
+          : cameraGenModel === 'gpt-image-2'
+            ? ['1:1', '3:2', '2:3', '5:4', '4:5', '16:9', '9:16', '21:9', '3:4', '4:3']
+            : [...CAMERA_BANANA_ASPECTS];
+    return [
+      { value: 'original', label: imgc.cameraControlAspectOriginal },
+      ...presets.map((value) => ({ value, label: value })),
+    ];
+  }, [cameraGenModel, cameraGenUsesTierResolution, imgc.cameraControlAspectOriginal]);
+
+  const cameraGenPriceYuanbao = useMemo(() => {
+    try {
+      const resolution = cameraGenUsesTierResolution
+        ? normalizeZImageResolutionTier(cameraGenResolution)
+        : cameraGenResolution;
+      return getImageDisplayPrice(
+        { model: cameraGenModel, resolution, quantity: 1 },
+        cloudMap,
+      );
+    } catch (e) {
+      if (isModelNotPricedError(e)) return null;
+      return null;
+    }
+  }, [cameraGenModel, cameraGenResolution, cameraGenUsesTierResolution, cloudMap]);
+
+  const cameraGenPriceLabel =
+    cameraGenPriceYuanbao == null
+      ? null
+      : locale === 'en'
+        ? `${cameraGenPriceYuanbao} ${imgc.creditsSuffix}`
+        : `${cameraGenPriceYuanbao}${imgc.creditsSuffix}`;
+
+  const resolveCameraAspectRatio = useCallback(async (): Promise<string> => {
+    const allowed =
+      cameraGenModel === 'seedream-v5'
+        ? CAMERA_SEEDREAM_ASPECTS
+        : cameraGenUsesTierResolution
+          ? Z_IMAGE_ASPECT_RATIOS
+          : cameraGenModel === 'gpt-image-2'
+            ? ['1:1', '3:2', '2:3', '5:4', '4:5', '16:9', '9:16', '21:9', '3:4', '4:3']
+            : CAMERA_BANANA_ASPECTS;
+    if (cameraGenAspect !== 'original') {
+      return snapAspectToAllowed(cameraGenAspect, allowed);
+    }
+    const assetW = Number(data?.imageAsset?.width) || 0;
+    const assetH = Number(data?.imageAsset?.height) || 0;
+    if (assetW > 0 && assetH > 0) {
+      return snapAspectToAllowed(aspectRatioLabelFromPixelSize(assetW, assetH), allowed);
+    }
+    const src = getImageDisplaySrc(formatImagePath(cameraSourceImageUrl || '')) || '';
+    if (!src) return snapAspectToAllowed('1:1', allowed);
+    try {
+      const px = await probeImagePixelSize(src);
+      return snapAspectToAllowed(aspectRatioLabelFromPixelSize(px.width, px.height), allowed);
+    } catch {
+      const fallback = String(data?.aspectRatio || '1:1');
+      return snapAspectToAllowed(fallback === 'original' ? '1:1' : fallback, allowed);
+    }
+  }, [
+    cameraGenAspect,
+    cameraGenModel,
+    cameraGenUsesTierResolution,
+    cameraSourceImageUrl,
+    data?.aspectRatio,
+    data?.imageAsset?.height,
+    data?.imageAsset?.width,
+  ]);
+
+  /**
+   * 在当前图片右侧新建图片模块并连线（原图不变）。
+   * @returns 新节点 id；失败返回 null
+   */
+  const spawnLinkedImageModule = useCallback(
+    (opts: {
+      label: string;
+      inputImageUrl: string;
+      outputImageUrl?: string;
+      extraData?: Record<string, unknown>;
+      /** 指定新模块外框尺寸（如全景截图按实际像素适配） */
+      nodeSize?: { w: number; h: number };
+      /** 全景连续截图：强制水平错开，避免相互堆叠 */
+      cascadeSpawn?: boolean;
+      /**
+       * 落点按此宽高贴源模块右侧（用于截图前仍是 360 放大态、即将还原的场景）。
+       * 不传则读源节点当前 width/height。
+       */
+      sourceBoxOverride?: { w: number; h: number };
+      /**
+       * 固定贴在主模块右侧约 1cm，不做避让/错开（右侧已有模块可重叠）。
+       * 画面裁剪等「结果必须紧挨源模块右侧」的场景使用。
+       */
+      pinToSourceRight?: boolean;
+    }): string | null => {
+      const srcFormatted = formatImagePath(opts.inputImageUrl);
+      if (!srcFormatted) return null;
+      /** 96dpi 下 1cm ≈ 37.8px；固定贴侧时用此间距 */
+      const GAP_CM = 37.8;
+      const GAP = opts.pinToSourceRight ? GAP_CM : 48;
+      const aspect = snapAspectToAllowed(
+        String(data?.aspectRatio || '1:1'),
+        CAMERA_BANANA_ASPECTS,
+      );
+      const sized = opts.nodeSize
+        ? { w: clampW(opts.nodeSize.w), h: clampH(opts.nodeSize.h) }
+        : imageNodeSizeForAspectRatio(String(data?.aspectRatio || aspect)) ||
+          { w: size.w, h: size.h };
+      const seedreamDims = CAMERA_SEEDREAM_V5_RATIO_MAP[aspect] || { width: 2048, height: 2048 };
+      const newNodeId = `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const styleDims = nodeStyleDimensions(sized.w, sized.h);
+      const outUrl = opts.outputImageUrl ? formatImagePath(opts.outputImageUrl) : '';
+
+      const source = getNodes().find((n) => n.id === id);
+      if (!source) return null;
+
+      const srcW =
+        (opts.sourceBoxOverride?.w && opts.sourceBoxOverride.w > 0
+          ? opts.sourceBoxOverride.w
+          : 0) ||
+        Number(source.width) ||
+        Number((source as { measured?: { width?: number } }).measured?.width) ||
+        Number(source.data?.width) ||
+        (nodeRef.current?.offsetWidth ?? 0) ||
+        size.w;
+      const srcH =
+        (opts.sourceBoxOverride?.h && opts.sourceBoxOverride.h > 0
+          ? opts.sourceBoxOverride.h
+          : 0) ||
+        Number(source.height) ||
+        Number((source as { measured?: { height?: number } }).measured?.height) ||
+        Number(source.data?.height) ||
+        (nodeRef.current?.offsetHeight ?? 0) ||
+        size.h;
+      const anchorX = source.position.x + srcW + GAP;
+      let newX = anchorX;
+      let newY = source.position.y + Math.max(0, (srcH - sized.h) / 2);
+
+      if (!opts.pinToSourceRight) {
+        if (opts.cascadeSpawn && panoCaptureSpawnXRef.current != null) {
+          newX = Math.max(newX, panoCaptureSpawnXRef.current);
+        }
+
+        const allNodes = getNodes();
+        const nodeBox = (n: Node) => {
+          const nw =
+            Number(n.width) ||
+            Number((n.style as { width?: number } | undefined)?.width) ||
+            Number(n.data?.width) ||
+            IMAGE_NODE_MIN_W;
+          const nh =
+            Number(n.height) ||
+            Number((n.style as { height?: number } | undefined)?.height) ||
+            Number(n.data?.height) ||
+            IMAGE_NODE_MIN_H;
+          return { x: n.position.x, y: n.position.y, w: nw, h: nh };
+        };
+
+        const priorTargets = getEdges()
+          .filter((e) => e.source === id && e.target && e.target !== id)
+          .map((e) => allNodes.find((n) => n.id === e.target))
+          .filter((n): n is Node => !!n && n.type === 'image');
+        if (priorTargets.length > 0) {
+          let maxRight = newX;
+          for (const n of priorTargets) {
+            const box = nodeBox(n);
+            if (box.x + box.w < anchorX - 4) continue;
+            maxRight = Math.max(maxRight, box.x + box.w + GAP);
+          }
+          newX = Math.max(newX, maxRight);
+        }
+
+        /** AABB 避让：与画布上已有节点重叠则继续右移（必要时下移） */
+        const overlapsAny = (x: number, y: number) =>
+          allNodes.some((n) => {
+            if (n.id === id) return false;
+            const r = nodeBox(n);
+            return (
+              x < r.x + r.w + GAP &&
+              x + sized.w + GAP > r.x &&
+              y < r.y + r.h + GAP &&
+              y + sized.h + GAP > r.y
+            );
+          });
+
+        let guard = 0;
+        while (overlapsAny(newX, newY) && guard < 48) {
+          let pushed = false;
+          for (const n of allNodes) {
+            if (n.id === id) continue;
+            const r = nodeBox(n);
+            const hit =
+              newX < r.x + r.w + GAP &&
+              newX + sized.w + GAP > r.x &&
+              newY < r.y + r.h + GAP &&
+              newY + sized.h + GAP > r.y;
+            if (hit) {
+              newX = Math.max(newX, r.x + r.w + GAP);
+              pushed = true;
+            }
+          }
+          if (!pushed) newY += sized.h + GAP;
+          guard += 1;
+        }
+
+        if (opts.cascadeSpawn) {
+          panoCaptureSpawnXRef.current = newX + sized.w + GAP;
+        }
+      }
+
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'image',
+        position: { x: newX, y: newY },
+        width: sized.w,
+        height: sized.h,
+        selected: true,
+        data: {
+          label: opts.label,
+          title: opts.label,
+          isUserResized: false,
+          resolution: (data?.resolution as string) || '1k',
+          aspectRatio: data?.aspectRatio || aspect,
+          model: (data?.model as string) || 'banana-2.0',
+          seedreamWidth: Number(data?.seedreamWidth) || seedreamDims.width,
+          seedreamHeight: Number(data?.seedreamHeight) || seedreamDims.height,
+          prompt: '',
+          inputImages: [srcFormatted],
+          ...(outUrl
+            ? {
+                outputImage: outUrl,
+                outputImages: [outUrl],
+                originalImageUrl: outUrl,
+                imageAsset: { preview: outUrl, original: outUrl },
+              }
+            : {}),
+          progress: 0,
+          errorMessage: undefined,
+          ...(opts.extraData || {}),
+          width: sized.w,
+          height: sized.h,
+        },
+        style: {
+          ...styleDims,
+          width: sized.w,
+          height: sized.h,
+          minWidth: `${IMAGE_NODE_MIN_W}px`,
+          minHeight: `${IMAGE_NODE_MIN_H}px`,
+        },
+      };
+
+      if (onAddCanvasImageNodes) {
+        onAddCanvasImageNodes([newNode]);
+      } else {
+        setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNode));
+      }
+
+      setEdges((eds) =>
+        addEdge(
+          {
+            id: `e-${id}-${newNodeId}`,
+            source: id,
+            target: newNodeId,
+            sourceHandle: 'output',
+            targetHandle: 'image-input',
+          },
+          eds,
+        ),
+      );
+      return newNodeId;
+    },
+    [
+      clampH,
+      clampW,
+      data?.aspectRatio,
+      data?.model,
+      data?.resolution,
+      data?.seedreamHeight,
+      data?.seedreamWidth,
+      getEdges,
+      getNodes,
+      id,
+      onAddCanvasImageNodes,
+      setEdges,
+      setNodes,
+      size.h,
+      size.w,
+    ],
+  );
+
+  const patchImageNodeData = useCallback(
+    (nodeId: string, updates: Record<string, unknown>) => {
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  ...updates,
+                },
+              }
+            : n,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  /** 点击 3D：在原图右侧新建视角模块并连线，控制器开在新模块上（不改原图） */
+  const spawnCameraViewModule = useCallback(() => {
+    const srcRaw = String(
+      primaryOutputImage ||
+        tinyImagePath ||
+        data?.imageAsset?.preview ||
+        data?.outputImage ||
+        (Array.isArray(data?.outputImages) ? data.outputImages[0] : '') ||
+        data?.localPath ||
+        data?.originalImageUrl ||
+        '',
+    ).trim();
+    if (!srcRaw) {
+      setErrorMessage(imgc.cameraGenerateNeedImage);
+      showAlert(imgc.cameraGenerateNeedImage);
+      return;
+    }
+
+    setIs3DPopoverOpen(false);
+    (window as Window & { __nexflowSkipClose3dUntil?: number }).__nexflowSkipClose3dUntil =
+      Date.now() + 400;
+
+    const newId = spawnLinkedImageModule({
+      label: imgc.cameraGenerateNodeLabel,
+      inputImageUrl: srcRaw,
+      extraData: {
+        isCameraViewModule: true,
+        cameraControl: { ...DEFAULT_CAMERA_VALUE },
+      },
+      // 视角模块始终贴源图右侧创建，不因旁侧已有模块而避让错位
+      pinToSourceRight: true,
+    });
+    if (!newId) {
+      showAlert(imgc.cameraGenerateNeedImage);
+      return;
+    }
+    // 一次性事件打开控制器，避免把 open3DPopover 写入节点数据后缩放又自动弹出
+    window.setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent('nexflow-open-3d-popover', { detail: { nodeId: newId } }),
+      );
+    }, 100);
+  }, [
+    data?.imageAsset?.preview,
+    data?.localPath,
+    data?.originalImageUrl,
+    data?.outputImage,
+    data?.outputImages,
+    imgc.cameraGenerateNeedImage,
+    imgc.cameraGenerateNodeLabel,
+    primaryOutputImage,
+    showAlert,
+    spawnLinkedImageModule,
+    tinyImagePath,
+  ]);
+
+  useEffect(() => {
+    if (cameraGenAspect === 'original') return;
+    const allowed = cameraGenAspectOptions.map((o) => o.value).filter((v) => v !== 'original');
+    if (!allowed.includes(cameraGenAspect)) setCameraGenAspect('original');
+  }, [cameraGenAspect, cameraGenAspectOptions]);
+
+  useEffect(() => {
+    const allowed = cameraGenResolutionOptions.map((o) => o.value);
+    if (!allowed.includes(cameraGenResolution)) {
+      setCameraGenResolution(allowed[0] || (cameraGenUsesTierResolution ? '720p' : '1k'));
+    }
+  }, [cameraGenResolution, cameraGenResolutionOptions, cameraGenUsesTierResolution]);
+
+  const handleCameraGenerate = useCallback(async () => {
+    const src = getImageDisplaySrc(formatImagePath(cameraSourceImageUrl || '')) || '';
+    if (!src) {
+      setErrorMessage(imgc.cameraGenerateNeedImage);
+      return;
+    }
+    const { payload } = getPhotographyPrompt(cameraValue);
+    const prompt =
+      payload.prompt_metadata.qwen_instruction ||
+      payload.prompt_metadata.formatted_output ||
+      'Front view, eye-level, medium shot.';
+    const aspect = await resolveCameraAspectRatio();
+    cameraGenMetaRef.current = { aspect, model: cameraGenModel };
+    const resolution = cameraGenUsesTierResolution
+      ? normalizeZImageResolutionTier(cameraGenResolution)
+      : cameraGenResolution;
+    const seedreamDims =
+      cameraGenModel === 'seedream-v5'
+        ? CAMERA_SEEDREAM_V5_RATIO_MAP[aspect] || { width: 2048, height: 2048 }
+        : cameraGenUsesTierResolution
+          ? zImageDimensionsForAspect(aspect, resolution)
+          : CAMERA_SEEDREAM_V5_RATIO_MAP[aspect] || { width: 2048, height: 2048 };
+    setProgress(1);
+    setProgressMessage(wc.progressImage);
+    try {
+      await executeCameraAI({
+        model: cameraGenModel,
+        prompt,
+        response_format: 'url',
+        aspect_ratio: aspect,
+        resolution,
+        seedreamWidth: seedreamDims.width,
+        seedreamHeight: seedreamDims.height,
+        image: [src],
+        projectId,
+      });
+    } catch (err) {
+      console.error('[ImageNode] 视角生成失败:', err);
+    }
+  }, [
+    cameraSourceImageUrl,
+    cameraValue,
+    cameraGenModel,
+    cameraGenResolution,
+    cameraGenUsesTierResolution,
+    executeCameraAI,
+    imgc.cameraGenerateNeedImage,
+    projectId,
+    resolveCameraAspectRatio,
+    wc.progressImage,
+  ]);
   /** 截帧/粘贴等为 data: 或 blob: 时必须优先于旧 imageAsset.preview，否则预取队列会去拉已失效的 http 图 → 闪一下后「图片加载失败」 */
   const previewImagePath = useMemo(() => {
     const stripIfRefOnly = (url: string): string => {
@@ -1701,16 +2637,512 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     transientImgErrorRetriesRef.current = 0;
   }, [primaryOutputImage]);
 
-  /** 当前主图像素尺寸，用于全景摆放入口判断与弹窗内分辨率展示 */
-  const [imageNaturalPx, setImageNaturalPx] = useState<{ w: number; h: number } | null>(null);
-  useEffect(() => {
-    setImageNaturalPx(null);
-  }, [primaryOutputImage]);
-  /** 与画板并列；任意比例图均可打开（球幕内为等距柱状投影时观感最佳） */
-  const showPanoramaPlacementEntry = useMemo(
-    () => !!(onOpenPanoramaPlacement && primaryOutputImage),
-    [onOpenPanoramaPlacement, primaryOutputImage]
+  /** 有图即可在模块内切换 360 环视（多图网格时不提供） */
+  const showPanorama360Entry = useMemo(
+    () => !!(primaryOutputImage && outputImages.length <= 1),
+    [primaryOutputImage, outputImages.length],
   );
+  const isPanorama360Mode = panorama360Active && showPanorama360Entry;
+  const panoTextureUrl = useMemo(() => {
+    const scene3d =
+      typeof data?.sceneDisplay3dUrl === 'string' ? data.sceneDisplay3dUrl.trim() : '';
+    if (scene3d) return getImageDisplaySrc(formatImagePath(scene3d));
+    const flat = previewImagePath || primaryOutputImage || tinyImagePath;
+    if (!flat) return '';
+    return getImageDisplaySrc(formatImagePath(flat));
+  }, [data?.sceneDisplay3dUrl, previewImagePath, primaryOutputImage, tinyImagePath]);
+
+  useEffect(() => {
+    const on = data?.viewMode === 'panorama360';
+    setPanorama360Active(on);
+    if (!on) {
+      panoLockedSizeRef.current = null;
+      return;
+    }
+    if (panoLockedSizeRef.current) return;
+    const bw = data?.panorama360BaseWidth;
+    const bh = data?.panorama360BaseHeight;
+    if (typeof bw === 'number' && bw > 0 && typeof bh === 'number' && bh > 0) {
+      panoLockedSizeRef.current = { w: clampW(bw * 2), h: clampH(bh * 2) };
+    }
+  }, [data?.viewMode, data?.panorama360BaseWidth, data?.panorama360BaseHeight, id]);
+
+  useEffect(() => {
+    if (outputImages.length > 1 && panorama360Active) {
+      const backup =
+        panoSizeBackupRef.current ||
+        (typeof data?.panorama360BaseWidth === 'number' &&
+        typeof data?.panorama360BaseHeight === 'number'
+          ? { w: data.panorama360BaseWidth, h: data.panorama360BaseHeight }
+          : null);
+      panoSizeBackupRef.current = null;
+      panoLockedSizeRef.current = null;
+      setPanorama360Active(false);
+      if (backup) {
+        const nextW = clampW(backup.w);
+        const nextH = clampH(backup.h);
+        setSize({ w: nextW, h: nextH });
+        updateNodeData({
+          viewMode: 'flat',
+          width: nextW,
+          height: nextH,
+          panorama360BaseWidth: undefined,
+          panorama360BaseHeight: undefined,
+        });
+      } else if (data?.viewMode === 'panorama360') {
+        updateNodeData({ viewMode: 'flat' });
+      }
+    }
+  }, [
+    outputImages.length,
+    panorama360Active,
+    data?.viewMode,
+    data?.panorama360BaseWidth,
+    data?.panorama360BaseHeight,
+    updateNodeData,
+  ]);
+
+  const togglePanorama360Mode = useCallback(() => {
+    if (!panoTextureUrl) {
+      showAlert(imgc.panorama360NoImage);
+      return;
+    }
+    const next = !panorama360Active;
+    if (next && showCropModal) closeCropSession();
+    setSuppressSizeTransition(true);
+
+    const applyNodeBox = (nextW: number, nextH: number, dataPatch: Record<string, unknown>) => {
+      const styleDims = nodeStyleDimensions(nextW, nextH);
+      // 先同步 RF store 的 width/height（选框 getNodesBounds 读的是这里），再改本地 size / DOM
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  width: nextW,
+                  height: nextH,
+                  style: {
+                    ...(node.style as object),
+                    ...styleDims,
+                    width: nextW,
+                    height: nextH,
+                  },
+                  data: {
+                    ...node.data,
+                    ...dataPatch,
+                    width: nextW,
+                    height: nextH,
+                  },
+                }
+              : node,
+          ),
+        );
+      });
+      setSize({ w: nextW, h: nextH });
+      if (nodeRef.current) {
+        nodeRef.current.style.width = `${nextW}px`;
+        nodeRef.current.style.height = `${nextH}px`;
+        nodeRef.current.style.minWidth = `${nextW}px`;
+        nodeRef.current.style.minHeight = `${nextH}px`;
+        const rfNode = nodeRef.current.closest('.react-flow__node') as HTMLElement | null;
+        if (rfNode) {
+          rfNode.style.width = `${nextW}px`;
+          rfNode.style.height = `${nextH}px`;
+        }
+      }
+      updateNodeInternals(id);
+      requestAnimationFrame(() => {
+        updateNodeInternals(id);
+        requestAnimationFrame(() => updateNodeInternals(id));
+      });
+    };
+
+    if (next) {
+      // 进 360：放大为原尺寸 2 倍（便于环视）；退出时还原
+      let baseW = size.w;
+      let baseH = size.h;
+      const bw = data?.panorama360BaseWidth;
+      const bh = data?.panorama360BaseHeight;
+      // 已是放大态时不要再 *2
+      if (
+        typeof bw === 'number' &&
+        bw > 0 &&
+        typeof bh === 'number' &&
+        bh > 0 &&
+        baseW >= bw * 1.7 &&
+        baseH >= bh * 1.7
+      ) {
+        baseW = clampW(bw);
+        baseH = clampH(bh);
+      }
+      panoSizeBackupRef.current = { w: baseW, h: baseH };
+      panoCaptureSpawnXRef.current = null;
+      const nextW = clampW(baseW * 2);
+      const nextH = clampH(baseH * 2);
+      panoLockedSizeRef.current = { w: nextW, h: nextH };
+      // 先落定外框尺寸，再挂载 WebGL，避免「先开 360 再用旧宽高初始化」导致右侧黑边
+      applyNodeBox(nextW, nextH, {
+        viewMode: 'panorama360',
+        panorama360BaseWidth: baseW,
+        panorama360BaseHeight: baseH,
+      });
+      setPanorama360Active(true);
+      // 先关掉半宽选框，待尺寸落稳后再按新宽高重新打开选区
+      storeApi.setState({ nodesSelectionActive: false });
+      window.setTimeout(() => {
+        updateNodeInternals(id);
+        flushSync(() => {
+          setNodes((nds) =>
+            nds.map((node) =>
+              node.id === id
+                ? {
+                    ...node,
+                    width: nextW,
+                    height: nextH,
+                    style: {
+                      ...(node.style as object),
+                      ...nodeStyleDimensions(nextW, nextH),
+                      width: nextW,
+                      height: nextH,
+                    },
+                    data: {
+                      ...node.data,
+                      width: nextW,
+                      height: nextH,
+                      viewMode: 'panorama360',
+                      panorama360BaseWidth: baseW,
+                      panorama360BaseHeight: baseH,
+                    },
+                  }
+                : node,
+            ),
+          );
+        });
+        updateNodeInternals(id);
+        const stillSelected = getNodes().some((n) => n.id === id && n.selected);
+        if (stillSelected) {
+          storeApi.setState({ nodesSelectionActive: true });
+        }
+      }, 32);
+    } else {
+      const backup =
+        panoSizeBackupRef.current ||
+        (typeof data?.panorama360BaseWidth === 'number' &&
+        typeof data?.panorama360BaseHeight === 'number'
+          ? { w: data.panorama360BaseWidth, h: data.panorama360BaseHeight }
+          : { w: clampW(size.w / 2), h: clampH(size.h / 2) });
+      panoSizeBackupRef.current = null;
+      panoLockedSizeRef.current = null;
+      const nextW = clampW(backup.w);
+      const nextH = clampH(backup.h);
+      setPanorama360Active(false);
+      applyNodeBox(nextW, nextH, {
+        viewMode: 'flat',
+        panorama360BaseWidth: undefined,
+        panorama360BaseHeight: undefined,
+      });
+    }
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+  }, [
+    panoTextureUrl,
+    panorama360Active,
+    showCropModal,
+    closeCropSession,
+    size.w,
+    size.h,
+    data?.panorama360BaseWidth,
+    data?.panorama360BaseHeight,
+    id,
+    setNodes,
+    updateNodeInternals,
+    showAlert,
+    imgc.panorama360NoImage,
+    storeApi,
+    getNodes,
+  ]);
+
+  /** 360 预览期间持续把 RF node 宽高钉在锁定尺寸，未退出前不允许变小 */
+  useLayoutEffect(() => {
+    if (!panorama360Active) return;
+    const locked = panoLockedSizeRef.current;
+    const w = Math.round(locked?.w ?? size.w);
+    const h = Math.round(locked?.h ?? size.h);
+    if (w < 2 || h < 2) return;
+    if (!panoLockedSizeRef.current) {
+      panoLockedSizeRef.current = { w, h };
+    }
+
+    const syncRfBox = () => {
+      const rfNode = nodeRef.current?.closest('.react-flow__node') as HTMLElement | null;
+      if (rfNode) {
+        rfNode.style.width = `${w}px`;
+        rfNode.style.height = `${h}px`;
+        rfNode.style.minWidth = `${w}px`;
+        rfNode.style.minHeight = `${h}px`;
+      }
+      if (nodeRef.current) {
+        nodeRef.current.style.width = `${w}px`;
+        nodeRef.current.style.height = `${h}px`;
+        nodeRef.current.style.minWidth = `${w}px`;
+        nodeRef.current.style.minHeight = `${h}px`;
+      }
+      const internals = storeApi.getState().nodeInternals;
+      const node = internals.get(id);
+      if (node && (node.width !== w || node.height !== h)) {
+        const nextMap = new Map(internals);
+        nextMap.set(id, {
+          ...node,
+          width: w,
+          height: h,
+          style: {
+            ...(node.style as object),
+            ...nodeStyleDimensions(w, h),
+            width: w,
+            height: h,
+          },
+        });
+        storeApi.setState({ nodeInternals: nextMap });
+      }
+    };
+
+    setSize((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+
+    const cur = getNodes().find((n) => n.id === id);
+    if (!cur || cur.width !== w || cur.height !== h || (cur.data as any)?.width !== w) {
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  width: w,
+                  height: h,
+                  style: {
+                    ...(node.style as object),
+                    ...nodeStyleDimensions(w, h),
+                    width: w,
+                    height: h,
+                  },
+                  data: {
+                    ...node.data,
+                    width: w,
+                    height: h,
+                    viewMode: 'panorama360',
+                  },
+                }
+              : node,
+          ),
+        );
+      });
+    }
+    syncRfBox();
+    updateNodeInternals(id);
+    const t = window.setTimeout(() => {
+      syncRfBox();
+      updateNodeInternals(id);
+    }, 48);
+    return () => window.clearTimeout(t);
+  }, [panorama360Active, size.w, size.h, id, getNodes, setNodes, updateNodeInternals, storeApi]);
+
+  useEffect(() => {
+    return () => {
+      if (panoramaConvertLeaveTimerRef.current != null) {
+        clearTimeout(panoramaConvertLeaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  const openPanoramaConvertHover = useCallback(() => {
+    if (panoramaConvertLeaveTimerRef.current != null) {
+      clearTimeout(panoramaConvertLeaveTimerRef.current);
+      panoramaConvertLeaveTimerRef.current = null;
+    }
+    setPanoramaConvertHover(true);
+  }, []);
+
+  const scheduleClosePanoramaConvertHover = useCallback(() => {
+    if (panoramaConvertLeaveTimerRef.current != null) {
+      clearTimeout(panoramaConvertLeaveTimerRef.current);
+    }
+    panoramaConvertLeaveTimerRef.current = setTimeout(() => {
+      panoramaConvertLeaveTimerRef.current = null;
+      setPanoramaConvertHover(false);
+      setScene360ModelMenuOpen(false);
+      setScene360PriceHoverModel(null);
+    }, 160);
+  }, []);
+
+  const openScene360ModelMenu = useCallback(() => {
+    openPanoramaConvertHover();
+    setScene360ModelMenuOpen(true);
+  }, [openPanoramaConvertHover]);
+
+  const runScene360ConvertWithModel = useCallback(
+    async (model: string) => {
+      const nextPrompt = imagePanelT.tagScene3dPrompt;
+      const aspectRatio = '21:9';
+      const resolution = scene360ResolutionForModel(model);
+      const seedreamDims =
+        model === 'seedream-v5'
+          ? CAMERA_SEEDREAM_V5_RATIO_MAP[aspectRatio] || { width: 3136, height: 1344 }
+          : model === 'flux2-klein'
+            ? zImageDimensionsForAspect(aspectRatio, normalizeZImageResolutionTier(resolution))
+            : CAMERA_SEEDREAM_V5_RATIO_MAP[aspectRatio] || { width: 3136, height: 1344 };
+
+      updateNodeData({
+        prompt: nextPrompt,
+        model,
+        aspectRatio,
+        resolution,
+        seedreamWidth: seedreamDims.width,
+        seedreamHeight: seedreamDims.height,
+      });
+      window.dispatchEvent(
+        new CustomEvent('nexflow-image-scene360-preset', {
+          detail: {
+            nodeId: id,
+            prompt: nextPrompt,
+            model,
+            aspectRatio,
+            resolution,
+          },
+        }),
+      );
+      setPanoramaConvertHover(false);
+      setScene360ModelMenuOpen(false);
+      setScene360PriceHoverModel(null);
+
+      const src = getImageDisplaySrc(formatImagePath(cameraSourceImageUrl || '')) || '';
+      if (!src) {
+        setErrorMessage(imgc.needImageFirst);
+        return;
+      }
+      if (cameraAiStatus === 'START' || cameraAiStatus === 'PROCESSING') {
+        return;
+      }
+
+      setProgress(1);
+      setProgressMessage(wc.progressImage);
+      try {
+        await executeCameraAI({
+          model,
+          prompt: nextPrompt,
+          response_format: 'url',
+          aspect_ratio: aspectRatio,
+          resolution,
+          seedreamWidth: seedreamDims.width,
+          seedreamHeight: seedreamDims.height,
+          image: [src],
+          projectId,
+        });
+      } catch (err) {
+        console.error('[ImageNode] 场景转换360失败:', err);
+      }
+    },
+    [
+      cameraAiStatus,
+      cameraSourceImageUrl,
+      executeCameraAI,
+      id,
+      imagePanelT.tagScene3dPrompt,
+      imgc.needImageFirst,
+      projectId,
+      scene360ResolutionForModel,
+      updateNodeData,
+      wc.progressImage,
+    ],
+  );
+
+  const handlePanoramaScreenshot = useCallback(
+    async (buffer: ArrayBuffer) => {
+      if (!projectId) {
+        showAlert(imgc.panorama360NeedProject);
+        return;
+      }
+      if (!window.electronAPI?.createImageLocalResourceFromBuffer) {
+        showAlert(imgc.panorama360CaptureFailed);
+        return;
+      }
+      try {
+        const result = await window.electronAPI.createImageLocalResourceFromBuffer(
+          projectId,
+          `pano-capture-${Date.now()}.png`,
+          buffer,
+        );
+        if (!result?.previewUrl) throw new Error('preview empty');
+        const w = Number(result.width) || 0;
+        const h = Number(result.height) || 0;
+        const adapted =
+          w > 0 && h > 0 ? computeAdaptiveNodeSize(w, h) : undefined;
+
+        // 落点按「退出 360 后」的外框算，避免按 2 倍宽生成后缩回留下大空档
+        const placeBox =
+          panoSizeBackupRef.current ||
+          (typeof data?.panorama360BaseWidth === 'number' &&
+          typeof data?.panorama360BaseHeight === 'number'
+            ? { w: data.panorama360BaseWidth, h: data.panorama360BaseHeight }
+            : null);
+
+        // 截取后退出浏览器全屏
+        try {
+          if (panoControlsRef.current?.isFullscreen()) {
+            await panoControlsRef.current.toggleFullscreen();
+          } else if (document.fullscreenElement) {
+            await document.exitFullscreen();
+          }
+        } catch {
+          /* ignore */
+        }
+
+        // 先退出 360 还原模块尺寸，再贴右侧生成截图模块
+        if (panorama360Active) {
+          togglePanorama360Mode();
+        }
+
+        spawnLinkedImageModule({
+          label: imgc.panorama360CaptureNodeLabel,
+          inputImageUrl: result.previewUrl,
+          outputImageUrl: result.previewUrl,
+          cascadeSpawn: true,
+          ...(adapted ? { nodeSize: adapted } : {}),
+          ...(placeBox ? { sourceBoxOverride: placeBox } : {}),
+          extraData: {
+            originalImageUrl: result.originalUrl,
+            localPath: result.originalPath,
+            tinyThumbUrl: result.tinyUrl,
+            avgColorHex: result.avgColorHex,
+            imageAsset: {
+              preview: result.previewUrl,
+              tiny: result.tinyUrl,
+              original: result.originalUrl,
+              ghost: result.ghostBase64,
+              avgColorHex: result.avgColorHex,
+              width: result.width,
+              height: result.height,
+            },
+          },
+        });
+      } catch (err) {
+        console.error('[ImageNode] 全景截图失败:', err);
+        showAlert(imgc.panorama360CaptureFailed);
+      }
+    },
+    [
+      projectId,
+      showAlert,
+      imgc.panorama360NeedProject,
+      imgc.panorama360CaptureFailed,
+      imgc.panorama360CaptureNodeLabel,
+      computeAdaptiveNodeSize,
+      spawnLinkedImageModule,
+      panorama360Active,
+      togglePanorama360Mode,
+      data?.panorama360BaseWidth,
+      data?.panorama360BaseHeight,
+    ],
+  );
+
   const flipHUi = !!data?.flipH;
   const flipVUi = !!data?.flipV;
 
@@ -1723,12 +3155,38 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
 
   useEffect(() => {
     flipLiveRef.current = { h: !!data?.flipH, v: !!data?.flipV };
+    if (panorama360Active) {
+      const el = imgContainerRef.current;
+      if (el) el.style.transform = '';
+      return;
+    }
     applyFlipToPreview();
-  }, [data?.flipH, data?.flipV, applyFlipToPreview]);
+  }, [data?.flipH, data?.flipV, panorama360Active, applyFlipToPreview]);
 
   useLayoutEffect(() => {
+    if (panorama360Active) {
+      const el = imgContainerRef.current;
+      if (el) el.style.transform = '';
+      return;
+    }
     applyFlipToPreview();
-  }, [primaryOutputImage, applyFlipToPreview]);
+  }, [primaryOutputImage, panorama360Active, applyFlipToPreview]);
+
+  /** 内联裁剪时临时取消镜像，避免选框坐标与源图不一致 */
+  useEffect(() => {
+    if (!showCropModal) {
+      applyFlipToPreview();
+      return;
+    }
+    const el = imgContainerRef.current;
+    if (el) el.style.transform = '';
+  }, [showCropModal, applyFlipToPreview]);
+
+  /** 裁剪期间保持节点在最上层（避免 RF 选中其它节点后压住选框） */
+  useEffect(() => {
+    if (!showCropModal) return;
+    elevateCropNodeLayer(true);
+  }, [showCropModal, elevateCropNodeLayer, selected]);
 
   const persistFlip = useCallback(
     (patch: { flipH?: boolean; flipV?: boolean }) => {
@@ -1766,17 +3224,68 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     flipMenuLeaveTimerRef.current = setTimeout(() => {
       flipMenuLeaveTimerRef.current = null;
       setFlipMenuHover(false);
-    }, 160);
+    }, 180);
+  }, []);
+
+  const openSplitMenu = useCallback(() => {
+    if (splitMenuLeaveTimerRef.current != null) {
+      clearTimeout(splitMenuLeaveTimerRef.current);
+      splitMenuLeaveTimerRef.current = null;
+    }
+    setSplitGridMenuHover(true);
+  }, []);
+
+  const applyCustomSplitGrid = useCallback(
+    (e?: React.SyntheticEvent) => {
+      const cols = parseInt(customSplitCols, 10);
+      const rows = parseInt(customSplitRows, 10);
+      if (
+        !Number.isFinite(cols) ||
+        !Number.isFinite(rows) ||
+        cols < 1 ||
+        rows < 1 ||
+        cols > GRID_SPLIT_MAX_AXIS ||
+        rows > GRID_SPLIT_MAX_AXIS ||
+        cols * rows > GRID_SPLIT_MAX_CELLS
+      ) {
+        showAlert(imgc.splitGridCustomInvalid);
+        return;
+      }
+      setSplitGridMenuHover(false);
+      void handleSplitGridToCanvas({ cols, rows }, e);
+    },
+    [customSplitCols, customSplitRows, handleSplitGridToCanvas, imgc.splitGridCustomInvalid, showAlert],
+  );
+
+  const scheduleCloseSplitMenu = useCallback(() => {
+    if (splitMenuLeaveTimerRef.current != null) clearTimeout(splitMenuLeaveTimerRef.current);
+    splitMenuLeaveTimerRef.current = setTimeout(() => {
+      splitMenuLeaveTimerRef.current = null;
+      setSplitGridMenuHover(false);
+    }, 180);
   }, []);
 
   const topToolbarIconBtn = useCallback(
-    (scratch: ScratchColorId = 'looks', extra = '') => {
+    (_scratch: ScratchColorId = 'looks', active = false, extra = '') => {
+      const base =
+        'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-[background-color,color,transform,opacity] duration-150 ease-out will-change-transform active:scale-[0.94] disabled:opacity-35 disabled:active:scale-100';
       if (isDarkMode) {
-        return `flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 text-white hover:bg-white/25 transition-all ${extra}`.trim();
+        return `${base} ${
+          active ? 'bg-white/15 text-white' : 'bg-transparent text-white/80 hover:bg-white/10 hover:text-white'
+        } ${extra}`.trim();
       }
-      return nodeFloatPillBtn(isDarkMode, `h-8 w-8 shrink-0 justify-center !p-0 ${extra}`, scratch);
+      return `${base} ${
+        active ? 'bg-black/10 text-gray-900' : 'bg-transparent text-gray-700 hover:bg-black/[0.06] hover:text-gray-900'
+      } ${extra}`.trim();
     },
     [isDarkMode],
+  );
+
+  const toolbarDivider = (
+    <span
+      className={`mx-0.5 h-4 w-px shrink-0 ${isDarkMode ? 'bg-white/20' : 'bg-black/15'}`}
+      aria-hidden
+    />
   );
 
   const openImagePreview = useCallback(() => {
@@ -1791,20 +3300,85 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     window.open(previewSrc, '_blank', 'noopener,noreferrer');
   }, [previewImagePath, primaryOutputImage, tinyImagePath, onPreviewImage, id]);
 
+  inspectZoomRef.current = inspectZoom;
+
+  useEffect(() => {
+    setInspectZoom(1);
+    setInspectPan({ x: 0, y: 0 });
+    inspectPanDragRef.current = null;
+  }, [primaryOutputImage]);
+
+  const handleInspectWheel = useCallback((e: React.WheelEvent) => {
+    if (!selected || isPanorama360Mode || showCropModal || outputImages.length > 1) return;
+    /** 与画布滚轮缩放区分：Ctrl/Meta+滚轮检视模块内细节 */
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    setInspectZoom((z) => {
+      const next = Math.min(6, Math.max(1, z * factor));
+      if (next <= 1.001) {
+        setInspectPan({ x: 0, y: 0 });
+        return 1;
+      }
+      return next;
+    });
+  }, [selected, isPanorama360Mode, showCropModal, outputImages.length]);
+
+  const handleInspectPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (inspectZoomRef.current <= 1.01) return;
+      if (e.button !== 0) return;
+      e.stopPropagation();
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      inspectPanDragRef.current = {
+        active: true,
+        startX: e.clientX,
+        startY: e.clientY,
+        originX: inspectPan.x,
+        originY: inspectPan.y,
+      };
+    },
+    [inspectPan.x, inspectPan.y],
+  );
+
+  const handleInspectPointerMove = useCallback((e: React.PointerEvent) => {
+    const d = inspectPanDragRef.current;
+    if (!d?.active) return;
+    e.stopPropagation();
+    setInspectPan({
+      x: d.originX + (e.clientX - d.startX),
+      y: d.originY + (e.clientY - d.startY),
+    });
+  }, []);
+
+  const handleInspectPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!inspectPanDragRef.current?.active) return;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    inspectPanDragRef.current = null;
+  }, []);
+
   const selectedAtPointerDownRef = useRef(false);
 
   const handleOutputImagePointerDown = useCallback(() => {
+    if (inspectZoomRef.current > 1.01) return;
     selectedAtPointerDownRef.current = selected;
     beginNativeDragPrepare();
   }, [selected, beginNativeDragPrepare]);
 
-  const handleOutputImageClick = useCallback(
+  const handleOutputImageDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!selectedAtPointerDownRef.current || !selected || outputImages.length > 1) return;
+      if (showCropModal) return;
       e.stopPropagation();
+      e.preventDefault();
       openImagePreview();
     },
-    [selected, outputImages.length, openImagePreview],
+    [selected, outputImages.length, openImagePreview, showCropModal],
   );
 
   useEffect(() => {
@@ -1832,11 +3406,17 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const handleCropConfirm = useCallback(
     async (rect: NormalizedCropRect) => {
       if (!cropSourceUrl) return;
+      if (!window.electronAPI?.createImageLocalResourceFromBuffer) {
+        showAlert(imgc.cropFailed);
+        return;
+      }
+      if (cropBusy) return;
+
+      // 与视频画面裁剪一致：原模块不动，确认后导出到右侧新模块
+      const sizeFallback = cropSizeBackupRef.current ?? { w: size.w, h: size.h };
+      closeCropSession();
       setCropBusy(true);
       try {
-        if (!window.electronAPI?.createImageLocalResourceFromBuffer) {
-          throw new Error('createImageLocalResourceFromBuffer IPC 不可用');
-        }
         const { buffer, width, height } = await cropImageToPngBuffer(cropSourceUrl, rect);
         const result = await window.electronAPI.createImageLocalResourceFromBuffer(
           projectId,
@@ -1844,33 +3424,41 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           buffer,
         );
         if (!result?.previewUrl) throw new Error('预览图路径为空');
-        setOutputImage(result.previewUrl);
-        const adapted = computeAdaptiveNodeSize(result.width ?? width, result.height ?? height);
-        setSize(adapted);
-        flipLiveRef.current = { h: false, v: false };
-        updateNodeData({
-          outputImage: result.previewUrl,
-          outputImages: undefined,
-          originalImageUrl: result.originalUrl,
-          localPath: result.originalPath,
-          tinyThumbUrl: result.tinyUrl,
-          avgColorHex: result.avgColorHex,
-          flipH: false,
-          flipV: false,
-          imageAsset: {
-            preview: result.previewUrl,
-            tiny: result.tinyUrl,
-            original: result.originalUrl,
-            ghost: result.ghostBase64,
+
+        const outW = Number(result.width) || width;
+        const outH = Number(result.height) || height;
+        const adapted =
+          outW > 0 && outH > 0
+            ? computeAdaptiveNodeSize(outW, outH)
+            : { w: sizeFallback.w, h: sizeFallback.h };
+
+        const newId = spawnLinkedImageModule({
+          label: imgc.cropNodeLabel,
+          inputImageUrl: result.previewUrl,
+          outputImageUrl: result.previewUrl,
+          /** 始终贴主模块右侧 1cm，不因右侧已有模块而右移避让 */
+          pinToSourceRight: true,
+          sourceBoxOverride: sizeFallback,
+          nodeSize: adapted,
+          extraData: {
+            originalImageUrl: result.originalUrl,
+            localPath: result.originalPath,
+            tinyThumbUrl: result.tinyUrl,
             avgColorHex: result.avgColorHex,
-            width: result.width,
-            height: result.height,
+            flipH: false,
+            flipV: false,
+            imageAsset: {
+              preview: result.previewUrl,
+              tiny: result.tinyUrl,
+              original: result.originalUrl,
+              ghost: result.ghostBase64,
+              avgColorHex: result.avgColorHex,
+              width: result.width,
+              height: result.height,
+            },
           },
-          width: adapted.w,
-          height: adapted.h,
-          errorMessage: undefined,
         });
-        setShowCropModal(false);
+        if (!newId) throw new Error('spawn failed');
       } catch (err) {
         console.error('[ImageNode] 裁剪失败:', err);
         showAlert(imgc.cropFailed);
@@ -1878,12 +3466,25 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         setCropBusy(false);
       }
     },
-    [cropSourceUrl, projectId, computeAdaptiveNodeSize, updateNodeData, showAlert, imgc.cropFailed],
+    [
+      cropSourceUrl,
+      cropBusy,
+      closeCropSession,
+      projectId,
+      computeAdaptiveNodeSize,
+      spawnLinkedImageModule,
+      showAlert,
+      imgc.cropFailed,
+      imgc.cropNodeLabel,
+      size.w,
+      size.h,
+    ],
   );
 
   useEffect(
     () => () => {
       if (flipMenuLeaveTimerRef.current != null) clearTimeout(flipMenuLeaveTimerRef.current);
+      if (splitMenuLeaveTimerRef.current != null) clearTimeout(splitMenuLeaveTimerRef.current);
     },
     [],
   );
@@ -1895,7 +3496,9 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const applyLayoutFromMediaPixels = useCallback(
     (naturalW: number, naturalH: number, srcKey: string) => {
       if (!naturalW || !naturalH || naturalW <= 0 || naturalH <= 0) return;
+      if (showCropModal) return;
       if (data?.preserveExportLayout && data?.width && data?.height) return;
+      if (panorama360Active || data?.viewMode === 'panorama360') return;
       if (isUserResized) return;
       const adapted = computeAdaptiveNodeSize(naturalW, naturalH);
       const lastApplied = lastAppliedSizeRef.current;
@@ -1943,6 +3546,9 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
       data?.preserveExportLayout,
       data?.width,
       data?.height,
+      data?.viewMode,
+      panorama360Active,
+      showCropModal,
       id,
       isUserResized,
       onDataChange,
@@ -1958,6 +3564,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   useEffect(() => {
     if (!mediaLayoutProbeKey || mediaLayoutProbeKey.endsWith(':')) return;
     if (data?.preserveExportLayout && data?.width && data?.height) return;
+    if (panorama360Active || data?.viewMode === 'panorama360') return;
     if (isUserResized) return;
 
     const rawPath = outputImages[0] || outputImage || primaryOutputImage || '';
@@ -2579,6 +4186,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         data-id={id}
         style={{
           ...combinedStyle,
+          overflow: 'visible',
           ...(shouldHideNodeForPrefetch ? { visibility: 'hidden', pointerEvents: 'none' as const } : {}),
         }}
         className={`custom-node-container group relative rounded-2xl overflow-visible ${
@@ -2589,13 +4197,15 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             : isDarkMode
               ? 'p-4 nexflow-glass-panel'
               : 'p-4 apple-panel-light' /* 使用磨砂材质浅灰半透明背板 */
-        } ${isResizing ? '!shadow-none !ring-0' : ''} transition-all duration-200`}
+        } ${isResizing ? '!shadow-none !ring-0' : ''} ${
+          isPanorama360Mode || suppressSizeTransition ? '' : 'transition-all duration-200'
+        }`}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
         {/* Handle 必须始终渲染，否则连线会断；有图片时输出 Handle 始终可见便于连接 */}
-        <Handle type="target" position={Position.Left} id="image-input" className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
-        <Handle type="source" position={Position.Right} id="output" style={{ top: '50%', right: 0 }} className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
+        <Handle type="target" position={Position.Left} id="image-input" style={{ top: '50%', left: 0 }} className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder || is3DPopoverOpen ? 'opacity-0 pointer-events-none' : ''}`} />
+        <Handle type="source" position={Position.Right} id="output" style={{ top: '50%', right: 0 }} className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder || is3DPopoverOpen ? 'opacity-0 pointer-events-none' : ''}`} />
         {showPlaceholder ? (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             {ghostImage ? (
@@ -2634,55 +4244,73 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           </div>
         ) : (
         <>
-        {/* 左上角标题区域（在文本框外部，节点边框外）；选中时缩小画布也显示 */}
-        {(showDetailedUi || selected) && <div className="title-area absolute -top-7 left-0 z-10">
-          {isEditingTitle ? (
-            <input
-              ref={titleInputRef}
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => {
-                setIsEditingTitle(false);
-                if (data?.title !== title) {
-                  updateNodeData({ title });
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  setIsEditingTitle(false);
-                  if (data?.title !== title) {
-                    updateNodeData({ title });
-                  }
-                }
-                if (e.key === 'Escape') {
-                  setIsEditingTitle(false);
-                  setTitle(data?.title || 'image');
-                }
-              }}
-              className={`bg-transparent outline-none font-bold text-xs ${
-                isDarkMode ? 'text-white/80' : 'text-gray-900'
-              }`}
-              style={{ 
-                caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
-                minWidth: '40px',
-                maxWidth: '120px',
-              }}
-              title={imgc.editTitle}
-              autoFocus
-            />
-          ) : (
-            <span
-              onClick={handleTitleDoubleClick}
-              className={`font-bold text-xs cursor-pointer select-none ${
-                isDarkMode ? 'text-white/80' : 'text-gray-900'
-              } hover:opacity-70 transition-opacity`}
-            >
-              {title || 'image'}
-            </span>
-          )}
-        </div>}
+        {/* 模块上方标签：仅图标 + 标题 + 耗时，不对齐“打印”式状态条 */}
+        {(showDetailedUi || selected) && (
+          <div className="title-area absolute -top-7 left-0 right-0 z-10 flex items-center justify-between gap-2 pointer-events-none">
+            <div className="flex min-w-0 items-center gap-1 pointer-events-auto">
+              <ImageIcon
+                className={`h-3 w-3 shrink-0 ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}
+                strokeWidth={2.25}
+              />
+              {isEditingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onBlur={() => {
+                    setIsEditingTitle(false);
+                    if (data?.title !== title) {
+                      updateNodeData({ title });
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      setIsEditingTitle(false);
+                      if (data?.title !== title) {
+                        updateNodeData({ title });
+                      }
+                    }
+                    if (e.key === 'Escape') {
+                      setIsEditingTitle(false);
+                      setTitle(data?.title || 'image');
+                    }
+                  }}
+                  className={`bg-transparent outline-none text-xs font-medium ${
+                    isDarkMode ? 'text-white/80' : 'text-gray-900'
+                  }`}
+                  style={{
+                    caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
+                    minWidth: '40px',
+                    maxWidth: '160px',
+                  }}
+                  title={imgc.editTitle}
+                  autoFocus
+                />
+              ) : (
+                <span
+                  onClick={handleTitleDoubleClick}
+                  className={`cursor-pointer select-none truncate text-xs font-medium ${
+                    isDarkMode ? 'text-white/75' : 'text-gray-700'
+                  } hover:opacity-70 transition-opacity`}
+                  title={title || 'image'}
+                >
+                  {displayTitleLabel}
+                </span>
+              )}
+            </div>
+            {displayElapsedSec != null && (
+              <span
+                className={`shrink-0 text-[10px] font-medium tabular-nums pointer-events-none ${
+                  isDarkMode ? 'text-white/45' : 'text-gray-500'
+                }`}
+              >
+                {wc.llmElapsedLabel(displayElapsedSec)}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 全模块覆盖进度条（生成中时纯色遮罩，不显示其他内容） */}
         <ModuleProgressBar
@@ -2694,30 +4322,98 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           onFadeComplete={() => updateNodeData({ progress: 0 })}
         />
 
-        {/* 抠图/去水印进度条（覆盖整个模块，带循环动画） */}
+        {/* 抠图进度条（覆盖整个模块）；去水印在右侧新模块显示进度，不遮挡原图 */}
         <ModuleProgressBar
-          visible={isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading}
+          visible={isMattingLoading}
           progress={0}
           solidBackground={isDarkMode ? '#1C1C1E' : '#f5f5f5'}
           progressMessage={
             isMattingLoading
               ? imgc.mattingProgress(String(mattingDisplayYuanbao))
-              : isWatermarkRemovalLoading
-                ? imgc.watermarkProgress(String(watermarkDisplayYuanbao))
-                : isMultiAngleLoading
-                  ? imgc.multiAngleProgress(String(multiAngleDisplayYuanbao))
-                  : undefined
+              : undefined
           }
           borderRadius={16}
         />
 
-        {/* 顶部工具栏：仅图标，悬停 title 显示文字 */}
-        {selected && (
+        {/* 顶部统一工具栏：360 模式仅保留放大 + 绿色地球退出；平面模式为完整工具 */}
+        {selected && isPanorama360Mode ? (
           <div
-            className="nodrag nopan absolute -top-14 left-0 right-0 z-10 flex items-center justify-center gap-2"
-            style={{ pointerEvents: 'all' }}
+            className={[
+              'node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-[80]',
+              'flex w-max flex-nowrap items-center justify-center gap-0.5',
+              'overflow-visible rounded-full px-2 py-1.5',
+              isDarkMode
+                ? 'nexflow-glass-panel border border-white/[0.14] shadow-[0_8px_28px_rgba(0,0,0,0.28)]'
+                : 'apple-panel-light border border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.06)]',
+            ].join(' ')}
+            style={{
+              pointerEvents: 'all',
+              transform: `translate3d(-50%, 0, 0) scale(${zoomInv})`,
+              transformOrigin: 'bottom center',
+              transition: 'opacity 160ms ease-out',
+              willChange: 'transform',
+              backfaceVisibility: 'hidden',
+            }}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                void panoControlsRef.current?.toggleFullscreen();
+              }}
+              className={topToolbarIconBtn('looks')}
+              title={locale === 'en' ? 'Enlarge / fullscreen' : '放大查看'}
+              aria-label={locale === 'en' ? 'Enlarge / fullscreen' : '放大查看'}
+            >
+              <Maximize2 className="w-4 h-4 shrink-0" />
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                togglePanorama360Mode();
+              }}
+              className={topToolbarIconBtn(
+                'sensing',
+                true,
+                isDarkMode
+                  ? '!bg-emerald-600/55 text-white ring-1 ring-emerald-400/70'
+                  : '!bg-emerald-600 text-white ring-2 ring-emerald-700/30',
+              )}
+              title={locale === 'en' ? 'Exit 360° view' : '退出 360° 模式'}
+              aria-label={locale === 'en' ? 'Exit 360° view' : '退出 360° 模式'}
+              aria-pressed
+            >
+              <Globe className="w-4 h-4 shrink-0" />
+            </button>
+          </div>
+        ) : null}
+        {selected && !isPanorama360Mode && (
+          <div
+            className={[
+              'node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-[80]',
+              'flex w-max max-w-[min(92vw,720px)] flex-nowrap items-center justify-center gap-0.5',
+              'overflow-visible rounded-full px-2 py-1.5',
+              isDarkMode
+                ? 'nexflow-glass-panel border border-white/[0.14] shadow-[0_8px_28px_rgba(0,0,0,0.28)]'
+                : 'apple-panel-light border border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.06)]',
+            ].join(' ')}
+            style={{
+              pointerEvents: 'all',
+              transform: `translate3d(-50%, 0, 0) scale(${zoomInv})`,
+              transformOrigin: 'bottom center',
+              transition: 'opacity 160ms ease-out',
+              willChange: 'transform',
+              backfaceVisibility: 'hidden',
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
           >
             <input
               ref={fileInputRef}
@@ -2781,19 +4477,11 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   onMouseLeave={scheduleCloseFlipMenu}
                 >
                   <div
-                    className={`flex h-8 cursor-default items-center justify-center gap-0.5 rounded-lg px-2 transition-all select-none ${
-                      isDarkMode
-                        ? `bg-white/15 text-white ${
-                            flipHUi || flipVUi
-                              ? 'ring-1 ring-violet-400/50 bg-violet-500/20'
-                              : flipMenuHover
-                                ? 'ring-1 ring-white/30'
-                                : 'hover:bg-white/25'
-                          }`
-                        : `scratch-float-btn ${scratchTintClass('variables')} px-2 ${
-                            flipHUi || flipVUi ? 'ring-2 ring-offset-1 ring-gray-900/20' : ''
-                          } ${flipMenuHover && !(flipHUi || flipVUi) ? 'ring-2 ring-offset-1 ring-gray-900/10' : ''}`
-                    }`}
+                    className={topToolbarIconBtn(
+                      'variables',
+                      flipHUi || flipVUi || flipMenuHover,
+                      'cursor-default gap-0 !w-auto px-1.5',
+                    )}
                     title={imgc.flipMenuHoverHint}
                     role="group"
                     aria-label={imgc.flipMenuHoverHint}
@@ -2870,10 +4558,15 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!cropSourceUrl) return;
-                      setShowCropModal(true);
+                      if (showCropModal) {
+                        closeCropSession();
+                        return;
+                      }
+                      openCropSession();
                     }}
                     className={topToolbarIconBtn(
                       'operators',
+                      showCropModal,
                       showCropModal
                         ? isDarkMode
                           ? '!bg-emerald-500/25 ring-1 ring-emerald-400/50'
@@ -2887,51 +4580,750 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     <Crop className="w-4 h-4 shrink-0" />
                   </button>
                 )}
-                {showPanoramaPlacementEntry && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const scene3dSrc =
-                        typeof data?.sceneDisplay3dUrl === 'string' ? data.sceneDisplay3dUrl.trim() : '';
-                      const flatSrc = getImageDisplaySrc(
-                        formatImagePath(previewImagePath || primaryOutputImage || tinyImagePath),
-                      );
-                      const baseSrc = scene3dSrc || flatSrc;
-                      if (!baseSrc || !onOpenPanoramaPlacement) return;
-                      const urlForPanel = baseSrc.startsWith('data:') ? baseSrc : `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}_t=${Date.now()}`;
-                      const nw = imgRef.current?.naturalWidth ?? imageNaturalPx?.w;
-                      const nh = imgRef.current?.naturalHeight ?? imageNaturalPx?.h;
-                      onOpenPanoramaPlacement({
-                        nodeId: id,
-                        imageUrl: urlForPanel,
-                        localPath: data?.localPath,
-                        pixelWidth: nw,
-                        pixelHeight: nh,
-                      });
-                    }}
-                    className={topToolbarIconBtn('sensing')}
-                    title={imgc.panoramaPlacementTitle}
-                    aria-label={imgc.panoramaPlacementAria}
+                  <div
+                    className="relative inline-flex flex-col items-stretch nodrag nopan"
+                    onMouseEnter={openPanoramaConvertHover}
+                    onMouseLeave={scheduleClosePanoramaConvertHover}
                   >
-                    <Globe className="w-4 h-4 shrink-0" />
-                  </button>
-                )}
+                    <button
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        if (!showPanorama360Entry) return;
+                        togglePanorama360Mode();
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                      }}
+                      className={topToolbarIconBtn(
+                        'sensing',
+                        isPanorama360Mode || panoramaConvertHover,
+                        isPanorama360Mode || panoramaConvertHover
+                          ? isDarkMode
+                            ? '!bg-emerald-500/25 ring-1 ring-emerald-400/50'
+                            : 'ring-2 ring-offset-1 ring-gray-900/20'
+                          : '',
+                      )}
+                      title={
+                        isPanorama360Mode
+                          ? imgc.panorama360PreviewExit
+                          : showPanorama360Entry
+                            ? imgc.panorama360Preview
+                            : imgc.panorama360Button
+                      }
+                      aria-label={
+                        isPanorama360Mode
+                          ? imgc.panorama360PreviewExit
+                          : showPanorama360Entry
+                            ? imgc.panorama360Preview
+                            : imgc.panorama360Button
+                      }
+                      aria-pressed={isPanorama360Mode}
+                    >
+                      <Globe className="w-4 h-4 shrink-0" />
+                    </button>
+                    {panoramaConvertHover ? (
+                      <div
+                        className="absolute left-1/2 bottom-full z-[60] mb-1 -translate-x-1/2 nodrag nopan"
+                        onMouseEnter={openPanoramaConvertHover}
+                        onMouseLeave={scheduleClosePanoramaConvertHover}
+                        onPointerDown={(ev) => ev.stopPropagation()}
+                        onClick={(ev) => ev.stopPropagation()}
+                      >
+                        <div className="relative inline-flex flex-col items-center">
+                          <button
+                            type="button"
+                            className={`inline-flex items-center whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-xs font-medium shadow-xl transition-colors ${
+                              isDarkMode
+                                ? 'bg-zinc-900 border-white/15 text-white/95 hover:bg-white/10'
+                                : 'bg-white border-gray-200 text-gray-900 hover:bg-gray-100'
+                            }`}
+                            title={imgc.panorama360SceneConvertHint}
+                            onMouseEnter={openScene360ModelMenu}
+                          >
+                            {imgc.panorama360Convert}
+                          </button>
+                          {scene360ModelMenuOpen ? (
+                            <div
+                              className={`absolute left-1/2 bottom-full mb-1 -translate-x-1/2 min-w-[168px] overflow-hidden rounded-lg border shadow-xl ${
+                                isDarkMode
+                                  ? 'bg-zinc-900 border-white/15'
+                                  : 'bg-white border-gray-200 shadow-gray-900/15'
+                              }`}
+                              onMouseEnter={openScene360ModelMenu}
+                            >
+                              <div className="p-1">
+                                {scene360ConvertModelOptions.map((opt) => {
+                                  const priceLabel = scene360PriceLabelForModel(opt.value);
+                                  const showPrice =
+                                    scene360PriceHoverModel === opt.value && !!priceLabel;
+                                  return (
+                                    <button
+                                      key={opt.value}
+                                      type="button"
+                                      className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors ${
+                                        isDarkMode
+                                          ? 'text-white/95 hover:bg-white/10'
+                                          : 'text-gray-900 hover:bg-gray-100'
+                                      }`}
+                                      onMouseEnter={() => setScene360PriceHoverModel(opt.value)}
+                                      onMouseLeave={() =>
+                                        setScene360PriceHoverModel((prev) =>
+                                          prev === opt.value ? null : prev,
+                                        )
+                                      }
+                                      onClick={() => void runScene360ConvertWithModel(opt.value)}
+                                    >
+                                      <span className="truncate">{opt.label}</span>
+                                      {showPrice ? (
+                                        <span
+                                          className={`shrink-0 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${
+                                            isDarkMode
+                                              ? 'bg-amber-500/20 text-amber-200/95 border border-amber-500/35'
+                                              : 'bg-amber-50 text-amber-800 border border-amber-200'
+                                          }`}
+                                        >
+                                          {priceLabel}
+                                        </span>
+                                      ) : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
               </>
             ) : null}
+
+            {toolbarDivider}
+
+            {/* 原下方工具：改为仅图标，并入顶栏 */}
+            <div
+              className="relative inline-flex"
+              onMouseEnter={() => setMattingPriceHover(true)}
+              onMouseLeave={() => setMattingPriceHover(false)}
+            >
+              <button
+                type="button"
+                disabled={isMattingLoading || isWatermarkRemovalLoading}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (isMattingLoading || isWatermarkRemovalLoading) return;
+                  const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
+                    return outImg
+                      || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
+                      || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
+                      || (nodeData?.originalImageUrl ? formatImagePath(nodeData.originalImageUrl) : '')
+                      || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
+                  };
+                  let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
+                  if (!imageToProcess) {
+                    const edges = getEdges();
+                    const nodes = getNodes();
+                    const incomingImageEdges = edges.filter((ed) => ed.target === id);
+                    for (const edge of incomingImageEdges) {
+                      const srcNode = nodes.find((n) => n.id === edge.source);
+                      if (srcNode?.type === 'image' && srcNode.data) {
+                        const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                        imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                        if (imageToProcess) break;
+                      }
+                    }
+                  }
+                  if (!imageToProcess) {
+                    setIsMattingLoading(true);
+                    setErrorMessage('');
+                    for (let i = 0; i < 4; i++) {
+                      await new Promise((r) => setTimeout(r, 500));
+                      const freshNodes = getNodes();
+                      const selfNode = freshNodes.find((n) => n.id === id);
+                      const freshData = selfNode?.data as ImageNodeData | undefined;
+                      const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
+                      imageToProcess = resolveImageToProcess(freshData, freshOut);
+                      if (!imageToProcess) {
+                        const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
+                        for (const edge of incomingImageEdges) {
+                          const srcNode = freshNodes.find((n) => n.id === edge.source);
+                          if (srcNode?.type === 'image' && srcNode.data) {
+                            const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                            imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                            if (imageToProcess) break;
+                          }
+                        }
+                      }
+                      if (imageToProcess) break;
+                    }
+                  }
+                  if (!imageToProcess) {
+                    setIsMattingLoading(false);
+                    setErrorMessage(imgc.needImageFirst);
+                    return;
+                  }
+                  if (!window.electronAPI?.imageMatting) {
+                    setErrorMessage(imgc.mattingNotSupported);
+                    return;
+                  }
+                  setIsMattingLoading(true);
+                  setErrorMessage('');
+                  try {
+                    const result = await window.electronAPI.imageMatting(imageToProcess);
+                    if (result?.success && result.imageUrl) {
+                      const newUrl = result.imageUrl;
+                      setOutputImage(newUrl);
+                      setOutputImages([newUrl]);
+                      updateNodeData({
+                        outputImage: newUrl,
+                        outputImages: [newUrl],
+                        errorMessage: undefined,
+                        imageAsset: buildImageAssetAfterAuxUrl(data?.imageAsset, newUrl),
+                      });
+                      onAuxImageTaskComplete?.({ nodeId: id, type: 'matting', imageUrl: newUrl });
+                    }
+                  } catch (err: any) {
+                    const msg = err?.message || imgc.mattingFailedDefault;
+                    setErrorMessage(msg);
+                    updateNodeData({ errorMessage: msg });
+                  } finally {
+                    setIsMattingLoading(false);
+                  }
+                }}
+                className={topToolbarIconBtn(
+                  'motion',
+                  false,
+                  isMattingLoading || isWatermarkRemovalLoading ? '!opacity-50 cursor-not-allowed' : '',
+                )}
+                title={`${imgc.mattingTitle} · ${locale === 'en' ? `${mattingDisplayYuanbao} ${imgc.creditsSuffix}` : `${mattingDisplayYuanbao}${imgc.creditsSuffix}`}`}
+                aria-label={imgc.mattingButton}
+              >
+                {isMattingLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Scissors className="w-4 h-4 shrink-0" />
+                )}
+              </button>
+              <span
+                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                } ${
+                  mattingPriceHover
+                    ? 'pointer-events-none translate-y-0 opacity-100'
+                    : 'pointer-events-none translate-y-2 opacity-0'
+                }`}
+                title={imgc.mattingPriceTitle}
+              >
+                {locale === 'en' ? `${mattingDisplayYuanbao} ${imgc.creditsSuffix}` : `${mattingDisplayYuanbao}${imgc.creditsSuffix}`}
+              </span>
+            </div>
+
+            {/* 超分放大：仅图标，悬停显示价；结果落到右侧新模块 */}
+            <div
+              className="relative inline-flex"
+              onMouseEnter={() => setUpscaleV3PriceHover(true)}
+              onMouseLeave={() => setUpscaleV3PriceHover(false)}
+            >
+              <button
+                type="button"
+                disabled={isMattingLoading || isWatermarkRemovalLoading || isUpscaleV3Loading}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (isMattingLoading || isWatermarkRemovalLoading || isUpscaleV3Loading) return;
+                  const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
+                    return outImg
+                      || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
+                      || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
+                      || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
+                  };
+                  let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
+                  if (!imageToProcess) {
+                    const edges = getEdges();
+                    const nodes = getNodes();
+                    const incomingImageEdges = edges.filter((ed) => ed.target === id);
+                    for (const edge of incomingImageEdges) {
+                      const srcNode = nodes.find((n) => n.id === edge.source);
+                      if (srcNode?.type === 'image' && srcNode.data) {
+                        const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                        imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                        if (imageToProcess) break;
+                      }
+                    }
+                  }
+                  if (!imageToProcess) {
+                    setErrorMessage('');
+                    for (let i = 0; i < 4; i++) {
+                      await new Promise((r) => setTimeout(r, 500));
+                      const freshNodes = getNodes();
+                      const selfNode = freshNodes.find((n) => n.id === id);
+                      const freshData = selfNode?.data as ImageNodeData | undefined;
+                      const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
+                      imageToProcess = resolveImageToProcess(freshData, freshOut);
+                      if (!imageToProcess) {
+                        const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
+                        for (const edge of incomingImageEdges) {
+                          const srcNode = freshNodes.find((n) => n.id === edge.source);
+                          if (srcNode?.type === 'image' && srcNode.data) {
+                            const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                            imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                            if (imageToProcess) break;
+                          }
+                        }
+                      }
+                      if (imageToProcess) break;
+                    }
+                  }
+                  if (!imageToProcess) {
+                    setErrorMessage(imgc.needImageFirst);
+                    return;
+                  }
+                  if (!window.electronAPI?.imageUpscaleV3) {
+                    setErrorMessage(imgc.upscaleV3NotSupported);
+                    return;
+                  }
+
+                  const targetNodeId = spawnLinkedImageModule({
+                    label: imgc.upscaleV3Title,
+                    inputImageUrl: imageToProcess,
+                    pinToSourceRight: true,
+                    extraData: {
+                      progress: 1,
+                      progressMessage: imgc.upscaleV3Progress(String(upscaleV3DisplayYuanbao)),
+                    },
+                  });
+                  if (!targetNodeId) {
+                    setErrorMessage(imgc.needImageFirst);
+                    return;
+                  }
+
+                  setIsUpscaleV3Loading(true);
+                  setErrorMessage('');
+                  try {
+                    const result = await window.electronAPI.imageUpscaleV3(imageToProcess);
+                    if (result?.success && result.imageUrl && !/\.zip(?:$|[?#])/i.test(result.imageUrl)) {
+                      const newUrl = result.imageUrl;
+                      patchImageNodeData(targetNodeId, {
+                        outputImage: newUrl,
+                        outputImages: [newUrl],
+                        originalImageUrl: newUrl,
+                        errorMessage: undefined,
+                        progress: 0,
+                        progressMessage: '',
+                        imageAsset: buildImageAssetAfterAuxUrl(undefined, newUrl),
+                      });
+                      onAuxImageTaskComplete?.({ nodeId: targetNodeId, type: 'upscale-v3', imageUrl: newUrl });
+                    } else {
+                      patchImageNodeData(targetNodeId, {
+                        progress: 0,
+                        progressMessage: '',
+                        errorMessage:
+                          result?.success && result.imageUrl
+                            ? (locale === 'en' ? 'Upscale returned no image (zip ignored)' : '超分未返回可用图片（已忽略 zip）')
+                            : imgc.upscaleV3FailedDefault,
+                      });
+                    }
+                  } catch (err: any) {
+                    const msg = err?.message || imgc.upscaleV3FailedDefault;
+                    patchImageNodeData(targetNodeId, {
+                      progress: 0,
+                      progressMessage: '',
+                      errorMessage: msg,
+                    });
+                  } finally {
+                    setIsUpscaleV3Loading(false);
+                  }
+                }}
+                className={topToolbarIconBtn(
+                  'looks',
+                  false,
+                  isMattingLoading || isWatermarkRemovalLoading || isUpscaleV3Loading
+                    ? '!opacity-50 cursor-not-allowed'
+                    : '',
+                )}
+                title={`${imgc.upscaleV3Title} · ${locale === 'en' ? `${upscaleV3DisplayYuanbao} ${imgc.creditsSuffix}` : `${upscaleV3DisplayYuanbao}${imgc.creditsSuffix}`}`}
+                aria-label={imgc.upscaleV3Title}
+              >
+                {isUpscaleV3Loading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ZoomIn className="w-4 h-4 shrink-0" />
+                )}
+              </button>
+              <span
+                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                } ${
+                  upscaleV3PriceHover
+                    ? 'pointer-events-none translate-y-0 opacity-100'
+                    : 'pointer-events-none translate-y-2 opacity-0'
+                }`}
+                title={imgc.upscaleV3PriceTitle}
+              >
+                {locale === 'en' ? `${upscaleV3DisplayYuanbao} ${imgc.creditsSuffix}` : `${upscaleV3DisplayYuanbao}${imgc.creditsSuffix}`}
+              </span>
+            </div>
+
+            {primaryOutputImage ? (
+              <div
+                className="relative inline-flex flex-col items-stretch nodrag nopan"
+                onMouseEnter={openSplitMenu}
+                onMouseLeave={scheduleCloseSplitMenu}
+              >
+                <div
+                  className={topToolbarIconBtn(
+                    'events',
+                    splitGridMenuHover && !isSplitNineBusy,
+                    isMattingLoading ||
+                      isWatermarkRemovalLoading ||
+                      isUpscaleV3Loading ||
+                      !!nineSplitAnim ||
+                      isSplitNineBusy
+                      ? '!opacity-50 cursor-not-allowed'
+                      : 'cursor-default gap-0 !w-auto px-1.5',
+                  )}
+                  title={imgc.splitGridHoverHint}
+                  role="group"
+                  aria-label={imgc.splitGridHoverHint}
+                >
+                  {isSplitNineBusy ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <LayoutGrid className="w-4 h-4 shrink-0" />
+                  )}
+                  <ChevronDown className="w-3 h-3 shrink-0 opacity-80" aria-hidden />
+                </div>
+                {splitGridMenuHover &&
+                  !isMattingLoading &&
+                  !isWatermarkRemovalLoading &&
+                  !nineSplitAnim &&
+                  !isSplitNineBusy && (
+                    <div
+                      className="absolute left-0 top-full z-[60] min-w-[10.5rem] pt-1 nodrag nopan"
+                      onMouseEnter={openSplitMenu}
+                      onMouseLeave={scheduleCloseSplitMenu}
+                      onPointerDown={(ev) => ev.stopPropagation()}
+                      onClick={(ev) => ev.stopPropagation()}
+                    >
+                      <div
+                        className={`rounded-lg border py-1 shadow-xl ${
+                          isDarkMode ? 'bg-zinc-900 border-white/15 text-white/95' : 'bg-white border-gray-200 text-gray-900'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={(ev) => {
+                            setSplitGridMenuHover(false);
+                            void handleSplitGridToCanvas('four', ev);
+                          }}
+                        >
+                          {imgc.splitGridMenuFour}
+                        </button>
+                        <button
+                          type="button"
+                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={(ev) => {
+                            setSplitGridMenuHover(false);
+                            void handleSplitGridToCanvas('2x3', ev);
+                          }}
+                        >
+                          {imgc.splitGridMenuTwoByThree}
+                        </button>
+                        <button
+                          type="button"
+                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={(ev) => {
+                            setSplitGridMenuHover(false);
+                            void handleSplitGridToCanvas('3x2', ev);
+                          }}
+                        >
+                          {imgc.splitGridMenuThreeByTwo}
+                        </button>
+                        <button
+                          type="button"
+                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={(ev) => {
+                            setSplitGridMenuHover(false);
+                            void handleSplitGridToCanvas('nine', ev);
+                          }}
+                        >
+                          {imgc.splitGridMenuNine}
+                        </button>
+                        <div
+                          className={`mt-0.5 border-t px-3 py-2 ${
+                            isDarkMode ? 'border-white/10' : 'border-gray-200'
+                          }`}
+                          onMouseEnter={openSplitMenu}
+                        >
+                          <div
+                            className={`mb-1.5 text-[10px] font-medium ${
+                              isDarkMode ? 'text-white/55' : 'text-gray-500'
+                            }`}
+                          >
+                            {imgc.splitGridMenuCustom}
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={1}
+                              max={GRID_SPLIT_MAX_AXIS}
+                              inputMode="numeric"
+                              value={customSplitCols}
+                              onChange={(ev) => setCustomSplitCols(ev.target.value)}
+                              onFocus={openSplitMenu}
+                              onKeyDown={(ev) => {
+                                if (ev.key === 'Enter') {
+                                  ev.preventDefault();
+                                  applyCustomSplitGrid(ev);
+                                }
+                              }}
+                              className={`nodrag nopan h-7 w-10 rounded-md border px-1.5 text-center text-xs outline-none ${
+                                isDarkMode
+                                  ? 'border-white/15 bg-white/5 text-white focus:border-white/35'
+                                  : 'border-gray-200 bg-white text-gray-900 focus:border-gray-400'
+                              }`}
+                              aria-label={locale === 'en' ? 'Columns' : '列'}
+                              title={locale === 'en' ? 'Columns' : '列'}
+                            />
+                            <span className={`text-xs ${isDarkMode ? 'text-white/45' : 'text-gray-400'}`}>×</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={GRID_SPLIT_MAX_AXIS}
+                              inputMode="numeric"
+                              value={customSplitRows}
+                              onChange={(ev) => setCustomSplitRows(ev.target.value)}
+                              onFocus={openSplitMenu}
+                              onKeyDown={(ev) => {
+                                if (ev.key === 'Enter') {
+                                  ev.preventDefault();
+                                  applyCustomSplitGrid(ev);
+                                }
+                              }}
+                              className={`nodrag nopan h-7 w-10 rounded-md border px-1.5 text-center text-xs outline-none ${
+                                isDarkMode
+                                  ? 'border-white/15 bg-white/5 text-white focus:border-white/35'
+                                  : 'border-gray-200 bg-white text-gray-900 focus:border-gray-400'
+                              }`}
+                              aria-label={locale === 'en' ? 'Rows' : '行'}
+                              title={locale === 'en' ? 'Rows' : '行'}
+                            />
+                            <button
+                              type="button"
+                              className={`ml-auto h-7 shrink-0 rounded-md px-2 text-xs font-medium transition-colors ${
+                                isDarkMode
+                                  ? 'bg-white/12 text-white hover:bg-white/18'
+                                  : 'bg-gray-900 text-white hover:bg-gray-800'
+                              }`}
+                              onClick={(ev) => applyCustomSplitGrid(ev)}
+                            >
+                              {imgc.splitGridCustomApply}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+              </div>
+            ) : null}
+
+            <div
+              className="relative inline-flex flex-col items-center"
+              onMouseEnter={() => setWatermarkPriceHover(true)}
+              onMouseLeave={() => setWatermarkPriceHover(false)}
+            >
+              <button
+              type="button"
+              disabled={isMattingLoading || isWatermarkRemovalLoading}
+              onClick={async (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (isMattingLoading || isWatermarkRemovalLoading) return;
+                const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
+                  return outImg
+                    || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
+                    || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
+                    || (nodeData?.originalImageUrl ? formatImagePath(nodeData.originalImageUrl) : '')
+                    || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
+                };
+                let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
+                if (!imageToProcess) {
+                  const edges = getEdges();
+                  const nodes = getNodes();
+                  const incomingImageEdges = edges.filter((ed) => ed.target === id);
+                  for (const edge of incomingImageEdges) {
+                    const srcNode = nodes.find((n) => n.id === edge.source);
+                    if (srcNode?.type === 'image' && srcNode.data) {
+                      const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                      imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                      if (imageToProcess) break;
+                    }
+                  }
+                }
+                if (!imageToProcess) {
+                  setErrorMessage('');
+                  for (let i = 0; i < 4; i++) {
+                    await new Promise((r) => setTimeout(r, 500));
+                    const freshNodes = getNodes();
+                    const selfNode = freshNodes.find((n) => n.id === id);
+                    const freshData = selfNode?.data as ImageNodeData | undefined;
+                    const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
+                    imageToProcess = resolveImageToProcess(freshData, freshOut);
+                    if (!imageToProcess) {
+                      const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
+                      for (const edge of incomingImageEdges) {
+                        const srcNode = freshNodes.find((n) => n.id === edge.source);
+                        if (srcNode?.type === 'image' && srcNode.data) {
+                          const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
+                          imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
+                          if (imageToProcess) break;
+                        }
+                      }
+                    }
+                    if (imageToProcess) break;
+                  }
+                }
+                if (!imageToProcess) {
+                  setErrorMessage(imgc.needImageFirst);
+                  return;
+                }
+                if (!window.electronAPI?.imageWatermarkRemoval) {
+                  setErrorMessage(imgc.watermarkNotSupported);
+                  return;
+                }
+
+                // 原图不变：右侧新建模块承接去水印结果与进度遮罩
+                const targetNodeId = spawnLinkedImageModule({
+                  label: imgc.watermarkButton,
+                  inputImageUrl: imageToProcess,
+                  extraData: {
+                    progress: 1,
+                    progressMessage: imgc.watermarkProgress(String(watermarkDisplayYuanbao)),
+                  },
+                });
+                if (!targetNodeId) {
+                  setErrorMessage(imgc.needImageFirst);
+                  return;
+                }
+
+                // 仅按钮转圈，不在原模块盖进度遮罩
+                setIsWatermarkRemovalLoading(true);
+                setErrorMessage('');
+                try {
+                  const result = await window.electronAPI.imageWatermarkRemoval(imageToProcess);
+                  if (result?.success && result.imageUrl) {
+                    const newUrl = result.imageUrl;
+                    patchImageNodeData(targetNodeId, {
+                      outputImage: newUrl,
+                      outputImages: [newUrl],
+                      originalImageUrl: newUrl,
+                      errorMessage: undefined,
+                      progress: 0,
+                      progressMessage: '',
+                      imageAsset: buildImageAssetAfterAuxUrl(undefined, newUrl),
+                    });
+                    onAuxImageTaskComplete?.({ nodeId: targetNodeId, type: 'watermark', imageUrl: newUrl });
+                  } else {
+                    patchImageNodeData(targetNodeId, {
+                      progress: 0,
+                      progressMessage: '',
+                      errorMessage: imgc.watermarkFailedDefault,
+                    });
+                  }
+                } catch (err: any) {
+                  const msg = err?.message || imgc.watermarkFailedDefault;
+                  patchImageNodeData(targetNodeId, {
+                    progress: 0,
+                    progressMessage: '',
+                    errorMessage: msg,
+                  });
+                } finally {
+                  setIsWatermarkRemovalLoading(false);
+                }
+              }}
+              className={topToolbarIconBtn('operators', false, isMattingLoading || isWatermarkRemovalLoading ? '!opacity-50 cursor-not-allowed' : '')}
+              title={imgc.watermarkTitle}
+            >
+              {isWatermarkRemovalLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Stamp className="w-4 h-4" />
+              )}
+            </button>
+              <span
+                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                } ${
+                  watermarkPriceHover
+                    ? 'pointer-events-none translate-y-0 opacity-100'
+                    : 'pointer-events-none translate-y-2 opacity-0'
+                }`}
+                title={imgc.watermarkPriceTitle}
+              >
+                {locale === 'en' ? `${watermarkDisplayYuanbao} ${imgc.creditsSuffix}` : `${watermarkDisplayYuanbao}${imgc.creditsSuffix}`}
+              </span>
+            </div>
+            <button
+              ref={threeDTriggerRef}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (data?.isCameraViewModule) {
+                  setIs3DPopoverOpen((v) => !v);
+                } else {
+                  spawnCameraViewModule();
+                }
+              }}
+              className={topToolbarIconBtn('sensing', is3DPopoverOpen)}
+              title={imgc.perspective3dTitle}
+            >
+              <Box className="w-4 h-4" />
+            </button>
           </div>
         )}
 
         {/* 图片内容显示区域：运行中由全模块进度条遮罩覆盖，再显示结果/错误/占位；缩放时隐藏高清图仅显示轮廓以提升性能 */}
-        <div className={`custom-scrollbar relative w-full h-full flex flex-col items-center overflow-auto min-h-0 ${hasRenderableImage ? 'p-0' : 'p-2'}`}>
+        <div
+          className={`custom-scrollbar relative w-full h-full flex flex-col min-h-0 ${
+            hasRenderableImage ? 'p-0' : 'p-2'
+          } ${
+            isPanorama360Mode
+              ? 'items-stretch overflow-hidden'
+              : 'items-center overflow-auto'
+          }`}
+        >
+          {hasRenderableImage && !isPanorama360Mode ? <AiGeneratedBadge isDarkMode={isDarkMode} /> : null}
           {primaryOutputImage ? (
             <>
               <div
                 ref={imgContainerRef}
-                className="relative flex items-center justify-center min-w-0 min-h-0 flex-1 w-full h-full"
+                className={`relative flex items-center justify-center min-w-0 min-h-0 flex-1 w-full h-full ${
+                  isPanorama360Mode ? 'overflow-hidden' : inspectZoom > 1.01 ? 'overflow-hidden nodrag nopan nowheel' : ''
+                }`}
                 style={{
-                  ...(hideImageLayerInPrefetch ? { visibility: 'hidden', pointerEvents: 'none' as const } : {}),
+                  ...(hideImageLayerInPrefetch && !showCropModal && !isPanorama360Mode
+                    ? { visibility: 'hidden', pointerEvents: 'none' as const }
+                    : {}),
                 }}
+                onWheel={handleInspectWheel}
+                onPointerDown={inspectZoom > 1.01 ? handleInspectPointerDown : undefined}
+                onPointerMove={inspectZoom > 1.01 ? handleInspectPointerMove : undefined}
+                onPointerUp={inspectZoom > 1.01 ? handleInspectPointerUp : undefined}
+                onPointerCancel={inspectZoom > 1.01 ? handleInspectPointerUp : undefined}
               >
               {isResizing ? (
                 <div className={`w-full h-full min-h-[80px] rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-white/10' : 'bg-black/10'}`} />
@@ -3012,6 +5404,43 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 );
               })() : null}
               {shouldShowOutputLayer ? (
+              isPanorama360Mode && panoTextureUrl ? (
+                <div
+                  className="nexflow-pano360-host z-[1] rounded-2xl overflow-hidden nodrag nopan nowheel bg-black"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                  }}
+                >
+                  <Panorama360Viewer
+                    instanceKey={`${id}-pano360`}
+                    textureUrl={panoTextureUrl}
+                    isDarkMode={isDarkMode}
+                    chrome="overlay"
+                    className=""
+                    layoutWidth={Math.round(size.w)}
+                    layoutHeight={Math.round(size.h)}
+                    nearLabel={imgc.panorama360Near}
+                    farLabel={imgc.panorama360Far}
+                    zoomSliderTitle={imgc.panorama360ZoomTitle}
+                    aspectAdaptiveLabel={imgc.panorama360AspectAdaptive}
+                    screenshotLabel={imgc.panorama360Screenshot}
+                    resetFovLabel={imgc.panorama360ResetFov}
+                    dragHint={locale === 'en' ? 'Drag to rotate view' : '拖拽旋转视角'}
+                    onRegisterControls={registerPanoControls}
+                    expandRatioPickerTitle={imgc.panorama360ExpandRatioPicker}
+                    collapseRatioPickerTitle={imgc.panorama360CollapseRatioPicker}
+                    ratioShortcutHint={imgc.panorama360RatioShortcutHint}
+                    onScreenshotCaptured={handlePanoramaScreenshot}
+                    onCaptureEmpty={() => showAlert(imgc.panorama360CaptureNotReady)}
+                    onRequestExit={() => {
+                      if (panorama360Active) togglePanorama360Mode();
+                    }}
+                  />
+                </div>
+              ) : (
               <>
               {!isImageLoaded && !hasMultiOutputImages && (
                 loadingPlaceholderSrc ? (
@@ -3066,7 +5495,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   !dragOutFileSourceUrl.startsWith('blob:')
                 }
                 onPointerDown={handleOutputImagePointerDown}
-                onClick={handleOutputImageClick}
+                onDoubleClick={handleOutputImageDoubleClick}
                 onDragStart={handleOutputImageDragStart}
                 title={
                   selected && outputImages.length <= 1
@@ -3090,6 +5519,13 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
                   transitionDuration: isInteractionVisualLock ? '0ms' : '220ms',
                   ...(performanceMode ? { imageRendering: 'crisp-edges' } : {}),
+                  ...(inspectZoom > 1.01
+                    ? {
+                        transform: `translate(${inspectPan.x}px, ${inspectPan.y}px) scale(${inspectZoom})`,
+                        transformOrigin: 'center center',
+                        cursor: 'grab',
+                      }
+                    : {}),
                 }}
                 onLoad={(e) => {
                   transientImgErrorRetriesRef.current = 0;
@@ -3116,7 +5552,6 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     Math.abs(assetRatio - imgRatio) / Math.max(imgRatio, 0.01) < 0.08;
                   const naturalW = assetMatchesLoaded ? assetW : img.naturalWidth;
                   const naturalH = assetMatchesLoaded ? assetH : img.naturalHeight;
-                  setImageNaturalPx({ w: naturalW, h: naturalH });
                   applyLayoutFromMediaPixels(naturalW, naturalH, srcKey);
                 }}
                 onError={async (e) => {
@@ -3270,6 +5705,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 />
               )}
               </>
+              )
               ) : (
                 <div className={`w-full h-full min-h-[80px] rounded-lg flex items-center justify-center text-xs ${isDarkMode ? 'bg-white/10 text-white/50' : 'bg-black/10 text-gray-500'}`}>
                   {wc.viewportPausedLoad}
@@ -3277,6 +5713,21 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
               )}
               </>
               )}
+              {showCropModal && cropSourceUrl ? (
+                <ImageCropOverlay
+                  ref={cropOverlayRef}
+                  imageUrl={cropSourceUrl}
+                  isDarkMode={isDarkMode}
+                  hint=""
+                  showHint={false}
+                  busy={cropBusy}
+                  onConfirm={(rect) => void handleCropConfirm(rect)}
+                  onCancel={() => {
+                    if (cropBusy) return;
+                    closeCropSession();
+                  }}
+                />
+              ) : null}
               </div>
             </>
           ) : errorMessage ? (
@@ -3302,476 +5753,6 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             </p>
           )}
         </div>
-
-        {/* 抠图/去水印/3D视角：在 image 框外（下方），选中时显示；抠图/去水印作用于输出图或输入图 */}
-        {selected && (
-          <div
-            className="nodrag nopan absolute -bottom-[4.5rem] left-0 right-0 flex flex-wrap justify-center items-end gap-x-2 gap-y-1.5 z-10 overflow-visible pb-0.5"
-            style={{ pointerEvents: 'all' }}
-          >
-            <div
-              className="relative inline-flex flex-col items-center"
-              onMouseEnter={() => setMattingPriceHover(true)}
-              onMouseLeave={() => setMattingPriceHover(false)}
-            >
-              <button
-              type="button"
-              disabled={isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading}
-              onClick={async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                if (isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading) return;
-                const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
-                  return outImg
-                    || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
-                    || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
-                    || (nodeData?.originalImageUrl ? formatImagePath(nodeData.originalImageUrl) : '')
-                    || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
-                };
-                let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
-                if (!imageToProcess) {
-                  const edges = getEdges();
-                  const nodes = getNodes();
-                  const incomingImageEdges = edges.filter((ed) => ed.target === id);
-                  for (const edge of incomingImageEdges) {
-                    const srcNode = nodes.find((n) => n.id === edge.source);
-                    if (srcNode?.type === 'image' && srcNode.data) {
-                      const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                      imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                      if (imageToProcess) break;
-                    }
-                  }
-                }
-                if (!imageToProcess) {
-                  setIsMattingLoading(true);
-                  setErrorMessage('');
-                  for (let i = 0; i < 4; i++) {
-                    await new Promise((r) => setTimeout(r, 500));
-                    const freshNodes = getNodes();
-                    const selfNode = freshNodes.find((n) => n.id === id);
-                    const freshData = selfNode?.data as ImageNodeData | undefined;
-                    const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
-                    imageToProcess = resolveImageToProcess(freshData, freshOut);
-                    if (!imageToProcess) {
-                      const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
-                      for (const edge of incomingImageEdges) {
-                        const srcNode = freshNodes.find((n) => n.id === edge.source);
-                        if (srcNode?.type === 'image' && srcNode.data) {
-                          const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                          imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                          if (imageToProcess) break;
-                        }
-                      }
-                    }
-                    if (imageToProcess) break;
-                  }
-                }
-                if (!imageToProcess) {
-                  setIsMattingLoading(false);
-                  setErrorMessage(imgc.needImageFirst);
-                  return;
-                }
-                if (!window.electronAPI?.imageMatting) {
-                  setErrorMessage(imgc.mattingNotSupported);
-                  return;
-                }
-                setIsMattingLoading(true);
-                setErrorMessage('');
-                try {
-                  const result = await window.electronAPI.imageMatting(imageToProcess);
-                  if (result?.success && result.imageUrl) {
-                    const newUrl = result.imageUrl;
-                    setOutputImage(newUrl);
-                    setOutputImages([newUrl]);
-                    updateNodeData({
-                      outputImage: newUrl,
-                      outputImages: [newUrl],
-                      errorMessage: undefined,
-                      imageAsset: buildImageAssetAfterAuxUrl(data?.imageAsset, newUrl),
-                    });
-                    onAuxImageTaskComplete?.({ nodeId: id, type: 'matting', imageUrl: newUrl });
-                  }
-                } catch (err: any) {
-                  const msg = err?.message || imgc.mattingFailedDefault;
-                  setErrorMessage(msg);
-                  updateNodeData({ errorMessage: msg });
-                } finally {
-                  setIsMattingLoading(false);
-                }
-              }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                isMattingLoading
-                  ? 'bg-blue-500/70 cursor-not-allowed opacity-80'
-                  : 'bg-blue-500 hover:bg-blue-600'
-              }`}
-              title={imgc.mattingTitle}
-            >
-              {isMattingLoading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Scissors className="w-3.5 h-3.5" />
-              )}
-              {imgc.mattingButton}
-            </button>
-              <span
-                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
-                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
-                } ${
-                  mattingPriceHover
-                    ? 'pointer-events-none translate-y-0 opacity-100'
-                    : 'pointer-events-none translate-y-2 opacity-0'
-                }`}
-                title={imgc.mattingPriceTitle}
-              >
-                {locale === 'en' ? `${mattingDisplayYuanbao} ${imgc.creditsSuffix}` : `${mattingDisplayYuanbao}${imgc.creditsSuffix}`}
-              </span>
-            </div>
-            {primaryOutputImage ? (
-              <div
-                className="relative inline-flex flex-col items-stretch"
-                onMouseEnter={() => setSplitGridMenuHover(true)}
-                onMouseLeave={() => setSplitGridMenuHover(false)}
-              >
-                <div
-                  className={`flex items-center gap-0.5 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white select-none ${
-                    isMattingLoading ||
-                    isWatermarkRemovalLoading ||
-                    isMultiAngleLoading ||
-                    !!nineSplitAnim ||
-                    isSplitNineBusy
-                      ? 'bg-indigo-500/70 cursor-not-allowed opacity-80'
-                      : 'bg-indigo-600/90 hover:bg-indigo-600 cursor-default'
-                  } ${splitGridMenuHover && !isSplitNineBusy ? 'ring-1 ring-white/30' : ''}`}
-                  title={imgc.splitGridHoverHint}
-                  role="group"
-                  aria-label={imgc.splitGridHoverHint}
-                >
-                  {isSplitNineBusy ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <LayoutGrid className="w-3.5 h-3.5" />
-                  )}
-                  <span>{imgc.splitNineButton}</span>
-                  <ChevronDown className="w-3 h-3 shrink-0 opacity-90" aria-hidden />
-                </div>
-                {splitGridMenuHover &&
-                  !isMattingLoading &&
-                  !isWatermarkRemovalLoading &&
-                  !isMultiAngleLoading &&
-                  !nineSplitAnim &&
-                  !isSplitNineBusy && (
-                    <div
-                      className="absolute left-0 top-full z-[60] min-w-[10.5rem] pt-0.5"
-                      onClick={(ev) => ev.stopPropagation()}
-                    >
-                      <div
-                        className={`rounded-lg border py-1 shadow-xl ${
-                          isDarkMode ? 'bg-zinc-900 border-white/15 text-white/95' : 'bg-white border-gray-200 text-gray-900'
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
-                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                          }`}
-                          onClick={(ev) => {
-                            setSplitGridMenuHover(false);
-                            void handleSplitGridToCanvas('four', ev);
-                          }}
-                        >
-                          {imgc.splitGridMenuFour}
-                        </button>
-                        <button
-                          type="button"
-                          className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
-                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                          }`}
-                          onClick={(ev) => {
-                            setSplitGridMenuHover(false);
-                            void handleSplitGridToCanvas('nine', ev);
-                          }}
-                        >
-                          {imgc.splitGridMenuNine}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-              </div>
-            ) : null}
-            <div
-              className="relative inline-flex flex-col items-center"
-              onMouseEnter={() => setWatermarkPriceHover(true)}
-              onMouseLeave={() => setWatermarkPriceHover(false)}
-            >
-              <button
-              type="button"
-              disabled={isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading}
-              onClick={async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                if (isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading) return;
-                const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
-                  return outImg
-                    || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
-                    || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
-                    || (nodeData?.originalImageUrl ? formatImagePath(nodeData.originalImageUrl) : '')
-                    || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
-                };
-                let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
-                if (!imageToProcess) {
-                  const edges = getEdges();
-                  const nodes = getNodes();
-                  const incomingImageEdges = edges.filter((ed) => ed.target === id);
-                  for (const edge of incomingImageEdges) {
-                    const srcNode = nodes.find((n) => n.id === edge.source);
-                    if (srcNode?.type === 'image' && srcNode.data) {
-                      const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                      imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                      if (imageToProcess) break;
-                    }
-                  }
-                }
-                if (!imageToProcess) {
-                  setIsWatermarkRemovalLoading(true);
-                  setErrorMessage('');
-                  for (let i = 0; i < 4; i++) {
-                    await new Promise((r) => setTimeout(r, 500));
-                    const freshNodes = getNodes();
-                    const selfNode = freshNodes.find((n) => n.id === id);
-                    const freshData = selfNode?.data as ImageNodeData | undefined;
-                    const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
-                    imageToProcess = resolveImageToProcess(freshData, freshOut);
-                    if (!imageToProcess) {
-                      const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
-                      for (const edge of incomingImageEdges) {
-                        const srcNode = freshNodes.find((n) => n.id === edge.source);
-                        if (srcNode?.type === 'image' && srcNode.data) {
-                          const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                          imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                          if (imageToProcess) break;
-                        }
-                      }
-                    }
-                    if (imageToProcess) break;
-                  }
-                }
-                if (!imageToProcess) {
-                  setIsWatermarkRemovalLoading(false);
-                  setErrorMessage(imgc.needImageFirst);
-                  return;
-                }
-                if (!window.electronAPI?.imageWatermarkRemoval) {
-                  setErrorMessage(imgc.watermarkNotSupported);
-                  return;
-                }
-                setIsWatermarkRemovalLoading(true);
-                setErrorMessage('');
-                try {
-                  const result = await window.electronAPI.imageWatermarkRemoval(imageToProcess);
-                  if (result?.success && result.imageUrl) {
-                    const newUrl = result.imageUrl;
-                    setOutputImage(newUrl);
-                    setOutputImages([newUrl]);
-                    updateNodeData({
-                      outputImage: newUrl,
-                      outputImages: [newUrl],
-                      errorMessage: undefined,
-                      imageAsset: buildImageAssetAfterAuxUrl(data?.imageAsset, newUrl),
-                    });
-                    onAuxImageTaskComplete?.({ nodeId: id, type: 'watermark', imageUrl: newUrl });
-                  }
-                } catch (err: any) {
-                  const msg = err?.message || imgc.watermarkFailedDefault;
-                  setErrorMessage(msg);
-                  updateNodeData({ errorMessage: msg });
-                } finally {
-                  setIsWatermarkRemovalLoading(false);
-                }
-              }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading
-                  ? 'bg-orange-500/70 cursor-not-allowed opacity-80'
-                  : 'bg-orange-500 hover:bg-orange-600'
-              }`}
-              title={imgc.watermarkTitle}
-            >
-              {isWatermarkRemovalLoading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Eraser className="w-3.5 h-3.5" />
-              )}
-              {imgc.watermarkButton}
-            </button>
-              <span
-                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
-                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
-                } ${
-                  watermarkPriceHover
-                    ? 'pointer-events-none translate-y-0 opacity-100'
-                    : 'pointer-events-none translate-y-2 opacity-0'
-                }`}
-                title={imgc.watermarkPriceTitle}
-              >
-                {locale === 'en' ? `${watermarkDisplayYuanbao} ${imgc.creditsSuffix}` : `${watermarkDisplayYuanbao}${imgc.creditsSuffix}`}
-              </span>
-            </div>
-            <div
-              className="relative inline-flex flex-col items-center"
-              onMouseEnter={() => setMultiAnglePriceHover(true)}
-              onMouseLeave={() => setMultiAnglePriceHover(false)}
-            >
-              <button
-                type="button"
-                disabled={isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  if (isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading) return;
-                  const resolveImageToProcess = (nodeData: ImageNodeData | undefined, outImg: string): string => {
-                    return outImg
-                      || (nodeData?.inputImages && nodeData.inputImages.length > 0 ? formatImagePath(nodeData.inputImages[0]) : '')
-                      || (nodeData?.imageAsset?.original ? formatImagePath(nodeData.imageAsset.original) : '')
-                      || (nodeData?.originalImageUrl ? formatImagePath(nodeData.originalImageUrl) : '')
-                      || (nodeData?.imageAsset?.preview ? formatImagePath(nodeData.imageAsset.preview) : '');
-                  };
-                  let imageToProcess = resolveImageToProcess(data, primaryOutputImage);
-                  if (!imageToProcess) {
-                    const edges = getEdges();
-                    const nodes = getNodes();
-                    const incomingImageEdges = edges.filter((ed) => ed.target === id);
-                    for (const edge of incomingImageEdges) {
-                      const srcNode = nodes.find((n) => n.id === edge.source);
-                      if (srcNode?.type === 'image' && srcNode.data) {
-                        const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                        imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                        if (imageToProcess) break;
-                      }
-                    }
-                  }
-                  if (!imageToProcess) {
-                    setIsMultiAngleLoading(true);
-                    setErrorMessage('');
-                    for (let i = 0; i < 4; i++) {
-                      await new Promise((r) => setTimeout(r, 500));
-                      const freshNodes = getNodes();
-                      const selfNode = freshNodes.find((n) => n.id === id);
-                      const freshData = selfNode?.data as ImageNodeData | undefined;
-                      const freshOut = (freshData?.outputImage as string) || (freshData?.originalImageUrl as string) || '';
-                      imageToProcess = resolveImageToProcess(freshData, freshOut);
-                      if (!imageToProcess) {
-                        const incomingImageEdges = getEdges().filter((ed) => ed.target === id);
-                        for (const edge of incomingImageEdges) {
-                          const srcNode = freshNodes.find((n) => n.id === edge.source);
-                          if (srcNode?.type === 'image' && srcNode.data) {
-                            const srcOut = (srcNode.data?.outputImage as string) || (srcNode.data?.originalImageUrl as string) || '';
-                            imageToProcess = resolveImageToProcess(srcNode.data as ImageNodeData, srcOut);
-                            if (imageToProcess) break;
-                          }
-                        }
-                      }
-                      if (imageToProcess) break;
-                    }
-                  }
-                  if (!imageToProcess) {
-                    setIsMultiAngleLoading(false);
-                    setErrorMessage(imgc.needImageFirst);
-                    return;
-                  }
-                  if (!window.electronAPI?.imageCharacterMultiAngle) {
-                    setErrorMessage(imgc.multiAngleNotSupported);
-                    return;
-                  }
-                  setIsMultiAngleLoading(true);
-                  setErrorMessage('');
-                  try {
-                    const result = await window.electronAPI.imageCharacterMultiAngle(imageToProcess);
-                    if (result?.success && result.imageUrl) {
-                      const newUrl = result.imageUrl;
-                      let allUrls = Array.isArray(result.imageUrls) && result.imageUrls.length > 0
-                        ? result.imageUrls
-                        : [newUrl];
-                      if (allUrls.length === 1) {
-                        const expanded = await expandMultiAngleCompositeIfNeeded(newUrl, data, projectId);
-                        if (expanded && expanded.length > 1) {
-                          allUrls = expanded;
-                        }
-                      }
-                      const coverUrl = allUrls[0] || newUrl;
-                      setOutputImage(coverUrl);
-                      setOutputImages(allUrls);
-                      updateNodeData({
-                        outputImage: coverUrl,
-                        outputImages: allUrls,
-                        errorMessage: undefined,
-                        imageAsset: buildImageAssetAfterAuxUrl(data?.imageAsset, coverUrl),
-                      });
-                      onAuxImageTaskComplete?.({
-                        nodeId: id,
-                        type: 'multi-angle',
-                        imageUrl: coverUrl,
-                        imageUrls: allUrls,
-                      });
-                    } else {
-                      const msg =
-                        (result as { message?: string } | undefined)?.message || imgc.multiAngleFailedDefault;
-                      setErrorMessage(msg);
-                      updateNodeData({ errorMessage: msg });
-                    }
-                  } catch (err: any) {
-                    const msg = err?.message || imgc.multiAngleFailedDefault;
-                    setErrorMessage(msg);
-                    updateNodeData({ errorMessage: msg });
-                  } finally {
-                    setIsMultiAngleLoading(false);
-                  }
-                }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                  isMattingLoading || isWatermarkRemovalLoading || isMultiAngleLoading
-                    ? 'bg-violet-500/70 cursor-not-allowed opacity-80'
-                    : 'bg-violet-500 hover:bg-violet-600'
-                }`}
-                title={imgc.multiAngleTitle}
-              >
-                {isMultiAngleLoading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Sparkles className="w-3.5 h-3.5" />
-                )}
-                {imgc.multiAngleButton}
-              </button>
-              <span
-                className={`absolute left-1/2 top-full z-20 mt-1 w-24 -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
-                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
-                } ${
-                  multiAnglePriceHover
-                    ? 'pointer-events-none translate-y-0 opacity-100'
-                    : 'pointer-events-none translate-y-2 opacity-0'
-                }`}
-                title={imgc.multiAnglePriceTitle}
-              >
-                {locale === 'en' ? `${multiAngleDisplayYuanbao} ${imgc.creditsSuffix}` : `${multiAngleDisplayYuanbao}${imgc.creditsSuffix}`}
-              </span>
-            </div>
-            <button
-              ref={threeDTriggerRef}
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                setIs3DPopoverOpen((v) => !v);
-              }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all ${
-                is3DPopoverOpen
-                  ? 'bg-cyan-500 text-white ring-2 ring-cyan-400/60'
-                  : 'bg-cyan-600/90 hover:bg-cyan-600 text-white'
-              }`}
-              title={imgc.perspective3dTitle}
-            >
-              <Cuboid className="w-3.5 h-3.5" />
-              {imgc.perspective3dButton}
-            </button>
-          </div>
-        )}
 
         {nineSplitAnim &&
           createPortal(
@@ -3910,27 +5891,19 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           );
         })()}
 
-        {showCropModal && cropSourceUrl ? (
-          <ImageCropModal
-            imageUrl={cropSourceUrl}
-            isDarkMode={isDarkMode}
-            title={imgc.cropTitle}
-            hint={imgc.cropHint}
-            cancelLabel={imgc.cropCancel}
-            confirmLabel={imgc.cropConfirm}
-            confirmingLabel={imgc.cropConfirming}
-            busy={cropBusy}
-            onConfirm={(rect) => void handleCropConfirm(rect)}
-            onCancel={() => {
-              if (cropBusy) return;
-              setShowCropModal(false);
-            }}
-          />
-        ) : null}
-
-        {/* 3D 视角控制器弹窗：在 Image 下方，仅选中且打开时渲染 */}
+        {/* 3D 视角控制器弹窗：点旁边空白（遮罩）关闭 */}
         {is3DPopoverOpen && threeDPopoverPosition && createPortal(
-          <div
+          <>
+            <div
+              className="fixed inset-0 z-[9998] bg-transparent"
+              aria-hidden
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIs3DPopoverOpen(false);
+              }}
+            />
+            <div
             id={`image-3d-popover-${id}`}
             className={`fixed z-[9999] rounded-xl shadow-xl border overflow-hidden flex flex-col nodrag nopan ${
               isDarkMode ? 'apple-panel border-white/15' : 'apple-panel-light border-gray-300/40'
@@ -3943,6 +5916,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
               maxHeight: 460,
             }}
             onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
           >
             <div className={`flex items-center justify-between px-3 py-2 border-b ${isDarkMode ? 'border-white/10' : 'border-gray-200'}`}>
               <span className={`text-sm font-medium ${isDarkMode ? 'text-white/90' : 'text-gray-800'}`}>{imgc.dragCubeHint}</span>
@@ -4009,9 +5983,24 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                       <CubeCameraController
                         value={cameraValue}
                         isDarkMode={isDarkMode}
+                        locale={locale === 'en' ? 'en' : 'zh'}
                         inputImageUrl={
                           getImageDisplaySrc(
-                            formatImagePath(currentImageSrc || resolvedDisplaySrc || previewImagePath || primaryOutputImage || ''),
+                            formatImagePath(
+                              cameraSourceImageUrl ||
+                                currentImageSrc ||
+                                resolvedDisplaySrc ||
+                                previewImagePath ||
+                                primaryOutputImage ||
+                                '',
+                            ),
+                          ) || undefined
+                        }
+                        frontThumbnailUrl={
+                          getImageDisplaySrc(
+                            formatImagePath(
+                              tinyImagePath || cameraSourceImageUrl || previewImagePath || primaryOutputImage || '',
+                            ),
                           ) || undefined
                         }
                         onChange={(next) => {
@@ -4025,36 +6014,25 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     )}
                   </Local3DErrorBoundary>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => animateCameraResetToDefault()}
+                    className={`absolute right-1.5 top-1.5 z-10 inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                      isDarkMode
+                        ? 'bg-black/55 text-white/85 hover:bg-black/70'
+                        : 'bg-white/90 text-gray-800 hover:bg-white shadow-sm'
+                    }`}
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    {imgc.resetView}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => persistCameraValue(normalizeCameraValue(DEFAULT_CAMERA_VALUE))}
-                  className={`flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-xs ${isDarkMode ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-black/10 hover:bg-black/20 text-gray-800'}`}
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  {imgc.resetView}
-                </button>
               </div>
               <div className="flex flex-col gap-2 flex-1 min-w-0">
-                <div className="flex flex-wrap gap-1">
-                  {CAMERA_PRESETS.map((preset, presetIdx) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => {
-                        const next: CameraControlValue = { ...cameraValue, ...preset.value };
-                        persistCameraValue(normalizeCameraValue(next));
-                      }}
-                      className={`px-2 py-1 rounded text-[10px] ${isDarkMode ? 'bg-white/10 hover:bg-white/20 text-white' : 'bg-black/10 hover:bg-black/20 text-gray-800'}`}
-                    >
-                      {imageNodeCameraPresetLabel(locale, presetIdx)}
-                    </button>
-                  ))}
-                </div>
                 <div className={`text-[11px] ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
                   <div className="flex justify-between">
                     <span>{imgc.rotation}</span>
-                    <span>{Math.round(cameraValue.rotationY)}°</span>
+                    <span>{cameraValue.rotationY.toFixed(1)}°</span>
                   </div>
                   <input
                     type="range"
@@ -4069,7 +6047,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 <div className={`text-[11px] ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
                   <div className="flex justify-between">
                     <span>{imgc.tilt}</span>
-                    <span>{Math.round(cameraValue.rotationX)}°</span>
+                    <span>{cameraValue.rotationX.toFixed(1)}°</span>
                   </div>
                   <input
                     type="range"
@@ -4084,9 +6062,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 <div className={`text-[11px] ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
                   <div className="flex justify-between">
                     <span>{imgc.shotScale}</span>
-                    <span>
-                      {cameraValue.scale <= 2.5 ? imgc.shotCloseup : cameraValue.scale > 4.5 ? imgc.shotWide : imgc.shotMedium}
-                    </span>
+                    <span>{(cameraValue.scale / MAX_SCALE).toFixed(2)}</span>
                   </div>
                   <input
                     type="range"
@@ -4099,14 +6075,165 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     className="accent-cyan-400 w-full"
                   />
                 </div>
+                <div className="mt-auto flex flex-col gap-1.5 pt-1">
+                  <div className="grid grid-cols-2 gap-1.5 min-w-0">
+                    <PanelOptionDropdown
+                      value={cameraGenAspectOptions.some((o) => o.value === cameraGenAspect) ? cameraGenAspect : 'original'}
+                      options={cameraGenAspectOptions}
+                      onChange={setCameraGenAspect}
+                      isDarkMode={isDarkMode}
+                      title={imgc.cameraControlAspectTitle}
+                      minWidthPx={96}
+                      menuPlacement="up"
+                    />
+                    <PanelOptionDropdown
+                      value={
+                        cameraGenResolutionOptions.some((o) => o.value === cameraGenResolution)
+                          ? cameraGenResolution
+                          : cameraGenResolutionOptions[0]?.value || '1k'
+                      }
+                      options={cameraGenResolutionOptions}
+                      onChange={setCameraGenResolution}
+                      isDarkMode={isDarkMode}
+                      title={imgc.cameraControlResolutionTitle}
+                      minWidthPx={72}
+                      menuPlacement="up"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <PanelOptionDropdown
+                        value={
+                          cameraGenModelOptions.some((o) => o.value === cameraGenModel)
+                            ? cameraGenModel
+                            : cameraGenModelOptions[0]?.value || DEFAULT_IMAGE_MODEL
+                        }
+                        options={cameraGenModelOptions}
+                        onChange={(v) => setCameraGenModel(v)}
+                        isDarkMode={isDarkMode}
+                        title={imgc.cameraControlModelTitle}
+                        minWidthPx={120}
+                        menuPlacement="up"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCameraGenerate()}
+                      disabled={cameraAiStatus === 'PROCESSING' || !cameraSourceImageUrl}
+                      className={`flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 transition-colors ${
+                        cameraAiStatus === 'PROCESSING' || !cameraSourceImageUrl
+                          ? isDarkMode
+                            ? 'bg-white/10 text-white/30 cursor-not-allowed'
+                            : 'bg-black/10 text-gray-400 cursor-not-allowed'
+                          : 'bg-sky-500 text-white hover:bg-sky-400'
+                      }`}
+                      title={
+                        cameraGenPriceLabel
+                          ? `${imgc.cameraGenerateAria} · ${cameraGenPriceLabel}`
+                          : imgc.cameraGenerateAria
+                      }
+                      aria-label={imgc.cameraGenerateAria}
+                    >
+                      {cameraAiStatus === 'PROCESSING' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>
+                          {cameraGenPriceLabel ? (
+                            <span className="text-[11px] font-semibold tabular-nums whitespace-nowrap">
+                              {cameraGenPriceLabel}
+                            </span>
+                          ) : null}
+                          <ArrowUp className="h-4 w-4" strokeWidth={2.5} />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>,
+          </div>
+          </>,
           document.body
         )}
 
         </>
         )}
+
+      {/* 确认栏紧贴放大后图像下沿 */}
+      {showCropModal && cropSourceUrl ? (
+        <div
+          className="nodrag nopan pointer-events-auto absolute left-0 right-0 top-full z-[70] mt-1 flex justify-center"
+          style={{
+            transform: `scale(${zoomInv})`,
+            transformOrigin: 'top center',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-2 py-1.5 shadow-lg backdrop-blur-md ${
+              isDarkMode ? 'border-white/15 bg-black/75' : 'border-gray-200 bg-white/95'
+            }`}
+          >
+            <button
+              type="button"
+              disabled={cropBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (cropBusy) return;
+                closeCropSession();
+              }}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                isDarkMode
+                  ? 'border border-white/10 bg-white/10 text-white/90 hover:bg-white/15'
+                  : 'border border-gray-200 bg-gray-100 text-gray-800 hover:bg-gray-200'
+              }`}
+            >
+              <X className="h-3.5 w-3.5" />
+              {imgc.cropCancel}
+            </button>
+            <button
+              type="button"
+              disabled={cropBusy}
+              onClick={(e) => {
+                e.stopPropagation();
+                cropOverlayRef.current?.confirm();
+              }}
+              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {cropBusy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="h-3.5 w-3.5" />
+              )}
+              {cropBusy ? imgc.cropConfirming : imgc.cropConfirm}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* 对齐 LLM：控制栏挂在图像模块正下方，随节点平移/缩放 */}
+      {showImagePromptPanel && imagePromptAnchor && (
+        <div
+          className="image-text-prompt-panel nodrag nopan absolute z-[60]"
+          style={{
+            top: 'calc(100% + 14px)',
+            left: '50%',
+            width: imagePromptAnchor.width,
+            height: imagePromptAnchor.height === 'auto' ? 'auto' : imagePromptAnchor.height,
+            transform: `translateX(-50%) scale(${zoomInv})`,
+            transformOrigin: 'top center',
+            pointerEvents: 'auto',
+            transition: 'none',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          {imagePromptAnchor.panel}
+        </div>
+      )}
       </div>
     </>
   );
@@ -4140,7 +6267,9 @@ export const ImageNode = memo(ImageNodeComponent, (prevProps, nextProps) => {
     prevProps.data?.imageAsset?.ghost === nextProps.data?.imageAsset?.ghost &&
     prevProps.data?.imageAsset?.avgColorHex === nextProps.data?.imageAsset?.avgColorHex &&
     prevProps.data?.imageAsset?.width === nextProps.data?.imageAsset?.width &&
-    prevProps.data?.imageAsset?.height === nextProps.data?.imageAsset?.height
+    prevProps.data?.imageAsset?.height === nextProps.data?.imageAsset?.height &&
+    prevProps.data?.viewMode === nextProps.data?.viewMode &&
+    prevProps.data?.sceneDisplay3dUrl === nextProps.data?.sceneDisplay3dUrl
   );
 });
 ImageNode.displayName = 'ImageNode';

@@ -1,5 +1,5 @@
-import React from 'react';
-import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box, Music2, Mic2 } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box, Music2, Mic2, LayoutGrid, Sparkles, SplitSquareHorizontal } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { contextMenuLabelForType } from '../../i18n/contextMenuI18n';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../../config/sora2UiPolicy';
@@ -23,8 +23,10 @@ const baseMenuItems = [
   { type: 'heyGem', icon: UserRound },
   { type: 'videoSplice', icon: Film },
   { type: 'photoCollage', icon: Layers },
+  { type: 'gridMap', icon: LayoutGrid },
+  { type: 'imageComparer', icon: SplitSquareHorizontal },
+  { type: 'director', icon: Sparkles },
   { type: 'imageTo3d', icon: Box },
-  { type: 'rvcTrain', icon: Mic2 },
   { type: 'character', icon: User },
   { type: 'audio', icon: Volume2 },
 ];
@@ -33,22 +35,26 @@ const visibleBaseMenuItems = HIDE_SORA2_AND_SORA_CHARACTER_UI
   ? baseMenuItems.filter((item) => item.type !== 'character')
   : baseMenuItems;
 
-const videoToImageItems = [
-  { type: 'image-first-frame', icon: Image },
-  { type: 'image-current-frame', icon: Image },
-  { type: 'image-last-frame', icon: Image },
-];
-
 const videoToAudioItems = [{ type: 'audio-extract-from-video', icon: Volume2 }];
 
-const audioToAudioItems = [
+const audioSubMenuItems = [
   { type: 'audio-voice-cover', icon: Music2 },
   { type: 'audio-extract-vocals', icon: Volume2 },
   { type: 'audio-extract-background', icon: Volume2 },
+  { type: 'rvcTrain', icon: Mic2 },
 ];
 
 const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, onClose, onSelect, allowedTypes }) => {
   const { locale } = useAppLocale();
+
+  // 打开菜单时清掉画布上误拖出的文字选区，避免菜单项被“拖蓝”
+  useEffect(() => {
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const handleItemClick = (e: React.MouseEvent, type: string) => {
     e.preventDefault();
@@ -61,25 +67,20 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, onClose, onSelect, allo
   const items = (() => {
     if (allowedTypes && allowedTypes.length === 0) return [];
     if (allowedTypes && allowedTypes.length > 0) {
-      const hasVideoToImage =
-        allowedTypes.includes('image-first-frame') ||
-        allowedTypes.includes('image-current-frame') ||
-        allowedTypes.includes('image-last-frame');
       const hasVideoToAudio = allowedTypes.includes('audio-extract-from-video');
-      const hasAudioToAudio =
+      const hasAudioSubmenu =
         allowedTypes.includes('audio-voice-cover') ||
         allowedTypes.includes('audio-extract-vocals') ||
-        allowedTypes.includes('audio-extract-background');
+        allowedTypes.includes('audio-extract-background') ||
+        allowedTypes.includes('rvcTrain');
       const base = visibleBaseMenuItems.filter(
         (item) =>
           allowedTypes!.includes(item.type) &&
-          (hasVideoToImage ? item.type !== 'image' : true) &&
           (hasVideoToAudio ? item.type !== 'audio' : true)
       );
-      const frameItems = videoToImageItems.filter((item) => allowedTypes!.includes(item.type));
       const audioExtractItems = videoToAudioItems.filter((item) => allowedTypes!.includes(item.type));
-      const audioToAudioExtractItems = audioToAudioItems.filter((item) => allowedTypes!.includes(item.type));
-      return [...base, ...frameItems, ...audioExtractItems, ...audioToAudioExtractItems];
+      const audioSubItems = audioSubMenuItems.filter((item) => allowedTypes!.includes(item.type));
+      return [...base, ...audioExtractItems, ...audioSubItems];
     }
     return visibleBaseMenuItems;
   })();
@@ -88,19 +89,39 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, onClose, onSelect, allo
     <>
       {/* 背景遮罩，点击关闭菜单 */}
       <div
-        className="fixed inset-0 z-40"
+        className="fixed inset-0 z-40 select-none"
+        style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
         onClick={onClose}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          try {
+            window.getSelection()?.removeAllRanges();
+          } catch {
+            /* ignore */
+          }
+        }}
         onContextMenu={(e) => e.preventDefault()}
       />
       {/* 菜单 */}
       <div
-        className="fixed z-50 apple-panel rounded-lg py-2 min-w-[120px] shadow-xl animate-menu-expand"
+        className="fixed z-50 apple-panel rounded-lg py-2 min-w-[120px] shadow-xl animate-menu-expand select-none"
         style={{
           left: `${x}px`,
           top: `${y}px`,
+          userSelect: 'none',
+          WebkitUserSelect: 'none',
         }}
         onClick={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          // 阻止拖动手势产生文字蓝选；菜单项仍靠自身 onMouseDown 创建节点
+          e.preventDefault();
+          try {
+            window.getSelection()?.removeAllRanges();
+          } catch {
+            /* ignore */
+          }
+        }}
         onContextMenu={(e) => e.preventDefault()}
       >
         {items.map((item) => {
@@ -110,10 +131,11 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, onClose, onSelect, allo
               key={item.type}
               type="button"
               onMouseDown={(e) => handleItemClick(e, item.type)}
-              className="w-full px-4 py-2 flex items-center gap-3 text-white hover:bg-white/15 transition-colors text-sm"
+              className="w-full px-4 py-2 flex items-center gap-3 text-white hover:bg-white/15 transition-colors text-sm select-none"
+              style={{ userSelect: 'none', WebkitUserSelect: 'none' } as React.CSSProperties}
             >
-              <Icon className="w-4 h-4 text-white/60" />
-              <span>{contextMenuLabelForType(locale, item.type)}</span>
+              <Icon className="w-4 h-4 text-white/60 shrink-0 pointer-events-none" />
+              <span className="select-none pointer-events-none">{contextMenuLabelForType(locale, item.type)}</span>
             </button>
           );
         })}

@@ -106,6 +106,8 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     # --- RunningHub 应用 ID：无 pricing 细表：占位 ---
     "2021955919764000770": 0.01,
     "2022127885233950721": 0.01,
+    "2082378062234214401": 0.05,
+    "2082392424818757633": 0.15,
     "2033537159944212482": 0.01,
 }
 
@@ -308,6 +310,16 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "model_id": "2022127885233950721",
         "function_name": "图片模块-去水印（RunningHub AI 应用 ID）",
         "current_logic": "IMAGE 处理；无 pricing 表项；watermarkRemoval.ts；先 OSS 再 POST run/ai-app",
+    },
+    {
+        "model_id": "2082378062234214401",
+        "function_name": "图片模块-图像超分放大V3（RunningHub AI 应用 ID）",
+        "current_logic": "IMAGE 处理；pricing IMAGE_MODEL_CNY['2082378062234214401']=0.05；imageUpscaleV3；先 OSS 再 POST run/ai-app/2082378062234214401（plus）",
+    },
+    {
+        "model_id": "2082392424818757633",
+        "function_name": "视频模块-视频深度转换（RunningHub AI 应用 ID）",
+        "current_logic": "VIDEO 处理；VIDEO_FLAT_CNY['2082392424818757633']=0.15；videoDepthConvert；先 OSS 再 POST run/ai-app/2082392424818757633（default）",
     },
     {
         "model_id": "2033537159944212482",

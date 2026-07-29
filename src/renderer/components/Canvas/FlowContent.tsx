@@ -15,7 +15,6 @@ import ReactFlow, {
   SelectionMode,
   ReactFlowInstance,
   useStore,
-  useViewport,
   getNodesBounds,
   MiniMap,
   Panel,
@@ -30,12 +29,18 @@ import { Camera, ChevronDown, Maximize2, MousePointer2 } from 'lucide-react';
 import ContextMenu from './ContextMenu';
 import BatchRunButton from './BatchRunButton';
 import SuperConnectButton from './SuperConnectButton';
+import VideoJoinButton from './VideoJoinButton';
 import CanvasHardwareAccelToggle from './CanvasHardwareAccelToggle';
 
 const noopReverseSuperConnect = (_sourceNodeId: string, _targetNodeIds: string[]) => {};
 import { getAllowedMenuTypes, isConnectionAllowed, isCharacterConnectionDataValid } from '../../utils/connectionRules';
 import { isDigitalHumanConnectionDataValid, pickDigitalHumanVideoUrl } from '../../utils/digitalHumanNodeMedia';
-import { isTimelineMediaSourceNodeType } from '../../utils/timelineSourceMedia';
+import {
+  isTimelineMediaSourceNodeType,
+  isTimelineVideoSourceNodeType,
+  resolveTimelineMediaFromSource,
+  sortNodesByReadingOrder,
+} from '../../utils/timelineSourceMedia';
 import { snapConnectionToPlusHandle } from '../../utils/plusHandleConnectionSnap';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { getNodeDisplayPrice } from '../../utils/cloudModelPricing';
@@ -56,6 +61,7 @@ import {
   setGlobalVisualLockState,
   setVideoViewportSnapshot,
   triggerEmergencyVideoUnload,
+  resetGlobalInteractionLocks,
   useGlobalInteractionSelector,
 } from '../../utils/globalInteractionStore';
 import { ZERO_FLICKER_INTERACTION_UNLOCK_MS } from '../../config/videoVisualConstants';
@@ -73,6 +79,7 @@ import EdgeCanvasHitLayer from './EdgeCanvasHitLayer';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { flowEmptyCanvasT } from '../../i18n/flowEmptyCanvasI18n';
+import { VIDEO_NODE_DEFAULT_H, VIDEO_NODE_DEFAULT_W } from '../../utils/nodeSizeFromAspectRatio';
 import 'reactflow/dist/style.css';
 
 /** 与 Workspace pickCharacterLibraryAvatarUrlFromNode 一致：可点选参考图的 image / character 模块 */
@@ -161,6 +168,9 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   heyGem: 'HeyGem 数字人',
   digitalHuman: '视频+参考音',
   videoSplice: '视频剪辑',
+  photoCollage: '拼图',
+  gridMap: '宫格图',
+  imageComparer: '图片对比',
   character: '角色',
   audio: '音频',
   audioTranscribe: '语音转文字(旧)',
@@ -241,7 +251,9 @@ const ModuleCountStats = memo(function ModuleCountStats({ nodes, isDarkMode }: {
 const MAX_CANVAS_SIZE = 8000;
 
 /** 点阵背景基础间距（会随 zoom 动态换算） */
-const DOT_GAP = 20;
+const DOT_GAP_DEFAULT = 60;
+const DOT_GAP_MIN = 20;
+const DOT_GAP_MAX = 180;
 /** 缩放滑块：独立订阅 zoom，避免 FlowContent 在缩放时全树重渲染导致卡顿 */
 const ZoomSlider = memo(function ZoomSlider({ isDarkMode }: { isDarkMode: boolean }) {
   const zoom = useStore((s) => s.transform?.[2] ?? 1);
@@ -286,25 +298,23 @@ const ZoomSlider = memo(function ZoomSlider({ isDarkMode }: { isDarkMode: boolea
   );
 });
 
-const FlowDotBackground = memo(function FlowDotBackground({ isDarkMode, degraded = false, lightDotsColor = '#000000', lightDotSize = 2 }: { isDarkMode: boolean; degraded?: boolean; lightDotsColor?: string; lightDotSize?: number }) {
-  const { zoom } = useViewport();
-  const lastNormalRef = useRef<{ gap: number; size: number } | null>(null);
-  const { gap, size } = useMemo(() => {
-    const safeZoom = Math.max(0.1, zoom || 1);
-    const baseGap = Math.max(10, Math.min(160, DOT_GAP / safeZoom));
-    const factor = 0.5 + (safeZoom - 0.1) / 0.9;
-    const baseSize = Math.max(0.6, Math.min(6, 1.5 / safeZoom));
-    const sizeScale = lightDotSize; /* 光明/暗黑模式均应用波点大小设置 */
-    const computed = {
-      gap: Math.max(10, Math.min(240, baseGap * factor)),
-      size: Math.max(0.6, Math.min(24, baseSize * sizeScale)),
-    };
-    if (!degraded) {
-      lastNormalRef.current = computed;
-      return computed;
-    }
-    return lastNormalRef.current ?? computed;
-  }, [degraded, zoom, isDarkMode, lightDotSize]);
+const FlowDotBackground = memo(function FlowDotBackground({
+  isDarkMode,
+  degraded = false,
+  lightDotsColor = '#000000',
+  lightDotSize = 2,
+  canvasDotGap = DOT_GAP_DEFAULT,
+}: {
+  isDarkMode: boolean;
+  degraded?: boolean;
+  lightDotsColor?: string;
+  lightDotSize?: number;
+  canvasDotGap?: number;
+}) {
+  // 固定 flow 坐标下的间距/大小：随画布 zoom 一起放大缩小，缩小时也不隐藏
+  const sizeScale = Math.max(0.5, Math.min(4, lightDotSize));
+  const gap = Math.max(DOT_GAP_MIN, Math.min(DOT_GAP_MAX, canvasDotGap || DOT_GAP_DEFAULT));
+  const size = Math.max(0.8, Math.min(4, 1.35 * sizeScale));
 
   const hexToRgba = (hex: string, alpha: number) => {
     const m = hex.slice(1).match(/.{2}/g);
@@ -312,17 +322,13 @@ const FlowDotBackground = memo(function FlowDotBackground({ isDarkMode, degraded
     const [r, g, b] = m.map((x) => parseInt(x, 16));
     return `rgba(${r},${g},${b},${alpha})`;
   };
-  const color = isDarkMode ? 'rgba(255,255,255,0.22)' : hexToRgba(lightDotsColor, 0.14);
+  const color = isDarkMode ? 'rgba(255,255,255,0.14)' : hexToRgba(lightDotsColor, 0.14);
   const effectiveColor = color;
   // 鼠标范围内点亮的波点颜色（比底图更亮，聚光灯中心最亮）
-  const highlightColor = isDarkMode ? 'rgba(255,255,255,0.96)' : hexToRgba(lightDotsColor, 0.72);
-
-  const safeZoom = zoom || 1;
-  const showDots = safeZoom >= 0.53; /* zoom < 53% 时隐藏波点 */
+  const highlightColor = isDarkMode ? 'rgba(255,255,255,0.72)' : hexToRgba(lightDotsColor, 0.72);
 
   return (
     <>
-      {showDots && (
       <Background
         id="nexflow-dynamic-dots"
         variant={BackgroundVariant.Dots}
@@ -336,37 +342,35 @@ const FlowDotBackground = memo(function FlowDotBackground({ isDarkMode, degraded
           willChange: 'transform',
         }}
       />
-      )}
-      {/* 鼠标聚光灯：zoom > 38% 且 >= 53% 时才显示，随画布缩放 */}
-      {showDots && !degraded && (zoom || 1) > 0.38 && (
-        <div
-          aria-hidden
+      {/* 鼠标聚光灯：拖拽/缩放时保持；半径用屏幕像素，不随 zoom 隐藏 */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: 0,
+          zIndex: -1,
+          pointerEvents: 'none',
+          maskImage: 'radial-gradient(circle 180px at var(--dot-mouse-x, 50%) var(--dot-mouse-y, 50%), white 0%, rgba(255,255,255,0.9) 20%, rgba(255,255,255,0.5) 50%, transparent 100%)',
+          WebkitMaskImage: 'radial-gradient(circle 180px at var(--dot-mouse-x, 50%) var(--dot-mouse-y, 50%), white 0%, rgba(255,255,255,0.9) 20%, rgba(255,255,255,0.5) 50%, transparent 100%)',
+          maskSize: '100% 100%',
+          maskPosition: '0 0',
+        }}
+      >
+        <Background
+          id="nexflow-dots-highlight"
+          variant={BackgroundVariant.Dots}
+          gap={gap}
+          size={size}
+          color={highlightColor}
           style={{
-            position: 'absolute',
-            inset: 0,
-            zIndex: -1,
-            pointerEvents: 'none',
-            maskImage: 'radial-gradient(circle 180px at var(--dot-mouse-x, 50%) var(--dot-mouse-y, 50%), white 0%, rgba(255,255,255,0.9) 20%, rgba(255,255,255,0.5) 50%, transparent 100%)',
-            WebkitMaskImage: 'radial-gradient(circle 180px at var(--dot-mouse-x, 50%) var(--dot-mouse-y, 50%), white 0%, rgba(255,255,255,0.9) 20%, rgba(255,255,255,0.5) 50%, transparent 100%)',
-            maskSize: '100% 100%',
-            maskPosition: '0 0',
+            transition: degraded ? 'none' : 'all 0.1s ease-out',
+            imageRendering: 'auto',
+            transform: 'translateZ(0)',
           }}
-        >
-          <Background
-            id="nexflow-dots-highlight"
-            variant={BackgroundVariant.Dots}
-            gap={gap}
-            size={size}
-            color={highlightColor}
-            style={{
-              transition: 'all 0.1s ease-out',
-              imageRendering: 'auto',
-              transform: 'translateZ(0)',
-            }}
-          />
-        </div>
-      )}
-      {!degraded && (
+        />
+      </div>
+      {/* 明亮模式保留极轻纵向罩层；暗黑模式不再叠竖向渐变（易出现横向色带/斑纹） */}
+      {!degraded && !isDarkMode && (
         <div
           aria-hidden
           style={{
@@ -375,10 +379,8 @@ const FlowDotBackground = memo(function FlowDotBackground({ isDarkMode, degraded
             zIndex: -1,
             pointerEvents: 'none',
             background:
-              isDarkMode
-                ? 'linear-gradient(to bottom, rgba(0,0,0,0.04) 0%, rgba(0,0,0,0.12) 60%, rgba(0,0,0,0.2) 100%)'
-                : 'linear-gradient(to bottom, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.08) 65%, rgba(255,255,255,0.14) 100%)',
-            mixBlendMode: isDarkMode ? 'normal' : 'multiply',
+              'linear-gradient(to bottom, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.08) 65%, rgba(255,255,255,0.14) 100%)',
+            mixBlendMode: 'multiply',
           }}
         />
       )}
@@ -589,9 +591,14 @@ interface FlowContentProps {
   batchRunInProgress?: boolean; // 批量运行中，用于禁用按钮并显示绿色
   onSuperConnect?: (sourceNodeIds: string[], targetNodeId: string) => void; // 超级连线：多选模块输出全部接入目标
   onReverseSuperConnect?: (sourceNodeId: string, targetNodeIds: string[]) => void; // 反向：一源输出批量接入多选目标
+  /** 多选视频一键拼接 */
+  onJoinSelectedVideos?: (nodeIds: string[]) => void;
+  videoJoinBusy?: boolean;
   lightCanvasBgColor?: string; // 光明模式画布背景色
   lightDotsColor?: string; // 光明模式波点色
   lightDotSize?: number; // 光明模式波点粗细倍率 0.5–4（50%–400%）
+  /** 画布波点间距（flow 坐标） */
+  canvasDotGap?: number;
   moduleComponentColor?: string; // 模块组件颜色（适用所有模块）
   edgeColor?: string; // 连接线颜色（光明/暗黑模式通用）
   characterListCollapsed?: boolean; // 角色列表是否收起
@@ -650,9 +657,12 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     batchRunInProgress = false,
     onSuperConnect,
     onReverseSuperConnect,
+    onJoinSelectedVideos,
+    videoJoinBusy = false,
     lightCanvasBgColor = '#E5E7EB',
     lightDotsColor = '#000000',
     lightDotSize = 2,
+    canvasDotGap = DOT_GAP_DEFAULT,
     moduleComponentColor,
     edgeColor = '#9CA3AF',
     characterListCollapsed = true, // 默认收起
@@ -699,6 +709,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   const { screenToFlowPosition, flowToScreenPosition, getNodes, fitView, setViewport, getViewport, setCenter, setNodes: reactFlowSetNodes, setEdges: reactFlowSetEdges } = useReactFlow();
   const storeApi = useStoreApi();
   const isPanOrZoomingRef = useRef(false);
+  /** 避免平移时每帧重复写 --rf-zoom*；仅 zoom 变化时更新 */
+  const lastRfZoomCssRef = useRef(0);
   const [isPanOrZooming, setIsPanOrZooming] = useState(false);
   isPanOrZoomingRef.current = isPanOrZooming;
   const viewportWidth = useStore((s) => s.width ?? 800);
@@ -739,6 +751,15 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       // 连线 Canvas 必须与 .react-flow__viewport 矩阵实时一致（ComfyUI 同帧 draw）
       canvasEngine.setTransform(t[0], t[1], t[2]);
 
+      // 选框：与 AI Canvas 一样只写 :root 的 --rf-zoom-inv；zoom 未变时跳过，减少缩放抖动
+      const z = Math.max(0.1, t[2] || 1);
+      if (Math.abs(z - lastRfZoomCssRef.current) > 0.00005) {
+        lastRfZoomCssRef.current = z;
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--rf-zoom', String(z));
+        rootStyle.setProperty('--rf-zoom-inv', String(1 / z));
+      }
+
       if (isFitViewAnimatingRef.current) return;
       // 平移/滚轮缩放期间不做步进 snap，避免 setViewport 与实时矩阵争抢导致连线滞后
       if (isPanOrZoomingRef.current) return;
@@ -751,7 +772,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     };
     sync();
     return storeApi.subscribe(sync);
-  }, [storeApi, canvasEngine, setViewport]);
+  }, [storeApi, canvasEngine, setViewport, reactFlowWrapper]);
 
   // 零闪烁：同步视口快照到 VideoNode，仅非交互时更新，交互期间冻结
   useEffect(() => {
@@ -857,6 +878,39 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return nodes.filter((n) => ids.has(n.id));
   }, [selectedNodeIds, nodes]);
 
+  /** 框选中的可拼接视频模块（全部选中项须为视频且可播），已按从上到下、从左到右排序 */
+  const selectedJoinableVideos = useMemo(() => {
+    if (selectedNodes.length < 2) return [];
+    if (!selectedNodes.every((n) => isTimelineVideoSourceNodeType(n.type))) return [];
+    const withMedia = selectedNodes.filter((n) => {
+      const m = resolveTimelineMediaFromSource(n);
+      return !!m?.url && m.clipType === 'video';
+    });
+    if (withMedia.length < 2 || withMedia.length !== selectedNodes.length) return [];
+    return sortNodesByReadingOrder(withMedia);
+  }, [selectedNodes]);
+
+  const videoJoinButtonPosition = useMemo(() => {
+    if (selectedJoinableVideos.length < 2) return null;
+    try {
+      const bounds = getNodesBounds(selectedJoinableVideos);
+      if (!bounds || !reactFlowInstanceRef.current || !reactFlowWrapper.current) return null;
+      const viewport = reactFlowInstanceRef.current.getViewport();
+      const wrapperBounds = reactFlowWrapper.current.getBoundingClientRect();
+      const z = Math.max(0.1, viewport.zoom);
+      const screenX = bounds.x * z + viewport.x;
+      const screenY = bounds.y * z + viewport.y;
+      const screenWidth = bounds.width * z;
+      const offsetPx = Math.max(16, 28 * z);
+      return {
+        x: screenX + screenWidth / 2 - wrapperBounds.left,
+        y: screenY - offsetPx - wrapperBounds.top,
+      };
+    } catch {
+      return null;
+    }
+  }, [selectedJoinableVideos, reactFlowWrapper, transform]);
+
   // 超级连线按钮位置：选中框右侧框外 3 格、垂直居中；offset 用 flow 格距 * zoom 保证缩放时相对位置不变
   const superConnectButtonPosition = useMemo(() => {
     if (selectedNodes.length < 2) return null;
@@ -870,9 +924,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       const screenY = bounds.y * z + viewport.y;
       const screenWidth = bounds.width * z;
       const screenHeight = bounds.height * z;
-      const baseGap = Math.max(10, Math.min(160, DOT_GAP / z));
-      const factor = 0.5 + (z - 0.1) / 0.9;
-      const gapFlow = Math.max(10, Math.min(240, baseGap * factor));
+      const gapFlow = Math.max(DOT_GAP_MIN, Math.min(DOT_GAP_MAX, canvasDotGap || DOT_GAP_DEFAULT));
       const offsetPx = 3 * gapFlow * z;
       return {
         x: screenX + screenWidth + offsetPx - wrapperBounds.left,
@@ -881,7 +933,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     } catch {
       return null;
     }
-  }, [selectedNodes, reactFlowWrapper, transform]);
+  }, [selectedNodes, reactFlowWrapper, transform, canvasDotGap]);
 
   // 反向超级连线：选区左侧框外（与右侧对称）
   const superReverseConnectButtonPosition = useMemo(() => {
@@ -895,9 +947,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       const screenX = bounds.x * z + viewport.x;
       const screenY = bounds.y * z + viewport.y;
       const screenHeight = bounds.height * z;
-      const baseGap = Math.max(10, Math.min(160, DOT_GAP / z));
-      const factor = 0.5 + (z - 0.1) / 0.9;
-      const gapFlow = Math.max(10, Math.min(240, baseGap * factor));
+      const gapFlow = Math.max(DOT_GAP_MIN, Math.min(DOT_GAP_MAX, canvasDotGap || DOT_GAP_DEFAULT));
       const offsetPx = 3 * gapFlow * z;
       return {
         x: screenX - offsetPx - wrapperBounds.left,
@@ -906,7 +956,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     } catch {
       return null;
     }
-  }, [selectedNodes, reactFlowWrapper, transform]);
+  }, [selectedNodes, reactFlowWrapper, transform, canvasDotGap]);
 
   // 计算批量运行按钮位置（选区右上角外侧约 20px）
   // 只依赖节点 ID 字符串，避免循环更新
@@ -982,7 +1032,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return hasAny ? sum : null;
   }, [selectedNodeIdsString, selectedRunnableNodes, cloudMap]);
 
-  // 中心聚焦函数：自动对齐所有节点到几何中心
+  // 中心聚焦函数：与「一键归位」相同的 fitView 动画（800ms + padding 0.2）
   const FIT_VIEW_DURATION = 800;
   const centerNodes = useCallback((targetNodes: Node[] = nodes) => {
     if (!reactFlowInstanceRef.current || targetNodes.length === 0) {
@@ -1011,6 +1061,48 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
 
   const centerNodesRef = useRef(centerNodes);
   centerNodesRef.current = centerNodes;
+
+  /**
+   * 供节点内操作（如图片裁剪放大）请求「一键归位」同款对焦动画：
+   * detail.nodes: [{ id, width?, height? }] — 可带放大后尺寸，避免仍按旧小框取景
+   */
+  useEffect(() => {
+    const onFocusNodes = (ev: Event) => {
+      const detail = (ev as CustomEvent<{
+        nodes?: Array<{ id: string; width?: number; height?: number }>;
+      }>).detail;
+      const specs = detail?.nodes;
+      if (!specs?.length || !reactFlowInstanceRef.current) return;
+      const all = getNodes();
+      const targetNodes: Node[] = [];
+      for (const spec of specs) {
+        const n = all.find((x) => x.id === spec.id);
+        if (!n) continue;
+        const w =
+          typeof spec.width === 'number' && spec.width > 0
+            ? spec.width
+            : Number(n.width) || Number((n.style as { width?: number } | undefined)?.width) || undefined;
+        const h =
+          typeof spec.height === 'number' && spec.height > 0
+            ? spec.height
+            : Number(n.height) || Number((n.style as { height?: number } | undefined)?.height) || undefined;
+        targetNodes.push({
+          ...n,
+          ...(w != null ? { width: w } : {}),
+          ...(h != null ? { height: h } : {}),
+          style: {
+            ...(n.style as object),
+            ...(w != null ? { width: w } : {}),
+            ...(h != null ? { height: h } : {}),
+          },
+        });
+      }
+      if (targetNodes.length === 0) return;
+      centerNodesRef.current(targetNodes);
+    };
+    window.addEventListener('nexflow-canvas-focus-nodes', onFocusNodes as EventListener);
+    return () => window.removeEventListener('nexflow-canvas-focus-nodes', onFocusNodes as EventListener);
+  }, [getNodes]);
 
   // 配置边的样式：拖动时虚线，连接后实线（无箭头）
   const edgeTypes = useMemo<EdgeTypes>(() => ({
@@ -1308,10 +1400,18 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     }
   }, [onConnect, canvasEngine]);
   
-  // 处理画布右键点击：clientX/Y 用于菜单 fixed 定位，screenToFlowPosition 用于节点创建
+  // 处理画布右键点击：点选模式则取消；否则弹出菜单
   const onPaneContextMenu = useCallback(
     (event: React.MouseEvent) => {
       event.preventDefault();
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {
+        /* ignore */
+      }
+      if (characterAvatarPickActive) {
+        return;
+      }
       const flowPosition = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       setContextMenu({
         x: event.clientX,
@@ -1320,7 +1420,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         flowY: flowPosition.y,
       });
     },
-    [setContextMenu, screenToFlowPosition]
+    [setContextMenu, screenToFlowPosition, characterAvatarPickActive]
   );
 
   const updateNodeInternals = useUpdateNodeInternals();
@@ -1377,6 +1477,13 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             return;
           }
         }
+      }
+
+      // 左侧输入磁吸（target）拖到空白：可吸附连到其他模块输出，但不弹出「创建模块」菜单
+      if (pending.handleType === 'target') {
+        updateNodeInternals(pending.sourceNodeId);
+        pendingConnectRef.current = null;
+        return;
       }
 
       updateNodeInternals(pending.sourceNodeId);
@@ -1811,10 +1918,11 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         const rect = el.getBoundingClientRect();
         const style = window.getComputedStyle(el);
         const visualX = parseFloat(style.getPropertyValue('--plus-visual-x')) || 0;
+        const visualY = parseFloat(style.getPropertyValue('--plus-visual-y')) || 0;
         const magnetX = parseFloat(style.getPropertyValue('--magnet-x')) || 0;
         const magnetY = parseFloat(style.getPropertyValue('--magnet-y')) || 0;
         const baseCx = rect.left + rect.width / 2 + visualX * safeZoom;
-        const baseCy = rect.top + rect.height / 2;
+        const baseCy = rect.top + rect.height / 2 + visualY * safeZoom;
         const cx = baseCx + magnetX * safeZoom;
         const cy = baseCy + magnetY * safeZoom;
         const dx = pt.x - cx;
@@ -1823,8 +1931,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
 
         const isLeftHandle = el.classList.contains('nexflow-plus-handle-left');
         const isRightHandle = el.classList.contains('nexflow-plus-handle-right');
+        const isBottomHandle = el.classList.contains('nexflow-plus-handle-bottom');
         const isSplitHandle = el.classList.contains('nexflow-split-handle');
-        if (!isLeftHandle && !isRightHandle) {
+        if (!isLeftHandle && !isRightHandle && !isBottomHandle) {
           setNearState(el, false);
           setHotState(el, false);
           clearHandleVars(el);
@@ -1843,15 +1952,29 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         const nodeRect = nodeEl.getBoundingClientRect();
         // 分隔符模块输出点：范围 80 用于 proximity 亮度渐变（越近越亮）。
         // 其他 handle：用各自把手中心 cy（而非节点垂直中心），避免同侧双输出（如角色卡）共享一大块半圆磁区互相抢焦点。
+        // 底边 A/B：必须用「视觉中心全圆」——图片连线常从左侧/斜上方靠近，半圆「仅节点下方」会完全吸不到。
         const compactMagnet = el.classList.contains('nexflow-plus-handle-magnet-compact');
-        const zoneRadius = isSplitHandle ? 80 * safeZoom : (compactMagnet ? 52 : 72) * safeZoom;
-        const zoneCx = isSplitHandle ? cx : (isLeftHandle ? nodeRect.left : nodeRect.right);
-        const zoneCy = cy;
-        const zoneDx = pt.x - zoneCx;
-        const zoneDy = pt.y - zoneCy;
-        const zoneDistance = Math.hypot(zoneDx, zoneDy);
-        const inHalfCircle = isSplitHandle ? true : (isLeftHandle ? pt.x <= zoneCx : pt.x >= zoneCx);
-        const inZone = inHalfCircle && Number.isFinite(zoneDistance) && zoneDistance < zoneRadius;
+        const zoneRadius = isSplitHandle
+          ? 80 * safeZoom
+          : isBottomHandle
+            ? 108 * safeZoom
+            : (compactMagnet ? 52 : 72) * safeZoom;
+        let inZone = false;
+        if (isSplitHandle) {
+          const zoneCx = cx;
+          const zoneCy = cy;
+          const zoneDistance = Math.hypot(pt.x - zoneCx, pt.y - zoneCy);
+          inZone = Number.isFinite(zoneDistance) && zoneDistance < zoneRadius;
+        } else if (isBottomHandle) {
+          // 相对视觉「+」全圆；侧方/上方靠近也能高亮 A 或 B
+          inZone = Number.isFinite(d) && d < zoneRadius;
+        } else {
+          const zoneCx = isLeftHandle ? nodeRect.left : nodeRect.right;
+          const zoneCy = cy;
+          const zoneDistance = Math.hypot(pt.x - zoneCx, pt.y - zoneCy);
+          const inHalfCircle = isLeftHandle ? pt.x <= zoneCx : pt.x >= zoneCx;
+          inZone = inHalfCircle && Number.isFinite(zoneDistance) && zoneDistance < zoneRadius;
+        }
         setNearState(el, inZone);
 
         if (!inZone || !Number.isFinite(d) || d <= 0.0001) {
@@ -1861,25 +1984,30 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         }
 
         // 分隔符输出点：鼠标越近 --plus-p 越高，亮度渐变；其他 handle：二值吸附
-        const t = isSplitHandle ? Math.max(0, 1 - zoneDistance / zoneRadius) : 1;
+        const t = isSplitHandle ? Math.max(0, 1 - d / zoneRadius) : 1;
         let mx = (pt.x - baseCx) / safeZoom;
         let my = (pt.y - baseCy) / safeZoom;
 
         // 仅允许朝模块外侧偏移，避免“+”回到主模块内部
         if (isLeftHandle && mx > 0) mx = 0;
         if (isRightHandle && mx < 0) mx = 0;
+        if (isBottomHandle && my < 0) my = 0;
         if (isSplitHandle) {
           mx = Math.max(-15, Math.min(15, mx));
           my = Math.max(-3, Math.min(3, my));
         }
 
-        const projectedX = cx + mx * safeZoom;
-        const insideNodeX = projectedX > nodeRect.left && projectedX < nodeRect.right;
-        if (insideNodeX) {
-          setNearState(el, false);
-          setHotState(el, false);
-          clearHandleVars(el);
-          return;
+        // 左右把手：投影落入节点水平范围则取消（防 + 缩进节点内）。
+        // 底边把手的 cx 本来就在节点宽度内，套用 insideNodeX 会永远清掉磁吸（图片对比 A/B 失效根因）。
+        if (!isBottomHandle) {
+          const projectedX = cx + mx * safeZoom;
+          const insideNodeX = projectedX > nodeRect.left && projectedX < nodeRect.right;
+          if (insideNodeX) {
+            setNearState(el, false);
+            setHotState(el, false);
+            clearHandleVars(el);
+            return;
+          }
         }
 
         writeHandleVars(el, mx, my, t);
@@ -1917,17 +2045,19 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       // 命中补偿：如果未直接点中真实锚点，但点中了可见的“+”视觉区，也要路由到对应 handle
       if (!handle) {
         const candidates = Array.from(host.querySelectorAll<HTMLElement>('.nexflow-plus-handle'));
-        const HIT_RADIUS = 16;
         let best: { el: HTMLElement; d: number } | null = null;
         candidates.forEach((el) => {
           const computed = window.getComputedStyle(el);
           if (computed.pointerEvents === 'none') return;
+          const isBottom = el.classList.contains('nexflow-plus-handle-bottom');
+          const HIT_RADIUS = isBottom ? 36 : 16;
           const rect = el.getBoundingClientRect();
           const visualX = parseFloat(computed.getPropertyValue('--plus-visual-x')) || 0;
+          const visualY = parseFloat(computed.getPropertyValue('--plus-visual-y')) || 0;
           const magnetX = parseFloat(computed.getPropertyValue('--magnet-x')) || 0;
           const magnetY = parseFloat(computed.getPropertyValue('--magnet-y')) || 0;
           const cx = rect.left + rect.width / 2 + (visualX + magnetX) * safeZoom;
-          const cy = rect.top + rect.height / 2 + magnetY * safeZoom;
+          const cy = rect.top + rect.height / 2 + (visualY + magnetY) * safeZoom;
           const dd = Math.hypot(event.clientX - cx, event.clientY - cy);
           if (dd > HIT_RADIUS) return;
           if (!best || dd < best.d) best = { el, d: dd };
@@ -1988,7 +2118,17 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       const vy = (vp.y - prev.y) / (dt / 1000);
       setGlobalViewportVelocity(vx, vy);
     }
-    if (!event || isPanOrZoomingRef.current) return;
+    if (!event) return;
+    // 拖拽平移时仍更新亮点位置，保持聚光区域跟随指针
+    if (isPanOrZoomingRef.current) {
+      if ('clientX' in event) {
+        updateDotHighlightByClient(event.clientX, event.clientY);
+        return;
+      }
+      const touchPan = event.touches?.[0] ?? event.changedTouches?.[0];
+      if (touchPan) updateDotHighlightByClient(touchPan.clientX, touchPan.clientY);
+      return;
+    }
     const now2 = Date.now();
     if (now2 - lastDotHighlightAtRef.current < 80) return;
     lastDotHighlightAtRef.current = now2;
@@ -2011,8 +2151,142 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     hasActivatedMoveInteractionRef.current = true;
     beginVisualInteractionLock();
     setGlobalInteracting(true);
-    window.electronAPI?.setSharpQueuePaused?.(true).catch(() => undefined);
   }, [beginVisualInteractionLock, getViewport]);
+
+  /** 仅在确有平移/拖拽/全局交互锁时复位；勿在每次普通点击上 reset（会抢 click、加剧卡顿） */
+  const forceEndPanInteraction = useCallback(() => {
+    // 无论锁状态如何，先恢复 sharp，避免「锁已清但预览队列仍暂停」导致上传/资源区假死
+    window.electronAPI?.setSharpQueuePaused?.(false).catch(() => undefined);
+
+    const snap = getGlobalInteractionSnapshot();
+    const hadPan = isPanOrZoomingRef.current || hasActivatedMoveInteractionRef.current;
+    const hadNodeDrag = hasActivatedNodeDragInteractionRef.current;
+    const locked =
+      snap.isGlobalInteracting ||
+      snap.isInteracting ||
+      snap.visualLockState !== 'unlocked';
+    if (!hadPan && !hadNodeDrag && !locked) return;
+
+    isPanOrZoomingRef.current = false;
+    setIsPanOrZooming(false);
+    canvasEngine.setPanning(false);
+    canvasEngine.requestUpdate();
+
+    if (interactionRestoreTimerRef.current) {
+      clearTimeout(interactionRestoreTimerRef.current);
+      interactionRestoreTimerRef.current = null;
+    }
+    if (visualUnlockTimerRef.current) {
+      clearTimeout(visualUnlockTimerRef.current);
+      visualUnlockTimerRef.current = null;
+    }
+    visualLockTokenRef.current += 1;
+
+    hasActivatedMoveInteractionRef.current = false;
+    hasActivatedNodeDragInteractionRef.current = false;
+    moveStartViewportRef.current = null;
+    setGlobalViewportVelocity(0, 0);
+    setImageLoadMaxParallel(5);
+    // 必须走 setGlobalVisualLockState，保证 isVisualInteractionLocked 与 visualLockState 同步
+    setGlobalVisualLockState('unlocked');
+    setGlobalInteracting(false);
+    resetGlobalInteractionLocks();
+  }, [canvasEngine]);
+
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const buttons = typeof (e as any).buttons === 'number' ? (e as any).buttons : 0;
+      if (buttons === 0) forceEndPanInteraction();
+    };
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.buttons !== 0) return;
+      const snap = getGlobalInteractionSnapshot();
+      const interacting =
+        isPanOrZoomingRef.current ||
+        hasActivatedMoveInteractionRef.current ||
+        hasActivatedNodeDragInteractionRef.current ||
+        snap.isGlobalInteracting ||
+        snap.visualLockState !== 'unlocked';
+      if (!interacting) return;
+      // 必须解锁：松手落在底栏/按钮上时若跳过，宽底栏(840)极易把 is-dragging / interacting 卡死，表现为画布不能拖、点什么都没反应
+      forceEndPanInteraction();
+    };
+    const onWindowBlur = () => forceEndPanInteraction();
+    const onVisibility = () => {
+      if (document.hidden) forceEndPanInteraction();
+    };
+    const onWindowResize = () => forceEndPanInteraction();
+    /** Esc：紧急解除画布交互锁 + 清语音弹窗标记（透明遮罩/假死自救） */
+    const onEscUnlock = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const snap = getGlobalInteractionSnapshot();
+      const interacting =
+        isPanOrZoomingRef.current ||
+        hasActivatedMoveInteractionRef.current ||
+        hasActivatedNodeDragInteractionRef.current ||
+        snap.isGlobalInteracting ||
+        snap.isInteracting ||
+        snap.visualLockState !== 'unlocked';
+      forceEndPanInteraction();
+      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
+      if (interacting) {
+        // 阻止 Workspace 同一次 Esc 再弹「退出确认」
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    };
+    /** 无按键按住却仍处于交互锁：定时自救（丢失 pointerup / HMR / 松在底栏上） */
+    let stuckSince = 0;
+    const buttonsRef = { current: 0 };
+    const onPointerButtonsTrack = (e: PointerEvent) => {
+      buttonsRef.current = e.buttons;
+    };
+    const onWatchdog = () => {
+      const snap = getGlobalInteractionSnapshot();
+      const interacting =
+        isPanOrZoomingRef.current ||
+        hasActivatedMoveInteractionRef.current ||
+        hasActivatedNodeDragInteractionRef.current ||
+        snap.isGlobalInteracting ||
+        snap.visualLockState !== 'unlocked';
+      if (!interacting || buttonsRef.current !== 0) {
+        stuckSince = 0;
+        return;
+      }
+      if (!stuckSince) stuckSince = Date.now();
+      else if (Date.now() - stuckSince > 1200) {
+        console.warn('[FlowContent] 交互锁看门狗：无按键却锁住 >1.2s，强制解锁');
+        forceEndPanInteraction();
+        stuckSince = 0;
+      }
+    };
+    const onForceEndEvent = () => forceEndPanInteraction();
+    window.addEventListener('keyup', onKeyUp, true);
+    window.addEventListener('pointerup', onPointerUp, true);
+    window.addEventListener('pointercancel', onPointerUp, true);
+    window.addEventListener('pointerdown', onPointerButtonsTrack, true);
+    window.addEventListener('pointermove', onPointerButtonsTrack, true);
+    window.addEventListener('keydown', onEscUnlock, true);
+    window.addEventListener('nexflow-force-end-interaction', onForceEndEvent);
+    window.addEventListener('blur', onWindowBlur);
+    window.addEventListener('resize', onWindowResize);
+    document.addEventListener('visibilitychange', onVisibility);
+    const watchdogId = window.setInterval(onWatchdog, 500);
+    return () => {
+      window.clearInterval(watchdogId);
+      window.removeEventListener('keyup', onKeyUp, true);
+      window.removeEventListener('pointerup', onPointerUp, true);
+      window.removeEventListener('pointercancel', onPointerUp, true);
+      window.removeEventListener('pointerdown', onPointerButtonsTrack, true);
+      window.removeEventListener('pointermove', onPointerButtonsTrack, true);
+      window.removeEventListener('keydown', onEscUnlock, true);
+      window.removeEventListener('nexflow-force-end-interaction', onForceEndEvent);
+      window.removeEventListener('blur', onWindowBlur);
+      window.removeEventListener('resize', onWindowResize);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [forceEndPanInteraction]);
 
   // 向父组件暴露 screenToFlowPosition、fitView、getLastMousePosition
   useEffect(() => {
@@ -2021,7 +2295,16 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       screenToFlowPosition,
       getLastMousePosition: () => (reactFlowWrapper.current as any)?.lastMousePosition ?? { x: 0, y: 0 },
       fitView: (opts) => {
-        reactFlowInstanceRef.current?.fitView({ duration: opts?.duration ?? 300, padding: opts?.padding ?? 0.2 });
+        const duration = opts?.duration ?? FIT_VIEW_DURATION;
+        isFitViewAnimatingRef.current = true;
+        reactFlowInstanceRef.current?.fitView({
+          duration,
+          padding: opts?.padding ?? 0.2,
+          includeHiddenNodes: false,
+        });
+        window.setTimeout(() => {
+          isFitViewAnimatingRef.current = false;
+        }, duration + 50);
       },
     };
     return () => {
@@ -2241,8 +2524,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           const unloadIds = nodes
             .filter((n) => (n.type === 'video' || n.type === 'wanAnimate' || n.type === 'heyGem') && !!(n.data as any)?.outputVideo)
             .filter((n) => {
-              const nw = Number((n.data as any)?.width || 738.91);
-              const nh = Number((n.data as any)?.height || 422.22);
+              const nw = Number((n.data as any)?.width || VIDEO_NODE_DEFAULT_W);
+              const nh = Number((n.data as any)?.height || VIDEO_NODE_DEFAULT_H);
               const pos = (n as any).positionAbsolute || n.position;
               return pos.x + nw < left || pos.x > right || pos.y + nh < top || pos.y > bottom;
             })
@@ -2384,7 +2667,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
               beginVisualInteractionLock();
               setGlobalInteracting(true);
               setImageLoadMaxParallel(perfLevel >= 2 ? 1 : 2);
-              window.electronAPI?.setSharpQueuePaused?.(true).catch(() => undefined);
+              // 不 pause sharp，避免侧栏缩略图/上传被拖拽锁死
             }
             // 关闭 transform-only 直改：避免节点视觉位置先行、连线路径后一帧更新造成“慢半拍”。
             // 拖拽位置统一由 ReactFlow 状态驱动，确保节点与连线同源同步。
@@ -2484,9 +2767,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             setGlobalViewportVelocity(0, 0);
             handleFlowMove(event);
           }}
-          className={`${isDarkMode ? "bg-black dark-mode" : "light-mode"}${moduleComponentColor ? " nexflow-module-custom-color" : ""}`}
+          className={`${isDarkMode ? "bg-[#121212] dark-mode" : "light-mode"}${moduleComponentColor ? " nexflow-module-custom-color" : ""}`}
           style={{
-            ...(!isDarkMode ? { backgroundColor: lightCanvasBgColor } : {}),
+            ...(!isDarkMode ? { backgroundColor: lightCanvasBgColor } : { backgroundColor: '#121212' }),
             ...(moduleComponentColor ? { ['--nexflow-module-bg' as string]: moduleComponentColor } : {}),
           }}
           onContextMenu={onPaneContextMenu}
@@ -2499,6 +2782,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           degraded={isPanOrZooming || isFastDragDegraded}
           lightDotsColor={lightDotsColor}
           lightDotSize={lightDotSize}
+          canvasDotGap={canvasDotGap}
         />
         {/* 空白画布悬浮入口 */}
         {nodes.length === 0 && !contextMenu && (
@@ -2638,11 +2922,22 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             superReverseConnectButtonPosition &&
             onSuperConnect &&
             onReverseSuperConnect;
+          const showVideoJoin =
+            selectedJoinableVideos.length >= 2 && videoJoinButtonPosition && onJoinSelectedVideos;
           const shouldShow =
-            showBatchRun || showSuperForward || showSuperReverse;
+            showBatchRun || showSuperForward || showSuperReverse || showVideoJoin;
           if (!shouldShow) return null;
           return (
             <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 50 }}>
+              {showVideoJoin && videoJoinButtonPosition && (
+                <VideoJoinButton
+                  selectedNodes={selectedJoinableVideos}
+                  position={videoJoinButtonPosition}
+                  isDarkMode={isDarkMode}
+                  busy={videoJoinBusy}
+                  onJoin={() => onJoinSelectedVideos?.(selectedJoinableVideos.map((n) => n.id))}
+                />
+              )}
               {showBatchRun && batchRunButtonPosition && (
                 <BatchRunButton
                   selectedNodes={selectedRunnableNodes}

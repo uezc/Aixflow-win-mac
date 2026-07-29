@@ -424,10 +424,68 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('separate-vocals-from-audio', projectId, audioUrl, mode),
   transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) =>
     ipcRenderer.invoke('transcribe-speech-from-audio-url', projectId, audioUrl, language) as Promise<{ text: string }>,
+  transcribeSpeechSegmentsFromAudioUrl: (
+    projectId: string | undefined,
+    audioUrl: string,
+    language?: string,
+  ) =>
+    ipcRenderer.invoke(
+      'transcribe-speech-segments-from-audio-url',
+      projectId,
+      audioUrl,
+      language,
+    ) as Promise<{ text: string; segments: Array<{ text: string; startSec: number; endSec: number }> }>,
   trimAudio: (projectId: string | undefined, audioUrl: string, startSec: number, endSec: number) =>
     ipcRenderer.invoke('trim-audio', projectId, audioUrl, startSec, endSec),
   trimVideo: (projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) =>
     ipcRenderer.invoke('trim-video', projectId, videoUrl, startSec, endSec),
+  smartAnalyzeVideoShots: (
+    projectId: string | undefined,
+    videoUrl: string,
+    options?: {
+      mode?: 'stable' | 'balanced' | 'sensitive';
+      maxClips?: number;
+      minClipSec?: number;
+      withPosters?: boolean;
+    },
+  ) =>
+    ipcRenderer.invoke('smart-analyze-video-shots', projectId, videoUrl, options) as Promise<{
+      segments: Array<{ startSec: number; endSec: number; score: number; posterUrl?: string }>;
+      cutPoints: number[];
+      durationSec: number;
+      downgraded: boolean;
+    }>,
+  smartExtractVideoClips: (
+    projectId: string | undefined,
+    videoUrl: string,
+    options?: {
+      mode?: 'stable' | 'balanced' | 'sensitive';
+      maxClips?: number;
+      minClipSec?: number;
+      output?: 'clips' | 'keyframes';
+    },
+  ) =>
+    ipcRenderer.invoke('smart-extract-video-clips', projectId, videoUrl, options) as Promise<{
+      clips: Array<{ videoUrl: string; startSec: number; endSec: number; posterUrl?: string }>;
+      keyframes?: Array<{ imageUrl: string; timeSec: number }>;
+      cutPoints: number[];
+      durationSec: number;
+      downgraded: boolean;
+    }>,
+  cropVideo: (
+    projectId: string | undefined,
+    videoUrl: string,
+    rect: { x: number; y: number; w: number; h: number },
+    sourceWidth: number,
+    sourceHeight: number,
+  ) =>
+    ipcRenderer.invoke('crop-video', projectId, videoUrl, rect, sourceWidth, sourceHeight) as Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+    }>,
   getMediaDuration: (url: string, projectId?: string) => ipcRenderer.invoke('get-media-duration', url, projectId) as Promise<number>,
   exportTimelineVideo: (
     projectId: string | undefined,
@@ -446,6 +504,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('local-resource:set-sharp-queue-paused', paused),
   getSharpQueueStats: () =>
     ipcRenderer.invoke('local-resource:get-sharp-queue-stats'),
+  /** 资产库列表小缩略图（磁盘缓存，避免原图 1–3MB 解码卡死） */
+  ensureLibraryListThumb: (sourceUrlOrPath: string, maxEdge?: number) =>
+    ipcRenderer.invoke('local-resource:ensure-library-list-thumb', sourceUrlOrPath, maxEdge) as Promise<{
+      success: boolean;
+      thumbUrl?: string;
+      thumbPath?: string;
+      cached?: boolean;
+      error?: string;
+    }>,
+  /** 数字人列表头像：从参考视频抽帧并写入 store */
+  ensureDigitalHumanListPoster: (itemId: string) =>
+    ipcRenderer.invoke('ensure-digital-human-list-poster', itemId) as Promise<{
+      success: boolean;
+      posterUrl?: string;
+      localPosterPath?: string;
+      cached?: boolean;
+      error?: string;
+    }>,
 
   /** 兼容旧调用：仅同步工程 ID */
   setScreenshotSnipArmed: (armed: boolean, projectId?: string) =>
@@ -651,6 +727,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 选择参考音文件（Index-TTS2.0 等）
   showOpenAudioDialog: () => ipcRenderer.invoke('show-open-audio-dialog'),
+  // 选择参考图片（Doubao 音频等）
+  showOpenImageDialog: () => ipcRenderer.invoke('show-open-image-dialog'),
   // 选择视频文件（与 AudioNode 一致的 IPC 方案）
   showOpenVideoDialog: () => ipcRenderer.invoke('show-open-video-dialog'),
   // 在文件管理器中显示文件（打开文件所在的文件夹并选中文件）
@@ -796,8 +874,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   uploadImageToRunningHub: (imageUrl: string) => ipcRenderer.invoke('upload-image-to-runninghub', imageUrl),
   imageMatting: (imageUrl: string) => ipcRenderer.invoke('image-matting', imageUrl),
   imageWatermarkRemoval: (imageUrl: string) => ipcRenderer.invoke('image-watermark-removal', imageUrl),
+  imageUpscaleV3: (imageUrl: string) => ipcRenderer.invoke('image-upscale-v3', imageUrl),
   videoWatermarkRemoval: (videoUrl: string, strength?: number) =>
     ipcRenderer.invoke('video-watermark-removal', videoUrl, strength) as Promise<{ success: boolean; videoUrl: string }>,
+  videoDepthConvert: (videoUrl: string) =>
+    ipcRenderer.invoke('video-depth-convert', videoUrl) as Promise<{
+      success: boolean;
+      kind: 'video' | 'image';
+      url: string;
+      videoUrl?: string;
+      imageUrl?: string;
+    }>,
   imageCharacterMultiAngle: (imageUrl: string) =>
     ipcRenderer.invoke('image-character-multi-angle', imageUrl) as Promise<{ success: boolean; imageUrl: string; imageUrls?: string[] }>,
   imageTo3d: (imageUrl: string, projectId?: string, nodeId?: string, modelId?: string) =>

@@ -31,11 +31,14 @@ import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import {
   buildVideoBillingModelId,
   normalizeGrok3DurationSec,
+  normalizeRhartVideoXDurationSec,
   normalizeGrok3StableDurationSec,
   normalizeLtx23DurationSec,
   normalizeSeedanceDurationSec,
   normalizeGeminiOmniDurationSec,
+  normalizeGeminiOmniFlashDurationSec,
   coerceSeedanceResolution,
+  coerceSeedanceRatio,
 } from '../../utils/videoBillingSku.js';
 import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/fcBalanceError.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
@@ -46,7 +49,7 @@ import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
-import { getProjectsBasePath } from '../../utils/projectFolderHelper.js';
+import { getProjectsBasePath, isLocalResourcePathAllowed } from '../../utils/projectFolderHelper.js';
 import { resolveOriginalImageUrls } from '../utils/imageAssetResolver.js';
 import { createAliOssClientForMedia, invalidateOssTimeSkewCache } from '../../utils/ossTimeSkew.js';
 import { uploadMediaBufferViaFcProxy } from '../../services/ossFcProxyUpload.js';
@@ -64,6 +67,21 @@ import {
   isLtx23HdrMultiRunnable,
   validateLtx23HdrMultiInputs,
 } from '../../../common/ltx23HdrMulti.js';
+import {
+  LTX23_MSR_AV_APP_ID,
+  LTX23_MSR_AV_MODEL_ID,
+  LTX23_MSR_AV_STORYBOARD_NODES,
+  LTX23_MSR_AV_SCENE_NODE,
+  LTX23_MSR_AV_AUDIO_NODE,
+  LTX23_MSR_AV_PROMPT_NODE,
+  LTX23_MSR_AV_WIDTH_NODE,
+  LTX23_MSR_AV_HEIGHT_NODE,
+  LTX23_MSR_AV_DURATION_NODE,
+  LTX23_MSR_AV_FPS_NODE,
+  LTX23_MSR_AV_DEFAULT_FPS,
+  ltx23MsrAvDimensions,
+  isLtx23MsrAvModel,
+} from '../../../common/ltx23MsrAv.js';
 
 const require = createRequire(import.meta.url);
 
@@ -75,8 +93,8 @@ type Wan26FlashDuration = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' |
 
 interface VideoInput {
   prompt: string;
-  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
-  aspect_ratio?: '16:9' | '9:16' | '1:1' | '2:3' | '3:2';
+  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+  aspect_ratio?: '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | 'adaptive' | '4:3' | '3:4' | '21:9';
   hd?: boolean;
   duration?: '5' | '10' | '15' | '25';
   images?: string[]; // 图生视频参考图，支持 url / base64
@@ -114,7 +132,7 @@ interface VideoInput {
   modeKlingO1?: 'std' | 'pro';
   // ltx-2.3-lipsync 数字人对口型
   inputAudioUrl?: string;
-  resolutionLtx23Lipsync?: '720' | '1280' | '1920'; // 标准720 | 高清1280 | 超清1920
+  resolutionLtx23Lipsync?: '720' | '1280' | '1920'; // 内部档；UI 展示为 480p / 720p / 1080p
   actionPrompt?: string;
   // ltx-2.3-i2v 图生视频：时长 5|10|15 秒，分辨率 720|1280|1920（标准/高清/超清），工作流默认保持参考图比例
   durationLtx23I2v?: '5' | '10' | '15';
@@ -286,6 +304,52 @@ export class VideoProvider extends BaseProvider {
     }
   }
 
+  /**
+   * 将参考图按 contain 铺满目标画幅（黑边 letterbox），避免 Grok 图生视频被竖图「带跑」成 9:16。
+   */
+  private async padImageBufferToAspectRatio(
+    imageBuffer: Buffer,
+    aspectRatio: string,
+  ): Promise<{ buffer: Buffer; mimeType: string }> {
+    const map: Record<string, [number, number]> = {
+      '16:9': [1280, 720],
+      '9:16': [720, 1280],
+      '1:1': [1024, 1024],
+      '2:3': [768, 1152],
+      '3:2': [1152, 768],
+    };
+    const dims = map[String(aspectRatio || '').trim()] || map['16:9'];
+    const [tw, th] = dims;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const sharp = require('sharp') as typeof import('sharp');
+      const meta = await sharp(imageBuffer, { failOn: 'none' }).metadata();
+      const iw = Number(meta.width) || 0;
+      const ih = Number(meta.height) || 0;
+      if (iw > 0 && ih > 0) {
+        const src = iw / ih;
+        const tgt = tw / th;
+        if (Math.abs(Math.log(src / tgt)) < 0.03) {
+          return { buffer: imageBuffer, mimeType: meta.format === 'jpeg' ? 'image/jpeg' : 'image/png' };
+        }
+      }
+      const out = await sharp(imageBuffer, { failOn: 'none' })
+        .resize(tw, th, {
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 1 },
+        })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      console.log(
+        `[视频生成] Grok 参考图已按 ${aspectRatio} letterbox 为 ${tw}x${th}（原 ${iw || '?'}x${ih || '?'}）`,
+      );
+      return { buffer: out, mimeType: 'image/jpeg' };
+    } catch (e: any) {
+      console.warn('[视频生成] 参考图 letterbox 失败，使用原图:', e?.message || e);
+      return { buffer: imageBuffer, mimeType: 'image/png' };
+    }
+  }
+
   /** 将任意图片 URL/本地路径转为 RunningHub 可拉取的 OSS 源站直链（不用 CDN） */
   async processImageToOssUrl(imageUrl: string): Promise<string> {
     if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
@@ -388,11 +452,14 @@ export class VideoProvider extends BaseProvider {
       filePath = localVideoPath;
       if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.substring(1);
     }
+    // 与 local-resource / ImageProvider / 去水印上传一致：允许用户目录、桌面、文档、下载等
+    if (process.platform === 'win32' && /^[/\\][a-zA-Z]:[/\\]/.test(filePath)) {
+      filePath = filePath.replace(/^[/\\]+/, '');
+    }
     const normalizedFilePath = path.normalize(filePath);
-    const userDataPath = app.getPath('userData');
-    const projectsBase = getProjectsBasePath();
-    const allowed = normalizedFilePath.startsWith(path.normalize(userDataPath)) || normalizedFilePath.startsWith(path.normalize(projectsBase));
-    if (!allowed) throw new Error(`访问路径超出允许范围: ${filePath}`);
+    if (!isLocalResourcePathAllowed(normalizedFilePath)) {
+      throw new Error(`访问路径超出允许范围: ${filePath}`);
+    }
     if (!fs.existsSync(normalizedFilePath)) throw new Error(`文件不存在: ${normalizedFilePath}`);
     return normalizedFilePath;
   }
@@ -851,6 +918,7 @@ export class VideoProvider extends BaseProvider {
       const isWanAnimateModel = model === 'wan-animate';
       const isHeyGemModel = model === 'hey-gem';
       const isGeminiOmniModel = model === 'gemini-omni';
+      const isGeminiOmniFlashModel = model === 'gemini-omni-flash';
       const isSeedanceFastModel = model === 'seedance-2.0-fast';
       const isSeedanceMiniModel = model === 'seedance-2.0-mini';
       const isSeedanceModel = isSeedanceFastModel || isSeedanceMiniModel;
@@ -860,9 +928,10 @@ export class VideoProvider extends BaseProvider {
 
       const isLtx23LipsyncModel = model === 'ltx-2.3-lipsync';
       const isLtx23HdrMultiModel = model === 'ltx-2.3-hdr-multi';
+      const isLtx23MsrAv = isLtx23MsrAvModel(model);
 
       const isImageToVideo =
-        isLtx23HdrMultiModel
+        isLtx23HdrMultiModel || isLtx23MsrAv
           ? isLtx23HdrMultiRunnable(String(inputLtx23HdrBackgroundImage || ''), rawImages || [])
           : Array.isArray(images) && images.length > 0;
       const isKlingModel = model === 'kling-v2.6-pro';
@@ -876,13 +945,15 @@ export class VideoProvider extends BaseProvider {
       const isRhartV31ProSEModel = model === 'rhart-v3.1-pro-se';
       const isRhartV31ProOfficialI2vModel = model === 'rhart-v3.1-pro-official-i2v';
       const isGrok3Model = model === 'grok-3';
+      /** 全能视频X：文生/图生，海外站 rhart-video-g */
+      const isRhartVideoXModel = model === 'rhart-video-x';
       const isGrok3StableModel = model === 'grok-3-stable';
       // 存量工程可能仍带 rhart-video-g（已从类型中移除）
       if (String(videoInput.model ?? '') === 'rhart-video-g') {
         onStatus({
           nodeId,
           status: 'ERROR',
-          payload: { error: 'Grok 1.5（全能视频 G）已下线，请在面板中选择 Grok video3（grok-3）。' },
+          payload: { error: 'Grok 1.5（全能视频 G）已下线，请在面板中选择 Grok video3（grok-3）或全能视频X（rhart-video-x）。' },
         });
         return;
       }
@@ -934,6 +1005,7 @@ export class VideoProvider extends BaseProvider {
         isRhartV31ProModel ||
         isRhartV31ProSEModel ||
         isGrok3Model ||
+        isRhartVideoXModel ||
         isGrok3StableModel ||
         isSeedanceModel ||
         isHailuo02Model ||
@@ -967,6 +1039,7 @@ export class VideoProvider extends BaseProvider {
           isRhartV31ProModel ||
           isRhartV31ProSEModel ||
           isGrok3Model ||
+          isRhartVideoXModel ||
           isGrok3StableModel ||
           isHailuo02Model ||
           isHailuo23Model ||
@@ -1047,6 +1120,34 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: { error: 'LTX2.3 对口型需连接音频节点。' },
+          });
+          return;
+        }
+      }
+
+      // LTX2.3-MSR 图像+声音：背景+分镜 + 音频 + 提示词
+      if (isLtx23MsrAv) {
+        const hdrValidation = validateLtx23HdrMultiInputs(
+          String(inputLtx23HdrBackgroundImage || ''),
+          rawImages || [],
+        );
+        if (!hdrValidation.ok) {
+          onStatus({ nodeId, status: 'ERROR', payload: { error: hdrValidation.error } });
+          return;
+        }
+        if (!inputAudioUrl || !inputAudioUrl.trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'LTX2.3-MSR 图像+声音需连接音频节点。' },
+          });
+          return;
+        }
+        if (!(prompt || '').trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'LTX2.3-MSR 图像+声音需填写分镜提示词（Prompt）。' },
           });
           return;
         }
@@ -1273,14 +1374,14 @@ export class VideoProvider extends BaseProvider {
         return;
       }
 
-      // Grok video3：文生（无参考图）或图生 1–7 张（标准 API rhart-video-g）
-      if (isGrok3Model && isImageToVideo) {
+      // 全能视频X / Grok video3：图生 1–7 张（标准 API rhart-video-g/image-to-video）
+      if ((isGrok3Model || isRhartVideoXModel) && isImageToVideo) {
         const g3n = images!.length;
         if (g3n < 1 || g3n > 7) {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: `Grok video3 图生视频需 1–7 张参考图，当前 ${g3n} 张。` },
+            payload: { error: `${isRhartVideoXModel ? '全能视频X' : 'Grok video3'} 图生视频需 1–7 张参考图，当前 ${g3n} 张。` },
           });
           return;
         }
@@ -1357,15 +1458,18 @@ export class VideoProvider extends BaseProvider {
           'wan-2.6-flash',
           'wan-animate',
           'gemini-omni',
+          'gemini-omni-flash',
           'seedance-2.0-fast',
           'seedance-2.0-mini',
           'ltx-2.3-lipsync',
           'ltx-2.3-i2v', // LTX2.3 图生视频，仅 1 张
           'ltx-2.3-hdr-multi', // LTX2.3 高动态：背景 + 1–4 分镜
+          LTX23_MSR_AV_MODEL_ID, // LTX2.3-MSR 图像+声音
           'rhart-v3.1-fast',
           'rhart-v3.1-fast-se',
           'rhart-v3.1-pro-se',
           'grok-3',
+          'rhart-video-x',
           'grok-3-stable',
           'hailuo-02-i2v-standard',
           'hailuo-2.3-i2v-standard',
@@ -1412,6 +1516,28 @@ export class VideoProvider extends BaseProvider {
           }
         }
 
+        if (isGeminiOmniFlashModel) {
+          const flashImageCount = images.filter((img) => String(img || '').trim()).length;
+          if (flashImageCount !== 1 && flashImageCount !== 3) {
+            onStatus({
+              nodeId,
+              status: 'ERROR',
+              payload: {
+                error: `全能视频 Omni Flash 仅支持 1 或 3 张参考图（不支持 2 张），当前提供了 ${flashImageCount} 张。`,
+              },
+            });
+            return;
+          }
+          if (String(inputReferenceVideoUrl || '').trim()) {
+            onStatus({
+              nodeId,
+              status: 'ERROR',
+              payload: { error: '全能视频 Omni Flash 不支持参考视频，请断开视频连线或改用其他模型。' },
+            });
+            return;
+          }
+        }
+
         // sora-2 / 万相2.6 / 万相2.6 Flash / 海螺-2.3 图生 / 可灵图生o1 只支持 1 张图片
         if ((isSora2Model || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isWanAnimateModel || isHailuo23I2vModel || isKlingVideoO1I2vModel || isLtx23LipsyncModel || isLtx23I2vModel) && imageCount > 1) {
           const name = isWanAnimateModel ? 'WanAnimate（角色替换）' : isRhartV31ProOfficialI2vModel ? 'Veo 3.1 Pro（图生）' : isKlingVideoO1I2vModel ? '可灵图生视频o1' : isHailuo23I2vModel ? '海螺-2.3-图生视频-标准' : isWan26FlashModel ? '万相2.6 Flash' : isWan26Model ? '万相2.6' : isLtx23I2vModel ? 'LTX2.3 图生视频' : 'sora-2';
@@ -1436,6 +1562,7 @@ export class VideoProvider extends BaseProvider {
             model === 'kling-video-o1-start-end' ||
             model === 'rh-video-start-end' ||
             model === 'grok-3' ||
+            model === 'rhart-video-x' ||
             model === 'grok-3-stable' ||
             model === 'gemini-omni';
           if (!allowedForTwo) {
@@ -1954,6 +2081,238 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'LTX2.3 高动态（多图控制）生成失败'),
+          });
+        }
+        return;
+      }
+
+      // LTX2.3-MSR 图像+声音：背景 + 分镜 + 音频 + Prompt（PLUS 48G）
+      if (isLtx23MsrAv) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const bgUrl = String(inputLtx23HdrBackgroundImage || '').trim();
+        const storyboardSlots = normalizeLtx23HdrStoryboardSlots(images || []);
+
+        const ensureAudioRemoteMsr = async (url: string): Promise<string> => {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            if (isOurOssOrCdnObjectUrl(url)) {
+              return preferDirectOssUrlForThirdPartyImageRef(url);
+            }
+            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+            const ct = res.headers['content-type'] || '';
+            const mimeType = ct.includes('wav')
+              ? 'audio/wav'
+              : ct.includes('ogg')
+                ? 'audio/ogg'
+                : ct.includes('m4a')
+                  ? 'audio/mp4'
+                  : 'audio/mpeg';
+            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+          }
+          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+            return this.uploadLocalAudioToOSS(url);
+          }
+          if (url.startsWith('data:audio/')) {
+            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+            const buf = Buffer.from(m ? m[2] : '', 'base64');
+            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+            return this.uploadAudioToOSS(buf, mime);
+          }
+          return url;
+        };
+
+        let ltxFcChargedIdMsrAv: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 5, text: '正在上传场景图、分镜图与音频…' },
+          });
+
+          const bgRemote = bgUrl ? await this.processImageToOssUrl(bgUrl) : '';
+          const storyboardRemote: string[] = [];
+          for (const u of storyboardSlots) {
+            const trimmed = String(u || '').trim();
+            storyboardRemote.push(trimmed ? await this.processImageToOssUrl(trimmed) : '');
+          }
+          const audioRemote = await ensureAudioRemoteMsr(String(inputAudioUrl || '').trim());
+          const promptText = (prompt || '').trim();
+
+          const resRaw = (inputResolutionLtx23HdrMulti || '720') as string;
+          const res =
+            resRaw === '1080' || resRaw === '1920'
+              ? '1280'
+              : (resRaw as '720' | '1280' | '1920');
+          const ratio = aspect_ratio === '9:16' || aspect_ratio === '16:9' ? aspect_ratio : '16:9';
+          const { width, height } = ltx23MsrAvDimensions(ratio, res);
+          const durSec = normalizeLtx23DurationSec(inputDurationLtx23HdrMulti, 10);
+          const fps = LTX23_MSR_AV_DEFAULT_FPS;
+
+          const nodeInfoList: Array<{
+            nodeId: string;
+            fieldName: string;
+            fieldValue: string;
+            description?: string;
+          }> = [
+            {
+              nodeId: LTX23_MSR_AV_SCENE_NODE.nodeId,
+              fieldName: 'image',
+              fieldValue: bgRemote,
+              description: LTX23_MSR_AV_SCENE_NODE.description,
+            },
+          ];
+          LTX23_MSR_AV_STORYBOARD_NODES.forEach((slot, idx) => {
+            const v = storyboardRemote[idx] || '';
+            if (!v && idx >= 2) return; // image3/4 可选，空则不传
+            nodeInfoList.push({
+              nodeId: slot.nodeId,
+              fieldName: 'image',
+              fieldValue: v,
+              description: slot.description,
+            });
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_AUDIO_NODE.nodeId,
+            fieldName: 'audio',
+            fieldValue: audioRemote,
+            description: LTX23_MSR_AV_AUDIO_NODE.description,
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_PROMPT_NODE.nodeId,
+            fieldName: 'value',
+            fieldValue: promptText,
+            description: LTX23_MSR_AV_PROMPT_NODE.description,
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_WIDTH_NODE.nodeId,
+            fieldName: 'value',
+            fieldValue: String(width),
+            description: LTX23_MSR_AV_WIDTH_NODE.description,
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_HEIGHT_NODE.nodeId,
+            fieldName: 'value',
+            fieldValue: String(height),
+            description: LTX23_MSR_AV_HEIGHT_NODE.description,
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_DURATION_NODE.nodeId,
+            fieldName: 'value',
+            fieldValue: String(durSec),
+            description: LTX23_MSR_AV_DURATION_NODE.description,
+          });
+          nodeInfoList.push({
+            nodeId: LTX23_MSR_AV_FPS_NODE.nodeId,
+            fieldName: 'value',
+            fieldValue: String(fps),
+            description: LTX23_MSR_AV_FPS_NODE.description,
+          });
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中…' } });
+
+          console.log(
+            '[视频生成] LTX2.3-MSR 图像+声音 提交参数:',
+            JSON.stringify({
+              appId: LTX23_MSR_AV_APP_ID,
+              instanceType: 'plus',
+              width,
+              height,
+              durationSec: durSec,
+              fps,
+              prompt: promptText.slice(0, 120),
+              nodeInfoList: summarizeRhNodeInfoForLog(nodeInfoList),
+            }),
+          );
+
+          const ltxFcId = randomUUID();
+          const runRes = await rhPostChargeVideo(
+            `${RUN_BASE}/run/ai-app/${LTX23_MSR_AV_APP_ID}`,
+            {
+              nodeInfoList,
+              instanceType: 'plus',
+              usePersonalQueue: 'false',
+            } as Record<string, unknown>,
+            ltxFcId,
+            {
+              billingModelId: buildVideoBillingModelId(LTX23_MSR_AV_MODEL_ID, input as Record<string, unknown>),
+            },
+          );
+          ltxFcChargedIdMsrAv = ltxFcId;
+
+          const body = runRes ?? {};
+          const taskId = body.taskId ?? body.task_id;
+          if (!taskId) {
+            throw new Error(`提交失败：${formatRunningHubTaskError(body, '未返回 taskId')}`);
+          }
+
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskId) },
+          });
+
+          const deadline = Date.now() + POLL_DEADLINE_MS;
+          let lastProgress = 15;
+          let ltxPollRound = 0;
+
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgress = Math.min(95, lastProgress + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
+            });
+
+            ltxPollRound += 1;
+            const queryRes = await rhQueryPollVideo(String(taskId), `${ltxFcId}:poll:${ltxPollRound}`);
+
+            const status = queryRes.status;
+            if (status === 'SUCCESS') {
+              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
+              if (results && Array.isArray(results) && results.length > 0) {
+                const first = results[0];
+                const url =
+                  typeof first?.url === 'string'
+                    ? first.url
+                    : ((first?.url as { url?: string })?.url ??
+                      (first?.url as { href?: string })?.href);
+                if (url) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url, videoUrl: url, originalVideoUrl: url },
+                  });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (status === 'FAILED' || status === 'FAILURE') {
+              throw rhPollFailureError('LTX2.3-MSR 图像+声音', queryRes, String(taskId));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(ltxFcChargedIdMsrAv, 'video', 'ltx_23_msr_av_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(
+              err,
+              err instanceof Error ? err.message : 'LTX2.3-MSR 图像+声音生成失败',
+            ),
           });
         }
         return;
@@ -2492,6 +2851,159 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'Gemini Omni 生成失败'),
+          });
+          return;
+        }
+      }
+
+      // 全能视频 Omni Flash 图生视频：OpenAPI /gemini-omni-flash/image-to-video（海外站；仅 1 或 3 张图）
+      if (isGeminiOmniFlashModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        if (!isImageToVideo) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '全能视频 Omni Flash 仅支持图生视频，请连接 1 或 3 张参考图' },
+          });
+          return;
+        }
+        const flashImages = (images || [])
+          .map((img) => String(img || '').trim())
+          .filter(Boolean)
+          .slice(0, 3);
+        if (flashImages.length !== 1 && flashImages.length !== 3) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error: `全能视频 Omni Flash 仅支持 1 或 3 张参考图，当前 ${flashImages.length} 张`,
+            },
+          });
+          return;
+        }
+
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+        let flashChargedTaskId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 5, text: '正在上传参考图...' } });
+          const imageUrls = await Promise.all(flashImages.map((img) => this.processImageToOssUrl(img)));
+          const resRaw = String(inputResolutionGeminiOmni || '720p').trim().toLowerCase();
+          const resolutionVal = resRaw === '1080p' || resRaw === '4k' ? resRaw : '720p';
+          const durationVal = String(normalizeGeminiOmniFlashDurationSec(inputDurationGeminiOmni, 6));
+          const aspectVal = aspect_ratio === '9:16' ? '9:16' : '16:9';
+          const promptText = String(prompt || '').trim();
+          if (!promptText) {
+            throw new Error('全能视频 Omni Flash 需要填写视频描述（prompt）');
+          }
+          if (promptText.length > 2048) {
+            throw new Error('prompt 长度不能超过 2048 字符');
+          }
+
+          const payloadFlash = {
+            prompt: promptText,
+            imageUrls,
+            duration: durationVal,
+            resolution: resolutionVal,
+            aspectRatio: aspectVal,
+          };
+          const apiEndpointFlash = `${RUNNINGHUB_OPENAPI_V2_BASE}/gemini-omni-flash/image-to-video`;
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 10, text: '提交任务中...' } });
+          const fcBaseIdFlash = randomUUID();
+          const runResFlash = await rhPostChargeVideo(
+            apiEndpointFlash,
+            payloadFlash as Record<string, unknown>,
+            fcBaseIdFlash,
+            {
+              // 海外站 runninghub.ai（与 FC ALWAYS_OVERSEAS / forceOverseas 对齐）
+              rhRegion: 'ai',
+              billingModelId: buildVideoBillingModelId(
+                'gemini-omni-flash',
+                input as Record<string, unknown>,
+              ),
+            },
+          );
+          flashChargedTaskId = fcBaseIdFlash;
+          const taskIdFlash = runResFlash?.taskId ?? runResFlash?.task_id;
+          if (!taskIdFlash) {
+            throw new Error(`提交失败：${formatRunningHubTaskError(runResFlash ?? {}, '未返回 taskId')}`);
+          }
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskIdFlash) },
+          });
+
+          const deadlineFlash = Date.now() + POLL_DEADLINE_MS;
+          let lastProgressFlash = 15;
+          let pollRoundFlash = 0;
+          while (Date.now() < deadlineFlash) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgressFlash = Math.min(95, lastProgressFlash + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgressFlash, text: '生成中...', taskId: String(taskIdFlash) },
+            });
+            pollRoundFlash += 1;
+            const queryResFlash = await rhQueryPollVideo(
+              String(taskIdFlash),
+              `${fcBaseIdFlash}:poll:${pollRoundFlash}`,
+              undefined,
+              { rhRegion: 'ai' },
+            );
+            const st = queryResFlash.status;
+            if (st === 'SUCCESS') {
+              const resultsFlash = queryResFlash.results as
+                | Array<{ url?: unknown; outputType?: unknown }>
+                | undefined;
+              if (resultsFlash && Array.isArray(resultsFlash) && resultsFlash.length > 0) {
+                const pickUrl = (it: { url?: unknown } | undefined): string => {
+                  if (!it) return '';
+                  if (typeof it.url === 'string') return it.url;
+                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
+                };
+                const mp4Item = resultsFlash.find((it) => {
+                  const out = String(it?.outputType ?? '').trim().toLowerCase();
+                  const u = pickUrl(it).toLowerCase();
+                  return out === 'mp4' || u.endsWith('.mp4');
+                });
+                const bestItem = mp4Item || resultsFlash[0];
+                const urlFlash = pickUrl(bestItem);
+                if (urlFlash) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url: urlFlash, videoUrl: urlFlash, originalVideoUrl: urlFlash },
+                  });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (st === 'FAILED' || st === 'FAILURE') {
+              throw rhPollFailureError('全能视频 Omni Flash', queryResFlash, String(taskIdFlash));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(flashChargedTaskId, 'video', 'gemini_omni_flash_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(
+              err,
+              err instanceof Error ? err.message : '全能视频 Omni Flash 生成失败',
+            ),
           });
           return;
         }
@@ -3199,31 +3711,29 @@ export class VideoProvider extends BaseProvider {
           };
           apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video-v3.1-fast/text-to-video`;
         }
-      } else if (isGrok3Model) {
-        // Grok video3（标准 OpenAPI v2）：文生 /rhart-video-g/text-to-video；图生 /rhart-video-g/image-to-video
-        // 参数：prompt、aspectRatio、resolution(720p)、duration(6|10|15|30 秒)；图生另含 imageUrls(最多 7)
+      } else if (isGrok3Model || isRhartVideoXModel) {
+        // Grok video3 / 全能视频X（标准 OpenAPI v2）：文生 text-to-video；图生 image-to-video
+        // 全能视频X 时长 6|8|10|15|30；Grok 时长 6|10|15|30；分辨率仅 720p；图生最多 7 张
         const arG3Raw = String(aspect_ratio || '16:9').trim();
         const allowedG3Ar = new Set(['2:3', '3:2', '1:1', '16:9', '9:16']);
         const aspectG3Val = allowedG3Ar.has(arG3Raw) ? arG3Raw : '16:9';
         const resG3Val = '720p';
-        const durG3Sec = normalizeGrok3DurationSec(inputDurationGrok3, 10);
+        const durG3Sec = isRhartVideoXModel
+          ? normalizeRhartVideoXDurationSec(inputDurationGrok3, 10)
+          : normalizeGrok3DurationSec(inputDurationGrok3, 10);
 
         if (isImageToVideo) {
           const toProcessG3 = (images || []).slice(0, 7);
           const imageUrlsG3: string[] = [];
           for (const imageUrl of toProcessG3) {
             if (!imageUrl) continue;
-            let processed = imageUrl;
             let imageBuffer: Buffer;
             let mimeType = 'image/png';
             try {
               if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-                if (!isOurOssOrCdnObjectUrl(imageUrl)) {
-                  const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
-                  imageBuffer = Buffer.from(response.data);
-                  mimeType = (response.headers['content-type'] as string) || 'image/png';
-                  processed = await this.uploadImageToOSS(imageBuffer, mimeType);
-                }
+                const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+                imageBuffer = Buffer.from(response.data);
+                mimeType = (response.headers['content-type'] as string) || 'image/png';
               } else if (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://')) {
                 let filePath = imageUrl.startsWith('local-resource://') ? imageUrl.replace(/^local-resource:\/\//, '') : imageUrl.replace(/^file:\/\//, '');
                 if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
@@ -3239,46 +3749,49 @@ export class VideoProvider extends BaseProvider {
                 imageBuffer = fs.readFileSync(normalizedFilePath);
                 const ext = path.extname(normalizedFilePath).toLowerCase();
                 mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
-                processed = await this.uploadImageToOSS(imageBuffer, mimeType);
               } else if (imageUrl.startsWith('data:image/')) {
                 const base64Data = imageUrl.split(',')[1];
                 if (!base64Data) throw new Error('Base64 Data URL 格式无效');
                 imageBuffer = Buffer.from(base64Data, 'base64');
                 const mimeMatch = imageUrl.match(/^data:image\/(\w+);base64,/);
                 mimeType = mimeMatch ? `image/${mimeMatch[1]}` : 'image/png';
-                processed = await this.uploadImageToOSS(imageBuffer, mimeType);
               } else {
                 throw new Error(`不支持的图片 URL 格式: ${imageUrl.substring(0, 50)}`);
               }
+              const padded = await this.padImageBufferToAspectRatio(imageBuffer, aspectG3Val);
+              const processed = await this.uploadImageToOSS(padded.buffer, padded.mimeType || mimeType);
+              if (processed && (processed.startsWith('http://') || processed.startsWith('https://'))) {
+                imageUrlsG3.push(preferDirectOssUrlForThirdPartyImageRef(processed));
+              }
             } catch (err: any) {
-              throw new Error(`Grok video3 图生视频图片处理失败: ${err.message || err}`);
-            }
-            if (processed && (processed.startsWith('http://') || processed.startsWith('https://'))) {
-              imageUrlsG3.push(preferDirectOssUrlForThirdPartyImageRef(processed));
+              throw new Error(`${isRhartVideoXModel ? '全能视频X' : 'Grok video3'} 图生视频图片处理失败: ${err.message || err}`);
             }
           }
           if (imageUrlsG3.length === 0) throw new Error('图生视频需要至少一张有效图片');
           payload = {
             prompt: String(prompt || '').trim(),
-            aspectRatio: aspectG3Val,
+            aspectRatio: String(aspectG3Val),
             imageUrls: imageUrlsG3,
             resolution: resG3Val,
             duration: durG3Sec,
           };
           apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video-g/image-to-video`;
           console.log(
-            '[视频生成] Grok video3 图生视频 请求体:',
+            `[视频生成] ${isRhartVideoXModel ? '全能视频X' : 'Grok video3'} 图生视频 请求体:`,
             JSON.stringify({ ...payload, imageUrls: imageUrlsG3.map((u) => (u.length > 90 ? `${u.slice(0, 90)}…` : u)) }, null, 2),
           );
         } else {
           payload = {
             prompt: String(prompt || '').trim(),
-            aspectRatio: aspectG3Val,
+            aspectRatio: String(aspectG3Val),
             resolution: resG3Val,
             duration: durG3Sec,
           };
           apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/rhart-video-g/text-to-video`;
-          console.log('[视频生成] Grok video3 文生视频 请求体:', JSON.stringify(payload, null, 2));
+          console.log(
+            `[视频生成] ${isRhartVideoXModel ? '全能视频X' : 'Grok video3'} 文生视频 请求体:`,
+            JSON.stringify(payload, null, 2),
+          );
         }
       } else if (isGrok3StableModel) {
         const durG3StableSec = normalizeGrok3StableDurationSec(inputDurationGrok3, 10);
@@ -3434,7 +3947,7 @@ export class VideoProvider extends BaseProvider {
           videoUrls: videoUrlsSd,
           audioUrls: audioUrlsSd,
           generateAudio: true,
-          ratio: 'adaptive',
+          ratio: coerceSeedanceRatio(aspect_ratio),
           realPersonMode: true,
           ...(isSeedanceMiniModel ? { conversionSlots: ['all'] as string[] } : {}),
           returnLastFrame: false,
@@ -3845,7 +4358,7 @@ export class VideoProvider extends BaseProvider {
       }
 
       // 注意：sora-2、全能视频S-图生视频-pro、万相2.6、万相2.6 Flash、全能V3.1-fast/pro 图生/首尾帧已在上面单独处理，这里只处理其他模型（如 kling）
-      if (isImageToVideo && !isSora2Model && !isWan26Model && !isWan26FlashModel && !isRhartV31FastModel && !isRhartV31FastSEModel && !isRhartV31ProSEModel && !isGrok3Model) {
+      if (isImageToVideo && !isSora2Model && !isWan26Model && !isWan26FlashModel && !isRhartV31FastModel && !isRhartV31FastSEModel && !isRhartV31ProSEModel && !isGrok3Model && !isRhartVideoXModel) {
         // 处理图片URL：将 local-resource:// 和 file:// 上传到 OSS
         const processedImages = await Promise.all(
           images!.slice(0, 10).map(async (imageUrl) => {
@@ -3972,7 +4485,7 @@ export class VideoProvider extends BaseProvider {
             ? `, 时长: ${duration || '5'}, 镜头: ${inputShotType || 'single'}${isImageToVideo ? `, 分辨率: ${inputResolutionWan26 || '1080p'}` : ''}`
             : isRhartV31ProModel || isRhartV31ProSEModel
             ? `, 比例: ${aspect_ratio || '16:9'}`
-            : isGrok3Model
+            : isGrok3Model || isRhartVideoXModel
             ? `, 比例: ${aspect_ratio || '16:9'}, 时长: ${inputDurationGrok3 || '10'}s, 分辨率: 720p`
             : isRhartV31FastSEModel || isRhartV31FastModel
             ? `, 比例: ${aspect_ratio || '16:9'}, 分辨率: ${inputResolutionRhartV31 || '1080p'}`
@@ -4001,7 +4514,10 @@ export class VideoProvider extends BaseProvider {
             apiEndpoint,
             payload as Record<string, unknown>,
             fcVideoSessionId,
-            { billingModelId: videoBillingId },
+            {
+              billingModelId: videoBillingId,
+              ...(isRhartVideoXModel || isGrok3Model || isGrok3StableModel ? { rhRegion: 'ai' as const } : {}),
+            },
             ledgerVideoId,
           );
           fcChargedTaskId = ledgerVideoId || fcVideoSessionId;
@@ -4086,7 +4602,7 @@ export class VideoProvider extends BaseProvider {
           console.log(`[视频生成] sora-2 图生视频：获取到 taskId: ${taskId}，已存储到状态中`);
           // 可以将 taskId 存储到 store 中，但通常通过 onStatus 回调传递给前端即可
         }
-      } else if (isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isSora2ProModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel) {
+      } else if (isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isRhartVideoXModel || isGrok3StableModel || isSeedanceModel || isSora2ProModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel) {
         taskId = d.taskId || d.task_id || d.data?.taskId || d.data?.task_id;
         videoUrl = d.results?.[0]?.url || d.data?.results?.[0]?.url || d.data?.output || d.url || d.data?.url;
       } else {
@@ -4099,7 +4615,7 @@ export class VideoProvider extends BaseProvider {
       }
 
       // 若首次响应即返回 FAILED（如系统繁忙 1011），立即发送 ERROR 并退出，避免进入轮询后进度条继续跑
-      const isRunningHubModel = !isSora2Core && (isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isSora2Model || isSora2ProModel || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel);
+      const isRunningHubModel = !isSora2Core && (isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isSora2Model || isSora2ProModel || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isRhartVideoXModel || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel);
       if ((isRunningHubModel || isSora2Core) && (d.status === 'FAILED' || d.status === 'FAILURE')) {
         const failReason = d.fail_reason || d.errorMessage || d.error || d.message || '视频生成失败';
         const fullReason = d.errorCode ? `[错误码: ${d.errorCode}] ${failReason}` : failReason;
@@ -4200,7 +4716,12 @@ export class VideoProvider extends BaseProvider {
             } else if (usesRhOpenApiV2QueryPoll) {
               // RunningHub OpenAPI v2：经 FC 轮询（billing=none）
               pollResponse = {
-                data: await rhQueryPollVideo(String(taskId), `${fcVideoSessionId}:poll:${attempt}`, ledgerVideoId),
+                data: await rhQueryPollVideo(
+                  String(taskId),
+                  `${fcVideoSessionId}:poll:${attempt}`,
+                  ledgerVideoId,
+                  isRhartVideoXModel || isGrok3Model || isGrok3StableModel ? { rhRegion: 'ai' } : undefined,
+                ),
               };
             } else {
               const r = await fcForwardRequest(
@@ -4284,14 +4805,14 @@ export class VideoProvider extends BaseProvider {
                 pollData.output ||
                 pollData.url;
               if (possibleVideoUrl) console.log(`[视频生成] Sora2 核心算力 - 提取到视频 URL: ${possibleVideoUrl}`);
-            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateModel) {
+            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isRhartVideoXModel || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateModel) {
               const resultsArray = Array.isArray(pollData.results) ? pollData.results : pollData.data?.results;
               if (resultsArray && resultsArray.length > 0) {
                 possibleVideoUrl = this.firstRhMediaUrlFromResultItem(resultsArray[0]);
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.log(`[视频生成] ${name} - 从 results[0].url 提取到视频 URL: ${possibleVideoUrl}`);
               } else {
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.warn(`[视频生成] ${name} - 未找到视频 URL，完整响应:`, JSON.stringify(pollData, null, 2));
               }
             } else if (isKlingModel) {
