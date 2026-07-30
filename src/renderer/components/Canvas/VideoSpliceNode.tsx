@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMe
 import { useViewportIntersection } from '../../hooks/useViewportIntersection';
 import { Handle, Position, NodeProps, useReactFlow, useStore } from 'reactflow';
 import { createPortal } from 'react-dom';
-import { Film, Plus, Play, Pause, Volume2, VolumeX, Video, Maximize2, Minimize2, Trash2, Download, RotateCcw, Scissors, ZoomIn, ZoomOut, Magnet, ChevronDown } from 'lucide-react';
+import { Film, Plus, Play, Pause, Volume2, VolumeX, Video, Maximize2, Minimize2, Trash2, Download, RotateCcw, Scissors, ZoomIn, ZoomOut, Magnet, ChevronDown, Loader2 } from 'lucide-react';
 import { normalizeVideoUrl } from '../../utils/normalizeVideoUrl';
 import { mapProjectPath } from '../../utils/pathMapper';
 import {
@@ -30,6 +30,7 @@ import {
   WORKSPACE_HEADER_SELECTOR,
 } from '../../utils/workspaceChromeLayout';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import {
   DEFAULT_SPLICE_PREVIEW_ASPECT_ID,
   resolveSpliceExportDimensions,
@@ -37,10 +38,12 @@ import {
   VideoSpliceAspectRatioDropdown,
 } from './VideoSpliceAspectRatioDropdown';
 import { resolveCollage1080pDefaultSize } from './photoCollageAspectRatio';
+import TimelineClipFilmstrip from './TimelineClipFilmstrip';
 import {
   DEFAULT_VIDEO_TRACK_COUNT,
   DEFAULT_IMAGE_CLIP_DURATION_SEC,
   applyBuiltClipsToSpliceData,
+  collectSpliceIncomingSourceIds,
   encodeVideoTrackRef,
   clipEndSec,
   clipTimelineDurationSec,
@@ -51,6 +54,8 @@ import {
   isAudioTrackRef,
   isVideoTrackRef,
   normalizeVideoTracks,
+  spliceBuiltHasNewConnectedSources,
+  spliceRebuildWouldDropConnected,
   videoTrackIndexFromRef,
   clampSpliceAudioVolume,
   SPLICE_AUDIO_VOLUME_MAX,
@@ -65,10 +70,8 @@ const SPLICE_UI_BOX_SELECT = 'border-2 border-sky-400/70 bg-sky-500/15';
 const SPLICE_UI_PLAYHEAD = 'bg-white/45 group-hover:bg-white/70';
 const spliceThumbStripBg = (isDarkMode: boolean) =>
   isDarkMode ? 'bg-violet-950/40' : 'bg-[#6D28D9]/50';
-const spliceVideoClipBg = (isDarkMode: boolean) =>
-  isDarkMode
-    ? 'bg-violet-950/90 hover:bg-violet-900/95 border border-violet-500/25'
-    : 'bg-[#7C3AED]/95 hover:bg-[#8B5CF6]/95 border border-white/25';
+/** 视频轨素材条已改为胶片填充，外层不再铺紫色底 */
+const spliceVideoClipBg = (_isDarkMode: boolean) => 'bg-transparent border-0 shadow-none';
 const spliceAudioClipBg = (isDarkMode: boolean) =>
   isDarkMode
     ? 'bg-amber-950/95 hover:bg-amber-900/95 border border-amber-500/60'
@@ -88,6 +91,8 @@ export interface TimelineClip {
   sourceNodeId?: string;
   /** 素材单独音量 0–1，默认 1 */
   volume?: number;
+  /** 导演 MV：对应镜号，便于生视频后替换图片占位 */
+  directorShotNo?: string;
 }
 
 type SpliceClipClipboardItem = {
@@ -163,14 +168,19 @@ export interface VideoSpliceNodeData {
 interface VideoSpliceNodeProps extends NodeProps<VideoSpliceNodeData> {
   projectId?: string;
   isDarkMode?: boolean;
-  onDataChange?: (nodeId: string, updates: Partial<VideoSpliceNodeData>) => void;
+  onDataChange?: (
+    nodeId: string,
+    updates:
+      | Partial<VideoSpliceNodeData>
+      | ((prev: VideoSpliceNodeData) => Partial<VideoSpliceNodeData>),
+  ) => void;
   onExportToCanvas?: (nodeId: string, payload: VideoSpliceExportPayload) => Promise<{ createdAudioNode?: boolean } | void>;
 }
 
 const PIXELS_PER_SECOND_DEFAULT = 60;
 const PIXELS_PER_SECOND_MIN = 20;
 const PIXELS_PER_SECOND_MAX = 200;
-const TRACK_HEIGHT = 56;
+const TRACK_HEIGHT = 64;
 const RULER_HEIGHT = 28;
 const RULER_HEIGHT_FULLSCREEN = 32;
 /** 轨道左侧标签/控件的固定宽度，须与刻度尺占位一致（含 px-2 内边距与 gap-1） */
@@ -204,8 +214,7 @@ const SPLICE_TIMELINE_SCROLLBAR_THUMB_PX = 36;
 /** 滚动条下方留白，避免被节点圆角裁切 */
 const SPLICE_TIMELINE_SCROLLBAR_PAD_PX = 10;
 const SPLICE_TIMELINE_SCROLLBAR_LANE_PX = SPLICE_TIMELINE_SCROLLBAR_THUMB_PX + SPLICE_TIMELINE_SCROLLBAR_PAD_PX;
-const SPLICE_EMPTY_PREVIEW_PX = 120;
-/** 预览视口固定 16:9，切换导出比例时主模块尺寸不变 */
+/** 预览视口固定 16:9，切换导出比例时主模块尺寸不变（空内容时同样保持该视口比例） */
 const SPLICE_PREVIEW_VIEWPORT_AR = 16 / 9;
 const splicePreviewCanvasBg = (isDarkMode: boolean) =>
   isDarkMode ? 'bg-zinc-500' : 'bg-gray-400';
@@ -284,7 +293,8 @@ function clipTimelineSpan(clip: TimelineClip, sourceHint = 0): { start: number; 
 
 function clipContainsTimelineTime(clip: TimelineClip, timelineTime: number, sourceHint = 0): boolean {
   const { start, end } = clipTimelineSpan(clip, sourceHint);
-  return timelineTime >= start + 1e-4 && (end === Number.POSITIVE_INFINITY || timelineTime < end - 1e-4);
+  // 半开区间 [start, end)：必须包含起点，否则播放头停在 0 时预览灰屏
+  return timelineTime >= start && (end === Number.POSITIVE_INFINITY || timelineTime < end);
 }
 
 function tracksEqual(a: TimelineTrackRef, b: TimelineTrackRef): boolean {
@@ -1012,6 +1022,40 @@ function setVideoElSrc(el: HTMLVideoElement, url: string) {
   const attr = el.getAttribute('src') || '';
   if (attr === url) return;
   el.setAttribute('src', url);
+  try {
+    el.load();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** seek 后等 seeked，避免未对齐就 play 造成片间卡一帧 */
+function seekVideoElement(el: HTMLVideoElement, localTime: number): Promise<void> {
+  const t = Math.max(0, localTime);
+  try {
+    if (el.readyState >= HTMLMediaElement.HAVE_METADATA && Math.abs(el.currentTime - t) <= 0.04) {
+      return Promise.resolve();
+    }
+  } catch {
+    /* ignore */
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('seeked', finish);
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(finish, 350);
+    el.addEventListener('seeked', finish, { once: true });
+    try {
+      el.currentTime = t;
+    } catch {
+      finish();
+    }
+  });
 }
 
 function setStackedVideoLayerVisible(el: HTMLVideoElement, visible: boolean) {
@@ -1024,7 +1068,7 @@ function findImageClipAtTimeOnTrack(track: TimelineClip[], t: number): TimelineC
   return track.find((c) => {
     if (c.type !== 'image') return false;
     const dur = clipTimelineDurationSec(c);
-    return t >= c.startTime + 1e-4 && t < c.startTime + dur - 1e-4;
+    return t >= c.startTime && t < c.startTime + dur;
   });
 }
 
@@ -1035,8 +1079,8 @@ function computeStackedTrackShouldDecode(videoTracks: TimelineClip[][], t: numbe
       if (c.type !== 'video') return false;
       const start = c.startTime;
       const dur = clipPlaybackSpanDurationSec(c);
-      if (!Number.isFinite(dur)) return t >= start + 1e-4;
-      return t >= start && t < start + dur - 1e-4;
+      if (!Number.isFinite(dur)) return t >= start;
+      return t >= start && t < start + dur;
     }),
   );
   const trackHasVisual = videoTracks.map(
@@ -1350,9 +1394,62 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   onDataChange,
   onExportToCanvas,
 }) => {
-  const { setNodes, setEdges } = useReactFlow();
-  const nodes = useStore((s) => s.nodes) ?? [];
-  const edges = useStore((s) => s.edges) ?? [];
+  const { setNodes, setEdges, getNodes, getEdges } = useReactFlow();
+  /**
+   * 不要订阅整份 nodes/edges：剪辑模块 DOM 很重，任一节点更新都会拖死画布。
+   * 只在「入边拓扑 / 源素材 URL·时长」变化时用签名触发更新。
+   */
+  const incomingGraphSig = useStore(
+    useCallback((s: { edges: Array<{ source: string; target: string; sourceHandle?: string | null }>; nodes: Array<{ id: string; type?: string; data?: Record<string, unknown> }>; nodeInternals?: Map<string, { id: string; type?: string; data?: Record<string, unknown> }> }) => {
+      const parts: string[] = [];
+      for (const e of s.edges) {
+        if (e.target !== id) continue;
+        const n =
+          s.nodeInternals?.get?.(e.source) ??
+          s.nodes.find((x) => x.id === e.source);
+        if (!n) {
+          parts.push(`${e.source}:missing`);
+          continue;
+        }
+        const d = (n.data || {}) as Record<string, unknown>;
+        const multiA = Array.isArray(d.outputAudios) ? String(d.outputAudios[0] || '') : '';
+        const multiO = Array.isArray(d.originalOutputAudios)
+          ? String(d.originalOutputAudios[0] || '')
+          : '';
+        const multiImg = Array.isArray(d.outputImages) ? String(d.outputImages[0] || '') : '';
+        parts.push(
+          [
+            e.source,
+            n.type || '',
+            e.sourceHandle || '',
+            String(d.outputAudio || multiA || multiO || d.originalAudioUrl || d.referenceAudioUrl || ''),
+            String(d.outputVideo || d.originalVideoUrl || ''),
+            String(d.outputImage || multiImg || ''),
+            String(d.mediaDurationSec ?? ''),
+          ].join('\u0001'),
+        );
+      }
+      return parts.sort().join('|');
+    }, [id]),
+  );
+  const edges = useMemo(() => {
+    void incomingGraphSig;
+    return getEdges().filter((e) => e.target === id);
+  }, [incomingGraphSig, getEdges, id]);
+  const nodes = useMemo(() => {
+    void incomingGraphSig;
+    const all = getNodes();
+    const need = new Set(edges.map((e) => e.source));
+    for (const c of [
+      ...((data?.videoTracks as TimelineClip[][] | undefined)?.flat() ||
+        (data?.videoClips as TimelineClip[] | undefined) ||
+        []),
+      ...((data?.audioTracks as TimelineClip[][] | undefined)?.flat() || []),
+    ]) {
+      if (c?.sourceNodeId) need.add(c.sourceNodeId);
+    }
+    return all.filter((n) => need.has(n.id));
+  }, [incomingGraphSig, getNodes, edges, data?.videoTracks, data?.videoClips, data?.audioTracks]);
   const videoTracks = useMemo(() => normalizeVideoTracks(data), [data?.videoTracks, data?.videoClips]);
   const videoClips = videoTracks[0] ?? [];
   const audioTracks = useMemo(() => normalizeAudioTracks(data?.audioTracks), [data?.audioTracks]);
@@ -1380,6 +1477,43 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const [timelineScrubbing, setTimelineScrubbing] = useState(false);
   const [cutMode, setCutMode] = useState(false);
   const [exportBusy, setExportBusy] = useState<'save' | 'canvas' | null>(null);
+  /** 导出中动画进度（主进程暂无真实进度，用缓动假进度提示用户） */
+  const [exportProgress, setExportProgress] = useState(0);
+  const exportProgressRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (exportProgressRafRef.current != null) {
+      cancelAnimationFrame(exportProgressRafRef.current);
+      exportProgressRafRef.current = null;
+    }
+    if (!exportBusy) {
+      setExportProgress(0);
+      return;
+    }
+    setExportProgress(6);
+    const started = performance.now();
+    const tick = (now: number) => {
+      const elapsed = now - started;
+      // 约 45s 内缓到 92%，完成后由 finally 拉满
+      const t = Math.min(1, elapsed / 45000);
+      const eased = 1 - Math.pow(1 - t, 2.2);
+      setExportProgress(6 + eased * 86);
+      exportProgressRafRef.current = requestAnimationFrame(tick);
+    };
+    exportProgressRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (exportProgressRafRef.current != null) {
+        cancelAnimationFrame(exportProgressRafRef.current);
+        exportProgressRafRef.current = null;
+      }
+    };
+  }, [exportBusy]);
+
+  const finishExportProgress = useCallback(async () => {
+    setExportProgress(100);
+    await new Promise((r) => setTimeout(r, 280));
+  }, []);
+
   const pixelsPerSecond = Math.max(PIXELS_PER_SECOND_MIN, Math.min(PIXELS_PER_SECOND_MAX, data?.timelinePixelsPerSecond ?? PIXELS_PER_SECOND_DEFAULT));
   const legacyTrackLeftSnap = resolveLegacyTrackLeftSnap(data);
   const videoTrackLeftSnap = useMemo(() => {
@@ -1458,6 +1592,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const stackedVideoSrcCacheRef = useRef<Map<string, string>>(new Map());
   const stackedDecodeMaskRef = useRef('');
   const stackedVideoSyncWallRef = useRef(0);
+  const stackedClipSigRef = useRef('');
+  const dualPlayGenRef = useRef(0);
   const videoTrackContentRefs = useRef<(HTMLDivElement | null)[]>([]);
   const fullscreenVideoTrackContentRefs = useRef<(HTMLDivElement | null)[]>([]);
   const videoSlot0Ref = useRef<HTMLVideoElement>(null);
@@ -1465,6 +1601,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const activeVideoSlotRef = useRef<0 | 1>(0);
   const [visibleVideoSlot, setVisibleVideoSlot] = useState<0 | 1>(0);
   const slotClipKeyRef = useRef<[string, string]>(['', '']);
+  /** 空闲槽已 seek 到目标时刻并至少有一帧，可供热切换 */
+  const slotPrimedRef = useRef<[boolean, boolean]>([false, false]);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
   /** 片段或素材 URL 变化时，等 loadeddata 再 seek，避免解码未完成时硬 seek 造成衔接顿挫 */
@@ -1495,24 +1633,27 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       const el = (slot === 0 ? videoSlot0Ref : videoSlot1Ref).current;
       if (!el) return;
       const key = clipVideoSyncKey(clip);
+      const isActive = () => slot === activeVideoSlotRef.current;
       const applySeek = () => {
-        try {
-          if (Math.abs(el.currentTime - localTime) > 0.08) el.currentTime = localTime;
-        } catch (_) {}
-        if (slot === activeVideoSlotRef.current) {
-          applySlotVisibility(slot);
-        }
-        if (!isPlayingRef.current) {
-          el.pause();
-        } else if (slot === activeVideoSlotRef.current) {
-          void el.play().catch(() => {});
-        }
+        void seekVideoElement(el, localTime).then(() => {
+          slotPrimedRef.current[slot] = true;
+          if (isActive()) applySlotVisibility(slot);
+          if (!isPlayingRef.current) {
+            el.pause();
+          } else if (isActive()) {
+            void el.play().catch(() => {});
+          } else {
+            // 预加载槽：对齐后保持 pause，等边界热切换再 play
+            el.pause();
+          }
+        });
       };
       if (slotClipKeyRef.current[slot] === key && el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
         applySeek();
         return;
       }
       slotClipKeyRef.current[slot] = key;
+      slotPrimedRef.current[slot] = false;
       const raw = normalizeVideoUrl(clip.src);
       const bindSrc = (url: string) => {
         const onReady = () => {
@@ -1581,16 +1722,26 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   // 刻度线从第 0 秒开始，不再自动跳到第一个素材起始点
 
   const updateData = useCallback(
-    (updates: Partial<VideoSpliceNodeData>) => {
+    (
+      updates:
+        | Partial<VideoSpliceNodeData>
+        | ((prev: VideoSpliceNodeData) => Partial<VideoSpliceNodeData>),
+    ) => {
+      // 必须基于最新 node.data 合并，避免 effect 闭包里的空轨道把刚连上的素材盖掉
       if (onDataChange) {
-        onDataChange(id, updates);
-      } else {
-        setNodes((nds) =>
-          nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...updates } } : n))
-        );
+        onDataChange(id, updates as Partial<VideoSpliceNodeData>);
+        return;
       }
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== id) return n;
+          const prev = (n.data || {}) as VideoSpliceNodeData;
+          const patch = typeof updates === 'function' ? updates(prev) : updates;
+          return { ...n, data: { ...prev, ...patch } };
+        }),
+      );
     },
-    [id, onDataChange, setNodes]
+    [id, onDataChange, setNodes],
   );
 
   const activateSpliceEditing = useCallback(() => {
@@ -1636,9 +1787,10 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   }, [edges, nodes, id]);
 
   useEffect(() => {
-    const safeEdges = Array.isArray(edges) ? edges : [];
-    const safeNodes = Array.isArray(nodes) ? nodes : [];
-    if (!safeEdges.some((e) => e.target === id)) return;
+    // 用 RF 当前全量边/节点重建，避免仅用过滤快照时漏掉刚接入的音频源
+    const allEdges = getEdges();
+    const allNodes = getNodes();
+    if (!allEdges.some((e) => e.target === id)) return;
 
     setNodes((nds) => {
       const node = nds.find((n) => n.id === id);
@@ -1647,81 +1799,80 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       const existingAudio = (node.data?.audioTracks || [[]]) as TimelineClip[][];
       const built = buildVideoSpliceClipsFromEdges(
         id,
-        safeEdges,
-        safeNodes,
+        allEdges,
+        allNodes,
         node.data as VideoSpliceNodeData,
         clipLabels,
       );
-      const incomingSources = safeEdges.filter((e) => e.target === id).map((e) => e.source);
-      const builtSourceIds = new Set(
-        [...built.videoTracks.flat(), ...built.audioTracks.flat()]
-          .map((c) => c.sourceNodeId)
-          .filter(Boolean) as string[],
-      );
-      const wouldDropConnected = incomingSources.some((sid) => {
-        const had = [...existingVideoTracks.flat(), ...existingAudio.flat()].some((c) => c.sourceNodeId === sid);
-        return had && !builtSourceIds.has(sid);
-      });
-      if (wouldDropConnected) return nds;
+      const connectedIds = collectSpliceIncomingSourceIds(id, allEdges);
+      const blockDropOnly =
+        spliceRebuildWouldDropConnected(node.data as VideoSpliceNodeData, built, connectedIds) &&
+        !spliceBuiltHasNewConnectedSources(node.data as VideoSpliceNodeData, built);
+      if (blockDropOnly) {
+        return nds;
+      }
 
       const prevFp = timelineClipsFingerprint(existingVideoTracks, existingAudio);
       const nextFp = timelineClipsFingerprint(built.videoTracks, built.audioTracks);
       if (prevFp === nextFp) return nds;
-      const merged = applyBuiltClipsToSpliceData(node.data as VideoSpliceNodeData, built);
+      const merged = applyBuiltClipsToSpliceData(node.data as VideoSpliceNodeData, built, connectedIds);
       return nds.map((n) =>
         n.id === id
           ? { ...n, data: { ...n.data, ...merged } }
           : n,
       );
     });
-  }, [incomingSourceIdsKey, incomingSourceMediaKey, id, clipLabels, setNodes]);
+  }, [incomingSourceIdsKey, incomingSourceMediaKey, id, clipLabels, setNodes, getEdges, getNodes]);
 
   /** 清除 duration 已正确但 trimEnd 仍为占位短值的历史残留；同步源节点 mediaDurationSec */
   useEffect(() => {
-    const safeNodes = Array.isArray(nodes) ? nodes : [];
-    const mergeClipFromSource = (c: TimelineClip): TimelineClip => {
-      if (c.type === 'image') {
-        const dur =
-          Number.isFinite(c.duration) && c.duration > 0 ? c.duration : DEFAULT_IMAGE_CLIP_DURATION_SEC;
-        return sanitizeTimelineClipTrim(
-          dur === c.duration ? c : { ...c, duration: dur },
-          0,
+    updateData((prev) => {
+      const safeNodes = Array.isArray(nodes) ? nodes : [];
+      const curVideo = normalizeVideoTracks(prev);
+      const curAudio = normalizeAudioTracks(prev.audioTracks);
+      const mergeClipFromSource = (c: TimelineClip): TimelineClip => {
+        if (c.type === 'image') {
+          const dur =
+            Number.isFinite(c.duration) && c.duration > 0 ? c.duration : DEFAULT_IMAGE_CLIP_DURATION_SEC;
+          return sanitizeTimelineClipTrim(
+            dur === c.duration ? c : { ...c, duration: dur },
+            0,
+          );
+        }
+        const sourceNode = c.sourceNodeId ? safeNodes.find((n) => n.id === c.sourceNodeId) : undefined;
+        const sourceHint = sourceNode ? resolveSourceMediaDurationSec(sourceNode) : 0;
+        let next = c;
+        if (sourceHint > c.duration + 0.01) {
+          next = { ...next, duration: sourceHint };
+        }
+        return sanitizeTimelineClipTrim(next, sourceHint);
+      };
+      const newVideo = curVideo.map((t) => t.map(mergeClipFromSource));
+      const newAudio = curAudio.map((t) => t.map(mergeClipFromSource));
+      const changed =
+        newVideo.some((t, ti) =>
+          t.some((c, ci) => {
+            const orig = curVideo[ti]?.[ci];
+            return (
+              c.duration !== orig?.duration ||
+              c.trimStart !== orig?.trimStart ||
+              c.trimEnd !== orig?.trimEnd
+            );
+          }),
+        ) ||
+        newAudio.some((t, ti) =>
+          t.some((c, ci) => {
+            const orig = curAudio[ti]?.[ci];
+            return (
+              c.duration !== orig?.duration ||
+              c.trimStart !== orig?.trimStart ||
+              c.trimEnd !== orig?.trimEnd
+            );
+          }),
         );
-      }
-      const sourceNode = c.sourceNodeId ? safeNodes.find((n) => n.id === c.sourceNodeId) : undefined;
-      const sourceHint = sourceNode ? resolveSourceMediaDurationSec(sourceNode) : 0;
-      let next = c;
-      if (sourceHint > c.duration + 0.01) {
-        next = { ...next, duration: sourceHint };
-      }
-      return sanitizeTimelineClipTrim(next, sourceHint);
-    };
-    const newVideo = videoTracks.map(mergeClipFromSource);
-    const newAudio = audioTracks.map((t) => t.map(mergeClipFromSource));
-    const changed =
-      newVideo.some((t, ti) =>
-        t.some((c, ci) => {
-          const orig = videoTracks[ti]?.[ci];
-          return (
-            c.duration !== orig?.duration ||
-            c.trimStart !== orig?.trimStart ||
-            c.trimEnd !== orig?.trimEnd
-          );
-        }),
-      ) ||
-      newAudio.some((t, ti) =>
-        t.some((c, ci) => {
-          const orig = audioTracks[ti]?.[ci];
-          return (
-            c.duration !== orig?.duration ||
-            c.trimStart !== orig?.trimStart ||
-            c.trimEnd !== orig?.trimEnd
-          );
-        }),
-      );
-    if (changed) {
-      updateData({ videoTracks: newVideo, videoClips: newVideo[0], audioTracks: newAudio });
-    }
+      if (!changed) return {};
+      return { videoTracks: newVideo, videoClips: newVideo[0], audioTracks: newAudio };
+    });
   }, [videoTracks, audioTracks, nodes, updateData]);
 
   // 片段自动向左吸附：消除间隙、禁止重叠
@@ -1777,24 +1928,24 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       skipNextCompactRef.current = false;
       return;
     }
-    const clipCount = videoTracks.flat().length + audioTracks.flat().length;
-    const prevCount = prevTimelineClipCountRef.current;
-    prevTimelineClipCountRef.current = clipCount;
-    // 删除素材时不自动重排，保留用户手动排版
-    if (prevCount != null && clipCount < prevCount) return;
-    const newVideo = videoTracks.map((t, i) => (videoTrackLeftSnap[i] !== false ? compactTrack(t) : t));
-    const newAudio = audioTracks.map((t, i) => (audioTrackLeftSnap[i] !== false ? compactTrack(t) : t));
-    const videoChanged = newVideo.some((t, ti) => t.length !== (videoTracks[ti]?.length ?? 0) || t.some((c) => {
-      const orig = (videoTracks[ti] ?? []).find((o) => o.id === c.id);
-      return !orig || orig.startTime !== c.startTime;
-    }));
-    const audioChanged = newAudio.some((t, ti) => t.length !== (audioTracks[ti]?.length ?? 0) || t.some((c) => {
-      const orig = (audioTracks[ti] ?? []).find((o) => o.id === c.id);
-      return !orig || orig.startTime !== c.startTime;
-    }));
-    if (videoChanged || audioChanged) {
-      updateData({ videoTracks: newVideo, videoClips: newVideo[0], audioTracks: newAudio });
-    }
+    updateData((prev) => {
+      const curVideo = normalizeVideoTracks(prev);
+      const curAudio = normalizeAudioTracks(prev.audioTracks);
+      const clipCount = curVideo.flat().length + curAudio.flat().length;
+      prevTimelineClipCountRef.current = clipCount;
+      const newVideo = curVideo.map((t, i) => (videoTrackLeftSnap[i] !== false ? compactTrack(t) : t));
+      const newAudio = curAudio.map((t, i) => (audioTrackLeftSnap[i] !== false ? compactTrack(t) : t));
+      const videoChanged = newVideo.some((t, ti) => t.length !== (curVideo[ti]?.length ?? 0) || t.some((c) => {
+        const orig = (curVideo[ti] ?? []).find((o) => o.id === c.id);
+        return !orig || orig.startTime !== c.startTime;
+      }));
+      const audioChanged = newAudio.some((t, ti) => t.length !== (curAudio[ti]?.length ?? 0) || t.some((c) => {
+        const orig = (curAudio[ti] ?? []).find((o) => o.id === c.id);
+        return !orig || orig.startTime !== c.startTime;
+      }));
+      if (!videoChanged && !audioChanged) return {};
+      return { videoTracks: newVideo, videoClips: newVideo[0], audioTracks: newAudio };
+    });
   }, [videoTracks, audioTracks, compactTrack, updateData, draggingClip, videoTrackLeftSnap, audioTrackLeftSnap]);
 
   // 音频片段接入后加载实际时长，补齐完整信息（含 local-resource 路径映射）
@@ -1859,7 +2010,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     };
     run();
     return () => { cancelled = true; };
-  }, [audioTracks, id, projectId, setNodes, nodes]);
+  }, [audioTracks, id, projectId, setNodes, incomingGraphSig, nodes]);
 
   // 视频片段接入后加载实际时长，补齐完整信息（含 local-resource 路径映射）
   const probedVideoDurationRef = useRef<Map<string, number>>(new Map());
@@ -1923,7 +2074,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     };
     run();
     return () => { cancelled = true; };
-  }, [videoClips, id, projectId, setNodes, nodes]);
+  }, [videoClips, id, projectId, setNodes, incomingGraphSig, nodes]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1977,14 +2128,29 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           if (idsToRemove.has(c.id)) removed.push(c);
         }
       }
-      const newVideoTracks = videoTracks.map((track) => track.filter((c) => !idsToRemove.has(c.id)));
-      const newAudioTracks = audioTracks.map((track) => track.filter((c) => !idsToRemove.has(c.id)));
-      updateData({ videoTracks: newVideoTracks, videoClips: newVideoTracks[0], audioTracks: newAudioTracks });
+      // 先断边再改轨，避免重建 effect / 父级防护把片段又加回来
       disconnectEdgesForRemovedClips(removed);
+      updateData((prev) => {
+        const curVideo = normalizeVideoTracks(prev);
+        const curAudio = normalizeAudioTracks(prev.audioTracks);
+        const newVideoTracks = curVideo.map((track, i) => {
+          const filtered = track.filter((c) => !idsToRemove.has(c.id));
+          return videoTrackLeftSnap[i] !== false ? compactTrack(filtered) : filtered;
+        });
+        const newAudioTracks = curAudio.map((track, i) => {
+          const filtered = track.filter((c) => !idsToRemove.has(c.id));
+          return audioTrackLeftSnap[i] !== false ? compactTrack(filtered) : filtered;
+        });
+        return {
+          videoTracks: newVideoTracks,
+          videoClips: newVideoTracks[0],
+          audioTracks: newAudioTracks,
+        };
+      });
       setSelectedClip(null);
       setSelectedClipIds(new Set());
     },
-    [videoTracks, audioTracks, updateData, disconnectEdgesForRemovedClips],
+    [videoTracks, audioTracks, updateData, disconnectEdgesForRemovedClips, compactTrack, videoTrackLeftSnap, audioTrackLeftSnap],
   );
 
   useEffect(() => {
@@ -2115,60 +2281,67 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       const activeEl = getActiveVideo();
       const clipVol = clip.volume ?? 1;
       const vol = videoTrackMuted ? 0 : videoTrackVolume * clipVol;
+      const gen = ++dualPlayGenRef.current;
 
       const startOnSlot = (el: HTMLVideoElement, slot: 0 | 1) => {
-        activeVideoSlotRef.current = slot;
-        slotClipKeyRef.current[slot] = key;
-        videoSyncKeyRef.current = key;
-        applySlotVisibility(slot);
-        activeEl?.pause();
-        el.muted = videoTrackMuted;
-        el.volume = vol;
-        try {
-          if (Math.abs(el.currentTime - localT) > 0.05) el.currentTime = localT;
-        } catch (_) {}
-        void el.play().catch(() => {});
-        const nextNext = getAdjacentNextVideoClip(clip);
-        if (nextNext) {
-          const prepareSlot = (slot === 0 ? 1 : 0) as 0 | 1;
-          prepareVideoSlot(prepareSlot, nextNext, nextNext.trimStart ?? 0);
-        }
+        if (gen !== dualPlayGenRef.current) return;
+        void (async () => {
+          el.muted = videoTrackMuted;
+          el.volume = vol;
+          await seekVideoElement(el, localT);
+          if (gen !== dualPlayGenRef.current) return;
+          slotPrimedRef.current[slot] = true;
+          activeVideoSlotRef.current = slot;
+          slotClipKeyRef.current[slot] = key;
+          videoSyncKeyRef.current = key;
+          applySlotVisibility(slot);
+          if (activeEl && activeEl !== el) activeEl.pause();
+          void el.play().catch(() => {});
+          const nextNext = getAdjacentNextVideoClip(clip);
+          if (nextNext) {
+            const prepareSlot = (slot === 0 ? 1 : 0) as 0 | 1;
+            prepareVideoSlot(prepareSlot, nextNext, nextNext.trimStart ?? 0);
+          }
+        })();
       };
 
-      if (
-        inactiveEl &&
+      const inactiveReady =
+        !!inactiveEl &&
         slotClipKeyRef.current[inactiveSlot] === key &&
-        inactiveEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-      ) {
+        inactiveEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        (slotPrimedRef.current[inactiveSlot] ||
+          inactiveEl.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA);
+
+      if (inactiveReady && inactiveEl) {
         startOnSlot(inactiveEl, inactiveSlot);
         return;
       }
 
-      const activeSlot = activeVideoSlotRef.current;
-      const el = activeEl;
+      // 冷路径：优先在空闲槽换源，避免当前可见画面被换成 loading
+      const loadSlot = inactiveEl ? inactiveSlot : activeVideoSlotRef.current;
+      const el = inactiveEl || activeEl;
       if (!el) return;
       const src = normalizeVideoUrl(clip.src);
-      const apply = () => startOnSlot(el, activeSlot);
-      slotClipKeyRef.current[activeSlot] = key;
+      const apply = () => startOnSlot(el, loadSlot);
+      slotClipKeyRef.current[loadSlot] = key;
+      slotPrimedRef.current[loadSlot] = false;
       videoSyncKeyRef.current = key;
+      const bindAndPlay = (url: string) => {
+        if ((el.getAttribute('src') || '') !== url) {
+          setVideoElSrc(el, url);
+          el.addEventListener('loadeddata', apply, { once: true });
+        } else if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+          apply();
+        } else {
+          el.addEventListener('loadeddata', apply, { once: true });
+        }
+      };
       if (projectId) {
         mapProjectPath(src, projectId)
-          .then((url) => {
-            setVideoElSrc(el, url);
-            if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) apply();
-            else el.addEventListener('loadeddata', apply, { once: true });
-          })
-          .catch(() => {
-            setVideoElSrc(el, src);
-            el.addEventListener('loadeddata', apply, { once: true });
-          });
-      } else if ((el.getAttribute('src') || '') !== src) {
-        setVideoElSrc(el, src);
-        el.addEventListener('loadeddata', apply, { once: true });
-      } else if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        apply();
+          .then(bindAndPlay)
+          .catch(() => bindAndPlay(src));
       } else {
-        el.addEventListener('loadeddata', apply, { once: true });
+        bindAndPlay(src);
       }
     },
     [
@@ -2190,8 +2363,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       const hint = resolveClipSourceHint(c);
       const start = c.startTime;
       const dur = clipPlaybackSpanDurationSec(c, hint);
-      if (!Number.isFinite(dur)) return clipLookupTime >= start + 1e-4;
-      return clipLookupTime >= start && clipLookupTime < start + dur - 1e-4;
+      if (!Number.isFinite(dur)) return clipLookupTime >= start;
+      return clipLookupTime >= start && clipLookupTime < start + dur;
     }) ?? null;
   });
 
@@ -2639,14 +2812,13 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         const localTime = getClipLocalMediaTime(clip, t);
         const te = clip.trimEnd ?? clip.duration;
         const applyLoaded = () => {
-          try {
-            if (Math.abs(el.currentTime - localTime) > 0.08) el.currentTime = localTime;
-          } catch (_) {}
-          if (localTime >= te - 0.04) {
-            restStackedVideoLayer(el);
-            return;
-          }
-          if (isPlayingRef.current && el.paused) void el.play().catch(() => {});
+          void seekVideoElement(el, localTime).then(() => {
+            if (localTime >= te - 0.04) {
+              restStackedVideoLayer(el);
+              return;
+            }
+            if (isPlayingRef.current && el.paused) void el.play().catch(() => {});
+          });
         };
         const bindSrc = (url: string) => {
           if (lastVideoLayerClipIdsRef.current[trackIdx] !== clip.id) {
@@ -2710,8 +2882,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         const hint = resolveClipSourceHint(c);
         const start = c.startTime;
         const dur = clipPlaybackSpanDurationSec(c, hint);
-        if (!Number.isFinite(dur)) return t >= start + 1e-4;
-        return t >= start && t < start + dur - 1e-4;
+        if (!Number.isFinite(dur)) return t >= start;
+        return t >= start && t < start + dur;
       }) ?? null;
       const clipVol = clip?.volume ?? 1;
       const vol = audioTrackMuted[trackIdx] ? 0 : (audioTrackVolume[trackIdx] ?? 1) * clipVol;
@@ -2882,8 +3054,18 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         const nextMask = computeStackedTrackShouldDecode(videoTracks, next)
           .map((v) => (v ? '1' : '0'))
           .join('');
+        const nextClipSig = videoTracks
+          .map((track) => findVideoClipAtTimeOnTrack(track, next)?.id ?? '')
+          .join('|');
         const maskChanged = nextMask !== stackedDecodeMaskRef.current;
-        if (maskChanged || now - stackedVideoSyncWallRef.current >= STACKED_PLAYING_SYNC_MS) {
+        const clipSigChanged = nextClipSig !== stackedClipSigRef.current;
+        if (clipSigChanged) stackedClipSigRef.current = nextClipSig;
+        // 换片立即 sync，避免 200ms 节流拖到下一段才换源造成卡顿
+        if (
+          maskChanged ||
+          clipSigChanged ||
+          now - stackedVideoSyncWallRef.current >= STACKED_PLAYING_SYNC_MS
+        ) {
           syncVideoLayersToTimeRef.current(next);
           stackedVideoSyncWallRef.current = now;
         }
@@ -2945,19 +3127,11 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     setPausedFrameDataUrl(null);
   }, [activeVideoClip, clipLookupTime]);
 
-  // 同步当前视频槽（先当前片段、再预加载下一段）；播放中切换由 RAF + imperativePlayClip
+  // 同步当前视频槽；播放中由 RAF + imperativePlayClip 换片，勿用 currentTime 反复 prepare（会与 seek 打架导致片间卡顿）
   useLayoutEffect(() => {
     if (useStackedVideoPreview) return;
     if (playheadDraggingRef.current || timelineScrubActiveRef.current || timelineScrubbing) return;
     if (!activeVideoClip) return;
-    const timelineT = isPlaying ? playheadRef.current : currentTime;
-    const targetTime = getClipLocalMediaTime(activeVideoClip, timelineT);
-    const activeSlot = activeVideoSlotRef.current;
-    prepareVideoSlot(activeSlot, activeVideoClip, targetTime);
-    applySlotVisibility(activeSlot);
-    videoSyncKeyRef.current = clipVideoSyncKey(activeVideoClip);
-    const next = getAdjacentNextVideoClip(activeVideoClip);
-    if (next) prepareVideoSlot(getInactiveVideoSlot(), next, next.trimStart ?? 0);
     if (isPlaying) {
       const v = getActiveVideo();
       if (v) {
@@ -2965,7 +3139,16 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         const clipVol = activeVideoClip.volume ?? 1;
         v.volume = videoTrackMuted ? 0 : videoTrackVolume * clipVol;
       }
+      return;
     }
+    const timelineT = currentTime;
+    const targetTime = getClipLocalMediaTime(activeVideoClip, timelineT);
+    const activeSlot = activeVideoSlotRef.current;
+    prepareVideoSlot(activeSlot, activeVideoClip, targetTime);
+    applySlotVisibility(activeSlot);
+    videoSyncKeyRef.current = clipVideoSyncKey(activeVideoClip);
+    const next = getAdjacentNextVideoClip(activeVideoClip);
+    if (next) prepareVideoSlot(getInactiveVideoSlot(), next, next.trimStart ?? 0);
   }, [
     activeVideoClip?.id,
     activeVideoClip,
@@ -2987,6 +3170,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   useLayoutEffect(() => {
     if (!hasTimelineVisual) return;
     slotClipKeyRef.current = ['', ''];
+    slotPrimedRef.current = [false, false];
     setPausedFrameDataUrl(null);
     const t = playheadRef.current;
     if (useStackedVideoPreview) {
@@ -3777,6 +3961,118 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     [selectedClip, videoTracks, audioTracks, updateData],
   );
 
+  /** 胶片白框左右把手：就地微调 trim（视频/图片）；拖动过程按按下时快照计算，避免累计漂移 */
+  const clipEdgeTrimRef = useRef<{
+    track: TimelineTrackRef;
+    edge: 'start' | 'end';
+    startX: number;
+    snapshot: TimelineClip;
+    sourceHint: number;
+  } | null>(null);
+  const [clipEdgeTrimming, setClipEdgeTrimming] = useState(false);
+  const videoTracksLiveRef = useRef(videoTracks);
+  videoTracksLiveRef.current = videoTracks;
+  const audioTracksLiveRef = useRef(audioTracks);
+  audioTracksLiveRef.current = audioTracks;
+
+  const applyClipPatchOnTrack = useCallback(
+    (track: TimelineTrackRef, clipId: string, patch: Partial<TimelineClip>) => {
+      if (isVideoTrackRef(track)) {
+        const trackIdx = videoTrackIndexFromRef(track);
+        const current = videoTracksLiveRef.current;
+        const updated = current.map((t, i) =>
+          i === trackIdx ? t.map((c) => (c.id === clipId ? { ...c, ...patch } : c)) : t,
+        );
+        updateData({ videoTracks: updated, videoClips: updated[0] });
+      } else {
+        const trackIdx = track as number;
+        const current = audioTracksLiveRef.current;
+        const next = current.map((t, i) =>
+          i === trackIdx ? t.map((c) => (c.id === clipId ? { ...c, ...patch } : c)) : t,
+        );
+        updateData({ audioTracks: next });
+      }
+    },
+    [updateData],
+  );
+
+  const handleClipTrimEdgePointerDown = useCallback(
+    (clip: TimelineClip, track: TimelineTrackRef, edge: 'start' | 'end', e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      pendingClipDragRef.current = null;
+      setPendingClipDrag(null);
+      setSelectedClip({ clipId: clip.id, track });
+      setSelectedClipIds(new Set([clip.id]));
+      clipEdgeTrimRef.current = {
+        track,
+        edge,
+        startX: e.clientX,
+        snapshot: { ...clip },
+        sourceHint: resolveClipSourceHint(clip),
+      };
+      setClipEdgeTrimming(true);
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    },
+    [resolveClipSourceHint],
+  );
+
+  useEffect(() => {
+    if (!clipEdgeTrimming) return;
+    const MIN = 0.1;
+    const onMove = (e: PointerEvent) => {
+      const st = clipEdgeTrimRef.current;
+      if (!st) return;
+      const deltaSec = (e.clientX - st.startX) / pixelsPerSecond;
+      const snap = st.snapshot;
+      if (snap.type === 'image') {
+        if (st.edge === 'start') {
+          const newDur = Math.max(MIN, snap.duration - deltaSec);
+          const used = snap.duration - newDur;
+          applyClipPatchOnTrack(st.track, snap.id, {
+            startTime: Math.max(0, snap.startTime + used),
+            duration: newDur,
+          });
+        } else {
+          applyClipPatchOnTrack(st.track, snap.id, {
+            duration: Math.max(MIN, snap.duration + deltaSec),
+          });
+        }
+        return;
+      }
+      const ts0 = snap.trimStart ?? 0;
+      const te0 = effectiveClipTrimEnd(snap, st.sourceHint);
+      const mediaDur = Math.max(te0, snap.duration || te0, st.sourceHint || 0);
+      if (st.edge === 'start') {
+        const newTs = Math.max(0, Math.min(te0 - MIN, ts0 + deltaSec));
+        const dTs = newTs - ts0;
+        applyClipPatchOnTrack(st.track, snap.id, {
+          trimStart: newTs,
+          startTime: Math.max(0, snap.startTime + dTs),
+        });
+      } else {
+        const newTe = Math.max(ts0 + MIN, Math.min(mediaDur > 0 ? mediaDur : te0 + Math.abs(deltaSec) + MIN, te0 + deltaSec));
+        applyClipPatchOnTrack(st.track, snap.id, { trimEnd: newTe });
+      }
+    };
+    const onUp = () => {
+      clipEdgeTrimRef.current = null;
+      setClipEdgeTrimming(false);
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
+    return () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
+    };
+  }, [clipEdgeTrimming, pixelsPerSecond, applyClipPatchOnTrack]);
+
   const capturePausedFrame = useCallback(() => {
     const v = getActiveVideo();
     if (!v || v.readyState < 2 || v.videoWidth <= 0 || v.videoHeight <= 0) return;
@@ -4206,9 +4502,24 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     if (!activeVideoClip) return;
     const v = getActiveVideo();
     if (!v || !v.paused) return;
+    // 片尾故意 pause，等 RAF 墙钟切下一段 — 勿立刻再 play（会与换片打架导致卡一下）
+    const hint = resolveClipSourceHint(activeVideoClip);
+    const te = effectiveClipTrimEnd(activeVideoClip, hint);
+    if (Number.isFinite(te) && v.currentTime >= te - 0.08) return;
+    const clipEnd = clipPlaybackEndSec(activeVideoClip, hint);
+    if (clipEnd !== Number.POSITIVE_INFINITY && playheadRef.current >= clipEnd - 0.05) return;
     imperativePlayClip(activeVideoClip, playheadRef.current);
     applySlotVisibility(activeVideoSlotRef.current);
-  }, [isPlaying, activeVideoClip?.id, activeVideoClip, imperativePlayClip, applySlotVisibility, getActiveVideo]);
+  }, [
+    isPlaying,
+    activeVideoClip?.id,
+    activeVideoClip,
+    imperativePlayClip,
+    applySlotVisibility,
+    getActiveVideo,
+    resolveClipSourceHint,
+    useStackedVideoPreview,
+  ]);
 
   const buildExportPayload = useCallback((): VideoSpliceExportPayload => {
     const tracks = videoTracks.map((t) => t.filter((c) => c.type === 'video' || c.type === 'image'));
@@ -4285,6 +4596,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         },
       );
       if (res.success && res.videoPath) {
+        await finishExportProgress();
         if (res.hasAudio === false) {
           showAlert(vs.exportOkSilent(res.videoPath));
         } else {
@@ -4298,7 +4610,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     } finally {
       setExportBusy(null);
     }
-  }, [buildExportPayload, projectId, showAlert, showConfirm, vs]);
+  }, [buildExportPayload, finishExportProgress, projectId, showAlert, showConfirm, vs]);
 
   const handleExportToCanvas = useCallback(async () => {
     const payload = buildExportPayload();
@@ -4321,13 +4633,14 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     setExportBusy('canvas');
     try {
       const result = await onExportToCanvas(id, payload);
+      await finishExportProgress();
       showAlert(result?.createdAudioNode ? vs.exportToCanvasDoneWithAudio : vs.exportToCanvasDone);
     } catch (e: any) {
       showAlert(vs.exportToCanvasFailed(e?.message || ''));
     } finally {
       setExportBusy(null);
     }
-  }, [buildExportPayload, onExportToCanvas, id, showAlert, showConfirm, vs]);
+  }, [buildExportPayload, finishExportProgress, onExportToCanvas, id, showAlert, showConfirm, vs]);
 
   const handleAddMedia = useCallback(() => {
     const input = document.createElement('input');
@@ -4632,7 +4945,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     }
   };
 
-  const nodeWidth = data?.width ?? 800;
+  const nodeWidth = data?.width ?? scaleModulePx(800);
   const previewAspectId = data?.previewAspectId ?? DEFAULT_SPLICE_PREVIEW_ASPECT_ID;
   const spliceExportDims = useMemo(() => resolveSpliceExportDimensions(data), [data]);
   const previewAspectGroup = useMemo(
@@ -4643,10 +4956,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     () => [spliceExportDims.width, spliceExportDims.height] as const,
     [spliceExportDims.width, spliceExportDims.height],
   );
-  const hasPreviewMedia = hasTimelineVisual || !!activeImageClip;
-  const previewHeightPx = hasPreviewMedia
-    ? Math.round(nodeWidth / SPLICE_PREVIEW_VIEWPORT_AR)
-    : SPLICE_EMPTY_PREVIEW_PX;
+  const previewHeightPx = Math.round(nodeWidth / SPLICE_PREVIEW_VIEWPORT_AR);
   const nodePreviewCanvasSize = useMemo(
     () =>
       computeSplicePreviewCanvasSize(
@@ -4711,11 +5021,46 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     };
   }, [isFullscreen]);
 
+  const exportBusyLabel =
+    exportBusy === 'save'
+      ? vs.exportingToComputer
+      : exportBusy === 'canvas'
+        ? vs.exportingToCanvas
+        : '';
+
+  const renderExportProgressOverlay = (opts?: { fullscreen?: boolean }) => {
+    if (!exportBusy) return null;
+    const pct = Math.max(0, Math.min(100, exportProgress));
+    return (
+      <div
+        className={`nodrag nopan absolute inset-0 z-[80] flex flex-col items-center justify-center gap-3 px-6 ${
+          opts?.fullscreen ? 'bg-black/70' : 'bg-black/65 backdrop-blur-[2px]'
+        }`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Loader2 className="w-7 h-7 animate-spin text-sky-300" />
+        <div className="text-sm font-medium text-white/95 text-center">{exportBusyLabel}</div>
+        <div className="w-full max-w-[280px]">
+          <div className="h-2 rounded-full overflow-hidden bg-white/15 ring-1 ring-white/10">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-sky-500 via-cyan-400 to-emerald-400 transition-[width] duration-150 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="mt-1.5 text-center text-[11px] tabular-nums text-white/70">
+            {vs.exportingProgress(pct)}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div
       ref={spliceOuterRef}
       data-id={id}
-      className={`custom-node-container nexflow-splice-node group relative rounded-xl overflow-visible ${isPlaying ? 'nexflow-media-playing-glow' : ''}`}
+      className="custom-node-container nexflow-splice-node group relative rounded-xl overflow-visible"
       style={{
         width: nodeWidth,
         height: compactNodeHeight,
@@ -4746,8 +5091,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
             className={isDarkMode ? uiPrimaryBtn : splicePillBtn('operators')}
             title={vs.saveToComputerTitle}
           >
-            <Download className="w-3.5 h-3.5" />
-            {vs.saveToComputer}
+            {exportBusy === 'save' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Download className="w-3.5 h-3.5" />
+            )}
+            {exportBusy === 'save' ? vs.exportingProgress(exportProgress) : vs.saveToComputer}
           </button>
           <button
             type="button"
@@ -4756,8 +5105,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
             className={isDarkMode ? uiSecondaryBtn : spliceSecondaryPill('motion')}
             title={vs.exportToCanvasTitle}
           >
-            <Video className="w-3.5 h-3.5" />
-            {vs.exportToCanvas}
+            {exportBusy === 'canvas' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Video className="w-3.5 h-3.5" />
+            )}
+            {exportBusy === 'canvas' ? vs.exportingProgress(exportProgress) : vs.exportToCanvas}
           </button>
           <button
             type="button"
@@ -4786,9 +5139,9 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           style={{
             height: previewHeightPx,
             width: '100%',
-            ...(hasPreviewMedia ? {} : { minHeight: SPLICE_EMPTY_PREVIEW_PX }),
           }}
         >
+          {renderExportProgressOverlay()}
           {!isFullscreen ? (
             <div className="relative flex h-full w-full items-center justify-center">
               {renderAspectPreviewFrame('node', nodePreviewCanvasSize)}
@@ -5023,16 +5376,19 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                         setSelectedClipIds(new Set([clip.id]));
                       }}
                       data-clip
-                      className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing ${uiVideoClipBg} ${
-                        isSelected || isDraggingThis ? 'ring-2 ring-amber-400' : ''
+                      className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none overflow-hidden cursor-grab active:cursor-grabbing group ${uiVideoClipBg} ${
+                        isDraggingThis ? 'opacity-40' : ''
                       }`}
                       style={timelineClipDragStyle(left, w, isDraggingThis, !!draggingClip, clipPointerLeftPx(clip.id, left))}
                     >
-                      <div className="flex items-center justify-start gap-1 px-1.5 py-0.5 shrink-0 border-b border-white/10">
-                        <span className={`text-[10px] truncate text-white shrink-0 ${SPLICE_SELECTABLE_TEXT}`}>
-                          {clip.name || (clip.type === 'image' ? vs.clipNameImage : vs.clipNameVideo)}
-                        </span>
-                        <div className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
+                      <TimelineClipFilmstrip
+                        clip={clip}
+                        width={Math.max(24, w)}
+                        projectId={projectId}
+                        selected={isSelected || isDraggingThis}
+                        durationSec={dur}
+                        onTrimEdgePointerDown={(edge, e) => handleClipTrimEdgePointerDown(clip, trackRef, edge, e)}
+                        overlayTopLeft={
                           <VolumeFaderHorizontal
                             value={(clip.volume ?? 1) * 100}
                             onChange={(v) => handleClipVolumeChange(clip.id, trackRef, v / 100)}
@@ -5040,16 +5396,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                             height={10}
                             sliderTitle={vs.volumeSliderTitle}
                           />
-                        </div>
-                        <span className={`text-[9px] text-white/70 font-mono shrink-0 ml-auto ${SPLICE_SELECTABLE_TEXT}`}>{formatDuration(dur)}</span>
-                      </div>
-                      <div className="flex-1 min-h-0 overflow-hidden flex flex-col min-w-0">
-                        {clip.type === 'image' ? (
-                          <ImageThumbnail clip={clip} projectId={projectId} isDarkMode={!!isDarkMode} />
-                        ) : (
-                          <VideoThumbnailStrip clip={clip} width={Math.max(24, w - 12)} projectId={projectId} isDarkMode={!!isDarkMode} />
-                        )}
-                      </div>
+                        }
+                      />
                     </div>
                   );
                 })}
@@ -5239,7 +5587,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
             style={{ top: workspaceHeaderBottom }}
             onClick={(e) => e.target === e.currentTarget && setIsFullscreen(false)}
           >
-            <div className="flex-1 flex flex-col min-h-0" onClick={(e) => e.stopPropagation()}>
+            <div className="flex-1 flex flex-col min-h-0 relative" onClick={(e) => e.stopPropagation()}>
+              {renderExportProgressOverlay({ fullscreen: true })}
               <div className={`flex items-center justify-between px-4 py-3 border-b shrink-0 ${isDarkMode ? 'border-white/10' : 'bg-[#4A9BB8] border-white/25'}`}>
                 <div className="flex items-center gap-2">
                   <Film className={`w-5 h-5 ${uiFilmIcon}`} />
@@ -5260,8 +5609,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                     className={isDarkMode ? `${uiPrimaryBtn} !text-sm !px-3 !py-1.5` : `${splicePillBtn('operators')} !text-sm !px-3 !py-1.5`}
                     title={vs.saveToComputerTitle}
                   >
-                    <Download className="w-4 h-4" />
-                    {vs.saveToComputer}
+                    {exportBusy === 'save' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Download className="w-4 h-4" />
+                    )}
+                    {exportBusy === 'save' ? vs.exportingProgress(exportProgress) : vs.saveToComputer}
                   </button>
                   <button
                     type="button"
@@ -5270,8 +5623,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                     className={isDarkMode ? `${uiSecondaryBtn} !text-sm !px-3 !py-1.5` : `${spliceSecondaryPill('motion')} !text-sm !px-3 !py-1.5`}
                     title={vs.exportToCanvasTitle}
                   >
-                    <Video className="w-4 h-4" />
-                    {vs.exportToCanvas}
+                    {exportBusy === 'canvas' ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Video className="w-4 h-4" />
+                    )}
+                    {exportBusy === 'canvas' ? vs.exportingProgress(exportProgress) : vs.exportToCanvas}
                   </button>
                   <button
                     type="button"
@@ -5502,12 +5859,19 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                                   setSelectedClipIds(new Set([clip.id]));
                                 }}
                                 data-clip
-                                className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing ${uiVideoClipBg} ${isSelected || isDraggingThis ? 'ring-2 ring-amber-400' : ''}`}
+                                className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none overflow-hidden cursor-grab active:cursor-grabbing group ${uiVideoClipBg} ${
+                                  isDraggingThis ? 'opacity-40' : ''
+                                }`}
                                 style={timelineClipDragStyle(left, w, isDraggingThis, !!draggingClip, clipPointerLeftPx(clip.id, left))}
                               >
-                                <div className="flex items-center justify-start gap-1 px-1.5 py-0.5 shrink-0 border-b border-white/10">
-                                  <span className={`text-[10px] truncate text-white shrink-0 ${SPLICE_SELECTABLE_TEXT}`}>{clip.name || (clip.type === 'image' ? vs.clipNameImage : vs.clipNameVideo)}</span>
-                                  <div className="shrink-0 flex items-center" onClick={(e) => e.stopPropagation()}>
+                                <TimelineClipFilmstrip
+                                  clip={clip}
+                                  width={Math.max(24, w)}
+                                  projectId={projectId}
+                                  selected={isSelected || isDraggingThis}
+                                  durationSec={dur}
+                                  onTrimEdgePointerDown={(edge, e) => handleClipTrimEdgePointerDown(clip, trackRef, edge, e)}
+                                  overlayTopLeft={
                                     <VolumeFaderHorizontal
                                       value={(clip.volume ?? 1) * 100}
                                       onChange={(v) => handleClipVolumeChange(clip.id, trackRef, v / 100)}
@@ -5515,16 +5879,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                                       height={10}
                                       sliderTitle={vs.volumeSliderTitle}
                                     />
-                                  </div>
-                                  <span className={`text-[9px] text-white/70 font-mono shrink-0 ml-auto ${SPLICE_SELECTABLE_TEXT}`}>{formatDuration(dur)}</span>
-                                </div>
-                                <div className="flex-1 min-h-0 overflow-hidden flex flex-col min-w-0">
-                                  {clip.type === 'image' ? (
-                                    <ImageThumbnail clip={clip} projectId={projectId} isDarkMode />
-                                  ) : (
-                                    <VideoThumbnailStrip clip={clip} width={Math.max(24, w - 12)} projectId={projectId} isDarkMode />
-                                  )}
-                                </div>
+                                  }
+                                />
                               </div>
                             );
                           })}
@@ -5716,7 +6072,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
             width: Math.max(24, ((draggingClip.clip.trimEnd ?? draggingClip.clip.duration) - (draggingClip.clip.trimStart ?? 0)) * pixelsPerSecond),
             minWidth: 24,
             height: TRACK_HEIGHT - 8,
-            backgroundColor: isVideoTrackRef(draggingClip.track) ? 'rgb(76 29 149)' : 'rgb(113 63 18)',
+            backgroundColor: isVideoTrackRef(draggingClip.track) ? 'rgb(15 15 20)' : 'rgb(113 63 18)',
             opacity: dragOutsideTimeline ? 0.92 : 0,
           }}
         >

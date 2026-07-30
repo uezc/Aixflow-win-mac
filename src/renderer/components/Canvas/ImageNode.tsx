@@ -1480,6 +1480,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
       if (!(target instanceof Element)) return false;
       if (target.closest(`#image-3d-popover-${id}`)) return true;
       if (target.closest('.panel-option-dropdown-menu')) return true;
+      if (target.closest('.at-mention-menu')) return true;
+      if (target.closest('.prompt-mention-menu')) return true;
       if (threeDTriggerRef.current?.contains(target)) return true;
       return false;
     };
@@ -2423,6 +2425,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
 
   const patchImageNodeData = useCallback(
     (nodeId: string, updates: Record<string, unknown>) => {
+      // 画布 nodes 由 Workspace 受控：仅改 useReactFlow().setNodes 会被父状态覆盖，
+      // 导致任务列表已有结果、右侧新模块仍停在进度中。必须同步走 onDataChange。
       setNodes((nds) =>
         nds.map((n) =>
           n.id === nodeId
@@ -2436,8 +2440,11 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             : n,
         ),
       );
+      if (typeof onDataChange === 'function') {
+        onDataChange(nodeId, updates);
+      }
     },
-    [setNodes],
+    [setNodes, onDataChange],
   );
 
   /** 点击 3D：在原图右侧新建视角模块并连线，控制器开在新模块上（不改原图） */

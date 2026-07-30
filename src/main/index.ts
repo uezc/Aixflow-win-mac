@@ -136,6 +136,7 @@ import {
   runWatermarkRemovalViaFc,
   runVideoWatermarkRemovalViaFc,
   runVideoDepthConvertViaFc,
+  runVideoSubtitleWatermarkRemovalViaFc,
 } from './services/watermarkRemoval.js';
 import { runImageUpscaleV3ViaFc } from './services/imageUpscaleV3.js';
 import {
@@ -182,6 +183,7 @@ import { registerAppUpdaterIpc, setAppUpdaterMainWindow } from './appUpdater.js'
 import { registerBeforeUpdateQuitHook } from './updateQuitHelper.js';
 import { registerUpdatePrepareMainWindow } from './updatePrepareIpc.js';
 import { setCloudBalanceNotifier } from './cloudBalanceNotifier.js';
+import { resolveWeChatGroupQrFromOss } from './services/wechatGroupQr.js';
 import {
   finalizeMicRecording,
   getMediaDuration,
@@ -190,6 +192,7 @@ import {
   setSharpQueuePaused,
 } from './services/localResourceManager.js';
 import { initScreenSnip, setMainWindowForSnip } from './screenSnip.js';
+import { openInAppBrowser } from './inAppBrowser.js';
 import { aiCore } from './ai/AICore.js';
 import { registerProvider } from './ai/Registry.js';
 import { ChatProvider } from './ai/providers/ChatProvider.js';
@@ -3031,6 +3034,11 @@ ipcMain.handle('open-external-url', async (_, urlRaw: string) => {
     throw new Error('UNSUPPORTED_URL_PROTOCOL');
   }
   await shell.openExternal(url);
+});
+
+/** 应用内 BrowserWindow 打开 https/http（飞书文档等）；失败时 fallback 系统浏览器 */
+ipcMain.handle('open-in-app-browser', async (_, urlRaw: string, title?: string) => {
+  return openInAppBrowser(urlRaw, { title: typeof title === 'string' ? title : undefined });
 });
 
 // 打开路径（文件夹或文件）
@@ -6530,6 +6538,34 @@ ipcMain.handle('video-depth-convert', async (_, videoUrl: string) => {
   }
 });
 
+// 视频去字幕/水印：上传 OSS 后经 FC 调 RunningHub AI App 2082682378039943169
+ipcMain.handle('video-subtitle-watermark-removal', async (_, videoUrl: string) => {
+  const check = checkLicenseStatus(getUserDataPath());
+  if (check.status !== 'VALID') {
+    throw new Error('视频去字幕/水印需要有效授权，请先激活');
+  }
+  if (!getNxAccessToken()) {
+    throw new Error('请先登录云端账号');
+  }
+  try {
+    const videoProvider = new VideoProvider();
+    const publicVideoUrl = await videoProvider.prepareVideoForWatermarkRemovalRemoteUrl(String(videoUrl || ''));
+    const result = await runVideoSubtitleWatermarkRemovalViaFc(publicVideoUrl);
+    if (result.success) {
+      return {
+        success: true,
+        kind: result.kind,
+        url: result.url,
+        ...(result.kind === 'video' ? { videoUrl: result.url } : { imageUrl: result.url }),
+      };
+    }
+    throw new Error(result.message);
+  } catch (err: any) {
+    console.error('[视频去字幕/水印]', err);
+    throw err;
+  }
+});
+
 // 人物多角度：先上传 OSS 得公网 URL，再经 FC 调用 RunningHub AI 应用；与抠图/去水印一致
 ipcMain.handle('image-character-multi-angle', async (_, imageUrl: string) => {
   const check = checkLicenseStatus(getUserDataPath());
@@ -6863,6 +6899,11 @@ registerBeforeUpdateQuitHook(async () => {
   }
 });
 registerAppUpdaterIpc();
+
+/** 登录页交流群：列举北京桶 WX/ 下最新图片公开 URL（换图只需替换 OSS 文件） */
+ipcMain.handle('wechat-group:get-qr-url', async (_evt, force?: boolean) => {
+  return resolveWeChatGroupQrFromOss(Boolean(force));
+});
 
 ipcMain.handle('local-resource:set-sharp-queue-paused', async (_, paused: boolean) => {
   setSharpQueuePaused(Boolean(paused));

@@ -454,43 +454,75 @@ export class ImageProvider extends BaseProvider {
         'nano-banana-2-4k',
         'seedream-v4.5',
         'youchuan-text-to-image-v7',
-        'youchuan-text-to-image-v81',
+        'mj-v7',
+        'gpt-image-2',
         'rhart-image-g',
         'rhart-image-g-1.5',
       ]);
       if (retiredImageModels.has(String(model))) {
         throw new Error(
-          '该图片模型已从前端下架，请在面板中改用全能图片 V2、Seedream v5、GPT image 2、MJ V7 等模型。',
+          '该图片模型已从前端下架，请在面板中改用全能图片 V2、Seedream v5、悠船文生图 v8.1 等模型。',
         );
       }
 
       const knownImageModels = new Set([
         'banana-2.0',
-        'gpt-image-2',
         'seedream-v5',
         'rhart-image-g-2',
         'flux2-klein',
         'z-image',
         'lens',
-        'mj-v7',
+        'youchuan-text-to-image-v81',
       ]);
       if (!knownImageModels.has(String(model))) {
         throw new Error(`不支持的图片模型：${model}。请改用面板中的活跃模型。`);
       }
 
-      // 判断是文生图还是图生图
-      // 默认优先文生图模式，只有当有输入图片时才切换到图生图模式
-      const isImageToImage = !!imageInput.image && (Array.isArray(imageInput.image) ? imageInput.image.length > 0 : true);
-      
-      console.log(`[图片生成] 模式: ${isImageToImage ? '图生图' : '文生图'}, 模型: ${model}, 参考图数量: ${isImageToImage ? (Array.isArray(imageInput.image) ? imageInput.image.length : 1) : 0}`);
+      // 规范化参考图：空串/空白视为无图，避免 UI 有缩略图但请求 image:[] 被误判为文生图
+      const normalizeImageRefs = (raw: unknown): string[] => {
+        if (raw == null) return [];
+        const arr = Array.isArray(raw) ? raw : [raw];
+        return arr
+          .map((u) => String(u ?? '').trim())
+          .filter((u) => u.length > 0);
+      };
+      const imageRefs = normalizeImageRefs(imageInput.image);
+      if (imageRefs.length > 0) {
+        imageInput.image = imageRefs.length === 1 ? imageRefs[0] : imageRefs;
+      } else {
+        delete (imageInput as { image?: string | string[] }).image;
+      }
 
-      // 图生图模式：使用 RunningHub API（插件算力）。MJ V7 / Z-image / Lens 仅文生图
+      // 判断是文生图还是图生图
+      // 默认优先文生图模式，只有当有有效输入图片时才切换到图生图模式
+      const isImageToImage = imageRefs.length > 0;
+      
+      console.log(`[图片生成] 模式: ${isImageToImage ? '图生图' : '文生图'}, 模型: ${model}, 参考图数量: ${isImageToImage ? imageRefs.length : 0}`);
+
+      // 仅文生图且不允许参考图的模型：有参考图时硬拒（与 imageModelUiPolicy 对齐）
+      // 注：悠船 v7/v81 文生图可选用一张 style 图，不得在此硬拒，应落入下方文生图分支
+      const textToImageNoRefsModels = new Set(['mj-v7', 'z-image', 'lens', 'rhart-image-g']);
+      if (isImageToImage && textToImageNoRefsModels.has(String(model))) {
+        const labelMap: Record<string, string> = {
+          'mj-v7': 'MJ V7',
+          'z-image': 'Z-image',
+          lens: 'Lens',
+          'rhart-image-g': '全能图片 X',
+        };
+        const label = labelMap[String(model)] || String(model);
+        throw new Error(`${label} 仅支持文生图，请移除参考图后重试`);
+      }
+
+      // 图生图模式：使用 RunningHub API（插件算力）。MJ / Z-image / Lens / 悠船 / 全能图片 X 不走图生图 OpenAPI
       if (
         isImageToImage &&
         imageInput.image &&
         model !== 'mj-v7' &&
         model !== 'z-image' &&
-        model !== 'lens'
+        model !== 'lens' &&
+        model !== 'youchuan-text-to-image-v81' &&
+        model !== 'youchuan-text-to-image-v7' &&
+        model !== 'rhart-image-g'
       ) {
         // 图生图模式使用 RunningHub API（经 FC 转发）
         // 检查图片数量（GPT image 2 最多 2 张；全能图片PRO 最多5张；seedream / banana / G-2 最多10张）
@@ -765,27 +797,55 @@ export class ImageProvider extends BaseProvider {
           };
           console.log(`[图片生成] 提交图生图任务到 RunningHub API（seedream-v4.5/image-to-image），width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}, 图片数量: ${imageUrls.length}`);
         } else if (model === 'seedream-v5') {
-          // seedream-v5-图生图：https://www.runninghub.cn/openapi/v2/seedream-v5-lite/image-to-image
-          // 参数：prompt(5-2000字), width(1600-4704), height(1344-4096), imageUrls(最多10张), maxImages(1-15)
+          // seedream-v5-图生图（国内）：https://www.runninghub.cn/openapi/v2/seedream-v5-lite/image-to-image
+          // prompt(5-2000)、imageUrls≤10、sequentialImageGeneration、maxImages；
+          // resolution(2k|3k) 优先于 width/height
           const trimmedPrompt = prompt.trim();
           if (trimmedPrompt.length < 5 || trimmedPrompt.length > 2000) {
             throw new Error('seedream-v5-图生图 提示词长度为 5-2000 字');
           }
-          const { width, height } = resolveSeedreamPixelSize(
-            'seedream-v5',
-            aspect_ratio,
-            Number((imageInput as any).seedreamWidth) || undefined,
-            Number((imageInput as any).seedreamHeight) || undefined,
-          );
+          if (imageUrls.length === 0) {
+            throw new Error('seedream-v5-图生图需要至少 1 张参考图');
+          }
+          if (imageUrls.length > 10) {
+            throw new Error('seedream-v5-图生图最多 10 张参考图');
+          }
+          const resRaw = String((imageInput as { resolution?: string }).resolution || '')
+            .trim()
+            .toLowerCase();
+          const seedreamResolution =
+            resRaw === '2k' || resRaw === '3k' ? resRaw : undefined;
           submitUrl = `${this.runningHubApiBaseUrl}/seedream-v5-lite/image-to-image`;
-          submitPayload = {
-            prompt: trimmedPrompt,
-            width,
-            height,
-            imageUrls,
-            maxImages: 1,
-          };
-          console.log(`[图片生成] 提交图生图任务到 RunningHub API（seedream-v5/image-to-image），width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}, 图片数量: ${imageUrls.length}`);
+          if (seedreamResolution) {
+            submitPayload = {
+              prompt: trimmedPrompt,
+              imageUrls,
+              sequentialImageGeneration: 'disabled',
+              maxImages: 1,
+              resolution: seedreamResolution,
+            };
+            console.log(
+              `[图片生成] 提交图生图（seedream-v5，国内 .cn），resolution: ${seedreamResolution}, 图片数量: ${imageUrls.length}`,
+            );
+          } else {
+            const { width, height } = resolveSeedreamPixelSize(
+              'seedream-v5',
+              aspect_ratio,
+              Number((imageInput as any).seedreamWidth) || undefined,
+              Number((imageInput as any).seedreamHeight) || undefined,
+            );
+            submitPayload = {
+              prompt: trimmedPrompt,
+              width,
+              height,
+              imageUrls,
+              sequentialImageGeneration: 'disabled',
+              maxImages: 1,
+            };
+            console.log(
+              `[图片生成] 提交图生图（seedream-v5，国内 .cn），width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}, 图片数量: ${imageUrls.length}`,
+            );
+          }
         } else if (model === 'banana-2.0') {
           // 全能图片 V2 图生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-n-g31-flash/image-to-image
           const validAspectRatios = [
@@ -818,7 +878,7 @@ export class ImageProvider extends BaseProvider {
           );
         } else if (model === 'rhart-image-g-2') {
           // 全能图片 G-2.0 图生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-g-2/image-to-image
-          const validAspectRatios = [
+          const validAspectRatiosG2 = [
             '1:1',
             '2:3',
             '3:2',
@@ -836,17 +896,17 @@ export class ImageProvider extends BaseProvider {
             '1:3',
           ];
           const finalAspectRatio =
-            aspect_ratio && validAspectRatios.includes(aspect_ratio) ? aspect_ratio : '16:9';
+            aspect_ratio && validAspectRatiosG2.includes(aspect_ratio) ? aspect_ratio : '1:1';
           const finalResolution = this.toRunningHubResolution((imageInput as any).resolution);
           submitUrl = `${this.runningHubApiBaseUrl}/rhart-image-g-2/image-to-image`;
           submitPayload = {
-            prompt: prompt.trim(),
             imageUrls,
-            aspectRatio: finalAspectRatio,
+            prompt: prompt.trim(),
             resolution: finalResolution,
+            aspectRatio: finalAspectRatio,
           };
           console.log(
-            `[图片生成] 提交图生图到 RunningHub（全能图片 G-2.0 / rhart-image-g-2，海外），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}, 图片数量: ${imageUrls.length}`,
+            `[图片生成] 提交图生图到 RunningHub（全能图片 G-2.0 / rhart-image-g-2），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}, 图片数量: ${imageUrls.length}`,
           );
         } else {
           throw new Error(`不支持的图片模型：${model}。请改用面板中的活跃模型。`);
@@ -884,7 +944,11 @@ export class ImageProvider extends BaseProvider {
           });
           perfCreateDoneI2I = Date.now();
           const rhRegionI2I: 'cn' | 'ai' | undefined =
-            model === 'banana-2.0' || model === 'rhart-image-g-2' ? 'ai' : undefined;
+            model === 'banana-2.0' || model === 'rhart-image-g-2'
+              ? 'ai'
+              : model === 'seedream-v5'
+                ? 'cn'
+                : undefined;
           submitResult = await this.rhPostCharge(
             submitUrl,
             submitPayload as Record<string, unknown>,
@@ -1079,7 +1143,46 @@ export class ImageProvider extends BaseProvider {
       let submitPayload: any;
 
       if (model === 'rhart-image-g-2') {
-        throw new Error('全能图片 G-2.0 仅支持图生图，请连接参考图后重试');
+        // 安全网：有参考图时绝不能落到文生图分支（应已在上方 image-to-image 处理并 return）
+        if (isImageToImage) {
+          throw new Error(
+            '全能图片 G-2.0 图生图路径异常：请重试。若持续失败，请改选全能图片 V2 / Seedream v5。',
+          );
+        }
+        // 全能图片 G-2.0 文生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-g-2/text-to-image
+        const trimmedPrompt = prompt.trim();
+        if (!trimmedPrompt) {
+          throw new Error('全能图片 G-2.0 提示词不能为空');
+        }
+        const validAspectRatiosG2 = [
+          '1:1',
+          '2:3',
+          '3:2',
+          '4:5',
+          '5:4',
+          '4:3',
+          '3:4',
+          '16:9',
+          '9:16',
+          '21:9',
+          '9:21',
+          '2:1',
+          '1:2',
+          '3:1',
+          '1:3',
+        ];
+        const finalAspectRatio =
+          aspect_ratio && validAspectRatiosG2.includes(aspect_ratio) ? aspect_ratio : '16:9';
+        const finalResolution = this.toRunningHubResolution((imageInput as any).resolution);
+        submitUrl = `${this.runningHubApiBaseUrl}/rhart-image-g-2/text-to-image`;
+        submitPayload = {
+          prompt: trimmedPrompt,
+          aspectRatio: finalAspectRatio,
+          resolution: finalResolution,
+        };
+        console.log(
+          `[图片生成] 使用全能图片 G-2.0 文生图（rhart-image-g-2/text-to-image，海外），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}`,
+        );
       } else if (model === 'rhart-image-g') {
         // 全能图片 X 文生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-g/text-to-image
         if (isImageToImage) {
@@ -1156,27 +1259,48 @@ export class ImageProvider extends BaseProvider {
         };
         console.log(`[图片生成] 使用 seedream-v4.5-文生图，width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}`);
       } else if (model === 'seedream-v5') {
-        // seedream-v5-文生图：https://www.runninghub.cn/openapi/v2/seedream-v5-lite/text-to-image
-        // 参数：prompt(5-2000字), width(1600-4704), height(1344-4096), maxImages(1-15)
+        // seedream-v5-文生图（国内）：https://www.runninghub.cn/openapi/v2/seedream-v5-lite/text-to-image
+        // 参数：prompt(5-2000字), width(1600-4704), height(1344-4096),
+        // sequentialImageGeneration, maxImages(1-15)；可选 resolution(2k|3k，优先于宽高)、toolsType(web_search)
         // 注：有参考图时走上方图生图分支
         const trimmedPrompt = prompt.trim();
         if (trimmedPrompt.length < 5 || trimmedPrompt.length > 2000) {
           throw new Error('seedream-v5 提示词长度为 5-2000 字');
         }
-        const { width, height } = resolveSeedreamPixelSize(
-          'seedream-v5',
-          aspect_ratio,
-          Number((imageInput as any).seedreamWidth) || undefined,
-          Number((imageInput as any).seedreamHeight) || undefined,
-        );
+        const resRaw = String((imageInput as { resolution?: string }).resolution || '')
+          .trim()
+          .toLowerCase();
+        const seedreamResolution =
+          resRaw === '2k' || resRaw === '3k' ? resRaw : undefined;
         submitUrl = `${this.runningHubApiBaseUrl}/seedream-v5-lite/text-to-image`;
-        submitPayload = {
-          prompt: trimmedPrompt,
-          width,
-          height,
-          maxImages: 1,
-        };
-        console.log(`[图片生成] 使用 seedream-v5-文生图，width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}`);
+        if (seedreamResolution) {
+          submitPayload = {
+            prompt: trimmedPrompt,
+            sequentialImageGeneration: 'disabled',
+            maxImages: 1,
+            resolution: seedreamResolution,
+          };
+          console.log(
+            `[图片生成] 使用 seedream-v5-文生图（国内 .cn），resolution: ${seedreamResolution}`,
+          );
+        } else {
+          const { width, height } = resolveSeedreamPixelSize(
+            'seedream-v5',
+            aspect_ratio,
+            Number((imageInput as any).seedreamWidth) || undefined,
+            Number((imageInput as any).seedreamHeight) || undefined,
+          );
+          submitPayload = {
+            prompt: trimmedPrompt,
+            width,
+            height,
+            sequentialImageGeneration: 'disabled',
+            maxImages: 1,
+          };
+          console.log(
+            `[图片生成] 使用 seedream-v5-文生图（国内 .cn），width: ${width}, height: ${height}, aspect: ${aspect_ratio || ''}`,
+          );
+        }
       } else if (model === 'mj-v7') {
         // MJ V7 文生图（RunningHub AI App）：
         // POST /openapi/v2/run/ai-app/2049067169295638530
@@ -1481,13 +1605,16 @@ export class ImageProvider extends BaseProvider {
         aspectRatio: (submitPayload as { aspectRatio?: string }).aspectRatio ?? aspect_ratio,
       });
       const perfCreateDoneTxt = Date.now();
-      // G-2 / Flux 已在上方文生分支硬拒，此处勿再比较（TS 会判定无重叠）
+      // Flux 已在上方文生分支硬拒，此处勿再比较（TS 会判定无重叠）
       const rhRegionTxt: 'cn' | 'ai' | undefined =
         model === 'youchuan-text-to-image-v81' ||
         model === 'banana-2.0' ||
-        model === 'rhart-image-g'
+        model === 'rhart-image-g' ||
+        model === 'rhart-image-g-2'
           ? 'ai'
-          : undefined;
+          : model === 'seedream-v5'
+            ? 'cn'
+            : undefined;
       console.log(
         `[图片生成] 经 FC 转发 RunningHub path=${this.pathFromRunningHubUrl(submitUrl)} billingModelId=${billingModelIdForCharge} ledger=${ledgerIdTxt ?? '(run-task 内扣费)'} rhRegion=${rhRegionTxt ?? 'auto'}`,
       );

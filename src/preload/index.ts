@@ -619,6 +619,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getFullscreenState: () => ipcRenderer.invoke('get-fullscreen-state') as Promise<{ isFullScreen: boolean }>,
   getAppVersion: () => ipcRenderer.invoke('app:get-version') as Promise<string>,
   getNetworkTime: () => ipcRenderer.invoke('app:get-network-time') as Promise<number>,
+  /** 登录页交流群二维码：主进程列举 OSS `WX/` 最新图片 */
+  getWeChatGroupQrUrl: (force?: boolean) =>
+    ipcRenderer.invoke('wechat-group:get-qr-url', force) as Promise<
+      { ok: true; url: string; objectKey: string } | { ok: false; error: string }
+    >,
   checkForUpdates: () =>
     ipcRenderer.invoke('app:check-for-updates') as Promise<{
       updateAvailable: boolean;
@@ -628,6 +633,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       error?: string | null;
     }>,
   downloadAndInstallUpdate: () => ipcRenderer.invoke('app:download-and-install-update') as Promise<{ success: boolean; error?: string }>,
+  pauseUpdateDownload: () =>
+    ipcRenderer.invoke('app:pause-update-download') as Promise<{ success: boolean; paused?: boolean }>,
+  resumeUpdateDownload: () =>
+    ipcRenderer.invoke('app:resume-update-download') as Promise<{ success: boolean; paused?: boolean; error?: string }>,
+  cancelUpdateDownload: () =>
+    ipcRenderer.invoke('app:cancel-update-download') as Promise<{ success: boolean }>,
   onUpdateAvailable: (callback: (info: { version: string; packageBytes?: number }) => void) => {
     ipcRenderer.on('app:update-available', (_, info) => callback(info));
     return () => ipcRenderer.removeAllListeners('app:update-available');
@@ -653,7 +664,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onUpdateDownloadProgress: (
     callback: (info: {
-      phase?: 'stub' | 'main-package' | 'full';
+      phase?: 'stub' | 'main-package' | 'full' | 'paused';
       percent: number;
       stubPercent?: number;
       packagePercent?: number;
@@ -662,10 +673,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       bytesPerSecond: number;
       packageBytes?: number;
       stubBytes?: number;
+      etaSeconds?: number | null;
+      fileName?: string;
+      savePath?: string;
+      paused?: boolean;
     }) => void,
   ) => {
     ipcRenderer.on('app:update-download-progress', (_, info) => callback(info));
     return () => ipcRenderer.removeAllListeners('app:update-download-progress');
+  },
+  onUpdateDownloadPaused: (callback: (info: { paused: boolean }) => void) => {
+    ipcRenderer.on('app:update-download-paused', (_, info) => callback(info));
+    return () => ipcRenderer.removeAllListeners('app:update-download-paused');
+  },
+  onUpdateDownloadCancelled: (callback: () => void) => {
+    ipcRenderer.on('app:update-download-cancelled', () => callback());
+    return () => ipcRenderer.removeAllListeners('app:update-download-cancelled');
   },
   onUpdateError: (callback: (info: { message: string }) => void) => {
     ipcRenderer.on('app:update-error', (_, info) => callback(info));
@@ -740,6 +763,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 打开路径（文件夹或文件）
   openPath: (pathToOpen: string) => ipcRenderer.invoke('open-path', pathToOpen),
   openExternalUrl: (url: string) => ipcRenderer.invoke('open-external-url', url),
+  /** 应用内窗口打开外链；失败时主进程会 fallback 系统浏览器 */
+  openInAppBrowser: (url: string, title?: string) =>
+    ipcRenderer.invoke('open-in-app-browser', url, title) as Promise<
+      { ok: true; mode: 'in-app' | 'external' } | { ok: false; error: string }
+    >,
 
   // 角色管理
   getCharacters: () => ipcRenderer.invoke('get-characters'),
@@ -879,6 +907,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('video-watermark-removal', videoUrl, strength) as Promise<{ success: boolean; videoUrl: string }>,
   videoDepthConvert: (videoUrl: string) =>
     ipcRenderer.invoke('video-depth-convert', videoUrl) as Promise<{
+      success: boolean;
+      kind: 'video' | 'image';
+      url: string;
+      videoUrl?: string;
+      imageUrl?: string;
+    }>,
+  videoSubtitleWatermarkRemoval: (videoUrl: string) =>
+    ipcRenderer.invoke('video-subtitle-watermark-removal', videoUrl) as Promise<{
       success: boolean;
       kind: 'video' | 'image';
       url: string;

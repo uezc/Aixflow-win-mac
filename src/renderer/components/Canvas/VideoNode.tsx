@@ -1,8 +1,13 @@
 import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Handle, Position, NodeProps, Node, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
-import { Loader2, Scissors, Upload, Video, Download, Play, Pause, Film, Eraser, X, Check, ChevronDown, LayoutGrid, Maximize2, Volume2, Layers2 } from 'lucide-react';
+import { Handle, Position, NodeProps, Node, Edge, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
+import { Loader2, Scissors, Upload, Video, Download, Play, Pause, X, Check, Maximize2, Volume2, Layers2, Subtitles, Crop, Sparkles } from 'lucide-react';
+import SmartVideoEditModal, { type SmartVideoEditSettings } from './SmartVideoEditModal';
+import { type SmartEditReviewSegment } from './SmartVideoEditReviewBar';
+import VideoTrimFilmstripBar from './VideoTrimFilmstripBar';
+import VideoCropOverlay, { type VideoCropOverlayHandle } from './VideoCropModal';
+import type { NormalizedCropRect } from '../../utils/imageCropUtils';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { ModuleProgressBar } from './ModuleProgressBar';
@@ -53,7 +58,7 @@ import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { dispatchCanvasPickNode, isCanvasPickDigitalHumanVideoTarget } from '../../utils/canvasPickStore';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
-import { getVideoWatermarkRemovalDisplayPrice, getVideoDepthConvertDisplayPrice } from '../../utils/cloudModelPricing';
+import { getVideoDepthConvertDisplayPrice, getVideoSubtitleWatermarkDisplayPrice } from '../../utils/cloudModelPricing';
 import { assetLibBtnPrimary, assetLibBtnSecondary, nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import {
   VIDEO_FRAME_SPLIT_INTERVALS,
@@ -83,6 +88,71 @@ const LOW_RES_TRANSITION = 'opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), filter
 /** 与主进程 `videoScraper.ts` 中 `YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER` 保持一致 */
 const YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER = '[[NX:SHOW_PROXY_SETTING_UI]]';
 const MAX_VIDEO_FRAME_SPLIT_COUNT = 100;
+
+/** 导出到画布右侧时的间距（flow 坐标） */
+const CANVAS_EXPORT_GAP = 72;
+
+/**
+ * 计算「落在源模块右侧」的起点：取 data/style/measured/DOM 宽度最大值，
+ * 避免 data.width 偏小导致新模块被主模块盖住。
+ */
+function resolveExportRightAnchor(opts: {
+  source?: Node;
+  fallbackX: number;
+  fallbackY: number;
+  fallbackW: number;
+  fallbackH: number;
+  domEl?: HTMLElement | null;
+  screenToFlowPosition?: (p: { x: number; y: number }) => { x: number; y: number };
+  gap?: number;
+}): { baseX: number; baseY: number; srcW: number; srcH: number } {
+  const gap = opts.gap ?? CANVAS_EXPORT_GAP;
+  const pos = (opts.source as { positionAbsolute?: { x: number; y: number } } | undefined)?.positionAbsolute
+    ?? opts.source?.position;
+  const x = Number.isFinite(pos?.x) ? Number(pos?.x) : opts.fallbackX;
+  const y = Number.isFinite(pos?.y) ? Number(pos?.y) : opts.fallbackY;
+
+  const widthCandidates = [
+    opts.fallbackW,
+    Number(opts.source?.data?.width),
+    Number((opts.source?.style as { width?: number | string } | undefined)?.width),
+    Number((opts.source as { measured?: { width?: number }; width?: number } | undefined)?.measured?.width),
+    Number((opts.source as { width?: number } | undefined)?.width),
+    opts.domEl?.offsetWidth ?? 0,
+  ].filter((n): n is number => Number.isFinite(n) && n > 1);
+
+  const heightCandidates = [
+    opts.fallbackH,
+    Number(opts.source?.data?.height),
+    Number((opts.source?.style as { height?: number | string } | undefined)?.height),
+    Number((opts.source as { measured?: { height?: number }; height?: number } | undefined)?.measured?.height),
+    Number((opts.source as { height?: number } | undefined)?.height),
+    opts.domEl?.offsetHeight ?? 0,
+  ].filter((n): n is number => Number.isFinite(n) && n > 1);
+
+  let srcW = widthCandidates.length ? Math.max(...widthCandidates) : VIDEO_NODE_MIN_W;
+  let srcH = heightCandidates.length ? Math.max(...heightCandidates) : VIDEO_NODE_MIN_H;
+
+  if (opts.domEl && opts.screenToFlowPosition) {
+    const rootRect = opts.domEl.getBoundingClientRect();
+    let maxRight = rootRect.right;
+    for (const child of Array.from(opts.domEl.children)) {
+      if (child instanceof HTMLElement) {
+        maxRight = Math.max(maxRight, child.getBoundingClientRect().right);
+      }
+    }
+    const flowRight = opts.screenToFlowPosition({ x: maxRight, y: rootRect.top }).x;
+    const flowLeft = opts.screenToFlowPosition({ x: rootRect.left, y: rootRect.top }).x;
+    const domW = flowRight - flowLeft;
+    if (Number.isFinite(domW) && domW > srcW) srcW = domW;
+    if (Number.isFinite(flowRight)) {
+      return { baseX: flowRight + gap, baseY: y, srcW, srcH };
+    }
+  }
+
+  return { baseX: x + srcW + gap, baseY: y, srcW, srcH };
+}
+
 
 function resolveFrameSplitPixelSize(
   ...candidates: Array<{ width?: number; height?: number } | undefined>
@@ -268,311 +338,6 @@ const normalizeVideoUrlForNode = (url: string): string => {
 };
 
 // 视频裁剪双指针进度条（与 AudioNode TrimRangeBar 一致）
-const VideoTrimRangeBar: React.FC<{
-  duration: number;
-  currentTime: number;
-  trimStart: number;
-  trimEnd: number;
-  isDarkMode: boolean;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  setCurrentTime: (t: number) => void;
-  onTrimRangeChange: (start: number, end: number) => void;
-}> = ({ duration, currentTime, trimStart, trimEnd, isDarkMode, videoRef, setCurrentTime, onTrimRangeChange }) => {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef<'start' | 'end' | null>(null);
-  const trimRef = useRef({ start: trimStart, end: trimEnd });
-  trimRef.current = { start: trimStart, end: trimEnd };
-
-  const clamp = (v: number) => Math.max(0, Math.min(duration, v));
-  const pct = (t: number) => (duration > 0 ? (t / duration) * 100 : 0);
-
-  const getTimeFromClientX = useCallback((clientX: number): number => {
-    const track = trackRef.current;
-    if (!track) return 0;
-    const rect = track.getBoundingClientRect();
-    const x = (clientX - rect.left) / rect.width;
-    return clamp(x * duration);
-  }, [duration]);
-
-  const handleTrackClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!videoRef.current) return;
-    const t = getTimeFromClientX(e.clientX);
-    videoRef.current.currentTime = t;
-    setCurrentTime(t);
-  }, [videoRef, getTimeFromClientX, setCurrentTime]);
-
-  const handleThumbPointerDown = useCallback((which: 'start' | 'end') => (e: React.PointerEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    draggingRef.current = which;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-
-  const handleThumbPointerMove = useCallback((e: React.PointerEvent) => {
-    const which = draggingRef.current;
-    if (!which) return;
-    const t = getTimeFromClientX(e.clientX);
-    const { start, end } = trimRef.current;
-    if (which === 'start') {
-      onTrimRangeChange(clamp(t), Math.max(clamp(t), end));
-    } else {
-      onTrimRangeChange(Math.min(clamp(t), start), clamp(t));
-    }
-  }, [getTimeFromClientX, onTrimRangeChange]);
-
-  const handleThumbPointerUp = useCallback(() => {
-    draggingRef.current = null;
-  }, []);
-
-  const trackBg = isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)';
-  const selectedColor = isDarkMode ? '#a78bfa' : '#7c3aed';
-  const playedColor = isDarkMode ? 'rgba(167, 139, 250, 0.42)' : 'rgba(124, 58, 237, 0.32)';
-
-  return (
-    <div
-      ref={trackRef}
-      role="group"
-      aria-label="裁剪范围与播放进度"
-      title="拖拽前后指针选择裁剪区间，点击轨道跳转播放位置"
-      className="nodrag nopan relative h-2.5 w-full rounded-full cursor-pointer select-none"
-      style={{ background: trackBg }}
-      onClick={(e) => { e.stopPropagation(); handleTrackClick(e); }}
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <div className="absolute inset-y-0 left-0 rounded-l-full pointer-events-none" style={{ width: `${pct(Math.min(currentTime, trimStart))}%`, background: playedColor }} />
-      <div className="absolute inset-y-0 pointer-events-none rounded-full" style={{ left: `${pct(trimStart)}%`, width: `${pct(trimEnd - trimStart)}%`, background: selectedColor, opacity: 0.85 }} />
-      {currentTime > trimStart && currentTime < trimEnd && (
-        <div className="absolute inset-y-0 pointer-events-none rounded-l-full" style={{ left: `${pct(trimStart)}%`, width: `${pct(currentTime - trimStart)}%`, background: playedColor }} />
-      )}
-      <div
-        className="absolute top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 cursor-ew-resize rounded-full border-2 border-white/90 shadow-md nodrag nopan ring-2 ring-violet-400/30"
-        style={{ left: `calc(${pct(trimStart)}% - 7px)`, background: selectedColor }}
-        onPointerDown={handleThumbPointerDown('start')}
-        onPointerMove={handleThumbPointerMove}
-        onPointerUp={handleThumbPointerUp}
-        onPointerLeave={handleThumbPointerUp}
-      />
-      <div
-        className="absolute top-1/2 z-10 h-3.5 w-3.5 -translate-y-1/2 cursor-ew-resize rounded-full border-2 border-white/90 shadow-md nodrag nopan ring-2 ring-violet-400/30"
-        style={{ left: `calc(${pct(trimEnd)}% - 7px)`, background: selectedColor }}
-        onPointerDown={handleThumbPointerDown('end')}
-        onPointerMove={handleThumbPointerMove}
-        onPointerUp={handleThumbPointerUp}
-        onPointerLeave={handleThumbPointerUp}
-      />
-      {duration > 0 && (
-        <div
-          className="pointer-events-none absolute top-1/2 z-[5] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
-          style={{ left: `${pct(currentTime)}%` }}
-        />
-      )}
-    </div>
-  );
-};
-
-// 全屏背景虚化的视频裁剪专属弹窗
-const VideoTrimModal: React.FC<{
-  videoUrl: string;
-  isDarkMode: boolean;
-  initialTrimStart: number;
-  initialTrimEnd: number;
-  onConfirm: (trimStart: number, trimEnd: number) => void;
-  onCancel: () => void;
-  trimming: boolean;
-  trimError?: string | null;
-}> = ({ videoUrl, isDarkMode, initialTrimStart, initialTrimEnd, onConfirm, onCancel, trimming, trimError }) => {
-  const modalVideoRef = React.useRef<HTMLVideoElement>(null);
-  const [duration, setDuration] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [trimStart, setTrimStart] = useState(initialTrimStart);
-  const [trimEnd, setTrimEnd] = useState(initialTrimEnd);
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  const playbackUrl = useMemo(() => normalizeVideoUrlForNode(videoUrl), [videoUrl]);
-
-  useEffect(() => {
-    setTrimStart(initialTrimStart);
-    setTrimEnd(initialTrimEnd);
-  }, [initialTrimStart, initialTrimEnd]);
-
-  useEffect(() => {
-    if (duration > 0 && (trimEnd <= 0 || trimEnd > duration)) {
-      setTrimEnd(duration);
-    }
-  }, [duration, trimEnd]);
-
-  const formatTime = (s: number) => {
-    if (isNaN(s)) return '0:00';
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-  };
-
-  const togglePlay = useCallback(() => {
-    const el = modalVideoRef.current;
-    if (!el) return;
-    if (isPlaying) {
-      el.pause();
-      setIsPlaying(false);
-      return;
-    }
-    const inTrim = trimEnd > trimStart;
-    if (inTrim && (el.currentTime < trimStart || el.currentTime >= trimEnd)) {
-      el.currentTime = trimStart;
-      setCurrentTime(trimStart);
-    }
-    el.play().then(() => setIsPlaying(true)).catch(() => {});
-  }, [isPlaying, trimStart, trimEnd]);
-
-  const handleTrimChange = useCallback((start: number, end: number) => {
-    setTrimStart(start);
-    setTrimEnd(end);
-  }, []);
-
-  const handleConfirm = useCallback(() => {
-    onConfirm(trimStart, trimEnd);
-  }, [trimStart, trimEnd, onConfirm]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-md"
-      onClick={(e) => { if (e.target === e.currentTarget && !trimming) onCancel(); }}
-    >
-      <div
-        className={`mx-4 w-full max-w-2xl overflow-hidden rounded-2xl shadow-2xl ${
-          isDarkMode ? 'nexflow-glass-panel border border-white/10' : 'bg-white border border-gray-200'
-        }`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div
-          className={`flex items-center justify-between gap-3 border-b px-4 py-3 ${
-            isDarkMode ? 'border-white/10 text-white' : 'border-gray-200/80 text-gray-900'
-          }`}
-        >
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Film className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-violet-300' : 'text-violet-600'}`} />
-              <h3 className="text-sm font-semibold">视频裁剪</h3>
-            </div>
-            <p className={`mt-1 text-[11px] ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
-              拖拽前后指针选择裁剪区间，点击轨道可跳转播放位置
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={trimming}
-            className={nodeFloatToolBtn(isDarkMode, false, 'shrink-0 disabled:opacity-40')}
-            title="关闭"
-            aria-label="关闭"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-4 p-4">
-          <div className={`overflow-hidden rounded-xl p-1 ${isDarkMode ? 'apple-panel' : 'apple-panel-light'}`}>
-            <video
-              ref={modalVideoRef}
-              src={playbackUrl}
-              preload="metadata"
-              playsInline
-              muted={false}
-              crossOrigin={playbackUrl.startsWith('http') ? 'anonymous' : undefined}
-              className="aspect-video w-full rounded-lg bg-black"
-              onLoadedMetadata={(e) => {
-                const d = e.currentTarget.duration;
-                setDuration(d);
-                if (trimEnd <= 0 || trimEnd > d) setTrimEnd(d);
-              }}
-              onTimeUpdate={(e) => {
-                const t = e.currentTarget.currentTime;
-                if (trimEnd > trimStart && t >= trimEnd) {
-                  e.currentTarget.pause();
-                  e.currentTarget.currentTime = trimEnd;
-                  setCurrentTime(trimEnd);
-                  setIsPlaying(false);
-                } else {
-                  setCurrentTime(t);
-                }
-              }}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onEnded={() => {
-                setIsPlaying(false);
-                setCurrentTime(trimEnd > trimStart ? trimEnd : 0);
-              }}
-            />
-          </div>
-
-          <div
-            className={`flex items-center gap-2 rounded-lg px-2.5 py-2.5 ${
-              isDarkMode ? 'apple-panel' : 'apple-panel-light'
-            }`}
-          >
-            <button
-              type="button"
-              onClick={togglePlay}
-              className={`${nodeFloatToolBtn(isDarkMode, isPlaying, 'h-10 w-10 !p-0 flex shrink-0 items-center justify-center')}`}
-              title={isPlaying ? '暂停' : '播放'}
-              aria-label={isPlaying ? '暂停' : '播放'}
-            >
-              {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
-            </button>
-            <div className="min-w-0 flex-1">
-              <VideoTrimRangeBar
-                duration={duration}
-                currentTime={currentTime}
-                trimStart={trimStart}
-                trimEnd={trimEnd}
-                isDarkMode={isDarkMode}
-                videoRef={modalVideoRef}
-                setCurrentTime={setCurrentTime}
-                onTrimRangeChange={handleTrimChange}
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className={`text-[11px] tabular-nums ${isDarkMode ? 'text-white/55' : 'text-gray-600'}`}>
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </span>
-            <span className={`text-[11px] tabular-nums ${isDarkMode ? 'text-violet-200/80' : 'text-violet-700'}`}>
-              裁剪 {formatTime(trimStart)} – {formatTime(trimEnd)}
-            </span>
-          </div>
-
-          {trimError ? <div className="text-xs text-red-400">{trimError}</div> : null}
-        </div>
-
-        <div
-          className={`flex justify-end gap-1.5 border-t px-4 py-3 ${
-            isDarkMode ? 'border-white/10' : 'border-gray-200/80'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={trimming}
-            className={assetLibBtnSecondary(isDarkMode, 'disabled:opacity-50')}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={handleConfirm}
-            disabled={trimming || trimEnd <= trimStart}
-            className={assetLibBtnPrimary(isDarkMode, 'disabled:opacity-50 disabled:cursor-not-allowed')}
-          >
-            {trimming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-            {trimming ? '裁剪中...' : '确认'}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-};
 
 /** B 站链接输入（与底部面板解耦，在节点上与裁剪并列） */
 const VideoBilibiliGrabModal: React.FC<{
@@ -924,6 +689,8 @@ interface VideoNodeData {
   referenceVideoUrl?: string;
   /** 为 true 时 loadedmetadata 不自动改外框（如剪辑导出到画布） */
   preserveExportLayout?: boolean;
+  /** 裁剪/智能剪辑导出成片：与源模块同尺度，不走紧凑图模块布局 */
+  exportedMediaClip?: boolean;
 }
 
 interface VideoNodeProps extends NodeProps<VideoNodeData> {
@@ -933,7 +700,7 @@ interface VideoNodeProps extends NodeProps<VideoNodeData> {
   onDataChange?: (nodeId: string, updates: Partial<VideoNodeData>) => void;
   /** 拆帧生成的图片节点须写入 Workspace 状态（勿仅用 useReactFlow().setNodes） */
   onAddFrameSplitNodes?: (nodes: Node[]) => void;
-  /** 视频深度转换等：右侧新建视频/图片模块 + 连线 */
+  /** 智能剪辑 / 画面裁剪 / 深度转换等：右侧新建视频/图片模块 + 连线 */
   onAddVideoClipNodes?: (payload: { nodes: Node[]; edges: import('reactflow').Edge[] }) => void;
   interactionSettings?: {
     ultraNearZoomThreshold?: number;
@@ -1055,6 +822,22 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [trimEndSec, setTrimEndSec] = useState('');
   const [trimming, setTrimming] = useState(false);
   const [trimError, setTrimError] = useState<string | null>(null);
+  const [showSmartEditModal, setShowSmartEditModal] = useState(false);
+  const [smartEditing, setSmartEditing] = useState(false);
+  const [smartEditReviewOpen, setSmartEditReviewOpen] = useState(false);
+  const [smartEditAnalyzing, setSmartEditAnalyzing] = useState(false);
+  const [smartEditAnalyzeProgress, setSmartEditAnalyzeProgress] = useState(0);
+  const [smartEditExporting, setSmartEditExporting] = useState(false);
+  const [smartEditExportProgress, setSmartEditExportProgress] = useState(0);
+  const [smartEditSegments, setSmartEditSegments] = useState<SmartEditReviewSegment[]>([]);
+  const [smartEditDurationSec, setSmartEditDurationSec] = useState(0);
+  const [smartEditSelected, setSmartEditSelected] = useState<Set<number>>(() => new Set());
+  const [smartEditActiveIndex, setSmartEditActiveIndex] = useState(0);
+  const [smartEditSettings, setSmartEditSettings] = useState<SmartVideoEditSettings | null>(null);
+  const smartEditProgressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [showCropModal, setShowCropModal] = useState(false);
+  const [cropping, setCropping] = useState(false);
+  const cropOverlayRef = useRef<VideoCropOverlayHandle>(null);
   const [showBilibiliModal, setShowBilibiliModal] = useState(false);
   const [bilibiliUrlDraft, setBilibiliUrlDraft] = useState('');
   const [bilibiliFetching, setBilibiliFetching] = useState(false);
@@ -1067,20 +850,21 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     () => typeof window !== 'undefined' && typeof window.electronAPI?.createVideoFromBilibiliPage === 'function',
     [],
   );
-  const { getEdges, getNodes } = useReactFlow();
+  const { getEdges, getNodes, screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const { cloudMap } = useNxModelPricing();
-  const videoWatermarkDisplayYuanbao = useMemo(() => getVideoWatermarkRemovalDisplayPrice(cloudMap, 1), [cloudMap]);
   const videoDepthConvertDisplayYuanbao = useMemo(() => getVideoDepthConvertDisplayPrice(cloudMap, 1), [cloudMap]);
-  const [isVideoWatermarkLoading, setIsVideoWatermarkLoading] = useState(false);
+  const videoSubtitleWatermarkDisplayYuanbao = useMemo(
+    () => getVideoSubtitleWatermarkDisplayPrice(cloudMap, 1),
+    [cloudMap],
+  );
   const [isVideoDepthConvertLoading, setIsVideoDepthConvertLoading] = useState(false);
-  const [videoWatermarkPriceHover, setVideoWatermarkPriceHover] = useState(false);
+  const [isVideoSubtitleWatermarkLoading, setIsVideoSubtitleWatermarkLoading] = useState(false);
   const [videoDepthConvertPriceHover, setVideoDepthConvertPriceHover] = useState(false);
-  const [splitFramesMenuHover, setSplitFramesMenuHover] = useState(false);
-  const [splitFramesMenuOpen, setSplitFramesMenuOpen] = useState(false);
+  const [videoSubtitleWatermarkPriceHover, setVideoSubtitleWatermarkPriceHover] = useState(false);
   const [isSplitFramesBusy, setIsSplitFramesBusy] = useState(false);
   const hasIncomingReferenceVideo = !!((data?.referenceVideoUrl || '') as string).trim();
-  /** 订阅边变化：有来自 video / wanAnimate 的入边即显示去水印（不要求 data 已写入 referenceVideoUrl） */
+  /** 订阅边变化：有来自 video / wanAnimate 的入边即显示顶部深度/去字幕水印（不要求 data 已写入 referenceVideoUrl） */
   const hasIncomingVideoModuleEdge = useStore(
     useCallback(
       (s: { edges: { target: string; source: string }[]; nodeInternals: Map<string, { type?: unknown }> }) => {
@@ -1868,11 +1652,20 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
   const handleTrimClick = useCallback(() => {
     setTrimError(null);
+    setSmartEditReviewOpen(false);
+    setSmartEditing(false);
+    setSmartEditAnalyzing(false);
+    setSmartEditExporting(false);
     const dur = videoDurationRef.current;
     const start = 0;
-    const end = typeof dur === 'number' && isFinite(dur) && dur > 0 ? dur : 0;
+    const defaultLen = 3;
+    const end =
+      typeof dur === 'number' && Number.isFinite(dur) && dur > 0
+        ? Math.min(dur, defaultLen)
+        : defaultLen;
     setTrimStartSec(String(start));
-    setTrimEndSec(String(Math.round(end * 10) / 10));
+    setTrimEndSec(String(Math.round(end * 100) / 100));
+    setIsVideoAreaHovered(true);
     setShowTrimModal(true);
   }, []);
 
@@ -1880,46 +1673,128 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     const start = overrideStart ?? parseFloat(trimStartSec);
     const end = overrideEnd ?? parseFloat(trimEndSec);
     if (isNaN(start) || isNaN(end) || start < 0 || end <= start) {
-      setTrimError('请填写有效的起始和结束时间（结束时间须大于起始时间）');
+      setTrimError(locale === 'en' ? 'Invalid trim range' : '请填写有效的起始和结束时间（结束时间须大于起始时间）');
       return;
     }
-    const videoUrl = data?.outputVideo || outputVideo || data?.originalVideoUrl || '';
+    const videoUrl = (videoDisplayUrl || data?.outputVideo || outputVideo || data?.originalVideoUrl || '').trim();
     if (!videoUrl) {
-      setTrimError('无可用视频');
+      setTrimError(locale === 'en' ? 'No video available' : '无可用视频');
       return;
     }
     if (!window.electronAPI?.trimVideo) {
-      setTrimError('当前环境不支持裁剪');
+      setTrimError(locale === 'en' ? 'Trim is not supported' : '当前环境不支持裁剪');
       return;
     }
+    if (!onAddVideoClipNodes || !onDataChange) {
+      console.warn('[VideoNode] onAddVideoClipNodes / onDataChange 未注入，时间裁剪无法落到画布');
+      setTrimError(locale === 'en' ? 'Cannot export clip to canvas' : '无法导出片段到画布');
+      return;
+    }
+    if (trimming || cropping || isSplitFramesBusy || bilibiliFetching) return;
+
     setTrimError(null);
     setTrimming(true);
+
+    const source = getNodes().find((n) => n.id === id);
+    const { baseX, baseY, srcW, srcH } = resolveExportRightAnchor({
+      source,
+      fallbackX: xPos,
+      fallbackY: yPos,
+      fallbackW: size.w,
+      fallbackH: size.h,
+      domEl: nodeRef.current,
+      screenToFlowPosition,
+    });
+    const nodeW = Math.max(IMAGE_NODE_MIN_W, Math.min(srcW || size.w, 420));
+    const nodeH = Math.max(IMAGE_NODE_MIN_H, Math.round(nodeW * ((srcH || size.h) / Math.max(srcW || size.w, 1))));
+    const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newNode: Node = {
+      id: newNodeId,
+      type: 'video',
+      position: { x: baseX, y: baseY },
+      selected: true,
+      data: {
+        label: locale === 'en' ? 'Trimmed clip' : '裁剪片段',
+        title: locale === 'en' ? 'Trimmed clip' : '裁剪片段',
+        width: nodeW,
+        height: nodeH,
+        aspectRatio: data?.aspectRatio,
+        outputVideo: undefined,
+        originalVideoUrl: undefined,
+        exportedMediaClip: true,
+        preserveExportLayout: true,
+        progress: 12,
+        progressMessage: locale === 'en' ? 'Trimming…' : '裁剪中…',
+        errorMessage: undefined,
+      },
+      style: nodeStyleDimensions(nodeW, nodeH),
+    };
+    const edge: Edge = {
+      id: `e-${id}-${newNodeId}`,
+      source: id,
+      target: newNodeId,
+      sourceHandle: 'output',
+      targetHandle: 'input',
+    };
+    onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+    setShowTrimModal(false);
+
     try {
       const res = await window.electronAPI.trimVideo(projectId || undefined, videoUrl, start, end);
-      if (res?.videoUrl) {
-        setOutputVideo(res.videoUrl);
-        onDataChange?.(id, { outputVideo: res.videoUrl, originalVideoUrl: res.videoUrl, errorMessage: undefined });
-        setTrimStartSec(String(Math.round(start * 10) / 10));
-        setTrimEndSec(String(Math.round(end * 10) / 10));
-        setShowTrimModal(false);
-      } else {
-        setTrimError('裁剪未返回结果');
-      }
-    } catch (err: any) {
-      const msg = err?.message || '裁剪失败';
+      if (!res?.videoUrl) throw new Error(locale === 'en' ? 'Trim returned empty' : '裁剪未返回结果');
+      setTrimStartSec(String(Math.round(start * 100) / 100));
+      setTrimEndSec(String(Math.round(end * 100) / 100));
+      onDataChange(newNodeId, {
+        outputVideo: res.videoUrl,
+        originalVideoUrl: res.videoUrl,
+        mediaDurationSec: Math.max(0.01, end - start),
+        progress: 100,
+        progressMessage: '',
+        errorMessage: undefined,
+      });
+      window.setTimeout(() => {
+        onDataChange(newNodeId, { progress: 0, progressMessage: '' });
+      }, 420);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : locale === 'en' ? 'Trim failed' : '裁剪失败';
       console.error('[VideoNode] 裁剪失败:', err);
       setTrimError(msg);
-      onDataChange?.(id, { errorMessage: msg });
+      onDataChange(newNodeId, { errorMessage: msg, progress: 0, progressMessage: '' });
+      showAlert(`${locale === 'en' ? 'Trim failed' : '裁剪失败'}\n\n${msg}`);
     } finally {
       setTrimming(false);
     }
-  }, [trimStartSec, trimEndSec, data?.outputVideo, outputVideo, data?.originalVideoUrl, projectId, id, onDataChange]);
+  }, [
+    trimStartSec,
+    trimEndSec,
+    videoDisplayUrl,
+    data?.outputVideo,
+    outputVideo,
+    data?.originalVideoUrl,
+    data?.aspectRatio,
+    projectId,
+    id,
+    onDataChange,
+    onAddVideoClipNodes,
+    trimming,
+    cropping,
+    isSplitFramesBusy,
+    bilibiliFetching,
+    getNodes,
+    xPos,
+    yPos,
+    size.w,
+    size.h,
+    screenToFlowPosition,
+    locale,
+    showAlert,
+  ]);
 
   const handleSplitVideoFrames = useCallback(
-    async (intervalSec: VideoFrameSplitIntervalSec, e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      if (isSplitFramesBusy || trimming || isVideoWatermarkLoading || bilibiliFetching) return;
+    async (intervalSec: VideoFrameSplitIntervalSec, e?: React.MouseEvent, maxClips?: number) => {
+      e?.stopPropagation?.();
+      e?.preventDefault?.();
+      if (isSplitFramesBusy || trimming || bilibiliFetching || cropping || smartEditing || smartEditReviewOpen) return;
 
       const displayUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
       if (!displayUrl) {
@@ -1970,7 +1845,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           sourcePixelSize = (await probeVideoPixelSize(captureUrl)) ?? null;
         }
 
-        const times = buildVideoFrameTimestamps(duration, intervalSec);
+        let times = buildVideoFrameTimestamps(duration, intervalSec);
+        if (typeof maxClips === 'number' && maxClips > 0 && times.length > maxClips) {
+          times = times.slice(0, maxClips);
+        }
         if (times.length > MAX_VIDEO_FRAME_SPLIT_COUNT) {
           showAlert(vt.videoFrameSplitTooMany(MAX_VIDEO_FRAME_SPLIT_COUNT, times.length));
           return;
@@ -2125,8 +2003,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     [
       isSplitFramesBusy,
       trimming,
-      isVideoWatermarkLoading,
       bilibiliFetching,
+      cropping,
+      smartEditing,
+      smartEditReviewOpen,
       videoDisplayUrl,
       outputVideo,
       data?.outputVideo,
@@ -2141,6 +2021,501 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       xPos,
       yPos,
       size.w,
+    ],
+  );
+
+  const clearSmartEditProgressTimer = useCallback(() => {
+    if (smartEditProgressTimerRef.current) {
+      clearInterval(smartEditProgressTimerRef.current);
+      smartEditProgressTimerRef.current = null;
+    }
+  }, []);
+
+  const resetSmartEditReview = useCallback(() => {
+    clearSmartEditProgressTimer();
+    setSmartEditReviewOpen(false);
+    setSmartEditAnalyzing(false);
+    setSmartEditAnalyzeProgress(0);
+    setSmartEditExporting(false);
+    setSmartEditExportProgress(0);
+    setSmartEditSegments([]);
+    setSmartEditDurationSec(0);
+    setSmartEditSelected(new Set());
+    setSmartEditActiveIndex(0);
+    setSmartEditing(false);
+    setSmartEditSettings(null);
+    onDataChange?.(id, { progress: 0, progressMessage: '', errorMessage: undefined });
+  }, [clearSmartEditProgressTimer, id, onDataChange]);
+
+  useEffect(() => () => clearSmartEditProgressTimer(), [clearSmartEditProgressTimer]);
+
+  const runSmartEditAnalyze = useCallback(
+    async (settings: SmartVideoEditSettings) => {
+      const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+      if (!videoUrl) {
+        showAlert(locale === 'en' ? 'No video available' : '无可用视频');
+        return;
+      }
+      if (!window.electronAPI?.smartAnalyzeVideoShots && !window.electronAPI?.smartExtractVideoClips) {
+        showAlert(
+          locale === 'en'
+            ? 'Smart edit API missing. Fully quit and restart the app (preload must reload).'
+            : '智能剪辑接口未加载。请完全退出并重启应用后再试（仅刷新页面无效）。',
+        );
+        return;
+      }
+      if (
+        trimming ||
+        cropping ||
+        isVideoSubtitleWatermarkLoading ||
+        isVideoDepthConvertLoading ||
+        isSplitFramesBusy ||
+        smartEditExporting
+      ) {
+        return;
+      }
+
+      setSmartEditSettings(settings);
+      setShowSmartEditModal(false);
+      setShowTrimModal(false);
+      setSmartEditReviewOpen(true);
+      setSmartEditAnalyzing(true);
+      setSmartEditing(true);
+      setSmartEditAnalyzeProgress(4);
+      setSmartEditSegments([]);
+      setSmartEditSelected(new Set());
+      clearSmartEditProgressTimer();
+      smartEditProgressTimerRef.current = setInterval(() => {
+        setSmartEditAnalyzeProgress((p) => (p >= 92 ? p : p + Math.max(1, Math.round((92 - p) * 0.08))));
+      }, 400);
+      onDataChange?.(id, {
+        progress: 8,
+        progressMessage: locale === 'en' ? 'Analyzing shots…' : '分析镜头中…',
+        errorMessage: undefined,
+      });
+
+      try {
+        const minClipSec = settings.fps <= 16 ? 1.2 : settings.fps >= 30 ? 0.6 : 0.8;
+
+        if (settings.output === 'keyframes') {
+          if (!window.electronAPI?.smartExtractVideoClips) throw new Error('智能剪辑接口未加载');
+          const res = await window.electronAPI.smartExtractVideoClips(projectId || undefined, videoUrl, {
+            mode: settings.mode,
+            maxClips: settings.maxClips,
+            output: 'keyframes',
+            minClipSec,
+          });
+          clearSmartEditProgressTimer();
+          setSmartEditAnalyzeProgress(100);
+          const frames = res.keyframes || [];
+          if (!frames.length) throw new Error(locale === 'en' ? 'No keyframes found' : '未检测到关键帧');
+          const GAP = 48;
+          const CELL = 12;
+          const source = getNodes().find((n) => n.id === id);
+          const srcW = Number(source?.data?.width) || size.w;
+          const baseX = (source?.position.x ?? xPos) + srcW + GAP;
+          const baseY = source?.position.y ?? yPos;
+          const tile = Math.max(IMAGE_NODE_MIN_W * 0.7, 220);
+          const cols = Math.min(4, frames.length);
+          const newNodes: Node[] = frames.map((f, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const nid = `image-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+            return {
+              id: nid,
+              type: 'image',
+              position: { x: baseX + col * (tile + CELL), y: baseY + row * (tile + CELL) },
+              selected: i === frames.length - 1,
+              data: {
+                label: locale === 'en' ? `Keyframe ${i + 1}` : `关键帧 ${i + 1}`,
+                title: locale === 'en' ? `Keyframe ${i + 1}` : `关键帧 ${i + 1}`,
+                width: tile,
+                height: tile,
+                outputImage: f.imageUrl,
+                outputImages: [f.imageUrl],
+                originalImageUrl: f.imageUrl,
+                imageAsset: { preview: f.imageUrl, original: f.imageUrl },
+                preserveExportLayout: true,
+                progress: 0,
+              },
+              style: nodeStyleDimensions(tile, tile),
+            };
+          });
+          if (onAddFrameSplitNodes) onAddFrameSplitNodes(newNodes);
+          resetSmartEditReview();
+          if (res.downgraded) {
+            showAlert(
+              locale === 'en'
+                ? 'Few strong visual cuts found; kept the most visually changing frames.'
+                : '明显硬切较少，已保留相对画面变化最大的关键帧。',
+            );
+          }
+          return;
+        }
+
+        let segments: SmartEditReviewSegment[] = [];
+        let durationSec = 0;
+        let downgraded = false;
+
+        if (window.electronAPI?.smartAnalyzeVideoShots) {
+          const res = await window.electronAPI.smartAnalyzeVideoShots(projectId || undefined, videoUrl, {
+            mode: settings.mode,
+            maxClips: settings.maxClips,
+            minClipSec,
+            withPosters: true,
+          });
+          segments = res.segments || [];
+          durationSec = res.durationSec || 0;
+          downgraded = !!res.downgraded;
+        } else {
+          const res = await window.electronAPI!.smartExtractVideoClips!(projectId || undefined, videoUrl, {
+            mode: settings.mode,
+            maxClips: settings.maxClips,
+            output: 'clips',
+            minClipSec,
+          });
+          segments = (res.clips || []).map((c) => ({
+            startSec: c.startSec,
+            endSec: c.endSec,
+            score: 1,
+            posterUrl: c.posterUrl,
+          }));
+          durationSec = res.durationSec || 0;
+          downgraded = !!res.downgraded;
+        }
+
+        if (!segments.length) throw new Error(locale === 'en' ? 'No obvious shots found' : '未检测到画面变化明显的镜头');
+
+        clearSmartEditProgressTimer();
+        setSmartEditAnalyzeProgress(100);
+        setSmartEditSegments(segments);
+        setSmartEditDurationSec(durationSec);
+        setSmartEditSelected(new Set(segments.map((_, i) => i)));
+        setSmartEditActiveIndex(0);
+        setSmartEditAnalyzing(false);
+        setSmartEditing(false);
+        onDataChange?.(id, { progress: 0, progressMessage: '', errorMessage: undefined });
+        if (downgraded) {
+          showAlert(
+            locale === 'en'
+              ? 'Few strong visual cuts found; kept the most visually changing shots.'
+              : '明显硬切较少，已保留相对画面变化最大的镜头。',
+          );
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : locale === 'en' ? 'Smart edit failed' : '智能剪辑失败';
+        console.error('[VideoNode] smart analyze failed:', err);
+        showAlert(msg);
+        resetSmartEditReview();
+        onDataChange?.(id, { progress: 0, progressMessage: '', errorMessage: msg });
+      }
+    },
+    [
+      videoDisplayUrl,
+      outputVideo,
+      data?.outputVideo,
+      data?.originalVideoUrl,
+      trimming,
+      cropping,
+      isVideoSubtitleWatermarkLoading,
+      isVideoDepthConvertLoading,
+      isSplitFramesBusy,
+      smartEditExporting,
+      clearSmartEditProgressTimer,
+      id,
+      onDataChange,
+      locale,
+      showAlert,
+      projectId,
+      getNodes,
+      size.w,
+      xPos,
+      yPos,
+      onAddFrameSplitNodes,
+      resetSmartEditReview,
+    ],
+  );
+
+  const handleSmartEditConfirmToCanvas = useCallback(async () => {
+    const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+    if (!videoUrl || smartEditExporting) return;
+    const picked = smartEditSegments.filter((_, i) => smartEditSelected.has(i));
+    if (!picked.length) {
+      showAlert(locale === 'en' ? 'Select at least one shot' : '请至少选择一个镜头');
+      return;
+    }
+    if (!window.electronAPI?.trimVideo) {
+      showAlert(locale === 'en' ? 'Trim API missing' : '裁剪接口未加载，请重启应用');
+      return;
+    }
+
+    setSmartEditExporting(true);
+    setSmartEditing(true);
+    setSmartEditExportProgress(2);
+    onDataChange?.(id, {
+      progress: 10,
+      progressMessage: locale === 'en' ? 'Exporting shots to canvas…' : '正在导出镜头到画布…',
+      errorMessage: undefined,
+    });
+
+    try {
+      const GAP = 48;
+      const CELL = 12;
+      const source = getNodes().find((n) => n.id === id);
+      const srcW = Number(source?.data?.width) || size.w;
+      const srcH = Number(source?.data?.height) || size.h;
+      const nodeW = Math.max(IMAGE_NODE_MIN_W, Math.min(srcW, 420));
+      const nodeH = Math.max(IMAGE_NODE_MIN_H, Math.round(nodeW * (srcH / Math.max(srcW, 1))));
+      const baseX = (source?.position.x ?? xPos) + srcW + GAP;
+      const baseY = source?.position.y ?? yPos;
+      const newNodes: Node[] = [];
+      const newEdges: Edge[] = [];
+
+      for (let i = 0; i < picked.length; i++) {
+        const seg = picked[i]!;
+        const res = await window.electronAPI.trimVideo(projectId || undefined, videoUrl, seg.startSec, seg.endSec);
+        if (!res?.videoUrl) throw new Error(locale === 'en' ? 'Export failed' : '导出片段失败');
+        const nid = `video-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`;
+        newNodes.push({
+          id: nid,
+          type: 'video',
+          position: { x: baseX, y: baseY + i * (nodeH + CELL) },
+          selected: i === picked.length - 1,
+          data: {
+            label: locale === 'en' ? `Shot ${i + 1}` : `镜头 ${i + 1}`,
+            title: locale === 'en' ? `Shot ${i + 1}` : `镜头 ${i + 1}`,
+            width: nodeW,
+            height: nodeH,
+            outputVideo: res.videoUrl,
+            originalVideoUrl: res.videoUrl,
+            videoAsset: seg.posterUrl ? { poster: seg.posterUrl } : undefined,
+            preserveExportLayout: true,
+            exportedMediaClip: true,
+            mediaDurationSec: Math.max(0.01, seg.endSec - seg.startSec),
+            progress: 0,
+            errorMessage: undefined,
+          },
+          style: nodeStyleDimensions(nodeW, nodeH),
+        });
+        newEdges.push({
+          id: `e-${id}-${nid}`,
+          source: id,
+          target: nid,
+          sourceHandle: 'output',
+          targetHandle: 'input',
+        });
+        setSmartEditExportProgress(Math.round(((i + 1) / picked.length) * 100));
+        onDataChange?.(id, {
+          progress: Math.round(10 + ((i + 1) / picked.length) * 85),
+          progressMessage: locale === 'en' ? `Exporting ${i + 1}/${picked.length}` : `导出 ${i + 1}/${picked.length}`,
+        });
+      }
+
+      if (onAddVideoClipNodes) onAddVideoClipNodes({ nodes: newNodes, edges: newEdges });
+      else console.warn('[VideoNode] onAddVideoClipNodes 未注入');
+      resetSmartEditReview();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : locale === 'en' ? 'Export failed' : '导出失败';
+      console.error('[VideoNode] smart export failed:', err);
+      showAlert(msg);
+      setSmartEditExporting(false);
+      setSmartEditing(false);
+      onDataChange?.(id, { progress: 0, progressMessage: '', errorMessage: msg });
+    }
+  }, [
+    videoDisplayUrl,
+    outputVideo,
+    data?.outputVideo,
+    data?.originalVideoUrl,
+    smartEditExporting,
+    smartEditSegments,
+    smartEditSelected,
+    showAlert,
+    locale,
+    id,
+    onDataChange,
+    getNodes,
+    size.w,
+    size.h,
+    xPos,
+    yPos,
+    projectId,
+    onAddVideoClipNodes,
+    resetSmartEditReview,
+  ]);
+
+  const handleSmartEditStart = useCallback(
+    (settings: SmartVideoEditSettings) => {
+      if (settings.output === 'keyframes' && settings.keyframeMethod === 'interval') {
+        setShowSmartEditModal(false);
+        const interval = Math.max(1, Math.min(30, Math.round(Number(settings.keyframeIntervalSec) || 2)));
+        const allowed = VIDEO_FRAME_SPLIT_INTERVALS as readonly number[];
+        const nearest = (allowed.includes(interval)
+          ? interval
+          : allowed.reduce((best, cur) => (Math.abs(cur - interval) < Math.abs(best - interval) ? cur : best), allowed[0]!)) as VideoFrameSplitIntervalSec;
+        void handleSplitVideoFrames(nearest, undefined, settings.maxClips);
+        return;
+      }
+      void runSmartEditAnalyze(settings);
+    },
+    [runSmartEditAnalyze, handleSplitVideoFrames],
+  );
+
+  const handleCropClick = useCallback(() => {
+    const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+    if (!videoUrl) {
+      showAlert(vt.videoSpatialCropNeedVideo);
+      return;
+    }
+    if (!window.electronAPI?.cropVideo) {
+      showAlert(vt.videoSpatialCropNotSupported);
+      return;
+    }
+    setShowCropModal(true);
+  }, [videoDisplayUrl, outputVideo, data?.outputVideo, data?.originalVideoUrl, showAlert, vt]);
+
+  const handleCropConfirm = useCallback(
+    async (rect: NormalizedCropRect, sourceWidth: number, sourceHeight: number) => {
+      const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+      if (!videoUrl) {
+        showAlert(vt.videoSpatialCropNeedVideo);
+        return;
+      }
+      if (!window.electronAPI?.cropVideo) {
+        showAlert(vt.videoSpatialCropNotSupported);
+        return;
+      }
+      if (
+        cropping ||
+        trimming ||
+        isVideoSubtitleWatermarkLoading ||
+        isVideoDepthConvertLoading ||
+        bilibiliFetching ||
+        isSplitFramesBusy
+      ) {
+        return;
+      }
+      if (!onAddVideoClipNodes || !onDataChange) {
+        console.warn('[VideoNode] onAddVideoClipNodes / onDataChange 未注入，画面裁剪无法落到画布');
+        showAlert(vt.videoSpatialCropFailed);
+        return;
+      }
+
+      setShowCropModal(false);
+      setCropping(true);
+
+      const source = getNodes().find((n) => n.id === id);
+      const { baseX, baseY } = resolveExportRightAnchor({
+        source,
+        fallbackX: xPos,
+        fallbackY: yPos,
+        fallbackW: size.w,
+        fallbackH: size.h,
+        domEl: nodeRef.current,
+        screenToFlowPosition,
+      });
+      const placeholderW = Math.max(size.w, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
+      const placeholderH = Math.max(size.h, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
+      const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'video',
+        position: { x: baseX, y: baseY },
+        selected: true,
+        data: {
+          label: locale === 'en' ? 'Cropped clip' : '画面裁剪',
+          title: locale === 'en' ? 'Cropped clip' : '画面裁剪',
+          width: placeholderW,
+          height: placeholderH,
+          aspectRatio: data?.aspectRatio,
+          outputVideo: undefined,
+          originalVideoUrl: undefined,
+          exportedMediaClip: true,
+          isUserResized: true,
+          preserveExportLayout: true,
+          progress: 8,
+          progressMessage: vt.videoSpatialCropConfirming,
+          errorMessage: undefined,
+        },
+        style: nodeStyleDimensions(placeholderW, placeholderH),
+      };
+      const edge: Edge = {
+        id: `e-${id}-${newNodeId}`,
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+      };
+      onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+
+      try {
+        const res = await window.electronAPI.cropVideo(
+          projectId || undefined,
+          videoUrl,
+          rect,
+          sourceWidth,
+          sourceHeight,
+        );
+        if (!res?.originalUrl) throw new Error(vt.videoSpatialCropFailed);
+        const adapted = computeAdaptiveVideoSize(res.width, res.height);
+        const aspectRatio =
+          res.width && res.height
+            ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(res.width, res.height))
+            : data?.aspectRatio;
+        onDataChange(newNodeId, {
+          outputVideo: res.originalUrl,
+          originalVideoUrl: undefined,
+          videoAsset: {
+            poster: res.posterUrl,
+            ghost: res.ghostBase64,
+            width: res.width,
+            height: res.height,
+          },
+          width: adapted.w,
+          height: adapted.h,
+          ...(aspectRatio ? { aspectRatio } : {}),
+          progress: 100,
+          progressMessage: '',
+          errorMessage: undefined,
+        });
+        window.setTimeout(() => {
+          onDataChange(newNodeId, { progress: 0, progressMessage: '' });
+        }, 420);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : vt.videoSpatialCropFailed;
+        console.error('[VideoNode] spatial crop failed:', err);
+        showAlert(`${vt.videoSpatialCropFailed}\n\n${msg}`);
+        onDataChange(newNodeId, { errorMessage: msg, progress: 0, progressMessage: '' });
+      } finally {
+        setCropping(false);
+      }
+    },
+    [
+      videoDisplayUrl,
+      outputVideo,
+      data?.outputVideo,
+      data?.originalVideoUrl,
+      data?.aspectRatio,
+      cropping,
+      trimming,
+      isVideoSubtitleWatermarkLoading,
+      isVideoDepthConvertLoading,
+      bilibiliFetching,
+      isSplitFramesBusy,
+      projectId,
+      id,
+      onDataChange,
+      showAlert,
+      vt,
+      computeAdaptiveVideoSize,
+      getNodes,
+      xPos,
+      yPos,
+      size.w,
+      size.h,
+      screenToFlowPosition,
+      locale,
+      onAddVideoClipNodes,
     ],
   );
 
@@ -2488,7 +2863,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const showFloatingTopActions = showDetailedUi && showNodeChrome && !progress;
   const showBottomActionRow =
     showNodeChrome &&
-    (canUseBilibiliGrab || outputVideo || hasIncomingReferenceVideo || hasIncomingVideoModuleEdge);
+    (canUseBilibiliGrab || !!outputVideo) &&
+    !showCropModal &&
+    !smartEditReviewOpen &&
+    !showTrimModal;
   // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
   const zoomInv = Math.min(1, 1 / Math.max(zoom || 1, 0.01));
   const videoPromptAnchor = useVideoInputPanelAnchor();
@@ -2497,7 +2875,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     videoPromptAnchor.nodeId === id &&
     !!selected &&
     !showTrimModal &&
-    !showBilibiliModal;
+    !showBilibiliModal &&
+    !showSmartEditModal &&
+    !showCropModal &&
+    !smartEditReviewOpen;
   const videoPromptTop =
     showExternalPlayerControls && showBottomActionRow
       ? 'calc(100% + 84px)'
@@ -2514,6 +2895,9 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     shouldRenderVideo &&
     !showTrimModal &&
     !showBilibiliModal &&
+    !showSmartEditModal &&
+    !showCropModal &&
+    !smartEditReviewOpen &&
     !(progress > 0);
 
   useEffect(() => {
@@ -2822,6 +3206,17 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 {posterFillContent}
               </div>
             ) : null}
+            {showCropModal ? (
+              <VideoCropOverlay
+                ref={cropOverlayRef}
+                videoUrl={videoDisplayUrl || outputVideo || data?.originalVideoUrl || ''}
+                isDarkMode={isDarkMode}
+                hint={vt.videoSpatialCropHint}
+                busy={cropping}
+                onConfirm={(rect, sw, sh) => void handleCropConfirm(rect, sw, sh)}
+                onCancel={() => !cropping && setShowCropModal(false)}
+              />
+            ) : null}
           </div>
         ) : errorMessage ? (
           <div className="flex flex-col items-center justify-center gap-3 p-4">
@@ -2945,13 +3340,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
             >
               <button
                 type="button"
-                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading}
+                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading}
                 title={`${vt.videoDepthConvertTitle} · ${locale === 'en' ? `${videoDepthConvertDisplayYuanbao} ${vt.creditsSuffix}` : `${videoDepthConvertDisplayYuanbao}${vt.creditsSuffix}`}`}
                 aria-label={vt.videoDepthConvertTitle}
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading) return;
+                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading) return;
                   const ref = ((data?.referenceVideoUrl || '') as string).trim();
                   const selfRaw = (outputVideo || data?.originalVideoUrl || '').trim();
                   const edges = getEdges();
@@ -2982,25 +3377,105 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   }
 
                   const GAP_CM = 37.8;
-                  const srcNode = nodes.find((n) => n.id === id);
-                  const srcW =
-                    Number(srcNode?.width) ||
-                    Number((srcNode as { measured?: { width?: number } } | undefined)?.measured?.width) ||
-                    Number(srcNode?.data?.width) ||
-                    size.w;
-                  const srcH =
-                    Number(srcNode?.height) ||
-                    Number((srcNode as { measured?: { height?: number } } | undefined)?.measured?.height) ||
-                    Number(srcNode?.data?.height) ||
-                    size.h;
-                  const newX = (typeof xPos === 'number' ? xPos : 0) + srcW + GAP_CM;
-                  const newY = typeof yPos === 'number' ? yPos : 0;
                   const progressText = vt.videoDepthConvertProgress(String(videoDepthConvertDisplayYuanbao));
+                  const finishingText = locale === 'en' ? 'Finalizing…' : '正在整理结果…';
+
+                  const resolveSpawnOrigin = () => {
+                    const fresh = getNodes().find((n) => n.id === id);
+                    const srcW =
+                      Number(fresh?.width) ||
+                      Number((fresh as { measured?: { width?: number } } | undefined)?.measured?.width) ||
+                      Number(fresh?.data?.width) ||
+                      size.w;
+                    const srcH =
+                      Number(fresh?.height) ||
+                      Number((fresh as { measured?: { height?: number } } | undefined)?.measured?.height) ||
+                      Number(fresh?.data?.height) ||
+                      size.h;
+                    const originX =
+                      fresh?.positionAbsolute?.x ??
+                      fresh?.position?.x ??
+                      (typeof xPos === 'number' ? xPos : 0);
+                    const originY =
+                      fresh?.positionAbsolute?.y ??
+                      fresh?.position?.y ??
+                      (typeof yPos === 'number' ? yPos : 0);
+                    return {
+                      newX: originX + srcW + GAP_CM,
+                      newY: originY,
+                      srcH,
+                    };
+                  };
+
+                  const ipcErrorMessage = (err: unknown): string => {
+                    if (err instanceof Error && err.message) {
+                      return err.message
+                        .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+                        .replace(/^Error:\s*/i, '')
+                        .trim() || vt.videoDepthConvertFailed;
+                    }
+                    if (err && typeof err === 'object' && 'message' in err) {
+                      const m = String((err as { message?: unknown }).message || '').trim();
+                      if (m) return m;
+                    }
+                    return vt.videoDepthConvertFailed;
+                  };
 
                   void (async () => {
                     setIsVideoDepthConvertLoading(true);
                     setErrorMessage('');
-                    let spawnedId: string | null = null;
+                    // 进度只显示在右侧新模块，主模块不挂进度条
+                    onDataChange?.(id, {
+                      errorMessage: undefined,
+                    });
+
+                    /** RH 样例多为 png 深度图：先落占位图片模块，保持 loading 直到结果或失败 */
+                    const { newX, newY, srcH } = resolveSpawnOrigin();
+                    const imgW = IMAGE_NODE_MIN_W;
+                    const imgH = IMAGE_NODE_MIN_H;
+                    const imagePlaceholderId = `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                    let spawnedId: string | null = imagePlaceholderId;
+                    const imgStyleDims = nodeStyleDimensions(imgW, imgH);
+                    onAddVideoClipNodes({
+                      nodes: [
+                        {
+                          id: imagePlaceholderId,
+                          type: 'image',
+                          position: { x: newX, y: newY + Math.max(0, (srcH - imgH) / 2) },
+                          data: {
+                            label: vt.videoDepthConvertTitle,
+                            title: vt.videoDepthConvertTitle,
+                            width: imgW,
+                            height: imgH,
+                            isUserResized: false,
+                            preserveExportLayout: true,
+                            resolution: '1k',
+                            aspectRatio: '1:1',
+                            model: 'banana-2.0',
+                            prompt: '',
+                            progress: 8,
+                            progressMessage: progressText,
+                            errorMessage: undefined,
+                          },
+                          style: {
+                            ...imgStyleDims,
+                            minWidth: `${IMAGE_NODE_MIN_W}px`,
+                            minHeight: `${IMAGE_NODE_MIN_H}px`,
+                          },
+                          selected: true,
+                        },
+                      ],
+                      edges: [
+                        {
+                          id: `e-${id}-${imagePlaceholderId}-depth-convert`,
+                          source: id,
+                          sourceHandle: 'output',
+                          target: imagePlaceholderId,
+                          targetHandle: 'input',
+                        },
+                      ],
+                    });
+
                     try {
                       const result = await window.electronAPI.videoDepthConvert(urlToProcess);
                       const resultUrl = (result?.url || result?.videoUrl || result?.imageUrl || '').trim();
@@ -3016,17 +3491,18 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                             : 'video';
 
                       if (kind === 'image') {
-                        const imgW = IMAGE_NODE_MIN_W;
-                        const imgH = IMAGE_NODE_MIN_H;
-                        const newId = `image-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                        spawnedId = newId;
-                        const styleDims = nodeStyleDimensions(imgW, imgH);
+                        spawnedId = imagePlaceholderId;
+                        const origin = resolveSpawnOrigin();
+                        /** 同 id upsert：把占位回填为带 png 的图片模块 */
                         onAddVideoClipNodes({
                           nodes: [
                             {
-                              id: newId,
+                              id: imagePlaceholderId,
                               type: 'image',
-                              position: { x: newX, y: newY + Math.max(0, (srcH - imgH) / 2) },
+                              position: {
+                                x: origin.newX,
+                                y: origin.newY + Math.max(0, (origin.srcH - imgH) / 2),
+                              },
                               data: {
                                 label: vt.videoDepthConvertTitle,
                                 title: vt.videoDepthConvertTitle,
@@ -3047,7 +3523,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                                 errorMessage: undefined,
                               },
                               style: {
-                                ...styleDims,
+                                ...imgStyleDims,
                                 minWidth: `${IMAGE_NODE_MIN_W}px`,
                                 minHeight: `${IMAGE_NODE_MIN_H}px`,
                               },
@@ -3056,10 +3532,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                           ],
                           edges: [
                             {
-                              id: `e-${id}-${newId}-depth-convert`,
+                              id: `e-${id}-${imagePlaceholderId}-depth-convert`,
                               source: id,
                               sourceHandle: 'output',
-                              target: newId,
+                              target: imagePlaceholderId,
                               targetHandle: 'input',
                             },
                           ],
@@ -3068,20 +3544,22 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         if (!window.electronAPI?.createVideoLocalResourceFromUrl) {
                           throw new Error(vt.videoDepthConvertNotSupported);
                         }
-                        const newId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                        spawnedId = newId;
+                        const videoId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                        spawnedId = videoId;
                         const styleDims = nodeStyleDimensions(size.w, size.h);
+                        const origin = resolveSpawnOrigin();
+                        /** 用视频模块覆盖图片占位（同位置 upsert 占位 id 为视频） */
                         onAddVideoClipNodes({
                           nodes: [
                             {
-                              id: newId,
+                              id: imagePlaceholderId,
                               type: 'video',
-                              position: { x: newX, y: newY },
+                              position: { x: origin.newX, y: origin.newY },
                               data: {
                                 width: size.w,
                                 height: size.h,
-                                progress: 6,
-                                progressMessage: progressText,
+                                progress: 72,
+                                progressMessage: finishingText,
                                 preserveExportLayout: true,
                               },
                               style: {
@@ -3094,24 +3572,20 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                           ],
                           edges: [
                             {
-                              id: `e-${id}-${newId}-depth-convert`,
+                              id: `e-${id}-${imagePlaceholderId}-depth-convert`,
                               source: id,
                               sourceHandle: 'output',
-                              target: newId,
+                              target: imagePlaceholderId,
                               targetHandle: 'input',
                             },
                           ],
                         });
-                        onDataChange?.(newId, {
-                          progress: 72,
-                          progressMessage: locale === 'en' ? 'Finalizing…' : '正在整理结果…',
-                          errorMessage: undefined,
-                        });
+                        spawnedId = imagePlaceholderId;
                         const local = await window.electronAPI.createVideoLocalResourceFromUrl(
                           projectId || undefined,
                           resultUrl,
                         );
-                        onDataChange?.(newId, {
+                        onDataChange?.(imagePlaceholderId, {
                           outputVideo: local.originalUrl,
                           originalVideoUrl: resultUrl,
                           errorMessage: undefined,
@@ -3125,11 +3599,56 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                           progressMessage: '',
                         });
                       }
+                      onDataChange?.(id, { errorMessage: undefined });
                     } catch (err: unknown) {
-                      const msg = err instanceof Error ? err.message : vt.videoDepthConvertFailed;
+                      const msg = ipcErrorMessage(err);
                       setErrorMessage(msg);
+                      showAlert(`${vt.videoDepthConvertFailed}\n\n${msg}`);
+                      onDataChange?.(id, { errorMessage: undefined });
                       if (spawnedId) {
-                        onDataChange?.(spawnedId, { errorMessage: msg, progress: 0, progressMessage: '' });
+                        const origin = resolveSpawnOrigin();
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: spawnedId,
+                              type: 'image',
+                              position: {
+                                x: origin.newX,
+                                y: origin.newY + Math.max(0, (origin.srcH - imgH) / 2),
+                              },
+                              data: {
+                                label: vt.videoDepthConvertTitle,
+                                title: vt.videoDepthConvertTitle,
+                                width: imgW,
+                                height: imgH,
+                                isUserResized: false,
+                                preserveExportLayout: true,
+                                resolution: '1k',
+                                aspectRatio: '1:1',
+                                model: 'banana-2.0',
+                                prompt: '',
+                                progress: 0,
+                                progressMessage: '',
+                                errorMessage: msg,
+                              },
+                              style: {
+                                ...imgStyleDims,
+                                minWidth: `${IMAGE_NODE_MIN_W}px`,
+                                minHeight: `${IMAGE_NODE_MIN_H}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${spawnedId}-depth-convert`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: spawnedId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
                       }
                     } finally {
                       setIsVideoDepthConvertLoading(false);
@@ -3137,7 +3656,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   })();
                 }}
                 className={floatTopPillBtn(
-                  bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading
+                  bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading
                     ? 'opacity-50 cursor-not-allowed'
                     : '',
                 )}
@@ -3163,6 +3682,368 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   : `${videoDepthConvertDisplayYuanbao}${vt.creditsSuffix}`}
               </span>
             </div>
+          ) : null}
+          {hasIncomingReferenceVideo || hasIncomingVideoModuleEdge || outputVideo ? (
+            <div
+              className="relative inline-flex flex-col items-center"
+              onMouseEnter={() => setVideoSubtitleWatermarkPriceHover(true)}
+              onMouseLeave={() => setVideoSubtitleWatermarkPriceHover(false)}
+            >
+              <button
+                type="button"
+                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading}
+                title={`${vt.videoSubtitleWatermarkTitle} · ${locale === 'en' ? `${videoSubtitleWatermarkDisplayYuanbao} ${vt.creditsSuffix}` : `${videoSubtitleWatermarkDisplayYuanbao}${vt.creditsSuffix}`}`}
+                aria-label={vt.videoSubtitleWatermarkTitle}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading) return;
+                  const ref = ((data?.referenceVideoUrl || '') as string).trim();
+                  const selfRaw = (outputVideo || data?.originalVideoUrl || '').trim();
+                  const edges = getEdges();
+                  const nodes = getNodes();
+                  let urlFromUpstreamEdge = '';
+                  for (const ed of edges) {
+                    if (ed.target !== id) continue;
+                    const src = nodes.find((n) => n.id === ed.source);
+                    if (!src || (src.type !== 'video' && src.type !== 'wanAnimate')) continue;
+                    const sd = src.data as { outputVideo?: string; originalVideoUrl?: string } | undefined;
+                    const u = ((sd?.originalVideoUrl || sd?.outputVideo) || '').trim();
+                    if (u) {
+                      urlFromUpstreamEdge = normalizeVideoUrlForNode(u);
+                      break;
+                    }
+                  }
+                  const urlToProcess =
+                    (ref && normalizeVideoUrlForNode(ref)) ||
+                    urlFromUpstreamEdge ||
+                    (selfRaw ? normalizeVideoUrlForNode(selfRaw) : '');
+                  if (!urlToProcess) {
+                    showAlert(vt.videoSubtitleWatermarkNeedVideo);
+                    return;
+                  }
+                  if (!window.electronAPI?.videoSubtitleWatermarkRemoval || !onAddVideoClipNodes) {
+                    showAlert(vt.videoSubtitleWatermarkNotSupported);
+                    return;
+                  }
+
+                  const GAP_CM = 37.8;
+                  const progressText = vt.videoSubtitleWatermarkProgress(String(videoSubtitleWatermarkDisplayYuanbao));
+                  const finishingText = locale === 'en' ? 'Finalizing…' : '正在整理结果…';
+
+                  const resolveSpawnOrigin = () => {
+                    const fresh = getNodes().find((n) => n.id === id);
+                    const srcW =
+                      Number(fresh?.width) ||
+                      Number((fresh as { measured?: { width?: number } } | undefined)?.measured?.width) ||
+                      Number(fresh?.data?.width) ||
+                      size.w;
+                    const srcH =
+                      Number(fresh?.height) ||
+                      Number((fresh as { measured?: { height?: number } } | undefined)?.measured?.height) ||
+                      Number(fresh?.data?.height) ||
+                      size.h;
+                    const originX =
+                      fresh?.positionAbsolute?.x ??
+                      fresh?.position?.x ??
+                      (typeof xPos === 'number' ? xPos : 0);
+                    const originY =
+                      fresh?.positionAbsolute?.y ??
+                      fresh?.position?.y ??
+                      (typeof yPos === 'number' ? yPos : 0);
+                    return {
+                      newX: originX + srcW + GAP_CM,
+                      newY: originY,
+                      srcH,
+                    };
+                  };
+
+                  const ipcErrorMessage = (err: unknown): string => {
+                    if (err instanceof Error && err.message) {
+                      return err.message
+                        .replace(/^Error invoking remote method '[^']+':\s*/i, '')
+                        .replace(/^Error:\s*/i, '')
+                        .trim() || vt.videoSubtitleWatermarkFailed;
+                    }
+                    if (err && typeof err === 'object' && 'message' in err) {
+                      const m = String((err as { message?: unknown }).message || '').trim();
+                      if (m) return m;
+                    }
+                    return vt.videoSubtitleWatermarkFailed;
+                  };
+
+                  void (async () => {
+                    setIsVideoSubtitleWatermarkLoading(true);
+                    setErrorMessage('');
+                    // 进度只显示在右侧新模块，主模块不挂进度条（与视频深度转换 / 图片去水印一致）
+                    onDataChange?.(id, {
+                      errorMessage: undefined,
+                    });
+
+                    /** 去字幕/水印优先视频：先落右侧视频占位模块 */
+                    const { newX, newY } = resolveSpawnOrigin();
+                    const styleDims = nodeStyleDimensions(size.w, size.h);
+                    const videoPlaceholderId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                    let spawnedId: string | null = videoPlaceholderId;
+                    onAddVideoClipNodes({
+                      nodes: [
+                        {
+                          id: videoPlaceholderId,
+                          type: 'video',
+                          position: { x: newX, y: newY },
+                          data: {
+                            width: size.w,
+                            height: size.h,
+                            label: vt.videoSubtitleWatermarkTitle,
+                            title: vt.videoSubtitleWatermarkTitle,
+                            progress: 8,
+                            progressMessage: progressText,
+                            preserveExportLayout: true,
+                            errorMessage: undefined,
+                          },
+                          style: {
+                            ...styleDims,
+                            minWidth: `${layoutMinW}px`,
+                            minHeight: `${layoutMinH}px`,
+                          },
+                          selected: true,
+                        },
+                      ],
+                      edges: [
+                        {
+                          id: `e-${id}-${videoPlaceholderId}-subtitle-wm`,
+                          source: id,
+                          sourceHandle: 'output',
+                          target: videoPlaceholderId,
+                          targetHandle: 'input',
+                        },
+                      ],
+                    });
+
+                    try {
+                      const result = await window.electronAPI.videoSubtitleWatermarkRemoval(urlToProcess);
+                      const resultUrl = (result?.url || result?.videoUrl || result?.imageUrl || '').trim();
+                      if (!result?.success || !resultUrl) {
+                        throw new Error(vt.videoSubtitleWatermarkFailed);
+                      }
+
+                      const kind: 'video' | 'image' =
+                        result.kind === 'image' || result.kind === 'video'
+                          ? result.kind
+                          : /\.(png|jpe?g|webp|bmp)(?:$|[?#])/i.test(resultUrl)
+                            ? 'image'
+                            : 'video';
+
+                      if (kind === 'video') {
+                        if (!window.electronAPI?.createVideoLocalResourceFromUrl) {
+                          throw new Error(vt.videoSubtitleWatermarkNotSupported);
+                        }
+                        spawnedId = videoPlaceholderId;
+                        const origin = resolveSpawnOrigin();
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: videoPlaceholderId,
+                              type: 'video',
+                              position: { x: origin.newX, y: origin.newY },
+                              data: {
+                                width: size.w,
+                                height: size.h,
+                                label: vt.videoSubtitleWatermarkTitle,
+                                title: vt.videoSubtitleWatermarkTitle,
+                                progress: 72,
+                                progressMessage: finishingText,
+                                preserveExportLayout: true,
+                              },
+                              style: {
+                                ...styleDims,
+                                minWidth: `${layoutMinW}px`,
+                                minHeight: `${layoutMinH}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${videoPlaceholderId}-subtitle-wm`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: videoPlaceholderId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
+                        const local = await window.electronAPI.createVideoLocalResourceFromUrl(
+                          projectId || undefined,
+                          resultUrl,
+                        );
+                        onDataChange?.(videoPlaceholderId, {
+                          outputVideo: local.originalUrl,
+                          originalVideoUrl: resultUrl,
+                          errorMessage: undefined,
+                          videoAsset: {
+                            poster: local.posterUrl,
+                            ghost: local.ghostBase64,
+                            width: local.width,
+                            height: local.height,
+                          },
+                          progress: 100,
+                          progressMessage: '',
+                        });
+                      } else {
+                        const imgW = IMAGE_NODE_MIN_W;
+                        const imgH = IMAGE_NODE_MIN_H;
+                        const imgStyleDims = nodeStyleDimensions(imgW, imgH);
+                        const origin = resolveSpawnOrigin();
+                        spawnedId = videoPlaceholderId;
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: videoPlaceholderId,
+                              type: 'image',
+                              position: {
+                                x: origin.newX,
+                                y: origin.newY + Math.max(0, (origin.srcH - imgH) / 2),
+                              },
+                              data: {
+                                label: vt.videoSubtitleWatermarkTitle,
+                                title: vt.videoSubtitleWatermarkTitle,
+                                width: imgW,
+                                height: imgH,
+                                isUserResized: false,
+                                preserveExportLayout: true,
+                                resolution: '1k',
+                                aspectRatio: '1:1',
+                                model: 'banana-2.0',
+                                prompt: '',
+                                outputImage: resultUrl,
+                                outputImages: [resultUrl],
+                                originalImageUrl: resultUrl,
+                                imageAsset: { preview: resultUrl, original: resultUrl },
+                                progress: 100,
+                                progressMessage: '',
+                                errorMessage: undefined,
+                              },
+                              style: {
+                                ...imgStyleDims,
+                                minWidth: `${IMAGE_NODE_MIN_W}px`,
+                                minHeight: `${IMAGE_NODE_MIN_H}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${videoPlaceholderId}-subtitle-wm`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: videoPlaceholderId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
+                      }
+                      onDataChange?.(id, { errorMessage: undefined });
+                    } catch (err: unknown) {
+                      const msg = ipcErrorMessage(err);
+                      setErrorMessage(msg);
+                      showAlert(`${vt.videoSubtitleWatermarkFailed}\n\n${msg}`);
+                      // 持久化错误落在右侧子模块；主模块不写 progress（与视频深度转换一致）
+                      onDataChange?.(id, { errorMessage: undefined });
+                      if (spawnedId) {
+                        const origin = resolveSpawnOrigin();
+                        onAddVideoClipNodes({
+                          nodes: [
+                            {
+                              id: spawnedId,
+                              type: 'video',
+                              position: { x: origin.newX, y: origin.newY },
+                              data: {
+                                width: size.w,
+                                height: size.h,
+                                label: vt.videoSubtitleWatermarkTitle,
+                                title: vt.videoSubtitleWatermarkTitle,
+                                progress: 0,
+                                progressMessage: '',
+                                preserveExportLayout: true,
+                                errorMessage: msg,
+                              },
+                              style: {
+                                ...styleDims,
+                                minWidth: `${layoutMinW}px`,
+                                minHeight: `${layoutMinH}px`,
+                              },
+                              selected: true,
+                            },
+                          ],
+                          edges: [
+                            {
+                              id: `e-${id}-${spawnedId}-subtitle-wm`,
+                              source: id,
+                              sourceHandle: 'output',
+                              target: spawnedId,
+                              targetHandle: 'input',
+                            },
+                          ],
+                        });
+                      }
+                    } finally {
+                      setIsVideoSubtitleWatermarkLoading(false);
+                    }
+                  })();
+                }}
+                className={floatTopPillBtn(
+                  bilibiliFetching || trimming || isVideoGenerating || isVideoDepthConvertLoading || isVideoSubtitleWatermarkLoading
+                    ? 'opacity-50 cursor-not-allowed'
+                    : '',
+                )}
+              >
+                {isVideoSubtitleWatermarkLoading ? (
+                  <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                ) : (
+                  <Subtitles className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                )}
+              </button>
+              <span
+                className={`absolute left-1/2 top-full z-20 mt-1 w-max max-w-[220px] -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                } ${
+                  videoSubtitleWatermarkPriceHover
+                    ? 'pointer-events-none translate-y-0 opacity-100'
+                    : 'pointer-events-none translate-y-2 opacity-0'
+                }`}
+                title={vt.videoSubtitleWatermarkPriceTitle}
+              >
+                {locale === 'en'
+                  ? `${videoSubtitleWatermarkDisplayYuanbao} ${vt.creditsSuffix}`
+                  : `${videoSubtitleWatermarkDisplayYuanbao}${vt.creditsSuffix}`}
+              </span>
+            </div>
+          ) : null}
+          {hasRenderableVideo && videoDisplayUrl ? (
+            <button
+              type="button"
+              disabled={cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                if (cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating) return;
+                handleCropClick();
+              }}
+              className={floatTopPillBtn(
+                cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating
+                  ? 'opacity-50 cursor-not-allowed'
+                  : '',
+              )}
+              title={vt.videoSpatialCropTitle}
+              aria-label={vt.videoSpatialCropButton}
+            >
+              {cropping ? (
+                <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              ) : (
+                <Crop className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              )}
+            </button>
           ) : null}
           {hasRenderableVideo && videoDisplayUrl ? (
             <button
@@ -3193,7 +4074,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         ? createPortal(videoPlaybackControlsBar, playerControlsHost)
         : null}
 
-      {/* 导入在线视频（B 站 / YouTube，本机 yt-dlp）+ 视频去水印 + 裁剪：选中或播放中显示在模块下方 */}
+      {/* 导入在线视频（B 站 / YouTube，本机 yt-dlp）+ 拆帧 + 裁剪：选中或播放中显示在模块下方 */}
       {showBottomActionRow ? (
         <div
           className={`nodrag nopan absolute top-full left-0 right-0 flex justify-center items-center gap-2 z-10 px-1 ${
@@ -3207,16 +4088,16 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           {canUseBilibiliGrab ? (
             <button
               type="button"
-              disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading}
+              disabled={bilibiliFetching || trimming || isVideoGenerating}
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading) return;
+                if (bilibiliFetching || trimming || isVideoGenerating) return;
                 setBilibiliUrlDraft('');
                 setShowBilibiliModal(true);
               }}
               className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading
+                bilibiliFetching || trimming || isVideoGenerating
                   ? 'bg-violet-500/70 cursor-not-allowed opacity-80'
                   : 'bg-violet-600 hover:bg-violet-500'
               }`}
@@ -3226,215 +4107,19 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               {vt.bilibiliGrabButton}
             </button>
           ) : null}
-          {hasIncomingReferenceVideo || hasIncomingVideoModuleEdge || outputVideo ? (
-            <div
-              className="relative inline-flex flex-col items-center"
-              onMouseEnter={() => setVideoWatermarkPriceHover(true)}
-              onMouseLeave={() => setVideoWatermarkPriceHover(false)}
-            >
-              <button
-                type="button"
-                disabled={bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading}
-                title={vt.videoWatermarkTitle}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  if (bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading || isVideoDepthConvertLoading) return;
-                  /** 上游传入的参考视频（Workspace 写入 data.referenceVideoUrl）；结果始终落在当前模块 outputVideo */
-                  const ref = ((data?.referenceVideoUrl || '') as string).trim();
-                  const selfRaw = (outputVideo || data?.originalVideoUrl || '').trim();
-                  const edges = getEdges();
-                  const nodes = getNodes();
-                  let urlFromUpstreamEdge = '';
-                  for (const ed of edges) {
-                    if (ed.target !== id) continue;
-                    const src = nodes.find((n) => n.id === ed.source);
-                    if (!src || (src.type !== 'video' && src.type !== 'wanAnimate')) continue;
-                    const sd = src.data as { outputVideo?: string; originalVideoUrl?: string } | undefined;
-                    const u = ((sd?.originalVideoUrl || sd?.outputVideo) || '').trim();
-                    if (u) {
-                      urlFromUpstreamEdge = normalizeVideoUrlForNode(u);
-                      break;
-                    }
-                  }
-                  const urlToProcess =
-                    (ref && normalizeVideoUrlForNode(ref)) ||
-                    urlFromUpstreamEdge ||
-                    (selfRaw ? normalizeVideoUrlForNode(selfRaw) : '');
-                  if (!urlToProcess) {
-                    showAlert(vt.videoWatermarkNeedVideo);
-                    return;
-                  }
-                  if (!window.electronAPI?.videoWatermarkRemoval || !window.electronAPI?.createVideoLocalResourceFromUrl) {
-                    showAlert(vt.videoWatermarkNotSupported);
-                    return;
-                  }
-                  void (async () => {
-                    const wmProgressText = locale === 'en' ? 'Removing watermark…' : '视频去水印中…';
-                    const wmFinishingText = locale === 'en' ? 'Finalizing…' : '正在整理结果…';
-                    setIsVideoWatermarkLoading(true);
-                    setErrorMessage('');
-                    onDataChange?.(id, {
-                      errorMessage: undefined,
-                      progress: 6,
-                      progressMessage: wmProgressText,
-                    });
-                    try {
-                      const result = await window.electronAPI.videoWatermarkRemoval(urlToProcess, 0.2);
-                      if (!result?.success || !result.videoUrl) {
-                        throw new Error(vt.videoWatermarkFailed);
-                      }
-                      onDataChange?.(id, {
-                        progress: 72,
-                        progressMessage: wmFinishingText,
-                        errorMessage: undefined,
-                      });
-                      const local = await window.electronAPI.createVideoLocalResourceFromUrl(
-                        projectId || undefined,
-                        result.videoUrl,
-                      );
-                      onDataChange?.(id, {
-                        outputVideo: local.originalUrl,
-                        originalVideoUrl: result.videoUrl,
-                        errorMessage: undefined,
-                        videoAsset: {
-                          poster: local.posterUrl,
-                          ghost: local.ghostBase64,
-                          width: local.width,
-                          height: local.height,
-                        },
-                        progress: 100,
-                        progressMessage: '',
-                      });
-                    } catch (err: unknown) {
-                      const msg = err instanceof Error ? err.message : vt.videoWatermarkFailed;
-                      setErrorMessage(msg);
-                      onDataChange?.(id, { errorMessage: msg, progress: 0, progressMessage: '' });
-                    } finally {
-                      setIsVideoWatermarkLoading(false);
-                    }
-                  })();
-                }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                  bilibiliFetching || trimming || isVideoGenerating || isVideoWatermarkLoading
-                    ? 'bg-blue-500/70 cursor-not-allowed opacity-80'
-                    : 'bg-blue-600 hover:bg-blue-500'
-                }`}
-              >
-                {isVideoWatermarkLoading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Eraser className="w-3.5 h-3.5" />
-                )}
-                {vt.videoWatermarkButton}
-              </button>
-              <span
-                className={`absolute left-1/2 top-full z-20 mt-1 w-max max-w-[220px] -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
-                  isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
-                } ${
-                  videoWatermarkPriceHover
-                    ? 'pointer-events-none translate-y-0 opacity-100'
-                    : 'pointer-events-none translate-y-2 opacity-0'
-                }`}
-                title={vt.videoWatermarkPriceTitle}
-              >
-                {locale === 'en'
-                  ? `${videoWatermarkDisplayYuanbao} ${vt.creditsSuffix}`
-                  : `${videoWatermarkDisplayYuanbao}${vt.creditsSuffix}`}
-              </span>
-            </div>
-          ) : null}
           {outputVideo ? (
             <>
-              <div
-                className="relative inline-flex flex-col items-stretch"
-                onMouseEnter={() => setSplitFramesMenuHover(true)}
-                onMouseLeave={() => {
-                  setSplitFramesMenuHover(false);
-                  setSplitFramesMenuOpen(false);
-                }}
-              >
-                <div
-                  role="button"
-                  tabIndex={0}
-                  className={`flex items-center gap-0.5 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white select-none ${
-                    trimming || isVideoWatermarkLoading || isSplitFramesBusy || isVideoGenerating || bilibiliFetching
-                      ? 'bg-amber-500/70 cursor-not-allowed opacity-80'
-                      : 'bg-amber-600/90 hover:bg-amber-600 cursor-pointer'
-                  } ${(splitFramesMenuHover || splitFramesMenuOpen) && !isSplitFramesBusy ? 'ring-1 ring-white/30' : ''}`}
-                  title={vt.videoFrameSplitHoverHint}
-                  aria-label={vt.videoFrameSplitHoverHint}
-                  aria-expanded={splitFramesMenuOpen || splitFramesMenuHover}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    ev.preventDefault();
-                    if (trimming || isVideoWatermarkLoading || isSplitFramesBusy || isVideoGenerating || bilibiliFetching) {
-                      return;
-                    }
-                    setSplitFramesMenuOpen((open) => !open);
-                  }}
-                  onKeyDown={(ev) => {
-                    if (ev.key !== 'Enter' && ev.key !== ' ') return;
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                    if (trimming || isVideoWatermarkLoading || isSplitFramesBusy || isVideoGenerating || bilibiliFetching) {
-                      return;
-                    }
-                    setSplitFramesMenuOpen((open) => !open);
-                  }}
-                >
-                  {isSplitFramesBusy ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <LayoutGrid className="w-3.5 h-3.5" />
-                  )}
-                  <span>{vt.videoFrameSplitButton}</span>
-                  <ChevronDown className="w-3 h-3 shrink-0 opacity-90" aria-hidden />
-                </div>
-                {(splitFramesMenuHover || splitFramesMenuOpen) &&
-                  !trimming &&
-                  !isVideoWatermarkLoading &&
-                  !isSplitFramesBusy &&
-                  !isVideoGenerating &&
-                  !bilibiliFetching && (
-                    <div
-                      className="absolute left-0 top-full z-[60] min-w-[8.5rem] pt-0.5"
-                      onClick={(ev) => ev.stopPropagation()}
-                    >
-                      <div
-                        className={`rounded-lg border py-1 shadow-xl ${
-                          isDarkMode ? 'bg-zinc-900 border-white/15 text-white/95' : 'bg-white border-gray-200 text-gray-900'
-                        }`}
-                      >
-                        {VIDEO_FRAME_SPLIT_INTERVALS.map((sec) => (
-                          <button
-                            key={sec}
-                            type="button"
-                            className={`w-full text-left px-3 py-2 text-xs font-medium transition-colors ${
-                              isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                            }`}
-                            onClick={(ev) => {
-                              void handleSplitVideoFrames(sec, ev);
-                            }}
-                          >
-                            {vt.videoFrameSplitInterval(sec)}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-              </div>
               <button
                 type="button"
-                disabled={trimming || isVideoWatermarkLoading || isSplitFramesBusy}
+                disabled={trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen}
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  if (trimming || isVideoWatermarkLoading || isSplitFramesBusy) return;
+                  if (trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen) return;
                   handleTrimClick();
                 }}
                 className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                  trimming || isVideoWatermarkLoading || isSplitFramesBusy
+                  trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen
                     ? 'bg-green-500/70 cursor-not-allowed opacity-80'
                     : 'bg-green-500 hover:bg-green-600'
                 }`}
@@ -3446,6 +4131,29 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   <Scissors className="w-3.5 h-3.5" />
                 )}
                 裁剪
+              </button>
+              <button
+                type="button"
+                disabled={trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating) return;
+                  setShowSmartEditModal(true);
+                }}
+                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                  trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating
+                    ? 'bg-violet-500/70 cursor-not-allowed opacity-80'
+                    : 'bg-violet-600 hover:bg-violet-500'
+                }`}
+                title={locale === 'en' ? 'Smart edit: extract clips / keyframes' : '智能剪辑：提取片段 / 关键帧'}
+              >
+                {smartEditing ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                {locale === 'en' ? 'Smart Edit' : '智能剪辑'}
               </button>
             </>
           ) : null}
@@ -3500,19 +4208,131 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         </div>
       ) : null}
 
-      {/* 全屏背景虚化的视频裁剪弹窗 */}
-      {showTrimModal && (
-        <VideoTrimModal
-          videoUrl={videoDisplayUrl || outputVideo || data?.originalVideoUrl || ''}
+      {showCropModal ? (
+        <div
+          className="nodrag nopan pointer-events-auto absolute left-0 right-0 top-full z-[70] mt-1 flex justify-center"
+          style={{
+            transform: `scale(${zoomInv})`,
+            transformOrigin: 'top center',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-2 py-1.5 shadow-lg backdrop-blur-md ${
+              isDarkMode ? 'border-white/15 bg-black/75' : 'border-gray-200 bg-white/95'
+            }`}
+          >
+            <button
+              type="button"
+              disabled={cropping}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (cropping) return;
+                setShowCropModal(false);
+              }}
+              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
+                isDarkMode
+                  ? 'border border-white/10 bg-white/10 text-white/90 hover:bg-white/15'
+                  : 'border border-gray-200 bg-gray-100 text-gray-800 hover:bg-gray-200'
+              }`}
+            >
+              <X className="h-3.5 w-3.5" />
+              {vt.videoSpatialCropCancel}
+            </button>
+            <button
+              type="button"
+              disabled={cropping}
+              onClick={(e) => {
+                e.stopPropagation();
+                cropOverlayRef.current?.confirm();
+              }}
+              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {cropping ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="h-3.5 w-3.5" />
+              )}
+              {cropping ? vt.videoSpatialCropConfirming : vt.videoSpatialCropConfirm}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {smartEditReviewOpen || showTrimModal ? (
+        <div
+          className={`nodrag nopan pointer-events-auto absolute left-0 right-0 top-full z-30 px-1 ${
+            showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
+          }`}
+          style={{ width: Math.max(size.w, 320) }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <VideoTrimFilmstripBar
+            videoUrl={videoDisplayUrl || outputVideo || data?.originalVideoUrl || ''}
+            isDarkMode={isDarkMode}
+            initialTrimStart={parseFloat(trimStartSec) || 0}
+            initialTrimEnd={parseFloat(trimEndSec) || 0}
+            trimming={trimming}
+            trimError={trimError}
+            smartReview={
+              smartEditReviewOpen
+                ? {
+                    analyzing: smartEditAnalyzing,
+                    analyzeProgress: smartEditAnalyzeProgress,
+                    exporting: smartEditExporting,
+                    exportProgress: smartEditExportProgress,
+                    segments: smartEditSegments,
+                    selectedIndexes: smartEditSelected,
+                    activeIndex: smartEditActiveIndex,
+                    onToggleSelect: (index) => {
+                      setSmartEditSelected((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(index)) next.delete(index);
+                        else next.add(index);
+                        return next;
+                      });
+                    },
+                    onSelectActive: setSmartEditActiveIndex,
+                    onCancel: resetSmartEditReview,
+                    onRetry: () => {
+                      if (smartEditSettings) void runSmartEditAnalyze(smartEditSettings);
+                    },
+                    onConfirm: () => {
+                      void handleSmartEditConfirmToCanvas();
+                    },
+                  }
+                : null
+            }
+            onRangeChange={(start, end) => {
+              setTrimStartSec(String(Math.round(start * 100) / 100));
+              setTrimEndSec(String(Math.round(end * 100) / 100));
+              try {
+                videoPreviewRef.current?.seekTo?.(start);
+              } catch {
+                /* ignore */
+              }
+            }}
+            onConfirm={(start, end) => {
+              setTrimStartSec(String(start));
+              setTrimEndSec(String(end));
+              void handleTrimConfirm(start, end);
+            }}
+            onCancel={() => !trimming && !smartEditReviewOpen && setShowTrimModal(false)}
+          />
+        </div>
+      ) : null}
+
+      {showSmartEditModal ? (
+        <SmartVideoEditModal
           isDarkMode={isDarkMode}
-          initialTrimStart={parseFloat(trimStartSec) || 0}
-          initialTrimEnd={parseFloat(trimEndSec) || 0}
-          trimming={trimming}
-          trimError={trimError}
-          onConfirm={(start, end) => handleTrimConfirm(start, end)}
-          onCancel={() => !trimming && setShowTrimModal(false)}
+          busy={smartEditing}
+          onCancel={() => !smartEditing && setShowSmartEditModal(false)}
+          onStart={handleSmartEditStart}
         />
-      )}
+      ) : null}
     </div>
   );
 };

@@ -9,6 +9,8 @@ interface ImportMetaEnv {
   /** 可选：与主进程 OSS_PUBLIC_BASE_URL 同值的 CDN 根，用于场景 web 静态资源拼接（需重新构建） */
   readonly VITE_OSS_PUBLIC_BASE?: string;
   readonly VITE_OSS_SCENE_CONFIG_URL?: string;
+  /** 登录页微信交流群二维码图片 URL（覆盖默认 OSS 地址） */
+  readonly VITE_WECHAT_GROUP_QR_URL?: string;
 }
 
 interface ImportMeta {
@@ -611,14 +613,21 @@ interface Window {
     getFullscreenState: () => Promise<{ isFullScreen: boolean }>;
     getAppVersion: () => Promise<string>;
     getNetworkTime: () => Promise<number>;
+    /** 列举北京桶 WX/ 最新图片公开 URL */
+    getWeChatGroupQrUrl: (force?: boolean) => Promise<
+      { ok: true; url: string; objectKey: string } | { ok: false; error: string }
+    >;
     checkForUpdates: () => Promise<{ updateAvailable: boolean; currentVersion: string; latestVersion: string | null; packageBytes?: number; error?: string | null }>;
     downloadAndInstallUpdate: () => Promise<{ success: boolean; error?: string }>;
+    pauseUpdateDownload: () => Promise<{ success: boolean; paused?: boolean }>;
+    resumeUpdateDownload: () => Promise<{ success: boolean; paused?: boolean; error?: string }>;
+    cancelUpdateDownload: () => Promise<{ success: boolean }>;
     onUpdateAvailable: (callback: (info: { version: string; packageBytes?: number }) => void) => () => void;
     onUpdateDownloaded: (callback: () => void) => () => void;
     onUpdateInstalling: (callback: () => void) => () => void;
     onPrepareForUpdate: (callback: () => void | Promise<void>) => () => void;
     onUpdateDownloadProgress: (callback: (info: {
-      phase?: 'stub' | 'main-package' | 'full';
+      phase?: 'stub' | 'main-package' | 'full' | 'paused';
       percent: number;
       stubPercent?: number;
       packagePercent?: number;
@@ -627,8 +636,13 @@ interface Window {
       bytesPerSecond: number;
       packageBytes?: number;
       stubBytes?: number;
-      stubBytes?: number;
+      etaSeconds?: number | null;
+      fileName?: string;
+      savePath?: string;
+      paused?: boolean;
     }) => void) => () => void;
+    onUpdateDownloadPaused: (callback: (info: { paused: boolean }) => void) => () => void;
+    onUpdateDownloadCancelled: (callback: () => void) => () => void;
     onUpdateError: (callback: (info: { message: string }) => void) => () => void;
     onProjectImportedFromFile: (
       callback: (payload: {
@@ -686,6 +700,10 @@ interface Window {
     // 打开路径（文件夹或文件）
     openPath: (pathToOpen: string) => Promise<{ success: boolean; error?: string }>;
     openExternalUrl: (url: string) => Promise<void>;
+    openInAppBrowser: (
+      url: string,
+      title?: string,
+    ) => Promise<{ ok: true; mode: 'in-app' | 'external' } | { ok: false; error: string }>;
 
     // 项目存储根路径（自定义保存位置）
     getProjectBasePath: () => Promise<string>;
@@ -898,6 +916,13 @@ interface Window {
     imageUpscaleV3: (imageUrl: string) => Promise<{ success: boolean; imageUrl: string }>;
     videoWatermarkRemoval: (videoUrl: string, strength?: number) => Promise<{ success: boolean; videoUrl: string }>;
     videoDepthConvert: (videoUrl: string) => Promise<{
+      success: boolean;
+      kind: 'video' | 'image';
+      url: string;
+      videoUrl?: string;
+      imageUrl?: string;
+    }>;
+    videoSubtitleWatermarkRemoval: (videoUrl: string) => Promise<{
       success: boolean;
       kind: 'video' | 'image';
       url: string;

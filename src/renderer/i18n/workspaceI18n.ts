@@ -42,8 +42,15 @@ export type WorkspaceChromeStrings = {
   edgeStyleLabel: string;
   edgeCurve: string;
   edgeOrthogonal: string;
+  /** 画布指针形状 */
+  cursorShapeLabel: string;
+  cursorShapeOff: string;
+  cursorShapeDelta: string;
   dotSizeLabel: string;
   dotSizeRangeTitle: string;
+  /** 波点间距（画布坐标） */
+  dotGap: string;
+  dotGapRangeTitle: string;
   canvasColorSettingsTitle: string;
   canvasBackground: string;
   dotColor: string;
@@ -73,6 +80,9 @@ export type WorkspaceChromeStrings = {
   languageToZh: string;
   /** 语言下拉按钮无障碍说明 */
   languageMenuTitle: string;
+  /** 顶栏：BUG 反馈（飞书文档） */
+  bugFeedback: string;
+  bugFeedbackTitle: string;
   taskList: string;
   clearAllTasks: string;
   clearAllTasksTitle: string;
@@ -104,6 +114,16 @@ export type WorkspaceChromeStrings = {
   deleteTitle: string;
   dateLocale: string;
   llmGenerating: string;
+  /** LLM 结果卡默认标题（对齐 AI Canvas「T 文本」） */
+  llmTextCardTitle: string;
+  /** LLM 结果卡空态提示 */
+  llmEmptyHint: string;
+  /** LLM 复制按钮 */
+  llmCopyTitle: string;
+  /** LLM 已复制 */
+  llmCopiedTitle: string;
+  /** LLM 耗时展示，如 79.9s */
+  llmElapsedLabel: (sec: number) => string;
   progressImage: string;
   progressVideo: string;
   progressAudio: string;
@@ -174,8 +194,13 @@ const zh: WorkspaceChromeStrings = {
   edgeStyleLabel: '连接线样式',
   edgeCurve: '曲线',
   edgeOrthogonal: '直角',
+  cursorShapeLabel: '鼠标形状',
+  cursorShapeOff: '系统默认',
+  cursorShapeDelta: '白色三角',
   dotSizeLabel: '波点大小',
   dotSizeRangeTitle: '波点大小（50%–400%）',
+  dotGap: '波点间距',
+  dotGapRangeTitle: '波点间距（20–180）',
   canvasColorSettingsTitle: '画布颜色设置',
   canvasBackground: '画布背景',
   dotColor: '波点颜色',
@@ -204,6 +229,8 @@ const zh: WorkspaceChromeStrings = {
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: '界面语言',
+  bugFeedback: 'BUG反馈',
+  bugFeedbackTitle: '在软件内打开飞书反馈页面',
   taskList: '任务列表',
   clearAllTasks: '清空',
   clearAllTasksTitle: '清空全部任务',
@@ -236,6 +263,11 @@ const zh: WorkspaceChromeStrings = {
   deleteTitle: '删除',
   dateLocale: 'zh-CN',
   llmGenerating: '生成中...',
+  llmTextCardTitle: 'T 文本',
+  llmEmptyHint: '运行后在此显示结果',
+  llmCopyTitle: '复制',
+  llmCopiedTitle: '已复制',
+  llmElapsedLabel: (sec) => `${(Math.round(sec * 10) / 10).toFixed(1)}s`,
   progressImage: '正在生成图片...',
   progressVideo: '正在生成视频...',
   progressAudio: '正在生成音频...',
@@ -297,8 +329,13 @@ const en: WorkspaceChromeStrings = {
   edgeStyleLabel: 'Edge style',
   edgeCurve: 'Curved',
   edgeOrthogonal: 'Orthogonal',
+  cursorShapeLabel: 'Cursor shape',
+  cursorShapeOff: 'System',
+  cursorShapeDelta: 'White triangle',
   dotSizeLabel: 'Dot size',
   dotSizeRangeTitle: 'Dot size (50%–400%)',
+  dotGap: 'Dot spacing',
+  dotGapRangeTitle: 'Dot spacing (20–180)',
   canvasColorSettingsTitle: 'Canvas colors',
   canvasBackground: 'Canvas background',
   dotColor: 'Dot color',
@@ -327,6 +364,8 @@ const en: WorkspaceChromeStrings = {
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: 'Display language',
+  bugFeedback: 'Bug report',
+  bugFeedbackTitle: 'Open Feishu feedback page in-app',
   taskList: 'Tasks',
   clearAllTasks: 'Clear',
   clearAllTasksTitle: 'Clear all tasks',
@@ -359,6 +398,11 @@ const en: WorkspaceChromeStrings = {
   deleteTitle: 'Delete',
   dateLocale: 'en-US',
   llmGenerating: 'Generating...',
+  llmTextCardTitle: 'T text',
+  llmEmptyHint: 'Result appears here after you run',
+  llmCopyTitle: 'Copy',
+  llmCopiedTitle: 'Copied',
+  llmElapsedLabel: (sec) => `${(Math.round(sec * 10) / 10).toFixed(1)}s`,
   progressImage: 'Generating image...',
   progressVideo: 'Generating video...',
   progressAudio: 'Generating audio...',

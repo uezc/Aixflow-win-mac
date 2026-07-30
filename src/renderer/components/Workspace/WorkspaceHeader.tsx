@@ -1,11 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FolderOpen, Sun, Moon, Maximize2, Settings, GitBranch, Workflow, Undo2, Redo2, Coins, Globe, ChevronDown, Check, Archive, RotateCcw } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Sun, Moon, Maximize2, Settings, GitBranch, Workflow, Undo2, Redo2, Coins, Globe, ChevronDown, Check, Archive, RotateCcw, MousePointer2, Minus, Bug } from 'lucide-react';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { APP_LOCALE_OPTIONS, appLocaleNativeLabel, type AppLocale } from '../../i18n/settingsI18n';
 import { workspaceChromeT, type WorkspaceChromeStrings } from '../../i18n/workspaceI18n';
 import MediaOssRouteToggle from '../MediaOssRouteToggle';
+import {
+  getTechCursorShape,
+  setTechCursorShape,
+  subscribeTechCursorShape,
+  type TechCursorShape,
+} from '../../utils/techCursorPrefs';
 
 function hdrTextBtn(isDarkMode: boolean, scratch: ScratchColorId, extra = '') {
   if (isDarkMode) {
@@ -30,8 +36,8 @@ function hdrIconBtn(isDarkMode: boolean, scratch: ScratchColorId) {
 
 function settingsPopupClass(isDarkMode: boolean) {
   return isDarkMode
-    ? 'absolute left-0 top-full mt-1 z-[100] min-w-[220px] rounded-xl border border-white/20 bg-gray-900/95 backdrop-blur-sm py-3 px-3 shadow-xl'
-    : 'absolute left-0 top-full mt-1 z-[100] min-w-[220px] rounded-xl border border-gray-200/90 bg-white py-3 px-3 shadow-lg shadow-gray-300/25';
+    ? 'absolute left-0 top-full mt-1 z-[100] min-w-[280px] rounded-xl border border-white/20 bg-gray-900/95 backdrop-blur-sm py-3 px-3 shadow-xl'
+    : 'absolute left-0 top-full mt-1 z-[100] min-w-[280px] rounded-xl border border-gray-200/90 bg-white py-3 px-3 shadow-lg shadow-gray-300/25';
 }
 
 function settingsLabelClass(isDarkMode: boolean) {
@@ -62,12 +68,43 @@ function settingsEdgeToggleClass(isDarkMode: boolean, active: boolean) {
   return `${base} ${active ? 'bg-gray-200 text-gray-900' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'}`;
 }
 
-/** 暗黑模式设置：波点粗细 + 连接线颜色 + 连接线样式 */
+/** 画布指针形状：系统 / 科技箭头 */
+function CursorShapePicker({ wc, isDarkMode }: { wc: WorkspaceChromeStrings; isDarkMode: boolean }) {
+  const [shape, setShape] = useState<TechCursorShape>(() => getTechCursorShape());
+  useEffect(() => subscribeTechCursorShape(setShape), []);
+  const options: Array<{ id: TechCursorShape; label: string; icon: React.ReactNode }> = [
+    { id: 'off', label: wc.cursorShapeOff, icon: <Minus className="w-3.5 h-3.5" /> },
+    { id: 'delta', label: wc.cursorShapeDelta, icon: <MousePointer2 className="w-3.5 h-3.5" /> },
+  ];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className={settingsLabelClass(isDarkMode)}>{wc.cursorShapeLabel}</span>
+      <div className="flex gap-1.5">
+        {options.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            onClick={() => setTechCursorShape(opt.id)}
+            className={settingsEdgeToggleClass(isDarkMode, shape === opt.id)}
+            title={opt.label}
+          >
+            {opt.icon}
+            <span className="truncate">{opt.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 暗黑模式设置：波点粗细 + 波点间距 + 连接线颜色 + 连接线样式 */
 function DarkModeSettings({
   wc,
   isDarkMode,
   dotSize = 1.2,
   setDotSize,
+  canvasDotGap = 60,
+  setCanvasDotGap,
   edgeColor,
   setEdgeColor,
   edgePathStyle,
@@ -77,6 +114,8 @@ function DarkModeSettings({
   isDarkMode: boolean;
   dotSize?: number;
   setDotSize?: (v: number) => void;
+  canvasDotGap?: number;
+  setCanvasDotGap?: (v: number) => void;
   edgeColor?: string;
   setEdgeColor?: (v: string) => void;
   edgePathStyle?: 'curve' | 'smoothStep';
@@ -95,7 +134,7 @@ function DarkModeSettings({
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
-  const hasAny = !!setDotSize || !!setEdgePathStyle || !!setEdgeColor;
+  const hasAny = !!setDotSize || !!setCanvasDotGap || !!setEdgePathStyle || !!setEdgeColor;
   return (
     <div className="relative">
       <button
@@ -115,6 +154,7 @@ function DarkModeSettings({
           style={isDarkMode ? { boxShadow: '0 8px 32px rgba(0,0,0,0.4)' } : undefined}
         >
           <div className="flex flex-col gap-3">
+            <CursorShapePicker wc={wc} isDarkMode={isDarkMode} />
             {setEdgeColor && (
               <div className="flex items-center justify-between gap-2">
                 <span className={settingsLabelClass(isDarkMode)}>{wc.edgeColor}</span>
@@ -166,6 +206,24 @@ function DarkModeSettings({
                     title={wc.dotSizeRangeTitle}
                   />
                   <span className={`${settingsValueClass(isDarkMode)} w-8`}>{Math.round(dotSize * 100)}%</span>
+                </div>
+              </div>
+            )}
+            {setCanvasDotGap && (
+              <div className="flex flex-col gap-1.5">
+                <span className={settingsLabelClass(isDarkMode)}>{wc.dotGap}</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={20}
+                    max={180}
+                    step={5}
+                    value={canvasDotGap}
+                    onChange={(e) => setCanvasDotGap(parseInt(e.target.value, 10))}
+                    className={settingsRangeClass(isDarkMode)}
+                    title={wc.dotGapRangeTitle}
+                  />
+                  <span className={`${settingsValueClass(isDarkMode)} w-10 tabular-nums`}>{canvasDotGap}</span>
                 </div>
               </div>
             )}
@@ -260,6 +318,8 @@ function LightModeColorSettings({
   setLightDotsColor,
   lightDotSize,
   setLightDotSize,
+  canvasDotGap = 60,
+  setCanvasDotGap,
   edgeColor,
   setEdgeColor,
   edgePathStyle,
@@ -273,6 +333,8 @@ function LightModeColorSettings({
   setLightDotsColor?: (v: string) => void;
   lightDotSize: number;
   setLightDotSize?: (v: number) => void;
+  canvasDotGap?: number;
+  setCanvasDotGap?: (v: number) => void;
   edgeColor?: string;
   setEdgeColor?: (v: string) => void;
   edgePathStyle?: 'curve' | 'smoothStep';
@@ -312,6 +374,7 @@ function LightModeColorSettings({
           style={isDarkMode ? { boxShadow: '0 8px 32px rgba(0,0,0,0.4)' } : undefined}
         >
           <div className="flex flex-col gap-3">
+            <CursorShapePicker wc={wc} isDarkMode={isDarkMode} />
             <div className="flex items-center justify-between gap-2">
               <span className={settingsLabelClass(isDarkMode)}>{wc.canvasBackground}</span>
               <input
@@ -386,6 +449,24 @@ function LightModeColorSettings({
                 <span className={`${settingsValueClass(isDarkMode)} w-8`}>{Math.round(lightDotSize * 100)}%</span>
               </div>
             </div>
+            {setCanvasDotGap && (
+              <div className="flex flex-col gap-1.5">
+                <span className={settingsLabelClass(isDarkMode)}>{wc.dotGap}</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={20}
+                    max={180}
+                    step={5}
+                    value={canvasDotGap}
+                    onChange={(e) => setCanvasDotGap(parseInt(e.target.value, 10))}
+                    className={settingsRangeClass(isDarkMode)}
+                    title={wc.dotGapRangeTitle}
+                  />
+                  <span className={`${settingsValueClass(isDarkMode)} w-10 tabular-nums`}>{canvasDotGap}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -408,6 +489,8 @@ export interface WorkspaceHeaderProps {
   setEdgeColor?: (value: string) => void;
   darkDotSize?: number;
   setDarkDotSize?: (value: number) => void;
+  canvasDotGap?: number;
+  setCanvasDotGap?: (value: number) => void;
   onOpenFolder: () => void | Promise<void>;
   /** 手动备份 data.json / data.json.bak 到项目 backups/ */
   onBackupProject?: () => void | Promise<void>;
@@ -442,6 +525,8 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
   setEdgeColor,
   darkDotSize,
   setDarkDotSize,
+  canvasDotGap = 60,
+  setCanvasDotGap,
   onOpenFolder,
   onBackupProject,
   onRestoreFromBackup,
@@ -462,7 +547,7 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
   const lafLowBalance =
     lafBalance !== null && Number.isFinite(lafBalance) && lafBalance <= 10;
   return (
-    <div className="h-14 apple-panel border-b flex items-center justify-between px-4 flex-shrink-0 relative z-[100] overflow-visible" style={{ pointerEvents: 'auto' }}>
+    <div className="h-14 apple-panel flex items-center justify-between px-4 flex-shrink-0 relative z-[100] overflow-visible" style={{ pointerEvents: 'auto' }}>
       {/* 左侧：返回项目列表 + 打开项目文件夹 */}
       <div className="flex items-center gap-4">
         {onNavigateBack && (
@@ -553,6 +638,29 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
       {/* 右侧：设置 + 明暗切换（暗黑模式下设置紧挨切换按钮左侧）+ API 状态指示灯 */}
       <div className="flex items-center gap-[20px]">
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const api = window.electronAPI;
+              const title = wc.bugFeedback;
+              void (api?.openInAppBrowser
+                ? api.openInAppBrowser(
+                    'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
+                    title,
+                  )
+                : api?.openExternalUrl?.(
+                    'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
+                  ));
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className={hdrTextBtn(isDarkMode, 'variables', 'nodrag nopan')}
+            title={wc.bugFeedbackTitle}
+            aria-label={wc.bugFeedback}
+          >
+            <Bug className="w-4 h-4" />
+            <span>{wc.bugFeedback}</span>
+          </button>
           <MediaOssRouteToggle isDarkMode={isDarkMode} />
           {isDarkMode ? (
             <>
@@ -561,6 +669,8 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
                 isDarkMode={isDarkMode}
                 dotSize={darkDotSize}
                 setDotSize={setDarkDotSize}
+                canvasDotGap={canvasDotGap}
+                setCanvasDotGap={setCanvasDotGap}
                 edgeColor={edgeColor}
                 setEdgeColor={setEdgeColor}
                 edgePathStyle={edgePathStyle}
@@ -585,6 +695,8 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
                 setLightDotsColor={setLightDotsColor}
                 lightDotSize={lightDotSize}
                 setLightDotSize={setLightDotSize}
+                canvasDotGap={canvasDotGap}
+                setCanvasDotGap={setCanvasDotGap}
                 edgeColor={edgeColor}
                 setEdgeColor={setEdgeColor}
                 edgePathStyle={edgePathStyle}

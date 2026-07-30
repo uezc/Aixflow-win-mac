@@ -20,8 +20,12 @@ import {
   Eye,
   EyeOff,
   Coins,
+  FileText,
+  Shield,
+  Sparkles,
 } from 'lucide-react';
 import EcommerceLoginShell from './auth/EcommerceLoginShell';
+import WeChatGroupEntry from './auth/WeChatGroupEntry';
 import SettingsFullscreenToggle from './SettingsFullscreenToggle';
 import AppUpdatePanel from './AppUpdatePanel';
 import { useAppUpdate } from '../hooks/useAppUpdate';
@@ -38,6 +42,9 @@ import {
 import { useAppLocale } from '../contexts/AppLocaleContext';
 import { DarkAlertModal } from './DarkAlertModal';
 import RechargeModal from './RechargeModal';
+import { LegalDocModal } from './legal/LegalDocModal';
+import { legalUiT } from '../legal/legalI18n';
+import type { LegalDocId } from '../legal/legalDocs';
 import BillListModal from './BillListModal';
 import { NEXFLOW_RECHARGE_SETTLED_EVENT } from './RechargeSettledNotifier';
 import type { RechargePackageId } from '../shared/rechargePackages';
@@ -66,10 +73,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
   /** 正在提交登录 */
   const [authPending, setAuthPending] = useState(false);
   const [authError, setAuthError] = useState('');
-  const [ossRouteChannel, setOssRouteChannel] = useState<'cn' | 'global'>('cn');
-  const [ossRouteSaving, setOssRouteSaving] = useState(false);
-  const [ossRouteMenuOpen, setOssRouteMenuOpen] = useState(false);
-  const ossRouteMenuRef = useRef<HTMLDivElement>(null);
   const [loginSuccessModalOpen, setLoginSuccessModalOpen] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
 
@@ -136,8 +139,11 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
   const [txError, setTxError] = useState('');
   /** 账单大窗 */
   const [billModalOpen, setBillModalOpen] = useState(false);
+  /** 协议阅读弹窗（本地 md，不落库） */
+  const [legalDocId, setLegalDocId] = useState<LegalDocId | null>(null);
   const t = settingsT(locale);
   const loginT = loginPageT(locale);
+  const legalT = legalUiT(locale);
 
   const loadTransactions = useCallback(async () => {
     if (!window.electronAPI?.nxCloudGetTransactions) return;
@@ -148,11 +154,13 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
       const { items } = await window.electronAPI.nxCloudGetTransactions(30);
       const rows = Array.isArray(items) ? items : [];
       setTxList(
-        rows.filter((row) => {
-          const txId = String(row.tx_id ?? '');
-          const type = String(row.type ?? '').toLowerCase();
-          return type !== 'alipay_trade_ref' && !txId.startsWith('alipay_trade_');
-        }),
+        rows
+          .filter((row) => {
+            const txId = String(row.tx_id ?? '');
+            const type = String(row.type ?? '').toLowerCase();
+            return type !== 'alipay_trade_ref' && !txId.startsWith('alipay_trade_');
+          })
+          .slice(0, 30),
       );
     } catch (e: unknown) {
       setTxError(e instanceof Error ? e.message : tt.loadTxFailed);
@@ -246,28 +254,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
     };
   }, [langMenuOpen]);
 
-  useEffect(() => {
-    if (!ossRouteMenuOpen) return;
-    const onPointerDown = (e: MouseEvent) => {
-      const el = ossRouteMenuRef.current;
-      if (el && !el.contains(e.target as Node)) setOssRouteMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOssRouteMenuOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [ossRouteMenuOpen]);
 
-  useEffect(() => {
-    if (cloud?.loggedIn) {
-      setOssRouteMenuOpen(false);
-    }
-  }, [cloud?.loggedIn]);
 
   useEffect(() => {
     let retryCount = 0;
@@ -286,36 +273,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
     load();
   }, [refreshCloudState]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const loadRouteChannel = async () => {
-      if (!window.electronAPI?.getOssRouteChannel) return;
-      try {
-        const v = await window.electronAPI.getOssRouteChannel();
-        if (!cancelled) setOssRouteChannel(v === 'global' ? 'global' : 'cn');
-      } catch {
-        if (!cancelled) setOssRouteChannel('cn');
-      }
-    };
-    void loadRouteChannel();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleSelectOssRouteChannel = useCallback(async (channel: 'cn' | 'global') => {
-    setOssRouteChannel(channel);
-    if (!window.electronAPI?.setOssRouteChannel) return;
-    setOssRouteSaving(true);
-    try {
-      const res = await window.electronAPI.setOssRouteChannel(channel);
-      setOssRouteChannel(res?.channel === 'global' ? 'global' : 'cn');
-    } catch {
-      setOssRouteChannel('cn');
-    } finally {
-      setOssRouteSaving(false);
-    }
-  }, []);
 
   useEffect(() => {
     if (!window.electronAPI?.onLafBalanceUpdated) return;
@@ -743,71 +700,12 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
   const loginFieldClass =
     'w-full rounded-full border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder-white/35 focus:outline-none focus:ring-2 focus:ring-white/20 read-only:opacity-90';
 
-  const renderOssRouteMenu = (menuPlacement: 'above' | 'below' = 'below') => (
-      <div ref={ossRouteMenuRef} className="relative">
-        <button
-          type="button"
-          aria-expanded={ossRouteMenuOpen}
-          aria-haspopup="dialog"
-          aria-label={t.routeChannelTitle}
-          title={t.routeChannelTitle}
-          onClick={() => {
-            setOssRouteMenuOpen((o) => !o);
-            setLangMenuOpen(false);
-          }}
-          className="flex h-9 w-9 items-center justify-center rounded-full text-white/35 transition-colors hover:text-white/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
-        >
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full border border-white/25 shadow-sm transition-colors ${
-              ossRouteMenuOpen ? 'bg-white/55' : 'bg-white/30 hover:bg-white/45'
-            }`}
-            aria-hidden
-          />
-        </button>
-        {ossRouteMenuOpen ? (
-          <div
-            className={`absolute right-0 z-[10003] flex flex-col gap-0.5 rounded-xl border border-white/12 bg-zinc-900/95 p-1 shadow-lg backdrop-blur-sm ${
-              menuPlacement === 'above' ? 'bottom-full mb-2' : 'top-full mt-2'
-            }`}
-            role="dialog"
-            aria-label={t.routeChannelTitle}
-          >
-            <button
-              type="button"
-              disabled={authPending || ossRouteSaving}
-              onClick={() => void handleSelectOssRouteChannel('cn')}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-45 disabled:cursor-wait ${
-                ossRouteChannel === 'cn'
-                  ? 'bg-emerald-500/25 text-emerald-100'
-                  : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              {t.routeChannelCn}
-            </button>
-            <button
-              type="button"
-              disabled={authPending || ossRouteSaving}
-              onClick={() => void handleSelectOssRouteChannel('global')}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-45 disabled:cursor-wait ${
-                ossRouteChannel === 'global'
-                  ? 'bg-emerald-500/25 text-emerald-100'
-                  : 'text-white/80 hover:bg-white/10'
-              }`}
-            >
-              {t.routeChannelGlobal}
-            </button>
-          </div>
-        ) : null}
-      </div>
-  );
-
   const renderLanguageSelector = (placement: 'header' | 'footer') => (
     <div className="relative" ref={langMenuRef}>
       <button
         type="button"
         onClick={() => {
           setLangMenuOpen((o) => !o);
-          setOssRouteMenuOpen(false);
         }}
         className="flex items-center gap-2 rounded-full border border-white/10 bg-neutral-900/90 px-3 py-2 text-sm font-normal text-white backdrop-blur transition-colors hover:bg-neutral-800/90"
         aria-expanded={langMenuOpen}
@@ -862,8 +760,50 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
     </div>
   );
 
+  const openLegalDoc = (id: LegalDocId) => setLegalDocId(id);
+
+  const legalLinksSection = (
+    <div className="border-t border-white/[0.08] pt-3">
+      <p className="mb-1.5 px-1 text-xs font-medium text-white/45">{legalT.legalSectionTitle}</p>
+      {(
+        [
+          { id: 'user-agreement' as const, label: legalT.userAgreement, Icon: FileText },
+          { id: 'privacy-policy' as const, label: legalT.privacyPolicy, Icon: Shield },
+          { id: 'ai-disclaimer' as const, label: legalT.aiDisclaimer, Icon: Sparkles },
+        ] as const
+      ).map(({ id, label, Icon }) => (
+        <button
+          key={id}
+          type="button"
+          onClick={() => openLegalDoc(id)}
+          className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
+        >
+          <span className="flex items-center gap-2 text-sm text-white/60">
+            <Icon className="h-4 w-4 shrink-0" aria-hidden />
+            {label}
+          </span>
+          <ArrowRight className="h-4 w-4 shrink-0 text-white/45" aria-hidden />
+        </button>
+      ))}
+    </div>
+  );
+
   const loginPageUpdateFooter = (
-    <AppUpdatePanel update={appUpdate} variant="compact" align="right" />
+    <div className="flex w-full items-center justify-between gap-2">
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <AppUpdatePanel update={appUpdate} variant="compact" align="left" />
+      </div>
+      <div className="shrink-0">
+        <WeChatGroupEntry
+          label={loginT.wechatGroup}
+          title={loginT.wechatGroupTitle}
+          hint={loginT.wechatGroupHint}
+          closeLabel={loginT.wechatGroupClose}
+          loadingLabel={loginT.wechatGroupLoading}
+          loadFailedLabel={loginT.wechatGroupLoadFailed}
+        />
+      </div>
+    </div>
   );
 
   const accountUpdateFooter = <AppUpdatePanel update={appUpdate} variant="account" align="left" />;
@@ -946,6 +886,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
             <span className="truncate">{t.forgotPassword}</span>
           </button>
         </div>
+        {legalLinksSection}
       </div>
     ) : null;
 
@@ -1130,6 +1071,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
           </button>
         </div>
       ) : null}
+      {legalLinksSection}
     </div>
   ) : null;
 
@@ -1147,6 +1089,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
         onClose={() => setChangePwdSuccessOpen(false)}
         appearance="loginShell"
       />
+      <LegalDocModal open={!!legalDocId} docId={legalDocId} onClose={() => setLegalDocId(null)} />
     </>
   );
 
@@ -1161,14 +1104,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
           loginCard={loginFormCard}
           loginFooter={loginPageUpdateFooter}
         />
-        <div
-          className="pointer-events-none fixed inset-x-0 bottom-0 z-20 flex justify-end px-5 py-4 sm:px-6 sm:py-5"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-        >
-          <div className="pointer-events-auto flex items-center gap-2 opacity-40 transition-opacity hover:opacity-65">
-            {renderOssRouteMenu('above')}
-          </div>
-        </div>
         {registerModalOpen ? (
           <div
             className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/75 p-4"

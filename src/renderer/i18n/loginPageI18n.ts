@@ -61,6 +61,12 @@ export type LoginPageStrings = {
   figurineTitle: string;
   figurineDesc: string;
   discoverIt: string;
+  wechatGroup: string;
+  wechatGroupTitle: string;
+  wechatGroupHint: string;
+  wechatGroupClose: string;
+  wechatGroupLoading: string;
+  wechatGroupLoadFailed: string;
 };
 
 const zh: LoginPageStrings = {
@@ -69,7 +75,7 @@ const zh: LoginPageStrings = {
   brandTagline: 'AI驱动的电商内容创作平台',
   tagAiGenerate: '多模型AI',
   tagBatchCreate: '智能工作流',
-  heroTitle: '一站式创作AI工作站',
+  heroTitle: '地心引力AI聚合工作站',
   heroTitleAccent: '',
   heroSubtitle: '连接多模型AI能力，打造高效创作工作流',
   heroPreHeadline: '以思维的速度创作',
@@ -125,6 +131,12 @@ const zh: LoginPageStrings = {
   figurineDesc:
     '作品精美、开箱即用，工艺无可挑剔。感谢支持，祝你大卖——立即下单体验 AI 电商内容创作。',
   discoverIt: '立即探索',
+  wechatGroup: '交流群',
+  wechatGroupTitle: '微信交流群',
+  wechatGroupHint: '使用微信扫一扫加入',
+  wechatGroupClose: '关闭',
+  wechatGroupLoading: '加载中…',
+  wechatGroupLoadFailed: '二维码加载失败，请稍后重试',
 };
 
 const en: LoginPageStrings = {
@@ -133,7 +145,7 @@ const en: LoginPageStrings = {
   brandTagline: 'AI e-commerce content studio',
   tagAiGenerate: 'AI generation',
   tagBatchCreate: 'Batch creation',
-  heroTitle: 'E-commerce AI Studio',
+  heroTitle: 'Gravity AI Aggregation Workstation',
   heroTitleAccent: '',
   heroSubtitle: 'Generate, manage & optimize product content in one place',
   heroPreHeadline: 'Design at the speed of thought',
@@ -191,6 +203,12 @@ const en: LoginPageStrings = {
   figurineDesc:
     'The artwork is stunning, shipped fully prepared. The finish is a vision, the 3D craft is flawless. Many thanks! Wishing you the win. Order now.',
   discoverIt: 'DISCOVER IT',
+  wechatGroup: 'WeChat group',
+  wechatGroupTitle: 'WeChat group',
+  wechatGroupHint: 'Scan with WeChat to join',
+  wechatGroupClose: 'Close',
+  wechatGroupLoading: 'Loading…',
+  wechatGroupLoadFailed: 'Failed to load QR code. Please try again.',
 };
 
 export function loginPageT(locale: LoginPageLocale): LoginPageStrings {

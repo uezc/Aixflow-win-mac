@@ -12,7 +12,7 @@ import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { isAudioSongModel } from '../../utils/audioSongModels';
 import { isAudioCoverModel, AI_VOICE_COVER_MODEL_ID, resolveRvcCoverModelPath, clampCoverPitch, clampCoverIndexRate, clampCoverVocalMixPct, clampCoverAccompanimentMixPct } from '../../utils/audioCoverModel';
 import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from '../../utils/audioRvcTrainModel';
-import { isRvcModelPackageUrl } from '../../../shared/rvcVoiceTrainUtils';
+import { confirmOptionalEngineDownload } from '../../utils/confirmOptionalEngineDownload';
 import { rvcVoiceModelPackageUrl } from '../characterListShared';
 import {
   filterActiveAudioModelOptions,
@@ -20,18 +20,91 @@ import {
   normalizeAudioModelIfRetired,
 } from '../../config/audioModelUiPolicy';
 import {
+  DOUBAO_SEED_AUDIO_MODEL_ID,
+  DOUBAO_SEED_AUDIO_LABEL,
+  isDoubaoSeedAudioModel,
+  clampDoubaoSpeechRate,
+  clampDoubaoLoudnessRate,
+  clampDoubaoPitchRate,
+} from '../../utils/doubaoSeedAudioModel';
+import {
   audioInputPanelT,
   audioVoiceDisplayLabel,
   audioEmotionDisplayLabel,
 } from '../../i18n/audioInputPanelI18n';
-import { canvasBottomInputPanelShell } from '../../theme/canvasBottomInputPanel';
+import { AiGenerateDisclaimerTip } from '../legal/AiGenerateDisclaimerTip';
+import { PanelOptionDropdown } from './PanelOptionDropdown';
+import { AtMentionMenu } from './AtMentionMenu';
+import { PromptRichInput, type PromptRichInputHandle } from './PromptRichInput';
+import { usePromptAtMention } from '../../hooks/usePromptAtMention';
 
 const baseAudioModelOptions = filterActiveAudioModelOptions([
   { value: 'speech-2.8-hd', label: 'MiniMax 2.8 HD' },
+  { value: DOUBAO_SEED_AUDIO_MODEL_ID, label: DOUBAO_SEED_AUDIO_LABEL },
   { value: 'index-tts2', label: 'Index-TTS 2.0' },
   { value: 'rhart-song-v5.5', label: 'SUNO v5.5' },
   { value: AI_VOICE_COVER_MODEL_ID, label: 'RVC 翻唱' },
 ]);
+
+/** 从参考音 URL / 本地路径提取展示用文件名 */
+function displayNameFromAudioUrl(url: string): string {
+  const raw = (url || '').trim();
+  if (!raw) return '';
+  let path = raw;
+  if (path.startsWith('local-resource://')) path = path.slice('local-resource://'.length);
+  else if (path.startsWith('file://')) path = path.replace(/^file:\/+/i, '');
+  path = path.split('?')[0].split('#')[0];
+  const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+  let name = parts[parts.length - 1] || '';
+  try {
+    name = decodeURIComponent(name);
+  } catch {
+    /* keep raw */
+  }
+  return name.trim();
+}
+
+/** 苹果风格面板滑块（语速/音量/音调） */
+function ApplePanelRange({
+  isDarkMode,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+  title,
+  'aria-label': ariaLabel,
+}: {
+  isDarkMode: boolean;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+  title?: string;
+  'aria-label'?: string;
+}) {
+  const span = max - min || 1;
+  const pct = Math.max(0, Math.min(100, ((value - min) / span) * 100));
+  const fill = isDarkMode ? '#30D158' : '#34C759';
+  const track = isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(60,60,67,0.18)';
+  return (
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      title={title}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="nexflow-apple-panel-range nodrag w-full cursor-pointer"
+      style={{
+        background: `linear-gradient(to right, ${fill} 0%, ${fill} ${pct}%, ${track} ${pct}%, ${track} 100%)`,
+      }}
+    />
+  );
+}
 
 interface AudioInputPanelProps {
   nodeId: string;
@@ -59,7 +132,15 @@ interface AudioInputPanelProps {
   songName?: string;
   styleDesc?: string;
   lyrics?: string;
+  speechRate?: number;
+  loudnessRate?: number;
   projectId?: string;
+  /** 上游文本已连入 */
+  isTextConnected?: boolean;
+  /** 上游参考音已连入 */
+  isAudioConnected?: boolean;
+  /** 上游原曲已连入 */
+  isSourceSongConnected?: boolean;
   onStart?: () => void;
   onErrorTask?: (message: string) => void;
   onTextChange: (value: string) => void;
@@ -81,6 +162,8 @@ interface AudioInputPanelProps {
   onSongNameChange?: (value: string) => void;
   onStyleDescChange?: (value: string) => void;
   onLyricsChange?: (value: string) => void;
+  onSpeechRateChange?: (value: number) => void;
+  onLoudnessRateChange?: (value: number) => void;
   onOutputAudioChange: (audioUrl: string, originalUrl?: string, outputAudios?: string[], originalOutputAudios?: string[]) => void;
   onRvcTrainComplete?: (payload: {
     outputModelUrl: string;
@@ -138,7 +221,12 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   songName = '',
   styleDesc = '',
   lyrics = '',
+  speechRate = 0,
+  loudnessRate = 0,
   projectId,
+  isTextConnected = false,
+  isAudioConnected = false,
+  isSourceSongConnected = false,
   onStart,
   onErrorTask,
   onTextChange,
@@ -160,6 +248,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   onSongNameChange,
   onStyleDescChange,
   onLyricsChange,
+  onSpeechRateChange,
+  onLoudnessRateChange,
   onOutputAudioChange,
   onRvcTrainComplete,
 }) => {
@@ -170,6 +260,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   const [micVoiceBusy, setMicVoiceBusy] = useState(false);
   const voiceMergeTargetRef = useRef<'text' | 'lyrics' | 'styleDesc'>('text');
   const isIndexTts2 = model === 'index-tts2';
+  const isDoubaoSeedAudio = isDoubaoSeedAudioModel(model);
   const isRhartSong = isAudioSongModel(model);
   const effectiveRvcCoverModel = resolveRvcCoverModelPath({
     rvcCoverModelName,
@@ -181,16 +272,9 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   const isAudioCover = isAudioCoverModel(model);
   const isRvcTrain = isRvcTrainModel(model);
 
-  const audioModelOptions = useMemo(() => baseAudioModelOptions, []);
-
-  useEffect(() => {
-    if (!isRetiredAudioModel(model) || !onModelChange) return;
-    onModelChange(normalizeAudioModelIfRetired(model));
-  }, [model, onModelChange]);
-
   /** rvcTrain 入边时由 Workspace 写入 model；此处不再按双路 audio 自动切换 */
-  const textInputRef = useRef<HTMLTextAreaElement>(null);
-  const showAlert = useDarkAlert().showAlert;
+  const textInputRef = useRef<PromptRichInputHandle>(null);
+  const { showAlert, showConfirm } = useDarkAlert();
 
   // IME 输入法支持：全能写歌字段在 composition 期间使用本地状态，避免中文输入被打断
   const [songNameComposing, setSongNameComposing] = useState(false);
@@ -207,7 +291,6 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   const prevNodeIdRef = useRef(nodeId);
   const textInputFocusedRef = useRef(false);
   const [textComposing, setTextComposing] = useState(false);
-  const [textLocal, setTextLocal] = useState('');
 
   useEffect(() => {
     const nodeIdChanged = prevNodeIdRef.current !== nodeId;
@@ -229,6 +312,45 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     }
   }, [text, nodeId]);
 
+  /** 参考音 + 文本同时就绪：仅保留支持参考音配音的模型（Index-TTS / Doubao） */
+  const isVoiceCloneTtsMode =
+    !!(referenceAudioUrl || '').trim() &&
+    localText.trim().length > 0 &&
+    !(sourceSongAudioUrl || '').trim() &&
+    !hasRvcCoverModel;
+
+  const referenceAudioDisplayName = useMemo(() => {
+    const fromUrl = displayNameFromAudioUrl(referenceAudioUrl || '');
+    if (fromUrl) return fromUrl;
+    if (isAudioConnected) return at.linkedRefAudioTag;
+    return '';
+  }, [referenceAudioUrl, isAudioConnected, at.linkedRefAudioTag]);
+
+  const audioModelOptions = useMemo(() => {
+    if (!isVoiceCloneTtsMode) return baseAudioModelOptions;
+    return baseAudioModelOptions.filter(
+      (o) => o.value === 'index-tts2' || o.value === DOUBAO_SEED_AUDIO_MODEL_ID,
+    );
+  }, [isVoiceCloneTtsMode]);
+
+  const voiceOptions = useMemo(
+    () => VOICE_IDS.map((vid) => ({ value: vid, label: audioVoiceDisplayLabel(locale, vid) })),
+    [locale],
+  );
+
+  const emotionOptions = useMemo(
+    () => [
+      { value: '', label: at.emotionNone },
+      ...EMOTION_VALUES.map((ev) => ({ value: ev, label: audioEmotionDisplayLabel(locale, ev) })),
+    ],
+    [locale, at.emotionNone],
+  );
+
+  useEffect(() => {
+    if (!isRetiredAudioModel(model) || !onModelChange) return;
+    onModelChange(normalizeAudioModelIfRetired(model));
+  }, [model, onModelChange]);
+
   /** rvcTrain 入边或节点已有 RVC 模型包 → 有原曲时自动切翻唱 */
   useEffect(() => {
     if (!onModelChange || isAudioSongModel(model)) return;
@@ -237,20 +359,31 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     }
   }, [hasRvcCoverModel, hasCoverSource, model, onModelChange]);
 
-  /** 1 路参考音：无台词 → Index-TTS；有 RVC 模型卡时不切训练模块 */
+  /** 1 路参考音：无台词 → RVC 训练；有台词 → 仅 Index-TTS / Doubao */
   useEffect(() => {
     const ref = (referenceAudioUrl || '').trim();
     if (!ref || !onModelChange) return;
-    if (isAudioSongModel(model) || isAudioCoverModel(model)) return;
     if (hasRvcCoverModel) return;
     if ((sourceSongAudioUrl || '').trim()) return;
     const hasText = localText.trim().length > 0;
     if (!hasText) {
+      if (isAudioSongModel(model) || isAudioCoverModel(model)) return;
       if (!isRvcTrainModel(model)) onModelChange(RVC_VOICE_TRAIN_MODEL_ID);
       return;
     }
-    if (isRvcTrainModel(model)) onModelChange('index-tts2');
-  }, [referenceAudioUrl, sourceSongAudioUrl, localText, model, onModelChange, hasRvcCoverModel]);
+    if (isVoiceCloneTtsMode && !audioModelOptions.some((o) => o.value === model)) {
+      onModelChange('index-tts2');
+    }
+  }, [
+    referenceAudioUrl,
+    sourceSongAudioUrl,
+    localText,
+    model,
+    onModelChange,
+    hasRvcCoverModel,
+    isVoiceCloneTtsMode,
+    audioModelOptions,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -267,6 +400,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       if (!t) return;
       const prev = localText.trim();
       const next = prev ? `${prev}\n${t}` : t;
+      textInputRef.current?.setPlainText(next);
       setLocalText(next);
       lastSentTextRef.current = next;
       onTextChange(next);
@@ -274,6 +408,32 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     },
     [localText, onTextChange],
   );
+
+  const applyMentionToText = useCallback(
+    (next: string) => {
+      setLocalText(next);
+      lastSentTextRef.current = next;
+      onTextChange(next);
+    },
+    [onTextChange],
+  );
+
+  const {
+    mentionMenuProps,
+    mentionCandidates,
+    onMentionKeyDown,
+    onMentionInputCheck,
+  } = usePromptAtMention({
+    nodeId,
+    value: localText,
+    richEditorRef: textInputRef,
+    enabled: !micVoiceBusy && !isTextConnected,
+    composing: textComposing,
+    orderedInputImages: [],
+    locale,
+    preferSeedanceTag: false,
+    onApply: applyMentionToText,
+  });
 
   const mergeVoiceIntoLyrics = useCallback(
     (recognized: string) => {
@@ -304,6 +464,11 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         setMicVoiceBusy(false);
         return;
       }
+      const downloadOk = await confirmOptionalEngineDownload('whisper', showConfirm, locale);
+      if (!downloadOk) {
+        setMicVoiceBusy(false);
+        return;
+      }
       setMicVoiceBusy(true);
       try {
         const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
@@ -327,7 +492,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         setMicVoiceBusy(false);
       }
     },
-    [locale, mergeVoiceIntoLyrics, mergeVoiceIntoStyleDesc, mergeVoiceIntoText, projectId, showAlert],
+    [locale, mergeVoiceIntoLyrics, mergeVoiceIntoStyleDesc, mergeVoiceIntoText, projectId, showAlert, showConfirm],
   );
 
   const {
@@ -547,6 +712,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         showAlert(at.coverMissingModel);
         return;
       }
+      const downloadOk = await confirmOptionalEngineDownload('rvc', showConfirm, locale);
+      if (!downloadOk) return;
     } else if (isRvcTrain) {
       if (!(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()) return;
     } else if (!effectiveText) {
@@ -604,6 +771,18 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         }
         requestParams.referenceAudioUrl = refUrl;
         requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim();
+      } else if (isDoubaoSeedAudio) {
+        let refUrl = (referenceAudioUrl || '').trim();
+        if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
+          refUrl = refUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
+        }
+        requestParams.model = DOUBAO_SEED_AUDIO_MODEL_ID;
+        if (refUrl) requestParams.referenceAudioUrl = refUrl;
+        requestParams.speechRate = clampDoubaoSpeechRate(speechRate);
+        requestParams.loudnessRate = clampDoubaoLoudnessRate(loudnessRate);
+        requestParams.pitch = clampDoubaoPitchRate(pitch);
+        requestParams.doubaoFormat = 'mp3';
+        requestParams.doubaoSampleRate = '24000';
       } else if (isIndexTts2) {
         let refUrl = (referenceAudioUrl || '').trim();
         if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
@@ -622,7 +801,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     } catch (error) {
       console.error('音频生成失败:', error);
     }
-  }, [flushTextSync, localText, model, isIndexTts2, isAudioCover, isRvcTrain, isRhartSong, songName, styleDesc, lyrics, sourceSongAudioUrl, referenceAudioUrl, effectiveRvcCoverModel, rvcTrainModelName, outputModelUrl, outputModelRemoteUrl, coverReferenceAudioUrl, libraryRvcVoiceId, coverPitch, coverIndexRate, coverVocalMixPct, coverAccompanimentMixPct, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId]);
+  }, [flushTextSync, localText, model, isIndexTts2, isDoubaoSeedAudio, isAudioCover, isRvcTrain, isRhartSong, songName, styleDesc, lyrics, sourceSongAudioUrl, referenceAudioUrl, speechRate, loudnessRate, effectiveRvcCoverModel, rvcTrainModelName, outputModelUrl, outputModelRemoteUrl, coverReferenceAudioUrl, libraryRvcVoiceId, coverPitch, coverIndexRate, coverVocalMixPct, coverAccompanimentMixPct, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId, showAlert, showConfirm, locale, at]);
 
   const isRunDisabled =
     aiStatus === 'PROCESSING' ||
@@ -635,200 +814,236 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           ? !(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()
           : !localText.trim() || (isIndexTts2 && !(referenceAudioUrl || '').trim()));
 
-  return (
-    <div className={canvasBottomInputPanelShell(isDarkMode, { pad: 'p-4' })}>
-      {/* 顶部控制栏 */}
-      <div className={`flex items-center justify-between mb-3 flex-shrink-0 gap-3 ${isDarkMode ? 'border-b border-gray-700/30 pb-3' : 'border-b border-gray-300/30 pb-3'}`}>
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <label className={`text-xs font-medium whitespace-nowrap ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
-              {at.modelLabel}
-            </label>
-            <select
-              value={model}
-              onChange={(e) => onModelChange?.(e.target.value)}
-              className={`px-2 py-1.5 rounded-lg text-xs min-w-[140px] ${
-                isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-              } outline-none focus:ring-2 focus:ring-green-500/50`}
-              title={at.chooseModelTitle}
-              aria-label={at.chooseModelAria}
-            >
-              {audioModelOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-          {!isIndexTts2 && !isRhartSong && !isAudioCover && !isRvcTrain && (
-            <>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                <label className={`text-xs font-medium whitespace-nowrap ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.voiceLabel}</label>
-                <select
-                  value={voiceId}
-                  onChange={(e) => onVoiceIdChange(e.target.value)}
-                  className={`px-2 py-1.5 rounded-lg text-xs min-w-[100px] ${isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'} outline-none focus:ring-2 focus:ring-green-500/50`}
-                  title={at.chooseVoiceTitle}
-                  aria-label={at.chooseVoiceAria}
-                >
-                  {VOICE_IDS.map((vid) => (
-                    <option key={vid} value={vid}>
-                      {audioVoiceDisplayLabel(locale, vid)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {onEmotionChange && (
-                <div className="flex items-center gap-1.5 flex-shrink-0">
-                  <label className={`text-xs font-medium whitespace-nowrap ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.emotionLabel}</label>
-                  <select
-                    value={emotion || ''}
-                    onChange={(e) => onEmotionChange(e.target.value as any || undefined)}
-                    className={`px-2 py-1.5 rounded-lg text-xs min-w-[80px] ${isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'} outline-none focus:ring-2 focus:ring-green-500/50`}
-                  >
-                    <option value="">{at.emotionNone}</option>
-                    {EMOTION_VALUES.map((ev) => (
-                      <option key={ev} value={ev}>
-                        {audioEmotionDisplayLabel(locale, ev)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </>
-          )}
-          {isIndexTts2 && onReferenceAudioUrlChange && (
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <label className={`text-xs font-medium whitespace-nowrap ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.referenceAudioLabel}</label>
-              <input
-                type="text"
-                value={referenceAudioUrl}
-                onChange={(e) => onReferenceAudioUrlChange(e.target.value)}
-                placeholder={at.referenceAudioPlaceholder}
-                title={at.referenceAudioTitle}
-                aria-label={at.referenceAudioAria}
-                className={`flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border border-gray-300 placeholder:text-gray-500'
-                } outline-none focus:ring-2 focus:ring-green-500/50`}
-              />
-              <button
-                type="button"
-                onClick={async () => {
-                  if (typeof window.electronAPI?.showOpenAudioDialog !== 'function') return;
-                  const res = await window.electronAPI.showOpenAudioDialog();
-                  if (res.success && res.filePath) {
-                    onReferenceAudioUrlChange(localResourceUrlFromSavedPath(res.filePath));
-                  }
-                }}
-                title={at.selectFileTitle}
-                aria-label={at.selectFileAria}
-                className={`px-2 py-1.5 rounded-lg text-xs font-medium flex-shrink-0 transition-colors ${
-                  isDarkMode
-                    ? 'bg-blue-500/90 text-white border border-blue-400/55 hover:bg-blue-500'
-                    : 'bg-blue-500 text-white border border-blue-500 hover:bg-blue-600'
-                } outline-none focus:ring-2 focus:ring-blue-400/50`}
-              >
-                {at.selectFileButton}
-              </button>
-            </div>
-          )}
-          {isRvcTrain && onRvcTrainModelNameChange && (
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
-                {at.rvcTrainModelLabel}
-              </label>
-              <input
-                type="text"
-                value={rvcTrainModelName}
-                onChange={(e) => onRvcTrainModelNameChange(e.target.value)}
-                placeholder={at.rvcTrainModelPlaceholder}
-                className={`flex-1 min-w-0 px-2 py-1.5 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border border-gray-300 placeholder:text-gray-500'
-                } outline-none focus:ring-2 focus:ring-green-500/50`}
-              />
-            </div>
-          )}
-        </div>
+  const showVoiceEmotionControls =
+    !isIndexTts2 && !isDoubaoSeedAudio && !isRhartSong && !isAudioCover && !isRvcTrain;
 
-        {/* 右侧：价格 + 运行按钮（与图片模块一致：价格在左、按钮在右） */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {(() => {
-            if (!model) return null;
-            try {
-              if (isAudioCover) {
-                return (
-                  <span
-                    className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                      isDarkMode ? 'text-green-200 bg-green-500/25' : 'text-green-700 bg-green-100'
-                    }`}
-                    title={at.localCoverFreeTitle}
-                  >
-                    {at.localCoverFree}
-                  </span>
-                );
-              }
-              const price = getAudioDisplayPrice(model, cloudMap);
-              return (
-                <span
-                  className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                    isDarkMode ? 'text-yellow-200 bg-yellow-500/25' : 'text-yellow-700 bg-yellow-100'
-                  }`}
-                  title={at.priceTitle}
-                >
-                  {price}
-                  {locale === 'en' ? ' ' : ''}
-                  {at.creditsSuffix}
-                </span>
-              );
-            } catch (e) {
-              if (isModelNotPricedError(e)) {
-                return (
-                  <span
-                    className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                      isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
-                    }`}
-                    title={at.noPricingTitle}
-                  >
-                    {at.noPricingYet}
-                  </span>
-                );
-              }
-              throw e;
-            }
-          })()}
-          <button
-            onClick={handleExecute}
-            disabled={isRunDisabled}
-            className={`px-4 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all duration-200 ${
-              isRunDisabled
-                ? 'bg-gray-500/50 text-white/50 cursor-not-allowed'
-                : aiStatus === 'PROCESSING'
-                  ? 'bg-green-500 text-white'
-                  : 'bg-green-500 text-white hover:bg-green-600 shadow-md shadow-green-500/30'
+  const modelControls = (
+    <>
+      <div className="flex items-center gap-1 shrink-0">
+        <PanelOptionDropdown
+          value={model}
+          options={audioModelOptions}
+          onChange={(v) => onModelChange?.(v)}
+          isDarkMode={isDarkMode}
+          title={at.chooseModelTitle}
+          minWidthPx={112}
+          menuPlacement="up"
+        />
+      </div>
+      {showVoiceEmotionControls && (
+        <>
+          <div className="flex items-center gap-1 shrink-0">
+            <PanelOptionDropdown
+              value={voiceId}
+              options={voiceOptions}
+              onChange={onVoiceIdChange}
+              isDarkMode={isDarkMode}
+              title={at.chooseVoiceTitle}
+              minWidthPx={88}
+              menuPlacement="up"
+            />
+          </div>
+          {onEmotionChange && (
+            <div className="flex items-center gap-1 shrink-0">
+              <PanelOptionDropdown
+                value={emotion || ''}
+                options={emotionOptions}
+                onChange={(v) => onEmotionChange((v as any) || undefined)}
+                isDarkMode={isDarkMode}
+                title={at.emotionLabel}
+                minWidthPx={64}
+                menuPlacement="up"
+              />
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+
+  const priceBadge = (() => {
+    if (!model) return null;
+    try {
+      if (isAudioCover) {
+        return (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+              isDarkMode
+                ? 'text-emerald-200/90 bg-emerald-500/15 border-emerald-400/25'
+                : 'text-emerald-700 bg-emerald-50 border-emerald-200'
             }`}
-            title={at.generateAudioTitle}
+            title={at.localCoverFreeTitle}
           >
-            {aiStatus === 'PROCESSING' ? (
-              <>
-                <div className={`w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin`} />
-                {isRvcTrain ? at.generatingRvcTrain : at.generating}
-              </>
-            ) : (
-              <>
-                <Play className="w-3 h-3" />
-                {isRvcTrain ? at.generateRvcTrain : at.generateAudio}
-              </>
-            )}
+            {at.localCoverFree}
+          </span>
+        );
+      }
+      const price = getAudioDisplayPrice(model, cloudMap);
+      return (
+        <span
+          className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+            isDarkMode
+              ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+              : 'text-amber-700 bg-amber-50 border-amber-200'
+          }`}
+          title={at.priceTitle}
+        >
+          {price}
+          {locale === 'en' ? ' ' : ''}
+          {at.creditsSuffix}
+        </span>
+      );
+    } catch (e) {
+      if (isModelNotPricedError(e)) {
+        return (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+              isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+            }`}
+            title={at.noPricingTitle}
+          >
+            {at.noPricingYet}
+          </span>
+        );
+      }
+      throw e;
+    }
+  })();
+
+  const runButton = (
+    <button
+      type="button"
+      onClick={handleExecute}
+      disabled={isRunDisabled}
+      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+        isRunDisabled
+          ? isDarkMode
+            ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+            : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+          : aiStatus === 'PROCESSING'
+            ? 'bg-green-500/70 text-white cursor-not-allowed'
+            : 'bg-green-500 text-white hover:bg-green-600'
+      }`}
+      title={at.generateAudioTitle}
+      aria-label={isRvcTrain ? at.generateRvcTrain : at.generateAudio}
+    >
+      {aiStatus === 'PROCESSING' ? (
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      ) : (
+        <Play className="w-3.5 h-3.5" fill="currentColor" />
+      )}
+    </button>
+  );
+
+  return (
+    <div className="relative flex w-full flex-col nodrag nopan">
+      <style>{`
+        .nexflow-apple-panel-range {
+          -webkit-appearance: none;
+          appearance: none;
+          height: 4px;
+          border-radius: 999px;
+          outline: none;
+        }
+        .nexflow-apple-panel-range::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: #ffffff;
+          border: none;
+          box-shadow:
+            0 0.5px 1px rgba(0, 0, 0, 0.12),
+            0 2px 6px rgba(0, 0, 0, 0.18),
+            0 0 0 0.5px rgba(0, 0, 0, 0.06);
+          cursor: pointer;
+          margin-top: -7px;
+        }
+        .nexflow-apple-panel-range::-webkit-slider-runnable-track {
+          height: 4px;
+          border-radius: 999px;
+          background: transparent;
+        }
+        .nexflow-apple-panel-range::-moz-range-thumb {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: #ffffff;
+          border: none;
+          box-shadow:
+            0 0.5px 1px rgba(0, 0, 0, 0.12),
+            0 2px 6px rgba(0, 0, 0, 0.18);
+          cursor: pointer;
+        }
+        .nexflow-apple-panel-range::-moz-range-track {
+          height: 4px;
+          border-radius: 999px;
+          background: transparent;
+        }
+        .nexflow-apple-panel-range:active::-webkit-slider-thumb {
+          transform: scale(1.06);
+        }
+      `}</style>
+      {/* 无框贴水：弱边框 + 轻玻璃，与视频/图像/LLM 底栏同系 */}
+      <div
+        className={[
+          'relative flex flex-col overflow-hidden rounded-[18px] transition-colors',
+          isDarkMode
+            ? 'border border-white/[0.08] bg-[rgba(22,22,26,0.55)] shadow-[0_8px_28px_rgba(0,0,0,0.22)] backdrop-blur-xl'
+            : 'border border-black/[0.06] bg-white/70 shadow-[0_8px_24px_rgba(0,0,0,0.06)] backdrop-blur-xl',
+          'px-3.5 pt-2.5 pb-2',
+        ].join(' ')}
+      >
+      <AiGenerateDisclaimerTip isDarkMode={isDarkMode} />
+
+      {/* 无参考音时：Doubao / Index-TTS 提供轻量选文件入口（有 @ 标签后不再占一整行） */}
+      {(isDoubaoSeedAudio || isIndexTts2) &&
+        onReferenceAudioUrlChange &&
+        !referenceAudioDisplayName && (
+        <div className="mb-1 flex items-center justify-end flex-shrink-0">
+          <button
+            type="button"
+            onClick={async () => {
+              if (typeof window.electronAPI?.showOpenAudioDialog !== 'function') return;
+              const res = await window.electronAPI.showOpenAudioDialog();
+              if (res.success && res.filePath) {
+                onReferenceAudioUrlChange(localResourceUrlFromSavedPath(res.filePath));
+              }
+            }}
+            title={isIndexTts2 ? at.selectFileTitle : undefined}
+            aria-label={isIndexTts2 ? at.selectFileAria : undefined}
+            className={`px-2 py-1 rounded-lg text-xs font-medium flex-shrink-0 transition-colors ${
+              isDarkMode
+                ? 'bg-blue-500/90 text-white border border-blue-400/55 hover:bg-blue-500'
+                : 'bg-blue-500 text-white border border-blue-500 hover:bg-blue-600'
+            }`}
+          >
+            {at.selectFileButton}
           </button>
         </div>
-      </div>
+      )}
+      {isRvcTrain && onRvcTrainModelNameChange && (
+        <div className="mb-2 flex items-center gap-2 min-w-0 flex-shrink-0">
+          <span className={`text-xs whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+            {at.rvcTrainModelLabel}
+          </span>
+          <input
+            type="text"
+            value={rvcTrainModelName}
+            onChange={(e) => onRvcTrainModelNameChange(e.target.value)}
+            placeholder={at.rvcTrainModelPlaceholder}
+            className={`flex-1 min-w-0 px-2 py-1 rounded-lg text-xs ${
+              isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border border-gray-300 placeholder:text-gray-500'
+            } outline-none`}
+          />
+        </div>
+      )}
 
       {isAudioCover && onCoverPitchChange && (
-        <div
-          className={`flex flex-wrap items-center gap-x-4 gap-y-2 mb-3 flex-shrink-0 pb-3 ${
-            isDarkMode ? 'border-b border-gray-700/30' : 'border-b border-gray-300/30'
-          }`}
-        >
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 flex-shrink-0 pb-2 mb-2">
           <div className="flex items-center gap-2 min-w-[140px] flex-1 max-w-[200px]">
-            <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+            <label className={`text-xs whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
               {at.coverPitchLabel(`${clampCoverPitch(coverPitch) > 0 ? '+' : ''}${clampCoverPitch(coverPitch)}`)}
             </label>
             <input
@@ -845,7 +1060,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           </div>
           {onCoverIndexRateChange && (
             <div className="flex items-center gap-2 min-w-[140px] flex-1 max-w-[200px]">
-              <label className={`text-xs font-medium whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+              <label className={`text-xs whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
                 {at.coverIndexRateLabel(String(Math.round(clampCoverIndexRate(coverIndexRate) * 100)))}
               </label>
               <input
@@ -864,14 +1079,59 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         </div>
       )}
 
+      {/* 参考音 / 文本 / 原曲 @ 标签同一排 */}
+      {(isTextConnected || isSourceSongConnected || !!referenceAudioDisplayName || isAudioConnected) && (
+        <div className="mb-1 flex flex-wrap items-center gap-1.5 flex-shrink-0">
+          {referenceAudioDisplayName ? (
+            <span
+              className={`inline-flex items-center max-w-[220px] px-1.5 py-0.5 rounded-md text-[11px] font-semibold truncate ${
+                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+              }`}
+              title={referenceAudioUrl || at.linkedRefAudioTagTitle}
+            >
+              @{referenceAudioDisplayName}
+            </span>
+          ) : isAudioConnected ? (
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+              }`}
+              title={at.linkedRefAudioTagTitle}
+            >
+              @{at.linkedRefAudioTag}
+            </span>
+          ) : null}
+          {isTextConnected ? (
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+              }`}
+              title={at.linkedTextTagTitle}
+            >
+              @{at.linkedTextTag}
+            </span>
+          ) : null}
+          {isSourceSongConnected ? (
+            <span
+              className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+              }`}
+              title={at.linkedSourceSongTagTitle}
+            >
+              @{at.linkedSourceSongTag}
+            </span>
+          ) : null}
+        </div>
+      )}
+
       {/* 主要内容区域 - 左右分栏布局 */}
-      <div className="flex-1 min-h-0 flex gap-4 overflow-hidden">
+      <div className="pt-0 pb-0 flex-1 min-h-0 flex gap-3 overflow-hidden">
         {/* 左侧：文本内容 或 全能写歌（左：歌曲名+风格描述，右：歌词） */}
         {isRhartSong ? (
-          <div className="flex-1 min-w-0 min-h-0 flex gap-4 overflow-hidden">
+          <div className="flex-1 min-w-0 min-h-0 flex gap-3 overflow-hidden">
             <div className="w-52 flex-shrink-0 flex flex-col gap-3 overflow-auto custom-scrollbar">
               <div className="flex flex-col flex-shrink-0">
-                <label className={`text-xs font-medium mb-1 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.songNameLabel}</label>
+                <label className={`text-xs mb-1 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.songNameLabel}</label>
                 <input
                   type="text"
                   value={songNameComposing ? songNameLocal : songName}
@@ -897,7 +1157,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
               </div>
               <div className="flex flex-col flex-shrink-0">
                 <div className="mb-1 flex items-center gap-2 min-w-0">
-                  <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.styleDescLabel}</label>
+                  <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.styleDescLabel}</label>
                   {renderVoiceMicButton('styleDesc')}
                 </div>
                 <input
@@ -929,7 +1189,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
             </div>
             <div className="flex-1 min-w-0 min-h-0 flex flex-col">
               <div className="mb-1 flex items-center gap-2 min-w-0 flex-shrink-0">
-                <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>{at.lyricsLabel}</label>
+                <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.lyricsLabel}</label>
                 {renderVoiceMicButton('lyrics')}
               </div>
               <textarea
@@ -1081,101 +1341,167 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           </div>
         ) : (
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          <div className="mb-2 flex items-center gap-2 min-w-0 flex-shrink-0">
-            <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
-              {at.textContentLabel}
-            </label>
+          <div className="mb-1 flex items-center gap-2 min-w-0 flex-shrink-0">
+            {!isTextConnected && !isAudioConnected && !isSourceSongConnected ? (
+              <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+                {at.textContentLabel}
+              </label>
+            ) : null}
+            <div className="flex-1" />
             {renderVoiceMicButton('text')}
           </div>
-          <textarea
+          <PromptRichInput
             ref={textInputRef}
-            value={textComposing ? textLocal : localText}
-            readOnly={micVoiceBusy}
+            value={localText}
+            candidates={mentionCandidates}
+            readOnly={micVoiceBusy || isTextConnected}
             disabled={micVoiceBusy}
+            isDarkMode={isDarkMode}
+            placeholder={isDoubaoSeedAudio ? (locale === 'en' ? 'Audio generation prompt (≤3000 chars)…' : '输入音频生成提示词（≤3000 字符）…') : at.textContentPlaceholder}
+            title={at.textInputTitle}
             onFocus={() => {
-              if (micVoiceBusy) return;
+              if (micVoiceBusy || isTextConnected) return;
               textInputFocusedRef.current = true;
             }}
-            onCompositionStart={(e) => {
-              setTextComposing(true);
-              setTextLocal((e.target as HTMLTextAreaElement).value);
-            }}
-            onCompositionEnd={(e) => {
-              setTextComposing(false);
-              const v = (e.target as HTMLTextAreaElement).value;
-              setLocalText(v);
-              if (textDebounceRef.current) {
-                clearTimeout(textDebounceRef.current);
-                textDebounceRef.current = null;
-              }
-              lastSentTextRef.current = v;
-              onTextChange(v);
-            }}
-            onBlur={(e) => {
+            onCompositionChange={setTextComposing}
+            onBlur={() => {
               textInputFocusedRef.current = false;
               if (textDebounceRef.current) {
                 clearTimeout(textDebounceRef.current);
                 textDebounceRef.current = null;
               }
-              const v = (e.target as HTMLTextAreaElement).value;
+              const v = textInputRef.current?.getPlainText() ?? localText;
               if (v !== lastSentTextRef.current) {
                 lastSentTextRef.current = v;
                 setLocalText(v);
                 onTextChange(v);
               }
             }}
-            onChange={(e) => {
+            onKeyDown={onMentionKeyDown}
+            onInputCheck={onMentionInputCheck}
+            onChange={(v) => {
               if (micVoiceBusy) return;
-              const v = e.target.value;
-              if (textComposing) {
-                setTextLocal(v);
-              } else {
-                setLocalText(v);
-                if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
-                textDebounceRef.current = setTimeout(() => {
-                  textDebounceRef.current = null;
-                  lastSentTextRef.current = v;
-                  onTextChange(v);
-                }, 250);
-              }
+              setLocalText(v);
+              if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
+              textDebounceRef.current = setTimeout(() => {
+                textDebounceRef.current = null;
+                lastSentTextRef.current = v;
+                onTextChange(v);
+              }, 250);
             }}
-            className={`w-full flex-1 custom-scrollbar bg-transparent resize-none outline-none text-sm rounded-lg p-3 border ${
-              isDarkMode 
-                ? 'text-white placeholder:text-white/40 border-gray-600/50 focus:border-green-500/50' 
-                : 'text-gray-900 placeholder:text-gray-500 border-gray-300/50 focus:border-green-500/50'
-            } focus:ring-2 focus:ring-green-500/30 ${micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''}`}
-            placeholder={at.textContentPlaceholder}
+            className={`w-full flex-1 min-h-[112px] custom-scrollbar px-0 py-1 ${
+              micVoiceBusy || isTextConnected ? 'opacity-45 cursor-not-allowed' : ''
+            }`}
             style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
-            title={at.textInputTitle}
           />
+          <AtMentionMenu {...mentionMenuProps} />
         </div>
         )}
 
-        {/* 右侧：语速/音量/音调（仅 MiniMax 语音合成） */}
-        {!isIndexTts2 && !isRhartSong && !isAudioCover && !isRvcTrain && (
-            <div className="w-48 flex-shrink-0 flex flex-col gap-4">
-            <div className="flex flex-col">
-              <label className={`text-xs font-medium mb-2 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+        {/* 右侧：语速/音量/音调（MiniMax 或 Doubao）— 苹果风格滑块 */}
+        {isDoubaoSeedAudio && (
+          <div className="w-44 flex-shrink-0 flex flex-col gap-3.5 justify-center pl-1">
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
+                {at.doubaoSpeechRateLabel(String(clampDoubaoSpeechRate(speechRate)))}
+              </label>
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={-50}
+                max={100}
+                step={1}
+                value={clampDoubaoSpeechRate(speechRate)}
+                onChange={(v) => onSpeechRateChange?.(v)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
+                {at.doubaoLoudnessRateLabel(String(clampDoubaoLoudnessRate(loudnessRate)))}
+              </label>
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={-50}
+                max={100}
+                step={1}
+                value={clampDoubaoLoudnessRate(loudnessRate)}
+                onChange={(v) => onLoudnessRateChange?.(v)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
+                {at.pitchLabel(`${pitch > 0 ? '+' : ''}${clampDoubaoPitchRate(pitch)}`)}
+              </label>
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={-12}
+                max={12}
+                step={1}
+                value={clampDoubaoPitchRate(pitch)}
+                onChange={(v) => onPitchChange(v)}
+              />
+            </div>
+          </div>
+        )}
+        {!isIndexTts2 && !isDoubaoSeedAudio && !isRhartSong && !isAudioCover && !isRvcTrain && (
+          <div className="w-44 flex-shrink-0 flex flex-col gap-3.5 justify-center pl-1">
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
                 {at.speedLabel(speed.toFixed(1))}
               </label>
-              <input type="range" min="0.5" max="2" step="0.1" value={speed} onChange={(e) => onSpeedChange(parseFloat(e.target.value))} className="w-full h-2 bg-gray-600/30 rounded-lg appearance-none cursor-pointer accent-green-500" title={at.speedLabel(speed.toFixed(1))} aria-label={at.speedAria} />
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={0.5}
+                max={2}
+                step={0.1}
+                value={speed}
+                onChange={onSpeedChange}
+                title={at.speedLabel(speed.toFixed(1))}
+                aria-label={at.speedAria}
+              />
             </div>
-            <div className="flex flex-col">
-              <label className={`text-xs font-medium mb-2 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
                 {at.volumeLabel(volume.toFixed(1))}
               </label>
-              <input type="range" min="0.1" max="10" step="0.1" value={volume} onChange={(e) => onVolumeChange(parseFloat(e.target.value))} className="w-full h-2 bg-gray-600/30 rounded-lg appearance-none cursor-pointer accent-green-500" title={at.volumeLabel(volume.toFixed(1))} aria-label={at.volumeAria} />
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={0.1}
+                max={10}
+                step={0.1}
+                value={volume}
+                onChange={onVolumeChange}
+                title={at.volumeLabel(volume.toFixed(1))}
+                aria-label={at.volumeAria}
+              />
             </div>
-            <div className="flex flex-col">
-              <label className={`text-xs font-medium mb-2 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+            <div className="flex flex-col gap-1.5">
+              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
                 {at.pitchLabel(`${pitch > 0 ? '+' : ''}${pitch}`)}
               </label>
-              <input type="range" min="-12" max="12" step="1" value={pitch} onChange={(e) => onPitchChange(parseInt(e.target.value))} className="w-full h-2 bg-gray-600/30 rounded-lg appearance-none cursor-pointer accent-green-500" title={at.pitchLabel(`${pitch > 0 ? '+' : ''}${pitch}`)} aria-label={at.pitchAria} />
+              <ApplePanelRange
+                isDarkMode={isDarkMode}
+                min={-12}
+                max={12}
+                step={1}
+                value={pitch}
+                onChange={onPitchChange}
+                title={at.pitchLabel(`${pitch > 0 ? '+' : ''}${pitch}`)}
+                aria-label={at.pitchAria}
+              />
             </div>
           </div>
         )}
       </div>
 
+      {/* 底栏：与图像模块同系 — 下拉左、价格+圆形生成右 */}
+      <div className="mt-1 flex items-center gap-1.5 flex-shrink-0 min-w-0">
+        {modelControls}
+        <div className="flex-1" />
+        {priceBadge}
+        {runButton}
+      </div>
+
+      </div>
     </div>
   );
 };

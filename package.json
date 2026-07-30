@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.6.5",
+  "version": "1.7.2",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -31,7 +31,7 @@
     "pack:optional-bundles": "node scripts/pack-optional-engine-bundles.mjs",
     "upload:optional-bundles": "node scripts/upload-optional-bundles-to-oss.mjs --no-confirm",
     "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
-    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-splash-videos-to-resources.mjs && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
+    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
     "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
     "upload:release": "node scripts/upload-release-to-oss.js",
     "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
@@ -52,7 +52,10 @@
     "pack:aixflow-backend": "node scripts/pack-aixflow-backend-zip.mjs",
     "pack:alipay-backend": "node scripts/pack-alipay-backend-zip.mjs",
     "gallery-manifest": "node scripts/generate-oss-gallery-manifest.mjs",
-    "transcode:video": "node scripts/transcode-video-opencv-friendly.mjs"
+    "transcode:video": "node scripts/transcode-video-opencv-friendly.mjs",
+    "community:rpa": "npm run rpa --prefix community-bot",
+    "community:rpa:dry": "npm run rpa:dry --prefix community-bot",
+    "community:demo": "npm run demo --prefix community-bot"
   },
   "keywords": [
     "electron",
@@ -114,10 +117,6 @@
       {
         "from": "resources/yt-dlp",
         "to": "yt-dlp"
-      },
-      {
-        "from": "resources/splash-videos",
-        "to": "splash-videos"
       },
       {
         "from": "resources/login-videos",
@@ -243,6 +242,7 @@
     "ali-oss": "^6.23.0",
     "axios": "^1.13.6",
     "axios-retry": "^4.5.0",
+    "builder-util-runtime": "^9.5.1",
     "clsx": "^2.0.0",
     "dotenv": "^17.3.1",
     "electron-store": "^8.1.0",
