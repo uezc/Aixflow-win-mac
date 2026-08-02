@@ -5,7 +5,7 @@ import {
   buildOssUploadObjectKey,
   OSS_MAX_IMAGE_UPLOAD_BYTES,
   normalizeOssMediaUrlForGeneration,
-  type MediaOssRegion,
+  type MediaUploadOssRegion,
 } from '../config/ossConfig.js';
 import { getFcBaseUrlForClient } from './nxFcClient.js';
 import { applyNxFcRoute } from './nxFcRouteManager.js';
@@ -15,6 +15,9 @@ export const OSS_FC_PROXY_MAX_BYTES = OSS_MAX_IMAGE_UPLOAD_BYTES;
 
 const fcUploadAgent = new https.Agent({ keepAlive: false });
 const FC_UPLOAD_TIMEOUT_MS = 180000;
+
+const SH_NOT_CONFIGURED_MSG =
+  '请配置上海 OSS 素材桶供智能抠像使用（FC 环境变量 OSS_MEDIA_SH_BUCKET、OSS_MEDIA_SH_REGION=oss-cn-shanghai）';
 
 function readNxAccessToken(): string {
   const raw = store.get('cloudUser') as Record<string, unknown> | undefined;
@@ -44,14 +47,24 @@ function isAllowedFcProxyMime(mimeType: string): boolean {
   return m.startsWith('image/') || m.startsWith('video/') || m.startsWith('audio/');
 }
 
+function normalizeUploadMediaRegion(raw?: string): MediaUploadOssRegion {
+  const v = String(raw || '')
+    .trim()
+    .toLowerCase();
+  if (v === 'cn') return 'cn';
+  if (v === 'sh' || v === 'shanghai') return 'sh';
+  return 'hk';
+}
+
 /**
  * 经北京 FC 将素材写入指定区域 OSS 素材桶（POST /upload-media）。
- * mediaRegion=cn → 北京桶；hk → 香港桶。需已登录且 FC 已部署 upload-media。
+ * mediaRegion=cn → 北京桶；hk → 香港桶；sh → 上海桶（VIAPI 智能抠像）。
+ * 需已登录且 FC 已部署 upload-media。
  */
 export async function uploadMediaBufferViaFcProxy(
   buffer: Buffer,
   mimeType: string,
-  options?: { objectKey?: string; mediaRegion?: MediaOssRegion },
+  options?: { objectKey?: string; mediaRegion?: MediaUploadOssRegion },
 ): Promise<string> {
   if (!buffer?.length) throw new Error('OSS上传失败: 空文件');
   if (buffer.length > OSS_FC_PROXY_MAX_BYTES) {
@@ -79,7 +92,7 @@ export async function uploadMediaBufferViaFcProxy(
   const randomStr = Math.random().toString(36).slice(-5);
   const fileName = `${timestamp}-${randomStr}.${extFromMime(mime)}`;
   const objectKey = options?.objectKey || buildOssUploadObjectKey(fileName);
-  const mediaRegion: MediaOssRegion = options?.mediaRegion === 'cn' ? 'cn' : 'hk';
+  const mediaRegion = normalizeUploadMediaRegion(options?.mediaRegion);
 
   const res = await axios.post(
     `${base}/upload-media`,
@@ -103,6 +116,15 @@ export async function uploadMediaBufferViaFcProxy(
   );
 
   if (res.status < 200 || res.status >= 300) {
+    const errCode = String(res.data?.error || '').trim();
+    if (errCode === 'OSS_SH_NOT_CONFIGURED' || mediaRegion === 'sh') {
+      const msg = String(res.data?.message || '').trim();
+      if (errCode === 'OSS_SH_NOT_CONFIGURED' || /上海|shanghai|OSS_MEDIA_SH/i.test(msg)) {
+        throw Object.assign(new Error(msg || SH_NOT_CONFIGURED_MSG), {
+          code: 'OSS_SH_NOT_CONFIGURED',
+        });
+      }
+    }
     const msg =
       (res.data && (res.data.message || res.data.error)) ||
       `HTTP ${res.status}`;

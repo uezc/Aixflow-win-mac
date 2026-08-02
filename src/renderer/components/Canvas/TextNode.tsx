@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useViewport } from 'reactflow';
+import { useFrozenFlowViewport } from '../../hooks/useFrozenFlowViewport';
 import { FileText } from 'lucide-react';
 import { useGlobalInteractionSelector } from '../../utils/globalInteractionStore';
 
@@ -39,7 +39,7 @@ export const TextNode: React.FC<TextNodeProps> = ({
   });
   const [text, setText] = useState(data.text || '');
   const nodeRef = useRef<HTMLDivElement>(null);
-  const viewport = useViewport();
+  const viewport = useFrozenFlowViewport();
   const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
 
   // 同步外部数据变化

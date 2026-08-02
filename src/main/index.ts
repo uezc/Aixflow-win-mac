@@ -184,11 +184,23 @@ import { registerBeforeUpdateQuitHook } from './updateQuitHelper.js';
 import { registerUpdatePrepareMainWindow } from './updatePrepareIpc.js';
 import { setCloudBalanceNotifier } from './cloudBalanceNotifier.js';
 import { resolveWeChatGroupQrFromOss } from './services/wechatGroupQr.js';
+import { listTutorialVideosFromOss } from './services/tutorialVideos.js';
+import {
+  asrRealtimeCancel,
+  asrRealtimeSendAudio,
+  asrRealtimeStart,
+  asrRealtimeStop,
+} from './services/dashscopeRealtimeAsr.js';
+import {
+  transcribeSpeechSegmentsViaFunAsr,
+  transcribeSpeechViaFunAsr,
+} from './services/dashscopeFileAsr.js';
 import {
   finalizeMicRecording,
   getMediaDuration,
   getSharpQueueStats,
   localResourceManager,
+  cancelActiveAudioTranscribeJobs,
   setSharpQueuePaused,
 } from './services/localResourceManager.js';
 import { initScreenSnip, setMainWindowForSnip } from './screenSnip.js';
@@ -414,6 +426,11 @@ function createWindow() {
   });
   mainWindow.on('closed', () => {
     rendererReady = false;
+    try {
+      asrRealtimeCancel();
+    } catch {
+      /* ignore */
+    }
     aiCore.setMainWindow(null);
     setMainWindowForSnip(null);
     setAppUpdaterMainWindow(null);
@@ -432,7 +449,12 @@ function createWindow() {
   // 渲染进程崩溃时置位并弹窗，提供重新加载选项
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rendererReady = false;
-    const msg = `reason: ${details.reason}\nexitCode: ${details.exitCode}\n\n可能原因：3D 视角或大量图片导致显存/内存压力，建议减少画布上的图片节点或关闭部分 3D 预览。`;
+    try {
+      asrRealtimeCancel();
+    } catch {
+      /* ignore */
+    }
+    const msg = `reason: ${details.reason}\nexitCode: ${details.exitCode}\n\n可能原因：麦克风实时采集（旧版 ScriptProcessor）、3D 视角、大量图片或其它渲染压力。若刚按住了语音听写，请更新后重试「按住麦克风说话」；否则可减少画布图片/关闭 3D 预览后再重新加载。`;
     console.error('[主进程] 渲染进程已退出:', msg);
     dialog.showMessageBox(mainWindow!, {
       type: 'error',
@@ -1255,16 +1277,17 @@ ipcMain.handle('generate-activation-code', (_, days: number) => {
   return { code };
 });
 
-/** MV 人声时间轴：尽早注册，避免主进程未重启时前端已调用却报 No handler */
+/** 语音→文本：云端 fun-asr（经 FC），契约 { text }；不再下载/调用本地 Whisper */
 ipcMain.handle(
   'transcribe-speech-from-audio-url',
   async (_, projectId: string | undefined, audioUrl: string, language?: string) =>
-    localResourceManager.transcribeSpeechFromAudioUrl(projectId, audioUrl, language),
+    transcribeSpeechViaFunAsr(projectId, audioUrl, language),
 );
+/** MV 歌词时间线：云端 fun-asr（经 FC），契约 { text, segments } */
 ipcMain.handle(
   'transcribe-speech-segments-from-audio-url',
   async (_, projectId: string | undefined, audioUrl: string, language?: string) =>
-    localResourceManager.transcribeSpeechSegmentsFromAudioUrl(projectId, audioUrl, language),
+    transcribeSpeechSegmentsViaFunAsr(projectId, audioUrl, language),
 );
 ipcMain.handle(
   'separate-vocals-from-audio',
@@ -1275,6 +1298,17 @@ ipcMain.handle(
     mode: 'vocals' | 'accompaniment',
   ) => localResourceManager.separateVocalsFromAudio(projectId, audioUrl, mode),
 );
+ipcMain.handle('cancel-audio-transcribe-jobs', async () => cancelActiveAudioTranscribeJobs());
+
+/** 百炼实时 ASR 听写：票据经 FC，WebSocket 仅在主进程 */
+ipcMain.handle('asr-realtime-start', async () => asrRealtimeStart());
+/** 音频块用 on（单向），避免每帧 invoke 往返拖垮渲染进程 */
+ipcMain.on('asr-realtime-send-audio', (_event, sessionId: string, pcmBase64: string) => {
+  if (typeof sessionId !== 'string' || typeof pcmBase64 !== 'string') return;
+  asrRealtimeSendAudio(sessionId, pcmBase64);
+});
+ipcMain.handle('asr-realtime-stop', async (_, sessionId: string) => asrRealtimeStop(sessionId));
+ipcMain.handle('asr-realtime-cancel', async (_, sessionId?: string) => asrRealtimeCancel(sessionId));
 
 // 片头视频：开发时用项目下的 splash-videos，打包后优先用 userData/splash-videos，为空则从安装包内复制默认资源
 const SPLASH_VIDEO_EXT = ['.mp4', '.webm', '.mov', '.avi', '.mkv'];
@@ -6905,6 +6939,11 @@ ipcMain.handle('wechat-group:get-qr-url', async (_evt, force?: boolean) => {
   return resolveWeChatGroupQrFromOss(Boolean(force));
 });
 
+/** 顶栏教学视频：列举北京桶 `软件内教学视频/` 下 mp4（按文件名序号排序） */
+ipcMain.handle('tutorial-videos:list', async (_evt, force?: boolean) => {
+  return listTutorialVideosFromOss(Boolean(force));
+});
+
 ipcMain.handle('local-resource:set-sharp-queue-paused', async (_, paused: boolean) => {
   setSharpQueuePaused(Boolean(paused));
   return { success: true, paused: Boolean(paused) };
@@ -7034,6 +7073,31 @@ ipcMain.handle(
   ) => localResourceManager.cropVideo(projectId, videoUrl, rect, sourceWidth, sourceHeight),
 );
 
+ipcMain.handle(
+  'chroma-key-video',
+  async (
+    _,
+    projectId: string | undefined,
+    videoUrl: string,
+    options: { colorHex: string; similarity?: number; blend?: number },
+  ) => localResourceManager.chromaKeyVideo(projectId, videoUrl, options),
+);
+
+/** 智能抠像（阿里云 VIAPI 一键人像 → WebM alpha）；进度经 event 推送 */
+ipcMain.handle(
+  'smart-portrait-matting',
+  async (event, projectId: string | undefined, videoUrl: string) => {
+    const { runSmartPortraitMatting } = await import('./services/viapiSegmentVideoBody.js');
+    return runSmartPortraitMatting(projectId, videoUrl, (p) => {
+      try {
+        event.sender.send('smart-portrait-matting-progress', p);
+      } catch {
+        // ignore
+      }
+    });
+  },
+);
+
 ipcMain.handle('get-media-duration', async (_, url: string, projectId?: string) =>
   getMediaDuration(url, projectId),
 );
@@ -7056,7 +7120,10 @@ ipcMain.handle(
       startTime: number;
       trimStart?: number;
       trimEnd?: number;
+      lockTrim?: boolean;
       name?: string;
+      layout?: { x: number; y: number; w: number; h: number };
+      crop?: { left: number; top: number; right: number; bottom: number };
     }>,
     audioTracks: Array<
       Array<{
@@ -7066,6 +7133,7 @@ ipcMain.handle(
         startTime: number;
         trimStart?: number;
         trimEnd?: number;
+        lockTrim?: boolean;
       }>
     >,
     options?: {
@@ -7119,7 +7187,10 @@ ipcMain.handle(
       startTime: number;
       trimStart?: number;
       trimEnd?: number;
+      lockTrim?: boolean;
       name?: string;
+      layout?: { x: number; y: number; w: number; h: number };
+      crop?: { left: number; top: number; right: number; bottom: number };
     }>,
     audioTracks: Array<
       Array<{
@@ -7129,6 +7200,7 @@ ipcMain.handle(
         startTime: number;
         trimStart?: number;
         trimEnd?: number;
+        lockTrim?: boolean;
       }>
     >,
     options?: {

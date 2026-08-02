@@ -119,6 +119,120 @@ function GlbCameraFraming({
   return null;
 }
 
+/** 未加载模型时的默认低斜俯视取景（地平线约在画面上方 3/4） */
+function EmptyGridCameraFraming({ active }: { active: boolean }) {
+  const { camera, controls } = useThree();
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    const persp = camera as THREE.PerspectiveCamera;
+    // 低机位 + 后退：网格向前延伸，地平线偏上（对齐空状态参考图）
+    camera.position.set(0, 1.7, 7.2);
+    persp.fov = 46;
+    persp.near = 0.08;
+    persp.far = 100;
+    persp.updateProjectionMatrix();
+
+    const oc = controls as { target?: THREE.Vector3; update?: () => void } | null;
+    if (oc?.target) {
+      oc.target.set(0, 0, 0);
+      oc.update?.();
+    } else {
+      camera.lookAt(0, 0, 0);
+    }
+  }, [active, camera, controls]);
+
+  return null;
+}
+
+/**
+ * 强制 WebGL 画布铺满父容器。
+ * React Flow 视口有 scale(zoom) 时，R3F 默认 resize 易用 getBoundingClientRect（屏幕像素）
+ * 调用 setSize(updateStyle=true) 写成固定 px，画布会卡在左上角只占一部分。
+ */
+function FillCanvasToParent({ active }: { active: boolean }) {
+  const { gl, camera, set, invalidate } = useThree();
+
+  useLayoutEffect(() => {
+    const canvas = gl.domElement;
+    const root =
+      (canvas.closest('[data-glb-viewer-root]') as HTMLElement | null) ||
+      (canvas.parentElement as HTMLElement | null);
+    if (!root) return;
+
+    // 禁止 three/R3F 再把 canvas style 写成固定 px
+    const setSizeOrig = gl.setSize.bind(gl);
+    gl.setSize = ((width: number, height: number) => {
+      setSizeOrig(width, height, false);
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+      canvas.style.position = 'absolute';
+      canvas.style.inset = '0';
+    }) as typeof gl.setSize;
+
+    let lastW = 0;
+    let lastH = 0;
+
+    const sync = () => {
+      // 必须用 layout 尺寸（clientWidth），不能用 getBoundingClientRect（含 zoom）
+      const w = Math.max(1, Math.floor(root.clientWidth || root.offsetWidth));
+      const h = Math.max(1, Math.floor(root.clientHeight || root.offsetHeight));
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+      canvas.style.position = 'absolute';
+      canvas.style.inset = '0';
+      if (w === lastW && h === lastH) {
+        // 仍可能被 R3F 改回 px，每帧外再兜底
+        return;
+      }
+      lastW = w;
+      lastH = h;
+      setSizeOrig(w, h, false);
+      const persp = camera as THREE.PerspectiveCamera;
+      if (persp.isPerspectiveCamera) {
+        persp.aspect = w / Math.max(h, 1);
+        persp.updateProjectionMatrix();
+      }
+      set({ size: { width: w, height: h, top: 0, left: 0 } });
+      invalidate();
+    };
+
+    sync();
+    const ro = new ResizeObserver(() => sync());
+    ro.observe(root);
+    const raf1 = requestAnimationFrame(sync);
+    const raf2 = requestAnimationFrame(() => requestAnimationFrame(sync));
+    const t1 = window.setTimeout(sync, 50);
+    const t2 = window.setTimeout(sync, 200);
+    const t3 = window.setTimeout(sync, 500);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+      gl.setSize = setSizeOrig;
+    };
+  }, [gl, camera, set, invalidate, active]);
+
+  // 每帧兜底：防止 R3F resize 回调把 style 改回固定 px
+  useFrame(() => {
+    const canvas = gl.domElement;
+    if (canvas.style.width !== '100%' || canvas.style.height !== '100%') {
+      canvas.style.width = '100%';
+      canvas.style.height = '100%';
+      canvas.style.display = 'block';
+      canvas.style.position = 'absolute';
+      canvas.style.inset = '0';
+    }
+  });
+
+  return null;
+}
+
 /** 模型绕 Y 轴缓慢自转（资产库悬停预览，约一圈/24s） */
 function GlbTurntable({
   speed,
@@ -211,6 +325,7 @@ function GlbScene({
   usePureBlackBackground = false,
   usePureWhiteBackground = false,
   onModelReady,
+  renderActive = true,
 }: {
   url: string;
   showGridWhenEmpty: boolean;
@@ -235,6 +350,7 @@ function GlbScene({
   /** 全屏纯白背景 */
   usePureWhiteBackground?: boolean;
   onModelReady?: () => void;
+  renderActive?: boolean;
 }) {
   const hasModel = !!url?.trim();
   const gridProps =
@@ -242,10 +358,12 @@ function GlbScene({
       ? {
           cellSize: 0.32,
           sectionSize: 1.6,
-          cellColor: '#5a5a64',
-          sectionColor: '#c4c4cc',
-          fadeDistance: 26,
+          cellColor: '#8a8a94',
+          sectionColor: '#d8d8e0',
+          fadeDistance: 28,
           fadeStrength: 1,
+          sectionThickness: 1.15,
+          cellThickness: 0.65,
         }
       : {
           cellSize: 0.35,
@@ -262,6 +380,7 @@ function GlbScene({
   const fillLightIntensity = usePureWhiteBackground ? 0.75 : useStudioEnvironment ? 0.35 : 0.5;
   return (
     <>
+      <FillCanvasToParent active={!!renderActive} />
       <color attach="background" args={[bgColor]} />
       {showFog && !usePureWhiteBackground ? <fog attach="fog" args={[bgColor, 14, 32]} /> : null}
       <ambientLight intensity={ambientIntensity} />
@@ -272,6 +391,7 @@ function GlbScene({
         <directionalLight position={[0, 4, 8]} intensity={0.85} />
       ) : null}
       {useStudioEnvironment ? <Environment preset="studio" environmentIntensity={0.85} /> : null}
+      {!hasModel && showGridWhenEmpty ? <EmptyGridCameraFraming active /> : null}
       {turntableRotate ? (
         <GlbTurntable speed={turntableSpeed}>
           {showGrid ? <Grid position={[0, 0, 0]} infiniteGrid {...gridProps} /> : null}
@@ -307,6 +427,7 @@ function GlbScene({
       )}
       <OrbitControls
         makeDefault
+        target={[0, 0, 0]}
         enableDamping
         dampingFactor={0.08}
         minDistance={controlMinDistance}
@@ -455,13 +576,20 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
       return;
     }
     const check = () => {
-      const { width, height } = el.getBoundingClientRect();
-      setSizeReady(width >= 8 && height >= 8);
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      setSizeReady(w >= 8 && h >= 8);
     };
     check();
     const ro = new ResizeObserver(check);
     ro.observe(el);
-    return () => ro.disconnect();
+    const raf = requestAnimationFrame(check);
+    const t = window.setTimeout(check, 100);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+    };
   }, [enabled]);
 
   const dpr =
@@ -477,9 +605,35 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
     />
   );
 
-  if (!enabled || contextFailed || !webglCapable) {
-    return (
-      <div ref={containerRef} className={`relative overflow-hidden ${className}`}>
+  /** 嵌入画布且不可轨道操作时不加 nodrag，便于拖动节点；仍禁滚轮以免误触画布缩放 */
+  const flowGuard = embeddedInFlow
+    ? controlsInteractive
+      ? 'nodrag nopan nowheel'
+      : 'nopan nowheel'
+    : '';
+  const interactionStyle = controlsInteractive
+    ? { touchAction: 'none' as const, cursor: 'grab' }
+    : { touchAction: 'none' as const };
+
+  const showPlaceholderOnly = !enabled || contextFailed || !webglCapable;
+
+  // 外层容器始终同一 DOM，避免 sizeReady 切换 remount 导致 ResizeObserver 失效、画布卡在左上角
+  return (
+    <div
+      ref={containerRef}
+      data-glb-viewer-root
+      className={`${flowGuard} relative overflow-hidden h-full w-full min-h-0 min-w-0 ${
+        usePureWhiteBackground ? 'bg-white' : usePureBlackBackground ? 'bg-black' : 'bg-[#1a1a1e]'
+      } ${className}`}
+      style={{
+        ...interactionStyle,
+        // 明确铺满，避免父级高度未传时量成 0/半高
+        position: className.includes('absolute') ? undefined : 'relative',
+        width: '100%',
+        height: '100%',
+      }}
+    >
+      {showPlaceholderOnly ? (
         <GlbViewerPlaceholder
           className="absolute inset-0 w-full h-full"
           message={
@@ -493,75 +647,79 @@ const GlbModelViewer: React.FC<GlbModelViewerProps> = ({
               : undefined)
           }
         />
-      </div>
-    );
-  }
-
-  if (!sizeReady) {
-    return (
-      <div ref={containerRef} className={`relative overflow-hidden ${className}`}>
-        {placeholder}
-      </div>
-    );
-  }
-
-  const flowGuard = embeddedInFlow ? 'nodrag nopan nowheel' : '';
-  const interactionStyle = controlsInteractive
-    ? { touchAction: 'none' as const, cursor: 'grab' }
-    : { touchAction: 'none' as const };
-
-  return (
-    <div
-      ref={containerRef}
-      className={`${flowGuard} relative overflow-hidden ${
-        usePureWhiteBackground ? 'bg-white' : usePureBlackBackground ? 'bg-black' : 'bg-[#1a1a1e]'
-      } ${className}`}
-      style={interactionStyle}
-    >
-      <GlbCanvasErrorBoundary
-        fallback={placeholder}
-        onError={() => setContextFailed(true)}
-      >
-        <Canvas
-          frameloop={renderActive ? 'always' : 'never'}
-          dpr={effectiveDpr}
-          gl={{
-            antialias: true,
-            alpha: false,
-            powerPreference: 'default',
-            preserveDrawingBuffer: true,
-            failIfMajorPerformanceCaveat: false,
-          }}
-          onCreated={({ gl }) => {
-            glRef.current = gl;
-            gl.toneMapping = THREE.ACESFilmicToneMapping;
-            gl.toneMappingExposure = 1.05;
-            gl.outputColorSpace = THREE.SRGBColorSpace;
-          }}
+      ) : !sizeReady ? (
+        placeholder
+      ) : (
+        <GlbCanvasErrorBoundary
+          fallback={placeholder}
+          onError={() => setContextFailed(true)}
         >
-          <GlbScene
-            url={url}
-            showGridWhenEmpty={showGridWhenEmpty}
-            overrideTextureUrl={overrideTextureUrl}
-            cameraFraming={cameraFraming}
-            showGrid={showGrid}
-            showGizmo={showGizmo}
-            autoRotate={autoRotate}
-            autoRotateSpeed={autoRotateSpeed}
-            controlsInteractive={controlsInteractive}
-            controlMinDistance={controlMinDistance}
-            controlMaxDistance={controlMaxDistance}
-            gridStyle={gridStyle}
-            showFog={showFog}
-            turntableRotate={turntableRotate}
-            turntableSpeed={turntableSpeed}
-            useStudioEnvironment={useStudioEnvironment}
-            usePureBlackBackground={usePureBlackBackground}
-            usePureWhiteBackground={usePureWhiteBackground}
-            onModelReady={onModelReady}
-          />
-        </Canvas>
-      </GlbCanvasErrorBoundary>
+          <Canvas
+            frameloop={renderActive ? 'always' : 'never'}
+            dpr={effectiveDpr}
+            className="!absolute !inset-0 !h-full !w-full !block !max-h-full !max-w-full"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              display: 'block',
+              maxWidth: '100%',
+              maxHeight: '100%',
+            }}
+            // 关闭 scroll 监听，降低与 RF transform 打架的概率；尺寸由 FillCanvasToParent 接管
+            resize={{ scroll: false, debounce: 0 }}
+            camera={{ position: [0, 1.7, 7.2], fov: 46, near: 0.08, far: 100 }}
+            gl={{
+              antialias: true,
+              alpha: false,
+              powerPreference: 'default',
+              preserveDrawingBuffer: true,
+              failIfMajorPerformanceCaveat: false,
+            }}
+            onCreated={({ gl, camera }) => {
+              glRef.current = gl;
+              gl.toneMapping = THREE.ACESFilmicToneMapping;
+              gl.toneMappingExposure = 1.05;
+              gl.outputColorSpace = THREE.SRGBColorSpace;
+              const canvas = gl.domElement;
+              canvas.style.width = '100%';
+              canvas.style.height = '100%';
+              canvas.style.display = 'block';
+              canvas.style.position = 'absolute';
+              canvas.style.inset = '0';
+              // 首帧即低斜俯视网格，避免默认正面机位闪一下
+              if (!(url || '').trim()) {
+                camera.position.set(0, 1.7, 7.2);
+                camera.lookAt(0, 0, 0);
+              }
+            }}
+          >
+            <GlbScene
+              url={url}
+              showGridWhenEmpty={showGridWhenEmpty}
+              overrideTextureUrl={overrideTextureUrl}
+              cameraFraming={cameraFraming}
+              showGrid={showGrid}
+              showGizmo={showGizmo}
+              autoRotate={autoRotate}
+              autoRotateSpeed={autoRotateSpeed}
+              controlsInteractive={controlsInteractive}
+              controlMinDistance={controlMinDistance}
+              controlMaxDistance={controlMaxDistance}
+              gridStyle={gridStyle}
+              showFog={showFog}
+              turntableRotate={turntableRotate}
+              turntableSpeed={turntableSpeed}
+              useStudioEnvironment={useStudioEnvironment}
+              usePureBlackBackground={usePureBlackBackground}
+              usePureWhiteBackground={usePureWhiteBackground}
+              onModelReady={onModelReady}
+              renderActive={renderActive}
+            />
+          </Canvas>
+        </GlbCanvasErrorBoundary>
+      )}
     </div>
   );
 };

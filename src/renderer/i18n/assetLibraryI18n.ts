@@ -120,6 +120,9 @@ export type AssetLibraryStrings = {
   dhSaveFailed: string;
   dhPreviewAudio: string;
   dhPlaceOnCanvas: string;
+  /** HeyGem 等面板从素材库点选数字人 */
+  dhSelectForPanel: string;
+  dhPickForPanelHint: string;
   dhHasVideo: string;
   dhHasAudio: string;
   dhNoVideo: string;
@@ -286,6 +289,8 @@ const zh: AssetLibraryStrings = {
   dhSaveFailed: '保存失败',
   dhPreviewAudio: '试听驱动音频',
   dhPlaceOnCanvas: '导入到画布（视频模块）',
+  dhSelectForPanel: '选择为参考视频',
+  dhPickForPanelHint: '点击条目即可回填到数字人面板（Esc 取消）',
   dhHasVideo: '有视频',
   dhHasAudio: '有音频',
   dhNoVideo: '缺视频',
@@ -454,6 +459,8 @@ const en: AssetLibraryStrings = {
   dhSaveFailed: 'Save failed',
   dhPreviewAudio: 'Preview drive audio',
   dhPlaceOnCanvas: 'Place on canvas (video module)',
+  dhSelectForPanel: 'Use as reference video',
+  dhPickForPanelHint: 'Click an item to fill the digital human panel (Esc to cancel)',
   dhHasVideo: 'Video',
   dhHasAudio: 'Audio',
   dhNoVideo: 'No video',

@@ -24,9 +24,12 @@ export type TimelineClipRecord = {
   startTime: number;
   trimStart?: number;
   trimEnd?: number;
+  /** 导演规划裁切：探测不得清除/拉长有效 trim */
+  lockTrim?: boolean;
   name?: string;
   sourceNodeId?: string;
   volume?: number;
+  directorShotNo?: string;
 };
 
 export type VideoSpliceClipLabels = {
@@ -37,6 +40,26 @@ export type VideoSpliceClipLabels = {
 
 const isVideoSourceNodeType = (t: string | undefined) =>
   t === 'video' || t === 'wanAnimate' || t === 'heyGem';
+
+export function isTimelineVideoSourceNodeType(t: string | undefined): boolean {
+  return isVideoSourceNodeType(t);
+}
+
+/**
+ * 画布阅读顺序：从上到下（同行容差），再从左到右。
+ * 用于多选视频一键拼接等。
+ */
+export function sortNodesByReadingOrder<T extends { id: string; position?: { x?: number; y?: number } }>(
+  nodes: T[],
+  rowTolerance = 48,
+): T[] {
+  return [...nodes].sort((a, b) => {
+    const ya = a.position?.y ?? 0;
+    const yb = b.position?.y ?? 0;
+    if (Math.abs(ya - yb) > rowTolerance) return ya - yb;
+    return (a.position?.x ?? 0) - (b.position?.x ?? 0);
+  });
+}
 
 /** 可连入剪辑轨道的源模块类型 */
 export function isTimelineMediaSourceNodeType(t: string | undefined): boolean {
@@ -65,6 +88,10 @@ export function effectiveTimelineClipDurationSec(c: TimelineClipRecord): number 
   if (c.type === 'image') {
     return Number.isFinite(c.duration) && c.duration > 0 ? c.duration : DEFAULT_IMAGE_CLIP_DURATION_SEC;
   }
+  // 导演锁定：探测决策用规划 trim，勿把 5s 规划段当成 HTML5 占位时长反复打回 0
+  if (c.lockTrim && c.trimEnd != null && c.trimEnd > (c.trimStart ?? 0)) {
+    return Math.max(0.1, c.trimEnd - (c.trimStart ?? 0));
+  }
   return Math.max(0.1, (c.trimEnd ?? c.duration) - (c.trimStart ?? 0));
 }
 
@@ -78,6 +105,29 @@ function isUntrustedTimelineDuration(duration: number): boolean {
 export function needsTimelineDurationProbe(duration: number, sourceHint = 0): boolean {
   if (isUntrustedTimelineDuration(duration)) return true;
   if (sourceHint > duration + 0.01) return true;
+  return false;
+}
+
+/**
+ * 导演 lockTrim 片段：有效轨长已由 trim 锁定时，不必因「恰为 5s」反复探测。
+ * 仍会在成片 duration 明显短于 trim、或 sourceHint 更大时探测以抬高 media duration。
+ */
+export function needsDirectorLockedClipDurationProbe(
+  clip: TimelineClipRecord,
+  sourceHint = 0,
+): boolean {
+  if (!clip.lockTrim) return needsTimelineDurationProbe(clip.duration, sourceHint);
+  const ts = clip.trimStart ?? 0;
+  const te =
+    clip.trimEnd != null && clip.trimEnd > ts
+      ? clip.trimEnd
+      : Number.isFinite(clip.duration) && clip.duration > ts
+        ? clip.duration
+        : 0;
+  if (!(te > ts)) return needsTimelineDurationProbe(clip.duration, sourceHint);
+  if (sourceHint > clip.duration + 0.01) return true;
+  // 成片尚短于规划 trim：需要探测真实媒体长（或确认无法拉长）
+  if (Number.isFinite(clip.duration) && clip.duration + 0.05 < te) return true;
   return false;
 }
 
@@ -115,7 +165,12 @@ function shouldPreserveClipTrim(
   duration: number,
   sourceHint = 0,
 ): boolean {
-  if (!prev || prev.src !== resolvedUrl) return false;
+  if (!prev) return false;
+  // 导演规划裁切：换成本地路径后仍须保留 trim/lockTrim，否则有效时长被成片撑开并与原曲错位
+  if (prev.lockTrim && prev.trimEnd != null && (prev.trimEnd ?? 0) > (prev.trimStart ?? 0)) {
+    return true;
+  }
+  if (prev.src !== resolvedUrl) return false;
   if (needsTimelineDurationProbe(duration, sourceHint)) return false;
   if (needsTimelineDurationProbe(prev.duration, sourceHint)) return false;
   const ts = prev.trimStart ?? 0;
@@ -131,6 +186,25 @@ export function sanitizeTimelineClipTrim(
   clip: TimelineClipRecord,
   sourceHint = 0,
 ): TimelineClipRecord {
+  if (clip.lockTrim) {
+    const ts = clip.trimStart ?? 0;
+    let te = clip.trimEnd;
+    if (te == null || !(te > ts)) {
+      te = Number.isFinite(clip.duration) && clip.duration > ts ? clip.duration : ts + 0.1;
+    }
+    const mediaDur = Math.max(
+      Number.isFinite(clip.duration) ? clip.duration : 0,
+      sourceHint,
+      te,
+    );
+    return {
+      ...clip,
+      duration: mediaDur > 0 ? mediaDur : clip.duration,
+      trimStart: ts,
+      trimEnd: te,
+      lockTrim: true,
+    };
+  }
   if (clip.type === 'image') {
     const dur =
       Number.isFinite(clip.duration) && clip.duration > 0 ? clip.duration : DEFAULT_IMAGE_CLIP_DURATION_SEC;
@@ -145,6 +219,13 @@ export function sanitizeTimelineClipTrim(
   const ts = clip.trimStart ?? 0;
   const te = clip.trimEnd ?? dur;
   const effective = te - ts;
+
+  // 可信成片上的合法 in/out：保留（含用户时间轴鼠标裁剪），勿因 te < sourceHint 误清
+  const mediaTrusted =
+    Number.isFinite(dur) && dur > TIMELINE_MIN_TRUSTED_SEC && !isUntrustedTimelineDuration(dur);
+  const trimInMedia =
+    ts >= -0.001 && te > ts + 0.05 && te <= dur + 0.05 && (!sourceHint || te <= sourceHint + 0.05);
+  if (mediaTrusted && trimInMedia) return clip;
 
   // 仅清除占位探测遗留 trim
   const trimEndPinnedToOldShortDuration =
@@ -170,6 +251,35 @@ export function mergeProbedTimelineClipDuration(
 ): TimelineClipRecord {
   if (clip.type === 'image') return sanitizeTimelineClipTrim(clip, sourceHint);
   if (!Number.isFinite(probedDur) || probedDur <= 0) return sanitizeTimelineClipTrim(clip, sourceHint);
+
+  // 导演有意裁切：抬高成片 duration；若成片短于规划 trim 则收缩 trimEnd，避免片尾空转而原曲继续
+  if (clip.lockTrim) {
+    const ts = clip.trimStart ?? 0;
+    let te =
+      clip.trimEnd != null && clip.trimEnd > ts
+        ? clip.trimEnd
+        : Number.isFinite(clip.duration) && clip.duration > ts
+          ? clip.duration
+          : ts + 0.1;
+    const mediaLen = Math.max(
+      Number.isFinite(probedDur) ? probedDur : 0,
+      Number.isFinite(sourceHint) ? sourceHint : 0,
+    );
+    if (mediaLen > ts + 0.05 && te > mediaLen + 0.05) {
+      te = mediaLen;
+    }
+    const nextDur = Math.max(
+      Number.isFinite(clip.duration) ? clip.duration : 0,
+      probedDur,
+      sourceHint,
+      te,
+    );
+    return sanitizeTimelineClipTrim(
+      { ...clip, duration: nextDur, trimStart: ts, trimEnd: te, lockTrim: true },
+      Math.max(nextDur, sourceHint),
+    );
+  }
+
   const prevDur = clip.duration;
   const nextDur = Math.max(prevDur, probedDur, sourceHint);
   const next: TimelineClipRecord = { ...clip, duration: nextDur };
@@ -179,11 +289,10 @@ export function mergeProbedTimelineClipDuration(
   }
   const hadPlaceholderDur = needsTimelineDurationProbe(prevDur, sourceHint);
   const trimEnd = next.trimEnd ?? prevDur;
+  // 仅当 trim 钉在旧短 duration 上、且探测明显更长时视为占位；勿清用户有意裁短的 trimEnd
   const trimWasPlaceholder =
     hadPlaceholderDur ||
-    (next.trimEnd != null && trimEnd <= prevDur + 0.01) ||
-    (next.trimEnd != null && probedDur > prevDur + 0.5 && trimEnd < probedDur - 0.05) ||
-    (next.trimEnd != null && probedDur > trimEnd + 1);
+    (next.trimEnd != null && trimEnd <= prevDur + 0.01 && probedDur > prevDur + 0.5);
   if (trimWasPlaceholder) {
     const { trimEnd: _te, trimStart: _ts, ...rest } = next;
     return sanitizeTimelineClipTrim(rest, Math.max(nextDur, sourceHint));
@@ -350,8 +459,20 @@ export function resolveTimelineMediaFromSource(
     const multiOrig = Array.isArray(d.originalOutputAudios)
       ? (d.originalOutputAudios as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
       : [];
+    const edgeAudio = edge
+      ? String((edge.data as { audioSrc?: string } | undefined)?.audioSrc || '').trim()
+      : '';
+    // 与 Workspace.pickAudioOutputUrlFromAudioNodeData 一致；边上可缓存 audioSrc
     const url = normalizeVideoUrl(
-      String(d.outputAudio || multi[0] || multiOrig[0] || d.originalAudioUrl || d.referenceAudioUrl || '').trim(),
+      String(
+        d.originalAudioUrl ||
+          d.outputAudio ||
+          multi[0] ||
+          multiOrig[0] ||
+          d.referenceAudioUrl ||
+          edgeAudio ||
+          '',
+      ).trim(),
     );
     return url ? { clipType: 'audio', url } : null;
   }
@@ -450,7 +571,9 @@ export function buildVideoSpliceClipsFromEdges(
         sourceNodeId: edge.source,
         ...(keepTrim && prev?.trimStart != null ? { trimStart: prev.trimStart } : {}),
         ...(keepTrim && prev?.trimEnd != null ? { trimEnd: prev.trimEnd } : {}),
+        ...(keepTrim && prev?.lockTrim ? { lockTrim: true } : {}),
         ...(prev?.volume != null ? { volume: prev.volume } : {}),
+        ...(prev?.directorShotNo ? { directorShotNo: prev.directorShotNo } : {}),
       },
       sourceHint,
     );
@@ -486,7 +609,7 @@ export function timelineClipsFingerprint(
   audioTracks: TimelineClipRecord[][],
 ): string {
   const seg = (c: TimelineClipRecord) =>
-    `${c.id}|${c.sourceNodeId || ''}|${c.src}|${c.startTime}|${c.duration}|${c.trimStart ?? ''}|${c.trimEnd ?? ''}`;
+    `${c.id}|${c.sourceNodeId || ''}|${c.src}|${c.startTime}|${c.duration}|${c.trimStart ?? ''}|${c.trimEnd ?? ''}|${c.lockTrim ? 1 : 0}`;
   const videoTracks = Array.isArray(videoClipsOrTracks[0])
     ? (videoClipsOrTracks as TimelineClipRecord[][])
     : [videoClipsOrTracks as TimelineClipRecord[]];

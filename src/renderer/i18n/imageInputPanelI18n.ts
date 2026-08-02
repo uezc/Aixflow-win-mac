@@ -36,7 +36,11 @@ export type ImageInputPanelStrings = {
   tagThreeViewPrompt: string;
   /** 3D 场景 → 360° 全景（等距柱状）快捷提示词按钮 */
   tagScene3d: string;
-  /** 点击「3D场景转换」填入的模板（含 {scene_type} 等占位符，由用户自行替换） */
+  /** 上拉框标题 / 菜单项 */
+  tagScene3dMenuTitle: string;
+  tagScene3dMenuApply: string;
+  tagScene3dMenuHint: string;
+  /** 点击「场景转换360图」填入的模板（含 {scene_type} 等占位符，由用户自行替换） */
   tagScene3dPrompt: string;
   placeholderPrompt: string;
   titlePromptInput: string;
@@ -47,7 +51,8 @@ export type ImageInputPanelStrings = {
   initializingModel: string;
   generatingImage: string;
   voiceTranscribing: string;
-  voiceTranscribingModalTitle: string;
+  voiceStartTitle: string;
+  voiceStopTitle: string;
 };
 
 const zh: ImageInputPanelStrings = {
@@ -80,8 +85,11 @@ const zh: ImageInputPanelStrings = {
   tagCinematic: '电影级光影校正',
   tagThreeView: '角色四视图',
   tagThreeViewPrompt:
-    '纯人物（无道具）四视图，纯白背景，统一画风，四幅图拼接排列：\n1. 正面脸部特写\n2. 正面全身站立\n3. 侧面全身站立\n4. 背面全身站立',
-  tagScene3d: '3D场景转换',
+    '【四宫格真人写实】输出一张完整的 2×2 四宫格人物参考图（共四格）：左上正面脸部特写、右上正面全身站立、左下侧面全身站立、右下背面全身站立；同一人物、同一服装、同一发型；必须是真人写实摄影质感（photorealistic real human），禁止卡通、插画、二次元、概念设定板画风；统一纯白背景；四个宫格必须严格同等大小、等宽等高、整齐对齐；宫格之间禁止任何间隙、空隙、黑边、白边、分隔线或留白边框，四格紧密贴合；画面内无任何文字',
+  tagScene3d: '场景转换360图',
+  tagScene3dMenuTitle: '场景转换360图',
+  tagScene3dMenuApply: '生成 360 场景（banana · 21:9 · 4K）',
+  tagScene3dMenuHint: '填入全景模板，并切换全能图片 V2 / 21:9 / 4K',
   tagScene3dPrompt: `# Positive Prompt:
 (360-degree equirectangular panorama:1.3) of a {scene_type} environment,
 (designed for VR viewing with perfect spherical continuity:1.2).
@@ -97,16 +105,17 @@ Textures and perspectives flow continuously, (left and right edges match flawles
 no visible seams, no stitch lines, spherical projection.
 
 Photorealistic, ultra-detailed, cinematic composition, 8k resolution, {emotional_keywords}.`,
-  placeholderPrompt: '输入图片生成提示词...',
+  placeholderPrompt: '输入图片生成提示词…（Enter 发送 · Shift+Enter 换行）',
   titlePromptInput: '提示词输入框',
   refImagesColumnTitle: '参考图',
   appendImageSubject: (i) => `图${i + 1}主体`,
-  refThumbTitle: (n) => `参考图 ${n}`,
+  refThumbTitle: (n) => `参考图 ${n}（拖拽可调顺序）`,
   refThumbAlt: (n) => `参考图 ${n}`,
   initializingModel: '正在初始化模型...',
   generatingImage: '正在生成图片...',
-  voiceTranscribing: '正在将语音转为文字…',
-  voiceTranscribingModalTitle: '正在转写语音',
+  voiceTranscribing: '正在实时听写…',
+  voiceStartTitle: '按住说话',
+  voiceStopTitle: '松开结束',
 };
 
 const en: ImageInputPanelStrings = {
@@ -140,8 +149,11 @@ const en: ImageInputPanelStrings = {
   tagCinematic: 'Cinematic lighting',
   tagThreeView: 'Character 4-view sheet',
   tagThreeViewPrompt:
-    'Pure character (no props), four-view turnaround, pure white background, unified style, four panels in one layout:\n1. Front face close-up\n2. Front full-body standing\n3. Side full-body standing\n4. Back full-body standing',
-  tagScene3d: '3D → equirect',
+    'Photorealistic real-human 2x2 reference sheet on pure white: face close-up, full-body front, full-body side, full-body back; same person/outfit; four EQUAL cells edge-to-edge with ZERO gaps or divider lines; NOT illustration/anime/concept art; no text on image',
+  tagScene3d: 'Scene → 360°',
+  tagScene3dMenuTitle: 'Scene → 360°',
+  tagScene3dMenuApply: 'Generate 360 scene (banana · 21:9 · 4K)',
+  tagScene3dMenuHint: 'Fill panorama template; switch 全能图片 V2 / 21:9 / 4K',
   tagScene3dPrompt: `# Positive Prompt:
 (360-degree equirectangular panorama:1.3) of a {scene_type} environment,
 (designed for VR viewing with perfect spherical continuity:1.2).
@@ -157,16 +169,17 @@ Textures and perspectives flow continuously, (left and right edges match flawles
 no visible seams, no stitch lines, spherical projection.
 
 Photorealistic, ultra-detailed, cinematic composition, 8k resolution, {emotional_keywords}.`,
-  placeholderPrompt: 'Enter image prompt…',
+  placeholderPrompt: 'Enter image prompt… (Enter to send · Shift+Enter for newline)',
   titlePromptInput: 'Prompt',
   refImagesColumnTitle: 'References',
   appendImageSubject: (i) => `Image ${i + 1} subject`,
-  refThumbTitle: (n) => `Reference ${n}`,
+  refThumbTitle: (n) => `Reference ${n} (drag to reorder)`,
   refThumbAlt: (n) => `Reference ${n}`,
   initializingModel: 'Initializing model…',
   generatingImage: 'Generating image…',
-  voiceTranscribing: 'Converting speech to text…',
-  voiceTranscribingModalTitle: 'Transcribing speech',
+  voiceTranscribing: 'Live dictation…',
+  voiceStartTitle: 'Hold to talk',
+  voiceStopTitle: 'Release to finish',
 };
 
 export function imageInputPanelT(locale: AppLocale): ImageInputPanelStrings {

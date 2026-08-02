@@ -133,6 +133,15 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
   const [menu, setMenu] = useState<MenuState>(CLOSED);
   const menuOpenRef = useRef(false);
   menuOpenRef.current = menu.open;
+  /**
+   * IME 合成态用 ref 同步闸门：compositionend 里若只靠 React setState(composing)，
+   * 紧接着的 @ 检测仍会读到旧的 true，导致中文模式下 @ / ＠ 不弹菜单。
+   * 注意：不要在每次 render 用 props 覆盖 ref，否则会盖掉 composition 回调里的同步写入。
+   */
+  const composingRef = useRef(!!composing);
+  useEffect(() => {
+    composingRef.current = !!composing;
+  }, [composing]);
 
   const items = useMemo(
     () =>
@@ -165,9 +174,14 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
 
   const closeMenu = useCallback(() => setMenu(CLOSED), []);
 
+  /** 供 PromptRichInput onCompositionChange 同步写入，避免中文 IME 竞态 */
+  const onMentionCompositionChange = useCallback((next: boolean) => {
+    composingRef.current = !!next;
+  }, []);
+
   const checkAtTrigger = useCallback(() => {
     if (!enabled) return;
-    if (composing) return;
+    if (composingRef.current) return;
 
     const richEl = richEditorRef?.current?.getEditorEl?.() ?? null;
     if (richEl) {
@@ -216,7 +230,7 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
       y: pt.y,
       activeIndex: prev.open && prev.query === parsed.query ? prev.activeIndex : 0,
     }));
-  }, [enabled, richEditorRef, textareaRef, composing, closeMenu]);
+  }, [enabled, richEditorRef, textareaRef, closeMenu]);
 
   const selectItem = useCallback(
     (item: PromptMentionCandidate) => {
@@ -287,7 +301,17 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
   );
 
   const onChangeCheck = useCallback(() => {
-    requestAnimationFrame(() => checkAtTrigger());
+    // 合成中跳过；合成结束时由 compositionchange 同步清 ref 后再检测。
+    // 再延后一帧，兼容部分中文输入法先 input 再 compositionend 的顺序。
+    requestAnimationFrame(() => {
+      if (composingRef.current) {
+        setTimeout(() => {
+          if (!composingRef.current) checkAtTrigger();
+        }, 0);
+        return;
+      }
+      checkAtTrigger();
+    });
   }, [checkAtTrigger]);
 
   useEffect(() => {
@@ -311,6 +335,7 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
     mentionCandidates: allCandidates,
     onMentionKeyDown: onKeyDown,
     onMentionInputCheck: onChangeCheck,
+    onMentionCompositionChange,
     closeMentionMenu: closeMenu,
   };
 }

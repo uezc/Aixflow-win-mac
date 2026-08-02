@@ -1,6 +1,6 @@
 /**
- * 前端视频模型下架：可灵 / 万相 / 海螺 / Veo 3.1 Pro 系列不再出现在下拉中；
- * 旧工程 data.model 仍会归一到 DEFAULT_VIDEO_MODEL。
+ * 前端视频模型下架：可灵 / 万相 / 海螺 / Veo 3.1 Pro 文生与官方图生 / Veo 3.1 fast（含首尾帧）/ Grok video3 / Gemini Omni 不再出现在下拉中；
+ * rhart-v3.1-pro-se（全能视频V3.1-pro-首尾帧）、全能视频 Omni Flash、全能视频X 保持上架；旧工程 data.model 会归一到安全默认。
  */
 export const RETIRED_VIDEO_MODEL_IDS = [
   'kling-v2.6-pro',
@@ -15,8 +15,11 @@ export const RETIRED_VIDEO_MODEL_IDS = [
   'hailuo-02-i2v-standard',
   'hailuo-2.3-i2v-standard',
   'rhart-v3.1-pro',
-  'rhart-v3.1-pro-se',
   'rhart-v3.1-pro-official-i2v',
+  'rhart-v3.1-fast',
+  'rhart-v3.1-fast-se',
+  'grok-3',
+  'gemini-omni',
 ] as const;
 
 export type RetiredVideoModelId = (typeof RETIRED_VIDEO_MODEL_IDS)[number];
@@ -24,7 +27,12 @@ export type RetiredVideoModelId = (typeof RETIRED_VIDEO_MODEL_IDS)[number];
 const RETIRED_SET = new Set<string>(RETIRED_VIDEO_MODEL_IDS);
 
 /** 新建节点、下架模型迁移时的默认视频模型 */
-export const DEFAULT_VIDEO_MODEL = 'grok-3' as const;
+export const DEFAULT_VIDEO_MODEL = 'rhart-video-x' as const;
+
+/** 首尾帧 fast 下架后迁到仍上架的 V3.1-pro 首尾帧 */
+const RETIRED_MODEL_FALLBACK: Partial<Record<RetiredVideoModelId, string>> = {
+  'rhart-v3.1-fast-se': 'rhart-v3.1-pro-se',
+};
 
 export function isRetiredVideoModel(model: string | undefined | null): boolean {
   return RETIRED_SET.has(String(model ?? '').trim());
@@ -32,10 +40,31 @@ export function isRetiredVideoModel(model: string | undefined | null): boolean {
 
 export function normalizeVideoModelIfRetired(model: string | undefined | null): string {
   const m = String(model ?? '').trim();
-  return isRetiredVideoModel(m) ? DEFAULT_VIDEO_MODEL : m;
+  if (!isRetiredVideoModel(m)) return m;
+  return RETIRED_MODEL_FALLBACK[m as RetiredVideoModelId] ?? DEFAULT_VIDEO_MODEL;
 }
 
 /** 从候选列表中去掉已下架模型 */
 export function filterActiveVideoModels<T extends string>(models: readonly T[]): T[] {
   return models.filter((m) => !isRetiredVideoModel(m)) as T[];
+}
+
+/**
+ * 导演台普通生视频 / VideoInputPanel 图生主列表对齐的活跃 i2v 目录。
+ * 不含：对口型、MSR/MSR-AV、首位帧专用、WanAnimate、文生-only、已下架。
+ */
+export const ACTIVE_I2V_CATALOG_MODEL_IDS = [
+  'ltx-2.3-i2v',
+  'rhart-v3.1-pro-se',
+  'seedance-2.0-fast',
+  'seedance-2.0-mini',
+  'gemini-omni-flash',
+  'rhart-video-x',
+] as const;
+
+export type ActiveI2vCatalogModelId = (typeof ACTIVE_I2V_CATALOG_MODEL_IDS)[number];
+
+/** 活跃 i2v 目录（再过滤一次下架，便于与 VideoInputPanel 共用） */
+export function getActiveI2vCatalogModelIds(): ActiveI2vCatalogModelId[] {
+  return filterActiveVideoModels(ACTIVE_I2V_CATALOG_MODEL_IDS);
 }

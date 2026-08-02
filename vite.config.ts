@@ -27,6 +27,8 @@ export default defineConfig(({ mode }) => {
           aixflowAdmin: path.resolve(__dirname, 'manage-my-aixflow-content.html'),
           /** 静态官网落地页（public/index.html） */
           aixflowLanding: path.resolve(__dirname, 'public/index.html'),
+          /** 充值套餐公示页（支付宝电脑网站支付合规） */
+          aixflowRecharge: path.resolve(__dirname, 'public/recharge.html'),
         },
       },
     },

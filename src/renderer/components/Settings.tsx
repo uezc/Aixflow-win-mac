@@ -1,7 +1,6 @@
 // @ts-nocheck
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  ArrowLeft,
   ArrowRight,
   Download,
   RefreshCw,
@@ -51,11 +50,9 @@ import type { RechargePackageId } from '../shared/rechargePackages';
 
 interface SettingsProps {
   onSaveSuccess?: () => void;
-  /** 返回片头动画（由设置页左上角「返回」触发） */
-  onBackToSplash?: () => void;
 }
 
-const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) => {
+const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
   const { locale, setLocale } = useAppLocale();
   const { syncCloudPricing } = useNxModelPricing();
   const [langMenuOpen, setLangMenuOpen] = useState(false);
@@ -762,51 +759,47 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
 
   const openLegalDoc = (id: LegalDocId) => setLegalDocId(id);
 
+  const wechatGroupEntry = (
+    <WeChatGroupEntry
+      label={loginT.wechatGroup}
+      title={loginT.wechatGroupTitle}
+      hint={loginT.wechatGroupHint}
+      closeLabel={loginT.wechatGroupClose}
+      loadingLabel={loginT.wechatGroupLoading}
+      loadFailedLabel={loginT.wechatGroupLoadFailed}
+    />
+  );
+
+  /** 左：协议三图标；右：更新按钮（含版本/状态）+ 微信交流群 — 登录页与账户中心共用 */
   const legalLinksSection = (
-    <div className="border-t border-white/[0.08] pt-3">
-      <p className="mb-1.5 px-1 text-xs font-medium text-white/45">{legalT.legalSectionTitle}</p>
-      {(
-        [
-          { id: 'user-agreement' as const, label: legalT.userAgreement, Icon: FileText },
-          { id: 'privacy-policy' as const, label: legalT.privacyPolicy, Icon: Shield },
-          { id: 'ai-disclaimer' as const, label: legalT.aiDisclaimer, Icon: Sparkles },
-        ] as const
-      ).map(({ id, label, Icon }) => (
-        <button
-          key={id}
-          type="button"
-          onClick={() => openLegalDoc(id)}
-          className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
-        >
-          <span className="flex items-center gap-2 text-sm text-white/60">
-            <Icon className="h-4 w-4 shrink-0" aria-hidden />
-            {label}
-          </span>
-          <ArrowRight className="h-4 w-4 shrink-0 text-white/45" aria-hidden />
-        </button>
-      ))}
+    <div
+      className="flex items-center justify-between gap-2 border-t border-white/[0.08] pt-2.5"
+      role="group"
+      aria-label={legalT.legalSectionTitle}
+    >
+      <div className="flex min-w-0 items-center gap-0.5 sm:gap-1">
+        {(
+          [
+            { id: 'user-agreement' as const, label: legalT.userAgreement, Icon: FileText },
+            { id: 'privacy-policy' as const, label: legalT.privacyPolicy, Icon: Shield },
+            { id: 'ai-disclaimer' as const, label: legalT.aiDisclaimer, Icon: Sparkles },
+          ] as const
+        ).map(({ id, label, Icon }) => (
+          <button
+            key={id}
+            type="button"
+            title={label}
+            aria-label={label}
+            onClick={() => openLegalDoc(id)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-white/45 transition-colors hover:bg-white/[0.06] hover:text-white/75"
+          >
+            <Icon className="h-4 w-4" aria-hidden />
+          </button>
+        ))}
+      </div>
+      <AppUpdatePanel update={appUpdate} variant="compact" align="right" trailing={wechatGroupEntry} />
     </div>
   );
-
-  const loginPageUpdateFooter = (
-    <div className="flex w-full items-center justify-between gap-2">
-      <div className="min-w-0 flex-1 overflow-hidden">
-        <AppUpdatePanel update={appUpdate} variant="compact" align="left" />
-      </div>
-      <div className="shrink-0">
-        <WeChatGroupEntry
-          label={loginT.wechatGroup}
-          title={loginT.wechatGroupTitle}
-          hint={loginT.wechatGroupHint}
-          closeLabel={loginT.wechatGroupClose}
-          loadingLabel={loginT.wechatGroupLoading}
-          loadFailedLabel={loginT.wechatGroupLoadFailed}
-        />
-      </div>
-    </div>
-  );
-
-  const accountUpdateFooter = <AppUpdatePanel update={appUpdate} variant="account" align="left" />;
 
   const loginFormCard =
     cloud !== null ? (
@@ -1102,7 +1095,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
           loading={cloud === null}
           headerRight={renderLanguageSelector('header')}
           loginCard={loginFormCard}
-          loginFooter={loginPageUpdateFooter}
         />
         {registerModalOpen ? (
           <div
@@ -1434,19 +1426,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
         wideCard
         cardTitle={loginT.accountTitle}
         cardSubtitle={loginT.accountSubtitle}
-        headerLeftExtra={
-          onBackToSplash ? (
-            <button
-              type="button"
-              onClick={onBackToSplash}
-              className="nexflow-btn-secondary nexflow-btn-secondary-sm"
-              aria-label={t.backAria}
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              {t.back}
-            </button>
-          ) : null
-        }
         headerRight={
           <>
             {cloud?.loggedIn ? (
@@ -1471,7 +1450,6 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess, onBackToSplash }) =>
           </>
         }
         loginCard={accountPanelCard}
-        loginFooter={accountUpdateFooter}
       />
     </>
   );

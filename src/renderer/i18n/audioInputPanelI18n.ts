@@ -88,6 +88,15 @@ export type AudioInputPanelStrings = {
   textContentLabel: string;
   textContentPlaceholder: string;
   textInputTitle: string;
+  /** 已接入文本节点时的 @ 标签 */
+  linkedTextTag: string;
+  linkedTextTagTitle: string;
+  /** 已接入参考音时的 @ 标签 */
+  linkedRefAudioTag: string;
+  linkedRefAudioTagTitle: string;
+  /** 已接入原曲时的 @ 标签 */
+  linkedSourceSongTag: string;
+  linkedSourceSongTagTitle: string;
   voiceTranscribing: string;
   speedLabel: (v: string) => string;
   speedAria: string;
@@ -126,6 +135,17 @@ export type AudioInputPanelStrings = {
   rvcTrainHint: string;
   generateRvcTrain: string;
   generatingRvcTrain: string;
+  doubaoSpeakerLabel: string;
+  doubaoSpeakerPlaceholder: string;
+  doubaoImageLabel: string;
+  doubaoImagePlaceholder: string;
+  doubaoSelectImageTitle: string;
+  doubaoSelectImageButton: string;
+  doubaoFormatLabel: string;
+  doubaoSampleRateLabel: string;
+  doubaoSpeechRateLabel: (v: string) => string;
+  doubaoLoudnessRateLabel: (v: string) => string;
+  doubaoRefMutexHint: string;
 };
 
 const zh: AudioInputPanelStrings = {
@@ -169,8 +189,14 @@ const zh: AudioInputPanelStrings = {
   lyricsLabel: '歌词',
   lyricsPlaceholder: '写入完整歌词...',
   textContentLabel: '文本内容',
-  textContentPlaceholder: '输入要转换为语音的文本...',
+  textContentPlaceholder: '输入要转换为语音的文本…（Enter 发送 · Shift+Enter 换行）',
   textInputTitle: '文本输入框',
+  linkedTextTag: '文本',
+  linkedTextTagTitle: '已接入文本节点',
+  linkedRefAudioTag: '参考音',
+  linkedRefAudioTagTitle: '已接入参考音频',
+  linkedSourceSongTag: '原曲',
+  linkedSourceSongTagTitle: '已接入原曲音频',
   voiceTranscribing: '正在将语音转为文字…',
   speedLabel: (v) => `语速: ${v}`,
   speedAria: '语速',
@@ -209,6 +235,17 @@ const zh: AudioInputPanelStrings = {
   rvcTrainHint: '从上游声音节点连入训练素材；填写模型名称后点击开始训练（无需台词，结果写入音色库）',
   generateRvcTrain: '开始训练',
   generatingRvcTrain: '训练中',
+  doubaoSpeakerLabel: '音色ID',
+  doubaoSpeakerPlaceholder: '可选，豆包音色或复刻音色 ID',
+  doubaoImageLabel: '参考图',
+  doubaoImagePlaceholder: '可选，粘贴 URL 或选择本地图片',
+  doubaoSelectImageTitle: '选择本地参考图片',
+  doubaoSelectImageButton: '选图',
+  doubaoFormatLabel: '格式',
+  doubaoSampleRateLabel: '采样率',
+  doubaoSpeechRateLabel: (v) => `语速: ${v}`,
+  doubaoLoudnessRateLabel: (v) => `音量: ${v}`,
+  doubaoRefMutexHint: '音色ID、参考音、参考图三者只能选其一',
 };
 
 const en: AudioInputPanelStrings = {
@@ -252,8 +289,14 @@ const en: AudioInputPanelStrings = {
   lyricsLabel: 'Lyrics',
   lyricsPlaceholder: 'Full lyrics…',
   textContentLabel: 'Text',
-  textContentPlaceholder: 'Text to convert to speech…',
+  textContentPlaceholder: 'Text to convert to speech… (Enter to send · Shift+Enter for newline)',
   textInputTitle: 'Text input',
+  linkedTextTag: 'Text',
+  linkedTextTagTitle: 'Linked text node',
+  linkedRefAudioTag: 'Reference audio',
+  linkedRefAudioTagTitle: 'Linked reference audio',
+  linkedSourceSongTag: 'Source song',
+  linkedSourceSongTagTitle: 'Linked source song',
   voiceTranscribing: 'Converting speech to text…',
   speedLabel: (v) => `Speed: ${v}`,
   speedAria: 'Speech speed',
@@ -292,6 +335,17 @@ const en: AudioInputPanelStrings = {
   rvcTrainHint: 'Connect training audio from an upstream node; set a model name and start (no script; saves to voice library)',
   generateRvcTrain: 'Train model',
   generatingRvcTrain: 'Training',
+  doubaoSpeakerLabel: 'Speaker ID',
+  doubaoSpeakerPlaceholder: 'Optional Doubao / clone speaker ID',
+  doubaoImageLabel: 'Ref image',
+  doubaoImagePlaceholder: 'Optional URL or local image',
+  doubaoSelectImageTitle: 'Choose reference image',
+  doubaoSelectImageButton: 'Image',
+  doubaoFormatLabel: 'Format',
+  doubaoSampleRateLabel: 'Sample rate',
+  doubaoSpeechRateLabel: (v) => `Speech rate: ${v}`,
+  doubaoLoudnessRateLabel: (v) => `Loudness: ${v}`,
+  doubaoRefMutexHint: 'Use only one of: speaker ID, reference audio, or reference image',
 };
 
 export function audioInputPanelT(locale: AppLocale): AudioInputPanelStrings {

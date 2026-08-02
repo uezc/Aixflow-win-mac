@@ -1,7 +1,7 @@
 # Aixflow 产品优化与升级路线图（待办记录）
 
-> 记录日期：2026-06-30  
-> 状态：**仅规划，未实施**  
+> 记录日期：2026-06-30；ASR 听写接入：2026-07-31  
+> 状态：**流式语音输入（百炼实时 ASR）已接入 P0**；其余项仍为规划  
 > 目的：统一「安装包瘦身 + 云端素材 + 新功能」方向，供 Mac/Windows 开发与发版对照。
 
 ---
@@ -19,16 +19,16 @@
 
 ## 一、语音输入（流式 ASR）
 
-### 现状
+### 现状（2026-07-31）
 
-- 输入框麦克风：录完 → ffmpeg → 本地 **Whisper medium（~1.47GB）** → 出字  
-- 慢、安装包大、不适合短句输入
+- **打字/听写**：LLM 输入框、文本节点麦克风 → FC `POST /asr/realtime-session` 签发票据 → 主进程连百炼 WebSocket（默认 `fun-asr-realtime`）→ 边说边出字；密钥仅在 FC  
+- **MV 歌词时间线**：整曲上传 OSS → FC `POST /asr/file-transcribe` → 百炼 `fun-asr` 异步录音识别（句级时间戳）；**不再依赖本地 Whisper**  
+- **长音频转写节点 / 文本批转**：仍可用本地 Whisper（按需下载）
 
-### 目标
+### 目标（已完成 P0）
 
 - **微信式流式输入**：按住说话，文字实时进输入框，松手完成  
-- 使用 **阿里云智能语音交互 · 实时语音识别**（WebSocket / Paraformer 实时）  
-- 从安装包 **移除或可选下载** Whisper 大模型（仅「语音转文字节点」长音频可保留按需下载）
+- 使用 **阿里云百炼 / DashScope 实时语音识别**（Fun-ASR-Realtime WebSocket）
 
 ### 商业化（可选）
 
@@ -37,8 +37,10 @@
 
 ### 依赖
 
-- 阿里云 NLS 开通 + AppKey  
-- FC/后端签发 NLS Token（AccessKey 不下发客户端）
+- 阿里云百炼开通 + `DASHSCOPE_API_KEY`（FC 环境变量）
+- FC `POST /asr/realtime-session` 签发会话；`POST /asr/file-transcribe` 异步文件转写；AccessKey / API Key 不下发渲染进程
+- 客户端已配置 `HK_FC_ENDPOINT` / `ALIYUN_FC_TOKEN` 并登录
+- 文件转写：函数执行超时建议 ≥ 600s（FC 内轮询百炼任务）
 
 ---
 

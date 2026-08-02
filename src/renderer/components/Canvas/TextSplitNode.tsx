@@ -1,14 +1,24 @@
 // @ts-nocheck
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useStore } from 'reactflow';
-import { useAppLocale } from '../../contexts/AppLocaleContext';
-import { workspaceChromeT } from '../../i18n/workspaceI18n';
+import { useFrozenFlowViewport } from '../../hooks/useFrozenFlowViewport';
+import { computeTextSplitSegments, TEXT_SPLIT_DEFAULT_SEPARATOR } from '../../utils/textSplitSegmentUtils';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 
 const MAX_OUTPUTS = 20;
 const CIRCLE_NUMS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳'];
 
+function computeSegments(
+  inputText: string,
+  trimAndFilterEmpty: boolean,
+  convertType: 'string' | 'number' | 'boolean',
+): (string | number | boolean)[] {
+  return computeTextSplitSegments(inputText, TEXT_SPLIT_DEFAULT_SEPARATOR, trimAndFilterEmpty, convertType);
+}
+
 export interface TextSplitNodeData {
   inputText?: string;
+  /** @deprecated 固定按换行拆分 */
   separator?: string;
   trimAndFilterEmpty?: boolean;
   convertType?: 'string' | 'number' | 'boolean';
@@ -24,67 +34,26 @@ interface TextSplitNodeProps extends NodeProps<TextSplitNodeData> {
   isDarkMode?: boolean;
   performanceMode?: boolean;
   onCleanupEdgesForHandles?: (nodeId: string, keepSourceHandles: string[]) => void;
+  onDataChange?: (updates: Partial<TextSplitNodeData>) => void;
 }
 
-function tryConvert(value: string, mode: 'string' | 'number' | 'boolean'): string | number | boolean {
-  if (mode === 'string') return value;
-  if (mode === 'number') {
-    const n = Number(value);
-    if (!Number.isNaN(n)) return n;
-    return value;
-  }
-  if (mode === 'boolean') {
-    const lower = value.toLowerCase();
-    if (lower === 'true' || lower === '1') return true;
-    if (lower === 'false' || lower === '0' || lower === '') return false;
-    return value;
-  }
-  return value;
-}
-
-function unescapeSep(s: string): string {
-  if (s === '\\n') return '\n';
-  if (s === '\\t') return '\t';
-  return s;
-}
-
-function computeSegments(
-  inputText: string,
-  separator: string,
-  trimAndFilterEmpty: boolean,
-  convertType: 'string' | 'number' | 'boolean'
-): (string | number | boolean)[] {
-  if (inputText == null || String(inputText).trim() === '') return [];
-  const raw = String(inputText).replace(/\r?\n/g, ' ').trim();
-  const sep = unescapeSep(separator === '' ? ',' : separator);
-  let parts = raw.split(sep);
-  if (trimAndFilterEmpty) {
-    parts = parts.map((p) => p.trim()).filter((p) => p.length > 0);
-  } else {
-    parts = parts.map((p) => p.trim());
-  }
-  return parts.map((p) => tryConvert(p, convertType));
-}
-
-const MIN_WIDTH = 200;
-const MIN_HEIGHT = 100;
+const MIN_WIDTH = scaleModulePx(200);
+const MIN_HEIGHT = scaleModulePx(100);
 
 export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
-  const { id, data, selected, isDarkMode = true, performanceMode = false, dragging, xPos = 0, yPos = 0 } = props as any;
+  const { id, data, selected, isDarkMode = true, performanceMode = false, dragging, xPos = 0, yPos = 0, onDataChange } = props as any;
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const nodeRef = useRef<HTMLDivElement>(null);
   const [isHovered, setIsHovered] = useState(false);
-  const { locale } = useAppLocale();
-  const wc = workspaceChromeT(locale);
 
   const [inputText, setInputText] = useState(data?.inputText ?? '');
-  const [separator, setSeparator] = useState(data?.separator ?? '&&&');
   const [trimAndFilterEmpty] = useState(data?.trimAndFilterEmpty ?? true);
   const [convertType] = useState<'string' | 'number' | 'boolean'>(data?.convertType ?? 'string');
 
   const edges = useStore((s) => s.edges);
-  const transform = useStore((s) => s.transform);
+  const transformTuple = useFrozenFlowViewport();
+  const transform = [transformTuple.x, transformTuple.y, transformTuple.zoom] as const;
 
   // 连线传入的 data.inputText 优先，避免等 state 同步导致「有输入却算成 0 段」的帧，从而消除尺寸来回跳
   const effectiveInputText =
@@ -93,8 +62,8 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
       : inputText;
 
   const segments = useMemo(() => {
-    return computeSegments(effectiveInputText, separator, trimAndFilterEmpty, convertType);
-  }, [effectiveInputText, separator, trimAndFilterEmpty, convertType]);
+    return computeSegments(effectiveInputText, trimAndFilterEmpty, convertType);
+  }, [effectiveInputText, trimAndFilterEmpty, convertType]);
 
   const capped = segments.slice(0, MAX_OUTPUTS);
   const hasMore = segments.length > MAX_OUTPUTS;
@@ -117,6 +86,10 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
 
   const updateNodeData = useCallback(
     (updates: Partial<TextSplitNodeData>) => {
+      if (onDataChange) {
+        onDataChange(updates);
+        return;
+      }
       setNodes((nds) =>
         nds.map((n) => {
           if (n.id !== id) return n;
@@ -134,7 +107,7 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
         })
       );
     },
-    [id, setNodes]
+    [id, setNodes, onDataChange]
   );
 
   // 仅当 data 有值时把 data 同步到 state（便于断开连线后保留上次内容）；不把 data 空值写回 state
@@ -158,9 +131,9 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
       const keepHandles = isErrorOrEmpty
         ? ['output-null']
         : capped.map((_, i) => `output-${i}`);
-  const baseH = 100;
+  const baseH = 72;
   const perHandle = 28;
-  const outputBaseTop = 72;
+  const outputBaseTop = 36;
   const bottomPad = 12;
   const newHeight = Math.max(baseH, outputBaseTop + segmentCount * perHandle + bottomPad);
   const prevHeight = data?.height ?? newHeight;
@@ -182,21 +155,15 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
     updateNodeData({
       segments: capped,
       inputText: effectiveInputText,
-      separator,
+      separator: TEXT_SPLIT_DEFAULT_SEPARATOR,
       trimAndFilterEmpty,
       convertType,
     });
-  }, [segmentsJson, effectiveInputText, separator, id, updateNodeData]);
+  }, [segmentsJson, effectiveInputText, id, updateNodeData]);
 
-  const handleSeparatorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value;
-    setSeparator(v);
-    updateNodeData({ separator: v });
-  };
-
-  const baseH = 100;
+  const baseH = 72;
   const perHandle = 28;
-  const outputBaseTop = 72;
+  const outputBaseTop = 36;
   const bottomPad = 12;
   const computedHeight = Math.max(baseH, outputBaseTop + segmentCount * perHandle + bottomPad);
   const width = data?.width ?? MIN_WIDTH;
@@ -270,22 +237,7 @@ export const TextSplitNode: React.FC<TextSplitNodeProps> = (props) => {
         </span>
       </div>
 
-      <div className="p-2 space-y-1.5">
-        <div className="flex items-center gap-2 flex-wrap">
-          <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white' : 'text-gray-700'}`}>{wc.textSplitSeparatorLabel}</label>
-          <input
-            type="text"
-            value={separator}
-            onChange={handleSeparatorChange}
-            placeholder="如 \\n 或 ,"
-            className={`nodrag flex-1 min-w-0 min-w-[80px] text-sm rounded px-2 py-1.5 border cursor-text ${
-              isDarkMode ? 'bg-white/10 border-white/20 text-white placeholder:text-white/50' : 'bg-white border-gray-300 text-gray-900'
-            }`}
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-          />
-        </div>
-      </div>
+      {/* 固定按换行拆分，不再提供分隔符输入 */}
 
       {/* 框内列表：无滚动条，高度随行数自动撑开；pr-4 使序号文字与右侧绿点间距约 2–4px，与替换角色等模块一致 */}
       {!isErrorOrEmpty && (

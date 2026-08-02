@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { BaseEdge, EdgeLabelRenderer, EdgeProps, getBezierPath } from 'reactflow';
-import { Scissors } from 'lucide-react';
+import { Minus } from 'lucide-react';
 
 const EDGE_ATTACH_OVERLAP = 0;
 const CURVATURE = 0.38;
@@ -132,7 +132,7 @@ export default function AnimatedGradientEdge(props: EdgeProps) {
         <EdgeLabelRenderer>
           <button
             type="button"
-            className="nodrag nopan flex items-center justify-center w-8 h-8 rounded-full bg-red-500/90 hover:bg-red-500 text-white shadow-lg border border-red-400/50 transition-colors"
+            className="nodrag nopan nexflow-edge-delete-btn"
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${geom.labelX}px, ${geom.labelY}px)`,
@@ -145,7 +145,7 @@ export default function AnimatedGradientEdge(props: EdgeProps) {
             title="删除连接线"
             aria-label="删除连接线"
           >
-            <Scissors className="w-4 h-4" strokeWidth={2} />
+            <Minus className="w-4 h-4" strokeWidth={2.5} />
           </button>
         </EdgeLabelRenderer>
       )}

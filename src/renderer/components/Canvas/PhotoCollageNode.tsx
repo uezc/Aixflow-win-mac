@@ -17,6 +17,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { mapProjectPath } from '../../utils/pathMapper';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import {
   applyLayerTransform,
   collageLayerSourceNodeId,
@@ -157,9 +158,9 @@ async function rasterizeCollageCanvas2D(
 const MIN_CANVAS = 64;
 const MAX_CANVAS = 8192;
 /** 预览区最大显示高度，避免节点 data.height 过大产生底部空白 */
-const COLLAGE_MAX_PREVIEW_DISPLAY_H = 360;
+const COLLAGE_MAX_PREVIEW_DISPLAY_H = scaleModulePx(360);
 /** 预览区最大显示宽度（节点外框随画布比例收缩，标题/连线对齐棋盘） */
-const COLLAGE_MAX_PREVIEW_DISPLAY_W = 520;
+const COLLAGE_MAX_PREVIEW_DISPLAY_W = scaleModulePx(520);
 
 const PhotoCollageNode: React.FC<PhotoCollageNodeProps> = ({
   id,

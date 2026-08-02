@@ -32,11 +32,14 @@ export function isNxSaasMode(): boolean {
 
 const FC_TIMEOUT_MS = 10000;
 /**
- * 鎷夊彇娴佹按/浠诲姟/瀹氫环锛圥OST /transactions銆?tasks銆?model-config锛夛細FC 渚ф煡 Tablestore锛屾暟鎹鎴栧喎鍚姩鏃舵槗瓒呮椂銆? * 榛樿 120s锛涘彲鐢ㄧ幆澧冨彉閲?NX_FC_LIST_QUERY_TIMEOUT_MS锛堟绉掞紝10000鈥?00000锛夎鐩栥€備簯绔嚱鏁拌秴鏃堕渶 鈮?璇ュ€硷紝鍚﹀垯浠嶄細鍏堣 FC 鍒囨柇銆? */
+ * 拉取流水/任务/定价（POST /transactions、/tasks、/model-config）：
+ * FC 侧查 Tablestore，数据多或冷启动时易超时。
+ * 默认 25s（过长会让主进程堆积挂起请求，界面假死）；可用 NX_FC_LIST_QUERY_TIMEOUT_MS 覆盖（10000–300000）。
+ */
 const FC_LIST_QUERY_TIMEOUT_MS = (() => {
   const raw = process.env.NX_FC_LIST_QUERY_TIMEOUT_MS?.trim();
-  const n = raw ? Number(raw) : 120_000;
-  if (!Number.isFinite(n)) return 120_000;
+  const n = raw ? Number(raw) : 25_000;
+  if (!Number.isFinite(n)) return 25_000;
   return Math.min(300_000, Math.max(10_000, n));
 })();
 /** 涓?1 鏃朵笉璇锋眰 POST /tasks锛堜粎璺宠繃浜戠浠诲姟鍒楄〃鍚屾锛涙湰鍦?B 绔欐姄鍙栫瓑涓嶄緷璧?FC锛?*/
@@ -689,10 +692,14 @@ function isAxiosServerError(e: unknown): boolean {
   return s >= 500 && s <= 599;
 }
 
-/** 閴存潈澶辫触鏃跺彧鎵撲竴娆¤鏄庯紝閬垮厤 IPC 鎶涢敊鍒峰睆锛圵orkspace 鍚庡彴杞浼氶珮棰戣皟鐢級 */
+/** 授权失败时只打一次说明，避免 IPC 抛错刷屏（Workspace 后台轮询会高频调用） */
 let nxCloudGetTasksAuthDeniedLogged = false;
-/** 5xx锛堝 Tablestore 琛ㄦ湭寤恒€丗C 寮傚父锛夊悓鏍峰彧鎻愮ず涓€娆″苟杩斿洖绌哄垪琛?*/
+/** 5xx（如 Tablestore 表未建、FC 异常）同样只提示一次并返回空列表 */
 let nxCloudGetTasksServerErrorLogged = false;
+/** 超时/断连日志节流：避免反复刷屏拖慢控制台与主进程 */
+let nxCloudGetTasksTimeoutLogAt = 0;
+/** 并发合并：同一时刻多次 getTasks 共用一个请求，避免超时堆积导致假死 */
+let nxCloudGetTasksInFlight: Promise<unknown> | null = null;
 
 /** 鏈櫥褰曚笖宸查厤 FC 鏃惰烦杩囨媺鍙栵細鍙墦涓€娆¤鏄庯紝閬垮厤鐧诲綍椤靛弽澶嶅埛鏃ュ織 */
 let nxIdleNoJwtLogged = false;
@@ -949,49 +956,61 @@ export async function nxCloudGetTransactions(limit = 20): Promise<NxTransactionI
   }
 }
 
-/** 鎷夊彇鏈€杩戜换鍔★紙闇€ JWT锛孭OST /tasks锛?*/
+/** 拉取最近任务（需 JWT，POST /tasks） */
 export async function nxCloudGetTasks(limit = 20): Promise<NxTaskItem[]> {
   if (NX_SKIP_CLOUD_TASK_SYNC || isCloudTaskSyncForceDisabled()) return [];
   const base = getFcBaseUrl();
   if (!base || !getNxAccessToken() || isNxOfflineCloudSession()) return [];
-  try {
-    const { data } = await getNxFcAxios().post<{ items?: NxTaskItem[] }>(
-      '/tasks',
-      { limit: Math.min(50, Math.max(1, limit)) },
-      { timeout: FC_LIST_QUERY_TIMEOUT_MS }
-    );
-    return Array.isArray(data?.items) ? data.items : [];
-  } catch (e) {
-    if (isFcAxiosNoResponseTimeout(e)) {
-      console.warn(
-        '[Aliyun] nxCloudGetTasks: 超时或网络暂不可用，返回空列表（可优化 POST /tasks 或调 NX_FC_LIST_QUERY_TIMEOUT_MS）',
-        formatAliyunLogError(e),
+  if (nxCloudGetTasksInFlight) return nxCloudGetTasksInFlight as Promise<NxTaskItem[]>;
+
+  nxCloudGetTasksInFlight = (async (): Promise<NxTaskItem[]> => {
+    try {
+      const { data } = await getNxFcAxios().post<{ items?: NxTaskItem[] }>(
+        '/tasks',
+        { limit: Math.min(50, Math.max(1, limit)) },
+        { timeout: FC_LIST_QUERY_TIMEOUT_MS },
       );
-      return [];
-    }
-    if (isAxiosUnauthorized(e) || isAxiosForbidden(e)) {
-      if (!nxCloudGetTasksAuthDeniedLogged) {
-        nxCloudGetTasksAuthDeniedLogged = true;
-        console.warn(
-          '[Aliyun] nxCloudGetTasks: 云端授权失败（401/403），已返回空任务列表且不再抛错。本地功能（如 B 站视频抓取）不依赖此接口。若需同步云端任务请核对 ALIYUN_FC_TOKEN 与登录态；若暂时不需要云端轮询可在 .env 设 NX_SKIP_CLOUD_TASK_SYNC=1。',
-          formatAliyunLogError(e),
-        );
+      return Array.isArray(data?.items) ? data.items : [];
+    } catch (e) {
+      if (isFcAxiosNoResponseTimeout(e)) {
+        const now = Date.now();
+        if (now - nxCloudGetTasksTimeoutLogAt > 60_000) {
+          nxCloudGetTasksTimeoutLogAt = now;
+          console.warn(
+            '[Aliyun] nxCloudGetTasks: 超时或网络暂不可用，返回空列表（可优化 POST /tasks 或调 NX_FC_LIST_QUERY_TIMEOUT_MS）',
+            formatAliyunLogError(e),
+          );
+        }
+        return [];
       }
-      return [];
-    }
-    if (isAxiosServerError(e)) {
-      if (!nxCloudGetTasksServerErrorLogged) {
-        nxCloudGetTasksServerErrorLogged = true;
-        console.warn(
-          '[Aliyun] nxCloudGetTasks: 云端返回 5xx（常见：Tablestore 表未创建 OTSParameterInvalidRequest、或 FC 未就绪），已返回空列表且不再抛错。与本地 B 站抓取无关。请检查阿里云控制台与 FC 环境变量，或在 .env 设 NX_SKIP_CLOUD_TASK_SYNC=1 跳过轮询。',
-          formatAliyunLogError(e),
-        );
+      if (isAxiosUnauthorized(e) || isAxiosForbidden(e)) {
+        if (!nxCloudGetTasksAuthDeniedLogged) {
+          nxCloudGetTasksAuthDeniedLogged = true;
+          console.warn(
+            '[Aliyun] nxCloudGetTasks: 云端授权失败（401/403），已返回空任务列表且不再抛错。本地功能（如 B 站视频抓取）不依赖此接口。若需同步云端任务请核对 ALIYUN_FC_TOKEN 与登录态；若暂时不需要云端轮询可在 .env 设 NX_SKIP_CLOUD_TASK_SYNC=1。',
+            formatAliyunLogError(e),
+          );
+        }
+        return [];
       }
-      return [];
+      if (isAxiosServerError(e)) {
+        if (!nxCloudGetTasksServerErrorLogged) {
+          nxCloudGetTasksServerErrorLogged = true;
+          console.warn(
+            '[Aliyun] nxCloudGetTasks: 云端返回 5xx（常见：Tablestore 表未创建 OTSParameterInvalidRequest、或 FC 未就绪），已返回空列表且不再抛错。与本地 B 站抓取无关。请检查阿里云控制台与 FC 环境变量，或在 .env 设 NX_SKIP_CLOUD_TASK_SYNC=1 跳过轮询。',
+            formatAliyunLogError(e),
+          );
+        }
+        return [];
+      }
+      console.warn('[Aliyun] nxCloudGetTasks failed:', formatAliyunLogError(e));
+      throw new Error(nxFcErrorToUserMessage(e));
+    } finally {
+      nxCloudGetTasksInFlight = null;
     }
-    console.warn('[Aliyun] nxCloudGetTasks failed:', formatAliyunLogError(e));
-    throw new Error(nxFcErrorToUserMessage(e));
-  }
+  })();
+
+  return nxCloudGetTasksInFlight as Promise<NxTaskItem[]>;
 }
 
 /** 涓嬪崟鎵ｈ垂骞跺缓 pending 浠诲姟锛圥OST /tasks/create锛岄渶 JWT锛?*/

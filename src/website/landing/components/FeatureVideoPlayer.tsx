@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { FEATURE_VIDEOS } from '../data/content';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getFeatureVideos } from '../data/content';
 import { landingVideoCardClass, landingVideoInnerClass } from './landingVideoCard';
 
 export function FeatureVideoPlayer() {
+  const videos = useMemo(() => getFeatureVideos(), []);
   const [index, setIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const src = FEATURE_VIDEOS[index] ?? FEATURE_VIDEOS[0];
+  const src = videos[index] ?? videos[0];
 
   const playCurrent = useCallback(() => {
     const v = videoRef.current;
@@ -21,11 +22,11 @@ export function FeatureVideoPlayer() {
   }, [src, playCurrent]);
 
   const onEnded = () => {
-    if (FEATURE_VIDEOS.length <= 1) {
+    if (videos.length <= 1) {
       playCurrent();
       return;
     }
-    setIndex((i) => (i + 1) % FEATURE_VIDEOS.length);
+    setIndex((i) => (i + 1) % videos.length);
   };
 
   return (

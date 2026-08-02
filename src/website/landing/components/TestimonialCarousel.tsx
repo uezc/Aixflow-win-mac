@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { SCENARIO_CARDS } from '../data/content';
 import { animClass, useInViewAnimation } from '../hooks/useInViewAnimation';
+import { useSiteLocale } from '../lib/siteLocale';
 
 function QuoteIcon() {
   return (
@@ -16,9 +16,14 @@ function QuoteIcon() {
 }
 
 export function TestimonialCarousel() {
+  const { t } = useSiteLocale();
   const { ref, inView } = useInViewAnimation();
-  const count = SCENARIO_CARDS.length;
-  const items = useMemo(() => [...SCENARIO_CARDS, ...SCENARIO_CARDS, ...SCENARIO_CARDS], []);
+  const scenarioCards = t.scenarioCards;
+  const count = scenarioCards.length;
+  const items = useMemo(
+    () => [...scenarioCards, ...scenarioCards, ...scenarioCards],
+    [scenarioCards],
+  );
   const [index, setIndex] = useState(count);
   const [paused, setPaused] = useState(false);
   const [animating, setAnimating] = useState(false);
@@ -62,9 +67,11 @@ export function TestimonialCarousel() {
         className={`mx-auto mb-12 flex max-w-4xl flex-col gap-4 px-6 md:ml-auto md:flex-row md:items-end md:justify-between ${animClass(inView)}`}
       >
         <h2 className="text-[32px] leading-[1.1] tracking-tight text-zinc-100 md:text-[40px] lg:text-[44px]">
-          他们这样用 <span className="font-serif text-gradient-aix">Aixflow</span>
+          {t.scenariosTitleBefore}
+          <span className="font-serif text-gradient-aix">Aixflow</span>
+          {t.scenariosTitleAfter}
         </h2>
-        <p className="text-sm font-medium text-zinc-400">{count} 种典型场景</p>
+        <p className="text-sm font-medium text-zinc-400">{t.scenariosCount(count)}</p>
       </div>
 
       <div className="relative overflow-hidden px-6">
@@ -89,7 +96,7 @@ export function TestimonialCarousel() {
         <div className="mx-auto mt-8 flex max-w-4xl justify-end gap-3 md:ml-auto">
           <button
             type="button"
-            aria-label="上一张"
+            aria-label="Prev"
             onClick={() => go(-1)}
             className="flex h-12 w-12 items-center justify-center rounded-full border border-zinc-500/40 text-zinc-200"
           >
@@ -97,7 +104,7 @@ export function TestimonialCarousel() {
           </button>
           <button
             type="button"
-            aria-label="下一张"
+            aria-label="Next"
             onClick={() => go(1)}
             className="flex h-12 w-12 items-center justify-center rounded-full border border-zinc-500/40 text-zinc-200"
           >

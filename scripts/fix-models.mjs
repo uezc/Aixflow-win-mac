@@ -34,13 +34,16 @@ const DEFAULT_YUANBAO_RATE = 10;
 
 /**
  * 对话类 LLM：CNY/次（占位零售价，可按运营调整）。
- * 注意：若 model_id 已在 REVERSE_CAPTION_CNY / 视频 SKU / 图片表中存在，本表不会覆盖（保留已有定价）。
+ * 写入时覆盖同 id 的 REVERSE 占位（如 gpt-4o / terra）；专用反推键 gpt-4o-image-reverse 等仍走 REVERSE。
  */
 const LLM_CHAT_MODEL_CNY = {
-  'gpt-3.5-turbo': 0.01,
+  /** 1 元宝 = 0.1 元 × yuanbao_rate10（与 MODEL_YUANBAO_RATES / UI 大语言模型档一致） */
+  'gpt-3.5-turbo': 0.1,
+  'gpt-4o': 0.1,
+  'openai/gpt-5.6-terra': 0.1,
   'gpt-4-turbo': 0.03,
   'gpt-4': 0.08,
-  'gpt-4o-mini': 0.02,
+  'gpt-4o-mini': 0.1,
   'claude-3-5-sonnet-20240620': 0.04,
   'claude-3-5-sonnet-latest': 0.04,
   'claude-3-opus-20240229': 0.12,
@@ -116,7 +119,6 @@ function buildAllRows() {
   }
 
   for (const [model_id, v] of Object.entries(LLM_CHAT_MODEL_CNY)) {
-    if (byId.has(model_id)) continue;
     const p = Number(v);
     if (!Number.isFinite(p)) continue;
     byId.set(model_id, { model_id, price_cny: p, kind: 'llm' });

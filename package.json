@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.7.2",
+  "version": "1.7.9",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -31,7 +31,7 @@
     "pack:optional-bundles": "node scripts/pack-optional-engine-bundles.mjs",
     "upload:optional-bundles": "node scripts/upload-optional-bundles-to-oss.mjs --no-confirm",
     "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
-    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
+    "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && node scripts/patch-nsis-web-download.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
     "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
     "upload:release": "node scripts/upload-release-to-oss.js",
     "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
@@ -217,6 +217,7 @@
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@types/react-router-dom": "^5.3.3",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
     "concurrently": "^8.2.2",
@@ -264,6 +265,7 @@
     "recharts": "^3.8.1",
     "sharp": "^0.33.5",
     "tailwind-merge": "^2.1.0",
-    "three": "^0.183.1"
+    "three": "^0.183.1",
+    "ws": "^8.21.1"
   }
 }

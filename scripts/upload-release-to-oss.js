@@ -499,6 +499,7 @@ async function uploadRelease() {
 
     pushManifest(latestYmlPath, `${remoteFolder}latest.yml`, {
       'Content-Type': 'text/yaml; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
     });
 
     const collectedNames = new Set();
@@ -512,7 +513,13 @@ async function uploadRelease() {
         console.warn('[upload-release] latest.yml 引用但本地未找到:', name);
         continue;
       }
-      pushManifest(local, `${remoteFolder}${name}`, { 'Content-Type': 'application/octet-stream' });
+      const isStubExe = /\.exe$/i.test(name) && !/\.nsis\.7z$/i.test(name);
+      pushManifest(local, `${remoteFolder}${name}`, {
+        'Content-Type': 'application/octet-stream',
+        ...(isStubExe
+          ? { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+          : {}),
+      });
       collectedNames.add(name);
     }
 
@@ -548,6 +555,7 @@ async function uploadRelease() {
     if (!collectedNames.has(setupExe) && setupResolved) {
       pushManifest(setupResolved, `${remoteFolder}${setupExe}`, {
         'Content-Type': 'application/octet-stream',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
       });
     }
 
@@ -569,7 +577,10 @@ async function uploadRelease() {
 
     const offlineZipPath = path.join(releaseDir, offlineZip);
     if (fs.existsSync(offlineZipPath)) {
-      pushManifest(offlineZipPath, `${remoteFolder}${offlineZip}`, { 'Content-Type': 'application/zip' });
+      pushManifest(offlineZipPath, `${remoteFolder}${offlineZip}`, {
+        'Content-Type': 'application/zip',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      });
     } else {
       console.warn('[upload-release] 未找到离线 zip，跳过:', offlineZipPath);
     }

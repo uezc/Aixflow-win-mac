@@ -1,12 +1,25 @@
-/** 与 ImageNode 默认下限一致 */
-export const IMAGE_NODE_MIN_W = 369.46;
-export const IMAGE_NODE_MIN_H = 211.12;
+import { scaleModulePx } from './moduleDisplayScale';
+
+/**
+ * 图片模块短边统一长度：横版高度 = 竖版宽度 = 此值，保证横竖看起来差不多大。
+ * （旧版 minW/minH 按 16:9 拆开会导致竖版短边被撑到接近横版长边。）
+ */
+export const IMAGE_NODE_SHORT_SIDE = scaleModulePx(211.12);
+/** 任一边下限均为短边（横竖统一） */
+export const IMAGE_NODE_MIN_W = IMAGE_NODE_SHORT_SIDE;
+export const IMAGE_NODE_MIN_H = IMAGE_NODE_SHORT_SIDE;
+/** 空图 / 默认 16:9 外框（短边 = IMAGE_NODE_SHORT_SIDE） */
+export const IMAGE_NODE_DEFAULT_W = Math.round(IMAGE_NODE_SHORT_SIDE * (16 / 9));
+export const IMAGE_NODE_DEFAULT_H = Math.round(IMAGE_NODE_SHORT_SIDE);
 export const IMAGE_NODE_MAX_W = 2048;
 export const IMAGE_NODE_MAX_H = 2048;
 
-/** 与 VideoNode 默认下限一致 */
-export const VIDEO_NODE_MIN_W = 738.91;
-export const VIDEO_NODE_MIN_H = 422.22;
+/** 视频模块与图片模块同默认大小：短边统一 + 默认 16:9 外框 */
+export const VIDEO_NODE_SHORT_SIDE = IMAGE_NODE_SHORT_SIDE;
+export const VIDEO_NODE_MIN_W = VIDEO_NODE_SHORT_SIDE;
+export const VIDEO_NODE_MIN_H = VIDEO_NODE_SHORT_SIDE;
+export const VIDEO_NODE_DEFAULT_W = IMAGE_NODE_DEFAULT_W;
+export const VIDEO_NODE_DEFAULT_H = IMAGE_NODE_DEFAULT_H;
 export const VIDEO_NODE_MAX_W = 4096;
 export const VIDEO_NODE_MAX_H = 4096;
 
@@ -46,6 +59,7 @@ export function computeNodeSizeFromMedia(
   }
   let w = mediaW;
   let h = mediaH;
+  // minW===minH 时等价于「短边对齐」：横版高、竖版宽同长
   const scaleToMin = Math.max(minW / w, minH / h);
   w *= scaleToMin;
   h *= scaleToMin;
@@ -146,7 +160,10 @@ export function hasVideoOutputMedia(data: Record<string, unknown> | undefined | 
 
 export function hasImageOutputMedia(data: Record<string, unknown> | undefined | null): boolean {
   if (!data) return false;
-  return !!(String(data.outputImage || '').trim() || String(data.originalImageUrl || '').trim());
+  if (String(data.outputImage || '').trim() || String(data.originalImageUrl || '').trim()) return true;
+  const list = data.outputImages;
+  if (Array.isArray(list) && list.some((u) => String(u || '').trim())) return true;
+  return false;
 }
 
 /** 从节点 data 读取素材像素尺寸（优先 videoAsset / imageAsset；无成片时不读残留 asset） */

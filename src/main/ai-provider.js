@@ -93,6 +93,7 @@ export async function callFCGenericTask(opts = {}) {
     type,
     billing,
     ...(bid ? { billingModelId: bid } : {}),
+    ...(opts.rhRegion === 'ai' || opts.rhRegion === 'cn' ? { rhRegion: opts.rhRegion } : {}),
     ...(refundReason != null && String(refundReason).trim() ? { refundReason: String(refundReason).trim() } : {}),
     ...(forward && typeof forward === 'object' ? { forward } : {}),
     ...(type === 'llm' && llmInnerBody && typeof llmInnerBody === 'object' ? { body: llmInnerBody } : {}),
@@ -180,10 +181,57 @@ export async function callFCGenericTask(opts = {}) {
 }
 
 /**
- * LLM：通过 FC run-task 调用 BLTCY
- * @returns {{ content: string, balance: number }}
+ * 从 OpenAI / RunningHub 兼容 message 中提取最终文本。
+ * GPT-5.x Terra 等可能返回 content 为 parts 数组，或把正文放在 output_text。
  */
-export async function callFCChat({ messages, model = 'gpt-3.5-turbo', temperature, max_tokens } = {}) {
+function extractChatMessageText(message) {
+  if (message == null) return '';
+  if (typeof message === 'string') return message.trim();
+  if (typeof message !== 'object') return String(message || '').trim();
+
+  const parts = [];
+  const push = (v) => {
+    if (v == null) return;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t) parts.push(t);
+      return;
+    }
+    if (Array.isArray(v)) {
+      for (const item of v) push(item);
+      return;
+    }
+    if (typeof v === 'object') {
+      const type = String(v.type || '').toLowerCase();
+      if (/reason|thinking|thought/.test(type)) return;
+      push(v.text ?? v.content ?? v.value ?? v.output_text);
+    }
+  };
+
+  push(message.content);
+  if (!parts.length) push(message.output_text);
+  if (!parts.length && typeof message.refusal === 'string') push(message.refusal);
+
+  // 最后兜底：reasoning 里若夹带 JSON 剧本，仍尝试捞出（避免空返回直接解析失败）
+  if (!parts.length && typeof message.reasoning_content === 'string') {
+    const rc = message.reasoning_content;
+    if (/"plot"\s*:|段号\s*\|/.test(rc)) push(rc);
+  }
+
+  return parts.join('\n').trim();
+}
+
+/**
+ * LLM：通过 FC run-task 调用 BLTCY
+ * @returns {{ content: string, balance: number, finishReason?: string }}
+ */
+export async function callFCChat({
+  messages,
+  model = 'gpt-3.5-turbo',
+  temperature,
+  max_tokens,
+  response_format,
+} = {}) {
   const taskId = genTaskId();
   const body = {
     model,
@@ -191,6 +239,7 @@ export async function callFCChat({ messages, model = 'gpt-3.5-turbo', temperatur
     stream: false,
     ...(temperature != null && { temperature }),
     ...(max_tokens != null && { max_tokens }),
+    ...(response_format != null && { response_format }),
   };
   const { data, balance } = await callFCGenericTask({
     type: 'llm',
@@ -198,6 +247,34 @@ export async function callFCChat({ messages, model = 'gpt-3.5-turbo', temperatur
     billing: 'charge',
     body,
   });
-  const content = data?.choices?.[0]?.message?.content ?? '';
-  return { content, balance: Number.isFinite(balance) ? balance : 0 };
+  const choice = data?.choices?.[0];
+  const message = choice?.message ?? data?.message ?? null;
+  let content = extractChatMessageText(message);
+  // 部分网关把正文放在 data.text / data.output
+  if (!content) {
+    content = extractChatMessageText({ content: data?.text ?? data?.output ?? data?.result ?? '' });
+  }
+  const finishReason = choice?.finish_reason ?? choice?.finishReason ?? data?.finish_reason;
+  if (!content) {
+    console.warn('[callFCChat] empty assistant content', {
+      model,
+      finishReason,
+      messageKeys: message && typeof message === 'object' ? Object.keys(message) : [],
+      contentType: message ? typeof message.content : 'n/a',
+      isContentArray: Array.isArray(message?.content),
+    });
+  } else if (typeof message?.content !== 'string' && message?.content != null) {
+    console.log('[callFCChat] coerced non-string content', {
+      model,
+      finishReason,
+      contentType: typeof message.content,
+      isContentArray: Array.isArray(message.content),
+      textLen: content.length,
+    });
+  }
+  return {
+    content,
+    balance: Number.isFinite(balance) ? balance : 0,
+    finishReason: finishReason != null ? String(finishReason) : undefined,
+  };
 }

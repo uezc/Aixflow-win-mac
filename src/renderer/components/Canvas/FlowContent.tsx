@@ -1,5 +1,6 @@
 // @ts-nocheck
 import React, { useCallback, useMemo, useEffect, useRef, useState, memo } from 'react';
+import { createPortal } from 'react-dom';
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -25,11 +26,14 @@ import ReactFlow, {
   ConnectionLineType,
   useUpdateNodeInternals,
 } from 'reactflow';
-import { Camera, ChevronDown, Maximize2, MousePointer2 } from 'lucide-react';
+import { Camera, ChevronDown, Keyboard, Maximize2, MousePointer2 } from 'lucide-react';
+import CanvasShortcutsPanel from './CanvasShortcutsPanel';
 import ContextMenu from './ContextMenu';
 import BatchRunButton from './BatchRunButton';
 import SuperConnectButton from './SuperConnectButton';
 import VideoJoinButton from './VideoJoinButton';
+import GridMapFromSelectionButton from './GridMapFromSelectionButton';
+import type { CreateGridMapFromSelectionOpts } from './GridMapFromSelectionButton';
 import CanvasHardwareAccelToggle from './CanvasHardwareAccelToggle';
 
 const noopReverseSuperConnect = (_sourceNodeId: string, _targetNodeIds: string[]) => {};
@@ -41,6 +45,7 @@ import {
   resolveTimelineMediaFromSource,
   sortNodesByReadingOrder,
 } from '../../utils/timelineSourceMedia';
+import { resolveImageUrlFromNodeForPhotoCollage } from '../../utils/photoCollageFromEdges';
 import { snapConnectionToPlusHandle } from '../../utils/plusHandleConnectionSnap';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { getNodeDisplayPrice } from '../../utils/cloudModelPricing';
@@ -66,6 +71,7 @@ import {
 } from '../../utils/globalInteractionStore';
 import { ZERO_FLICKER_INTERACTION_UNLOCK_MS } from '../../config/videoVisualConstants';
 import { setImageLoadMaxParallel } from '../../utils/imageLoadPriorityQueue';
+import { setVideoExtractQueuePaused } from '../../utils/videoThumbnails';
 import { setOnAfterPositionApply } from '../../utils/nativeNodePositionSync';
 import { consumeAbortCount } from '../../utils/abortStats';
 import AnimatedGradientEdge from './AnimatedGradientEdge';
@@ -79,6 +85,7 @@ import EdgeCanvasHitLayer from './EdgeCanvasHitLayer';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { flowEmptyCanvasT } from '../../i18n/flowEmptyCanvasI18n';
+import { canvasShortcutsT } from '../../i18n/canvasShortcutsI18n';
 import { VIDEO_NODE_DEFAULT_H, VIDEO_NODE_DEFAULT_W } from '../../utils/nodeSizeFromAspectRatio';
 import 'reactflow/dist/style.css';
 
@@ -150,7 +157,10 @@ function isNodePickableForCanvasTarget(n: Node, target: string): boolean {
 }
 
 function stripCanvasPickNodeClasses(className?: string): string {
-  return (className || '').replace(/\bcanvas-pick-\S+/g, '').trim();
+  return (className || '')
+    .replace(/\bcanvas-pick-\S+/g, '')
+    .replace(/\bquick-connect-\S+/g, '')
+    .trim();
 }
 
 /** 连接线样式上下文，供 CustomConnectionLine / PendingConnectionLine 使用 */
@@ -505,7 +515,18 @@ const CustomConnectionLine = memo(function CustomConnectionLine({
         targetPosition: toPosition,
         curvature: 0.25,
       });
-  return <path d={path} fill="none" className="react-flow__connection-path" style={connectionLineStyle} />;
+  return (
+    <path
+      d={path}
+      fill="none"
+      className="react-flow__connection-path nexflow-connection-drag-path"
+      style={{
+        ...connectionLineStyle,
+        strokeDasharray: '8 6',
+        strokeLinecap: 'round',
+      }}
+    />
+  );
 });
 
 const PendingConnectionLine = memo(function PendingConnectionLine({
@@ -552,7 +573,15 @@ const PendingConnectionLine = memo(function PendingConnectionLine({
     <Panel position="top-left" style={{ left: 0, top: 0, margin: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 5 }}>
       <svg className="absolute inset-0 w-full h-full" style={{ overflow: 'visible' }}>
         <g transform={`translate(${transform[0]}, ${transform[1]}) scale(${transform[2]})`}>
-          <path d={path} fill="none" stroke={isDarkMode ? 'rgba(255,255,255,0.6)' : 'rgba(0,0,0,0.5)'} strokeWidth={4} />
+          <path
+            d={path}
+            fill="none"
+            stroke={isDarkMode ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.45)'}
+            strokeWidth={3}
+            strokeDasharray="8 6"
+            strokeLinecap="round"
+            className="nexflow-connection-drag-path"
+          />
         </g>
       </svg>
     </Panel>
@@ -594,6 +623,8 @@ interface FlowContentProps {
   /** 多选视频一键拼接 */
   onJoinSelectedVideos?: (nodeIds: string[]) => void;
   videoJoinBusy?: boolean;
+  /** 多选图片一键生成宫格图 */
+  onCreateGridMapFromSelection?: (opts: CreateGridMapFromSelectionOpts) => void;
   lightCanvasBgColor?: string; // 光明模式画布背景色
   lightDotsColor?: string; // 光明模式波点色
   lightDotSize?: number; // 光明模式波点粗细倍率 0.5–4（50%–400%）
@@ -622,6 +653,8 @@ interface FlowContentProps {
   characterAvatarPickActive?: boolean;
   /** 与 characterAvatarPickActive 配合：avatar / view=高亮 image，voice=高亮可选取参考音的节点 */
   characterCanvasPickTarget?: 'avatar' | 'voice' | 'view' | 'sceneNormal' | 'sceneDisplay3d' | 'digitalHumanVideo';
+  /** Ctrl+点击快速连线：已选定的源模块 id */
+  quickConnectSourceId?: string | null;
 }
 
 const FlowContent: React.FC<FlowContentProps> = (props) => {
@@ -659,6 +692,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     onReverseSuperConnect,
     onJoinSelectedVideos,
     videoJoinBusy = false,
+    onCreateGridMapFromSelection,
     lightCanvasBgColor = '#E5E7EB',
     lightDotsColor = '#000000',
     lightDotSize = 2,
@@ -676,13 +710,22 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     projectId,
     characterAvatarPickActive = false,
     characterCanvasPickTarget = 'avatar',
+    quickConnectSourceId = null,
   } = props || ({} as FlowContentProps);
   const { locale } = useAppLocale();
   const { showAlert } = useDarkAlert();
   const [characterAvatarPickHoverNodeId, setCharacterAvatarPickHoverNodeId] = useState<string | null>(null);
+  const [quickConnectHoverNodeId, setQuickConnectHoverNodeId] = useState<string | null>(null);
+  const [quickConnectHoverClient, setQuickConnectHoverClient] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     if (!characterAvatarPickActive) setCharacterAvatarPickHoverNodeId(null);
   }, [characterAvatarPickActive, characterCanvasPickTarget]);
+  useEffect(() => {
+    if (!quickConnectSourceId) {
+      setQuickConnectHoverNodeId(null);
+      setQuickConnectHoverClient(null);
+    }
+  }, [quickConnectSourceId]);
   const [screenshotSnipping, setScreenshotSnipping] = useState(false);
   useEffect(() => {
     const api = window.electronAPI;
@@ -690,6 +733,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return api.onScreenshotSnipActive(({ active }) => setScreenshotSnipping(Boolean(active)));
   }, []);
   const emptyCanvas = useMemo(() => flowEmptyCanvasT(locale), [locale]);
+  const shortcutsT = useMemo(() => canvasShortcutsT(locale), [locale]);
+  const [shortcutsPanelOpen, setShortcutsPanelOpen] = useState(false);
   const startCanvasScreenshot = useCallback(async () => {
     const api = window.electronAPI;
     if (!api?.startScreenshotSnip) {
@@ -707,12 +752,43 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   }, [projectId, showAlert]);
   const { cloudMap } = useNxModelPricing();
   const { screenToFlowPosition, flowToScreenPosition, getNodes, fitView, setViewport, getViewport, setCenter, setNodes: reactFlowSetNodes, setEdges: reactFlowSetEdges } = useReactFlow();
+  useEffect(() => {
+    if (!quickConnectSourceId) return;
+    let raf = 0;
+    let lastX = 0;
+    let lastY = 0;
+    const onMove = (e: MouseEvent) => {
+      lastX = e.clientX;
+      lastY = e.clientY;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        setQuickConnectHoverClient({ x: lastX, y: lastY });
+      });
+    };
+    window.addEventListener('mousemove', onMove, { passive: true });
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [quickConnectSourceId]);
   const storeApi = useStoreApi();
   const isPanOrZoomingRef = useRef(false);
   /** 避免平移时每帧重复写 --rf-zoom*；仅 zoom 变化时更新 */
   const lastRfZoomCssRef = useRef(0);
   const [isPanOrZooming, setIsPanOrZooming] = useState(false);
-  isPanOrZoomingRef.current = isPanOrZooming;
+  // 注意：禁止用 state 回写 ref。MoveStart 先置 ref=true，若中途因 setGlobalInteracting
+  // 触发重渲染而把 ref 同步回 false，transform 防抖会失效，导致每帧重渲染 FlowContent。
+  const setPanOrZooming = useCallback((next: boolean) => {
+    isPanOrZoomingRef.current = next;
+    const host = reactFlowWrapper.current;
+    if (host) {
+      // 挂在外层 wrapper：CSS `.react-flow-wrapper--interacting …` 立即生效，不依赖本次 setState 提交
+      host.classList.toggle('react-flow-wrapper--interacting', next);
+      host.querySelector('.nexflow-canvas-stack')?.classList.toggle('react-flow-wrapper--interacting', next);
+    }
+    setIsPanOrZooming((prev) => (prev === next ? prev : next));
+  }, [reactFlowWrapper]);
   const viewportWidth = useStore((s) => s.width ?? 800);
   const viewportHeight = useStore((s) => s.height ?? 600);
   const hasPlayingAudioNodes = useHasPlayingAudioNodes();
@@ -878,6 +954,38 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return nodes.filter((n) => ids.has(n.id));
   }, [selectedNodeIds, nodes]);
 
+  /** 框选中的可导入宫格图的图片模块（全部选中项须为 image 且有图），已按阅读顺序排序 */
+  const selectedJoinableImages = useMemo(() => {
+    if (selectedNodes.length < 2) return [];
+    if (!selectedNodes.every((n) => n.type === 'image')) return [];
+    const withUrl = selectedNodes.filter((n) =>
+      !!resolveImageUrlFromNodeForPhotoCollage(n.data as Record<string, unknown>),
+    );
+    if (withUrl.length < 2 || withUrl.length !== selectedNodes.length) return [];
+    return sortNodesByReadingOrder(withUrl);
+  }, [selectedNodes]);
+
+  const gridMapFromSelectionButtonPosition = useMemo(() => {
+    if (selectedJoinableImages.length < 2) return null;
+    try {
+      const bounds = getNodesBounds(selectedJoinableImages);
+      if (!bounds || !reactFlowInstanceRef.current || !reactFlowWrapper.current) return null;
+      const viewport = reactFlowInstanceRef.current.getViewport();
+      const wrapperBounds = reactFlowWrapper.current.getBoundingClientRect();
+      const z = Math.max(0.1, viewport.zoom);
+      const screenX = bounds.x * z + viewport.x;
+      const screenY = bounds.y * z + viewport.y;
+      const screenWidth = bounds.width * z;
+      const offsetPx = Math.max(16, 28 * z);
+      return {
+        x: screenX + screenWidth / 2 - wrapperBounds.left,
+        y: screenY - offsetPx - wrapperBounds.top,
+      };
+    } catch {
+      return null;
+    }
+  }, [selectedJoinableImages, reactFlowWrapper, transform]);
+
   /** 框选中的可拼接视频模块（全部选中项须为视频且可播），已按从上到下、从左到右排序 */
   const selectedJoinableVideos = useMemo(() => {
     if (selectedNodes.length < 2) return [];
@@ -1032,23 +1140,31 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return hasAny ? sum : null;
   }, [selectedNodeIdsString, selectedRunnableNodes, cloudMap]);
 
-  // 中心聚焦函数：与「一键归位」相同的 fitView 动画（800ms + padding 0.2）
+  // 中心聚焦：一键归位默认 800ms；裁剪等局部对焦默认约 320ms（跟手、少等待）
   const FIT_VIEW_DURATION = 800;
-  const centerNodes = useCallback((targetNodes: Node[] = nodes) => {
+  const CROP_FOCUS_DURATION = 320;
+  const centerNodes = useCallback((
+    targetNodes: Node[] = nodes,
+    opts?: { duration?: number; padding?: number },
+  ) => {
     if (!reactFlowInstanceRef.current || targetNodes.length === 0) {
       return;
     }
+    const duration =
+      typeof opts?.duration === 'number' && opts.duration >= 0 ? opts.duration : FIT_VIEW_DURATION;
+    const padding =
+      typeof opts?.padding === 'number' && opts.padding >= 0 ? opts.padding : 0.2;
     isFitViewAnimatingRef.current = true;
     // 传入完整 nodes，避免断头台过滤时只拟合可见节点；fitView 根据传入节点计算边界
     reactFlowInstanceRef.current.fitView({
       nodes: targetNodes,
-      padding: 0.2, // 20% 边距，确保模块离画布边缘有适当留白
-      includeHiddenNodes: false, // 不包括隐藏节点
-      duration: FIT_VIEW_DURATION, // 800ms 平滑过渡动画
+      padding,
+      includeHiddenNodes: false,
+      duration,
     });
     setTimeout(() => {
       isFitViewAnimatingRef.current = false;
-    }, FIT_VIEW_DURATION + 50); // 略长于动画，确保结束后才恢复 zoom 步进
+    }, duration + 50); // 略长于动画，确保结束后才恢复 zoom 步进
   }, [nodes]);
   
   // 一键归位按钮点击处理；动画结束后触发 onFitViewComplete（用于自动截取项目卡片图）
@@ -1063,18 +1179,26 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   centerNodesRef.current = centerNodes;
 
   /**
-   * 供节点内操作（如图片裁剪放大）请求「一键归位」同款对焦动画：
+   * 供节点内操作（如图片/视频裁剪放大）请求平滑对焦：
    * detail.nodes: [{ id, width?, height? }] — 可带放大后尺寸，避免仍按旧小框取景
+   * detail.duration / padding 可选；未传 duration 时用裁剪对焦默认 320ms
+   *
+   * 注意：React Flow 的 fitView({ nodes }) 只用 id 过滤，会忽略传入的 width/height，
+   * 仍按 store 里旧尺寸取景。裁剪放大后必须用 getNodesBounds + fitBounds 才能真正居中。
    */
   useEffect(() => {
     const onFocusNodes = (ev: Event) => {
       const detail = (ev as CustomEvent<{
         nodes?: Array<{ id: string; width?: number; height?: number }>;
+        duration?: number;
+        padding?: number;
       }>).detail;
       const specs = detail?.nodes;
-      if (!specs?.length || !reactFlowInstanceRef.current) return;
+      const rf = reactFlowInstanceRef.current;
+      if (!specs?.length || !rf) return;
       const all = getNodes();
       const targetNodes: Node[] = [];
+      let hasExplicitSize = false;
       for (const spec of specs) {
         const n = all.find((x) => x.id === spec.id);
         if (!n) continue;
@@ -1086,6 +1210,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           typeof spec.height === 'number' && spec.height > 0
             ? spec.height
             : Number(n.height) || Number((n.style as { height?: number } | undefined)?.height) || undefined;
+        if (typeof spec.width === 'number' && spec.width > 0 && typeof spec.height === 'number' && spec.height > 0) {
+          hasExplicitSize = true;
+        }
         targetNodes.push({
           ...n,
           ...(w != null ? { width: w } : {}),
@@ -1098,7 +1225,48 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         });
       }
       if (targetNodes.length === 0) return;
-      centerNodesRef.current(targetNodes);
+      const duration =
+        typeof detail?.duration === 'number' && detail.duration >= 0
+          ? detail.duration
+          : CROP_FOCUS_DURATION;
+      const padding =
+        typeof detail?.padding === 'number' && detail.padding >= 0 ? detail.padding : 0.2;
+
+      // 带显式放大尺寸时走 fitBounds，保证目标模块落在视口正中心
+      if (hasExplicitSize && typeof rf.fitBounds === 'function') {
+        try {
+          const bounds = getNodesBounds(targetNodes);
+          const bx = Number(bounds?.x);
+          const by = Number(bounds?.y);
+          const bw = Number(bounds?.width);
+          const bh = Number(bounds?.height);
+          const boundsOk =
+            Number.isFinite(bx) &&
+            Number.isFinite(by) &&
+            Number.isFinite(bw) &&
+            Number.isFinite(bh) &&
+            bw > 1 &&
+            bh > 1;
+          if (boundsOk) {
+            isFitViewAnimatingRef.current = true;
+            rf.fitBounds(
+              { x: bx, y: by, width: bw, height: bh },
+              { padding, duration },
+            );
+            window.setTimeout(() => {
+              isFitViewAnimatingRef.current = false;
+            }, duration + 50);
+            return;
+          }
+        } catch (err) {
+          console.warn('[FlowContent] fitBounds skipped (invalid bounds)', err);
+        }
+      }
+      try {
+        centerNodesRef.current(targetNodes, { duration, padding });
+      } catch (err) {
+        console.warn('[FlowContent] centerNodes failed', err);
+      }
     };
     window.addEventListener('nexflow-canvas-focus-nodes', onFocusNodes as EventListener);
     return () => window.removeEventListener('nexflow-canvas-focus-nodes', onFocusNodes as EventListener);
@@ -1276,6 +1444,38 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       });
     }
 
+    if (quickConnectSourceId) {
+      const sourceNode = base.find((n) => n.id === quickConnectSourceId);
+      const sourceType = sourceNode?.type ?? '';
+      base = base.map((n) => {
+        const prevClass = stripCanvasPickNodeClasses(n.className);
+        if (n.id === quickConnectSourceId) {
+          return {
+            ...n,
+            className: [prevClass, 'quick-connect-source'].filter(Boolean).join(' '),
+          };
+        }
+        if (n.id !== quickConnectHoverNodeId) {
+          return {
+            ...n,
+            className: prevClass || undefined,
+          };
+        }
+        const targetType = n.type ?? '';
+        const ok =
+          !!sourceType &&
+          !!targetType &&
+          isConnectionAllowed(sourceType, targetType) &&
+          !(targetType === 'videoSplice' && !isTimelineMediaSourceNodeType(sourceType));
+        return {
+          ...n,
+          className: [prevClass, ok ? 'quick-connect-target--ok' : 'quick-connect-target--bad']
+            .filter(Boolean)
+            .join(' '),
+        };
+      });
+    }
+
     // 不向 ReactFlow 传入裁切后的 nodes：断头台 + 受控 onNodesChange 曾导致屏外节点被误删并落盘。
     // 性能由 onlyRenderVisibleElements 与 EdgeCanvas 密度策略承担；
     // 有音频播放时关闭视口外卸载，避免 AudioNode 与 <audio> 被销毁。
@@ -1290,8 +1490,34 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     characterAvatarPickActive,
     characterCanvasPickTarget,
     characterAvatarPickHoverNodeId,
+    quickConnectSourceId,
+    quickConnectHoverNodeId,
     executingNodeIds,
   ]);
+
+  const quickConnectHoverHint = useMemo(() => {
+    if (!quickConnectSourceId || !quickConnectHoverNodeId) return null;
+    const sourceNode = nodes.find((n) => n.id === quickConnectSourceId);
+    const targetNode = nodes.find((n) => n.id === quickConnectHoverNodeId);
+    const sourceType = sourceNode?.type ?? '';
+    const targetType = targetNode?.type ?? '';
+    const ok =
+      !!sourceType &&
+      !!targetType &&
+      isConnectionAllowed(sourceType, targetType) &&
+      !(targetType === 'videoSplice' && !isTimelineMediaSourceNodeType(sourceType));
+    return {
+      ok,
+      text:
+        locale === 'en'
+          ? ok
+            ? 'Connect to this module'
+            : 'Cannot connect'
+          : ok
+            ? '接入此模块'
+            : '无法连接',
+    };
+  }, [quickConnectSourceId, quickConnectHoverNodeId, nodes, locale]);
 
   const scheduleInteractionRestore = useCallback(() => {
     if (interactionRestoreTimerRef.current) {
@@ -1301,6 +1527,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     interactionRestoreTimerRef.current = setTimeout(() => {
       setGlobalInteracting(false);
       setImageLoadMaxParallel(5);
+      setVideoExtractQueuePaused(false);
       window.electronAPI?.setSharpQueuePaused?.(false).catch(() => undefined);
       interactionRestoreTimerRef.current = null;
     }, ZERO_FLICKER_INTERACTION_UNLOCK_MS);
@@ -1598,7 +1825,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     }
   }, []);
   
-  // 复制粘贴状态管理
+  // 复制/剪切/粘贴状态管理
   const copiedDataRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
   const pasteOffsetRef = useRef(0); // 用于连续粘贴时的偏移
   
@@ -1606,68 +1833,97 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   const generateId = useCallback((prefix: string) => {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }, []);
+
+  /** 将当前选中节点写入内部剪贴板（两端均在选区内的边一并复制）。成功返回选中节点，否则 null。 */
+  const copySelectedNodesToClipboard = useCallback((): Node[] | null => {
+    const selectedNodes = nodes.filter((node) => node.selected);
+    if (selectedNodes.length === 0) return null;
+
+    const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+    const relatedEdges = edges.filter(
+      (edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target)
+    );
+
+    const clonedNodes = selectedNodes.map((node) => ({
+      ...node,
+      data: {
+        ...node.data,
+        progress: 0,
+        progressMessage: undefined,
+        errorMessage: undefined,
+      },
+    }));
+
+    copiedDataRef.current = {
+      nodes: clonedNodes,
+      edges: relatedEdges.map((edge) => ({ ...edge })),
+    };
+    pasteOffsetRef.current = 0;
+    return selectedNodes;
+  }, [nodes, edges]);
   
   // 复制逻辑 (Ctrl+C / Cmd+C)
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      // 检查是否按下了 Ctrl+C (Windows/Linux) 或 Cmd+C (Mac)
-      const isCopy = (event.ctrlKey || event.metaKey) && event.key === 'c';
-      
-      if (isCopy) {
-        // 检查是否在输入框中（避免复制文本时触发）
-        const target = event.target as HTMLElement;
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-          return;
-        }
-        
-        // 获取所有选中的节点
-        const selectedNodes = nodes.filter((node) => node.selected);
-        
-        if (selectedNodes.length === 0) {
-          return;
-        }
-        
-        // 获取所有连接这些选中节点的连线
-        const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
-        const relatedEdges = edges.filter((edge) => 
-          selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target)
-        );
-        
-        // 深度克隆节点和连线
-        const clonedNodes = selectedNodes.map((node) => ({
-          ...node,
-          data: {
-            ...node.data,
-            // 重置运行状态
-            progress: 0,
-            progressMessage: undefined,
-            errorMessage: undefined,
-          },
-        }));
-        
-        const clonedEdges = relatedEdges.map((edge) => ({ ...edge }));
-        
-        // 存储复制的数据
-        copiedDataRef.current = {
-          nodes: clonedNodes,
-          edges: clonedEdges,
-        };
-        
-        pasteOffsetRef.current = 0; // 重置偏移
-        
-        console.log(`[FlowContent] 已复制 ${clonedNodes.length} 个节点和 ${clonedEdges.length} 条连线`);
+      const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c';
+      if (!isCopy) return;
+
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
       }
+
+      const selectedNodes = copySelectedNodesToClipboard();
+      if (!selectedNodes) return;
+      console.log(
+        `[FlowContent] 已复制 ${copiedDataRef.current?.nodes.length ?? 0} 个节点和 ${copiedDataRef.current?.edges.length ?? 0} 条连线`
+      );
     };
     
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, edges]);
+  }, [copySelectedNodesToClipboard]);
+
+  // 剪切逻辑 (Ctrl+X / Cmd+X)：复制后删除选中节点及相连边
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isCut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'x';
+      if (!isCut) return;
+
+      const target = event.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      const selectedNodes = copySelectedNodesToClipboard();
+      if (!selectedNodes || selectedNodes.length === 0) return;
+
+      event.preventDefault();
+
+      const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
+      const edgesToRemove = edges.filter(
+        (edge) => selectedNodeIds.has(edge.source) || selectedNodeIds.has(edge.target)
+      );
+
+      // 走 React Flow change 管道，与 Delete 一致（任务同步 + 历史记录）
+      onNodesChange(selectedNodes.map((node) => ({ type: 'remove', id: node.id })));
+      if (edgesToRemove.length > 0) {
+        onEdgesChange(edgesToRemove.map((edge) => ({ type: 'remove', id: edge.id })));
+      }
+
+      console.log(
+        `[FlowContent] 已剪切 ${selectedNodes.length} 个节点和 ${edgesToRemove.length} 条连线`
+      );
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [copySelectedNodesToClipboard, edges, onNodesChange, onEdgesChange]);
   
   // 粘贴逻辑 (Ctrl+V / Cmd+V)
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      // 检查是否按下了 Ctrl+V (Windows/Linux) 或 Cmd+V (Mac)
-      const isPaste = (event.ctrlKey || event.metaKey) && event.key === 'v';
+      const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
       
       if (isPaste && copiedDataRef.current) {
         // 检查是否在输入框中（避免粘贴文本时触发）
@@ -2142,16 +2398,11 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
 
   const ensureMoveInteractionActive = useCallback(() => {
     if (hasActivatedMoveInteractionRef.current) return;
-    const start = moveStartViewportRef.current;
-    if (!start) return;
-    const current = getViewport();
-    const moved = Math.abs(current.x - start.x) > 0.5 || Math.abs(current.y - start.y) > 0.5;
-    const zoomed = Math.abs(current.zoom - start.zoom) > 0.001;
-    if (!moved && !zoomed) return;
     hasActivatedMoveInteractionRef.current = true;
     beginVisualInteractionLock();
     setGlobalInteracting(true);
-  }, [beginVisualInteractionLock, getViewport]);
+    setVideoExtractQueuePaused(true);
+  }, [beginVisualInteractionLock]);
 
   /** 仅在确有平移/拖拽/全局交互锁时复位；勿在每次普通点击上 reset（会抢 click、加剧卡顿） */
   const forceEndPanInteraction = useCallback(() => {
@@ -2167,8 +2418,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       snap.visualLockState !== 'unlocked';
     if (!hadPan && !hadNodeDrag && !locked) return;
 
-    isPanOrZoomingRef.current = false;
-    setIsPanOrZooming(false);
+    setPanOrZooming(false);
     canvasEngine.setPanning(false);
     canvasEngine.requestUpdate();
 
@@ -2187,11 +2437,12 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     moveStartViewportRef.current = null;
     setGlobalViewportVelocity(0, 0);
     setImageLoadMaxParallel(5);
+    setVideoExtractQueuePaused(false);
     // 必须走 setGlobalVisualLockState，保证 isVisualInteractionLocked 与 visualLockState 同步
     setGlobalVisualLockState('unlocked');
     setGlobalInteracting(false);
     resetGlobalInteractionLocks();
-  }, [canvasEngine]);
+  }, [canvasEngine, setPanOrZooming]);
 
   useEffect(() => {
     const onKeyUp = (e: KeyboardEvent) => {
@@ -2606,7 +2857,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             ...(edgeColor ? { ['--nexflow-edge-color' as string]: edgeColor } : {}),
             ['--nexflow-edge-zoom-opacity' as string]: String(0.45 * Math.max(0.2, zoom)),
           }}
-          className={`nexflow-canvas-stack ${characterAvatarPickActive ? 'canvas-pick-mode' : ''} ${isPanOrZooming ? 'react-flow-wrapper--interacting' : ''} ${isPerformanceMode ? 'pf-performance-mode' : ''} ${isGlobalInteracting ? 'is-dragging' : ''} ${isFastDragDegraded ? 'react-flow-wrapper--fast-drag' : ''}`.trim() || undefined}
+          className={`nexflow-canvas-stack ${characterAvatarPickActive ? 'canvas-pick-mode' : ''} ${quickConnectSourceId ? 'quick-connect-mode' : ''} ${isPanOrZooming ? 'react-flow-wrapper--interacting' : ''} ${isPerformanceMode ? 'pf-performance-mode' : ''} ${isGlobalInteracting ? 'is-dragging' : ''} ${isFastDragDegraded ? 'react-flow-wrapper--fast-drag' : ''}`.trim() || undefined}
         >
         <EdgeCanvasLayer
           ref={edgeCanvasRef}
@@ -2636,12 +2887,22 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           onConnectEnd={onConnectEnd}
           onNodeClick={onNodeClick}
           onNodeMouseEnter={(_e, node) => {
+            if (quickConnectSourceId) {
+              if (node.id !== quickConnectSourceId) {
+                setQuickConnectHoverNodeId(node.id);
+              }
+              return;
+            }
             if (!characterAvatarPickActive) return;
             if (isNodePickableForCanvasTarget(node, characterCanvasPickTarget)) {
               setCharacterAvatarPickHoverNodeId(node.id);
             }
           }}
           onNodeMouseLeave={(_e, node) => {
+            if (quickConnectSourceId) {
+              setQuickConnectHoverNodeId((prev) => (prev === node.id ? null : prev));
+              return;
+            }
             if (!characterAvatarPickActive) return;
             setCharacterAvatarPickHoverNodeId((prev) => (prev === node.id ? null : prev));
           }}
@@ -2667,6 +2928,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
               beginVisualInteractionLock();
               setGlobalInteracting(true);
               setImageLoadMaxParallel(perfLevel >= 2 ? 1 : 2);
+              setVideoExtractQueuePaused(true);
               // 不 pause sharp，避免侧栏缩略图/上传被拖拽锁死
             }
             // 关闭 transform-only 直改：避免节点视觉位置先行、连线路径后一帧更新造成“慢半拍”。
@@ -2705,7 +2967,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           connectionLineComponent={CustomConnectionLine}
-          connectionLineStyle={{ strokeWidth: 4 }}
+          connectionLineStyle={{ strokeWidth: 3 }}
           defaultEdgeOptions={defaultEdgeOptions}
           elementsSelectable={!characterAvatarPickActive}
           nodesDraggable={!characterAvatarPickActive}
@@ -2714,6 +2976,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           selectionOnDrag={!characterAvatarPickActive}
           selectionMode={SelectionMode.Partial}
           selectionKeyCode="Shift"
+          multiSelectionKeyCode={null}
           panActivationKeyCode="Space"
           panOnDrag={[1, 2]}
           onSelectionStart={(e) => e.preventDefault()}
@@ -2733,23 +2996,22 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           connectionRadius={40}
           onInit={onInit}
           onMoveStart={(event) => {
-            isPanOrZoomingRef.current = true;
-            setIsPanOrZooming(true);
+            // 立刻冻结：先 ref/锁，再让后续 transform 订阅与大节点 useViewport 跳过重渲染
+            setPanOrZooming(true);
             canvasEngine.setPanning(true);
             canvasEngine.requestUpdate();
             setImageLoadMaxParallel(perfLevel >= 2 ? 1 : 2);
+            setVideoExtractQueuePaused(true);
             moveStartViewportRef.current = getViewport();
-            hasActivatedMoveInteractionRef.current = false;
+            ensureMoveInteractionActive();
             handleFlowMove(event);
           }}
           onMove={(event) => {
-            ensureMoveInteractionActive();
             handleFlowMove(event);
             edgeCanvasRef.current?.redraw(activeDraggingNodeIdRef.current);
           }}
           onMoveEnd={(event) => {
-            isPanOrZoomingRef.current = false;
-            setIsPanOrZooming(false);
+            setPanOrZooming(false);
             canvasEngine.setPanning(false);
             canvasEngine.requestUpdate();
             const vp = getViewport();
@@ -2761,6 +3023,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             if (hasActivatedMoveInteractionRef.current) {
               scheduleVisualInteractionUnlock();
               scheduleInteractionRestore();
+            } else {
+              setVideoExtractQueuePaused(false);
             }
             hasActivatedMoveInteractionRef.current = false;
             moveStartViewportRef.current = null;
@@ -2895,8 +3159,29 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           <ZoomSlider isDarkMode={!!isDarkMode} />
         </div>
 
-        {/* 右下角：GPU 加速 + 模块数量统计（横向排列） */}
+        {/* 右下角：快捷键查询 + GPU 加速 + 模块数量统计（横向排列） */}
         <div className="absolute bottom-4 right-4 z-[12] nodrag nopan flex flex-row items-center gap-2">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShortcutsPanelOpen(true);
+            }}
+            className={`nexflow-theme-fixed nexflow-frosted-glass flex items-center justify-center w-10 h-10 rounded-lg transition-all ${
+              shortcutsPanelOpen
+                ? isDarkMode
+                  ? 'ring-2 ring-sky-400/80 ring-offset-2 ring-offset-black/40 bg-sky-500/20 text-sky-200'
+                  : 'ring-2 ring-sky-600/75 ring-offset-2 ring-offset-white bg-sky-500/15 text-sky-800'
+                : isDarkMode
+                  ? 'nexflow-frosted-glass-dark hover:bg-white/15 text-white/80'
+                  : 'nexflow-frosted-glass-light hover:bg-white/60 text-gray-700'
+            }`}
+            title={shortcutsT.openPanelTitle}
+            aria-pressed={shortcutsPanelOpen}
+            aria-label={shortcutsT.openPanelTitle}
+          >
+            <Keyboard className="w-5 h-5" />
+          </button>
           <CanvasHardwareAccelToggle isDarkMode={!!isDarkMode} />
           <ModuleCountStats nodes={getNodes()} isDarkMode={!!isDarkMode} />
         </div>
@@ -2912,6 +3197,27 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           </div>
         )}
       </ReactFlow>
+        {quickConnectSourceId && quickConnectHoverClient && quickConnectHoverHint
+          ? createPortal(
+              <div
+                className={`nexflow-quick-connect-hover-tip ${
+                  quickConnectHoverHint.ok
+                    ? 'nexflow-quick-connect-hover-tip--ok'
+                    : 'nexflow-quick-connect-hover-tip--bad'
+                }`}
+                style={{
+                  position: 'fixed',
+                  left: quickConnectHoverClient.x + 14,
+                  top: quickConnectHoverClient.y + 14,
+                  pointerEvents: 'none',
+                  zIndex: 10050,
+                }}
+              >
+                {quickConnectHoverHint.text}
+              </div>,
+              document.body,
+            )
+          : null}
         {/* 批量运行 + 超级连线按钮：放在 ReactFlow 外、与画布同坐标系，确保坐标正确 */}
         {(() => {
           const showBatchRun = selectedRunnableNodes.length >= 2 && batchRunButtonPosition;
@@ -2924,11 +3230,23 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             onReverseSuperConnect;
           const showVideoJoin =
             selectedJoinableVideos.length >= 2 && videoJoinButtonPosition && onJoinSelectedVideos;
+          const showGridMapFromSelection =
+            selectedJoinableImages.length >= 2 &&
+            gridMapFromSelectionButtonPosition &&
+            onCreateGridMapFromSelection;
           const shouldShow =
-            showBatchRun || showSuperForward || showSuperReverse || showVideoJoin;
+            showBatchRun || showSuperForward || showSuperReverse || showVideoJoin || showGridMapFromSelection;
           if (!shouldShow) return null;
           return (
             <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 50 }}>
+              {showGridMapFromSelection && gridMapFromSelectionButtonPosition && (
+                <GridMapFromSelectionButton
+                  selectedNodes={selectedJoinableImages}
+                  position={gridMapFromSelectionButtonPosition}
+                  isDarkMode={isDarkMode}
+                  onCreate={(opts) => onCreateGridMapFromSelection?.(opts)}
+                />
+              )}
               {showVideoJoin && videoJoinButtonPosition && (
                 <VideoJoinButton
                   selectedNodes={selectedJoinableVideos}
@@ -3029,6 +3347,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       {/* 选框 */}
       {/* 使用 React Flow 内置的框选高亮，不再自绘矩形 */}
       </div>
+      <CanvasShortcutsPanel open={shortcutsPanelOpen} onClose={() => setShortcutsPanelOpen(false)} />
       </EdgePathStyleContext.Provider>
     </ErrorBoundary>
   );

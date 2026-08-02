@@ -1,5 +1,7 @@
-export const RVC_TRAIN_WIDTH = 320;
-export const RVC_TRAIN_HEIGHT = 200;
+import { scaleModulePx } from '../utils/moduleDisplayScale';
+
+export const RVC_TRAIN_WIDTH = scaleModulePx(320);
+export const RVC_TRAIN_HEIGHT = scaleModulePx(200);
 
 /** 训练节点内边距（用于估算头像列高度） */
 export const RVC_TRAIN_BODY_PAD_Y_PX = 24;

@@ -26,6 +26,7 @@ import {
   type RefPillHoverMatch,
 } from '../../utils/promptRefPill';
 import { parseAtMentionQuery } from '../../utils/promptMentionCandidates';
+import { registerDictationTarget } from '../../utils/dictationTargetRegistry';
 
 export type { RefPillHoverMatch };
 
@@ -66,6 +67,12 @@ export type PromptRichInputProps = {
   onFocus?: () => void;
   onBlur?: () => void;
   onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
+  /**
+   * Enter 提交（等同点击生成）；Shift+Enter 换行。
+   * 会在 onKeyDown 之后触发；若已 preventDefault（如 @ 菜单选中）则跳过。
+   * 中文输入法组合中（isComposing / keyCode 229）不触发。
+   */
+  onSubmit?: () => void;
   onInputCheck?: () => void;
   onCompositionChange?: (composing: boolean) => void;
   /** 悬停/离开 `.ref-pill` 时回调，供右侧参考图联动放大 */
@@ -88,6 +95,7 @@ export const PromptRichInput = forwardRef<PromptRichInputHandle, PromptRichInput
       onFocus,
       onBlur,
       onKeyDown,
+      onSubmit,
       onInputCheck,
       onCompositionChange,
       onRefPillHover,
@@ -270,6 +278,27 @@ export const PromptRichInput = forwardRef<PromptRichInputHandle, PromptRichInput
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // 注册为画布级大话筒听写目标
+    useEffect(() => {
+      const el = editorRef.current;
+      if (!el) return;
+      return registerDictationTarget(el, {
+        getText: () => {
+          const node = editorRef.current;
+          return node ? serializePromptEditor(node) : lastEmittedRef.current;
+        },
+        setText: (text: string) => {
+          applyHtmlFromPlain(text);
+          lastEmittedRef.current = text;
+          onChange(text);
+        },
+        isAvailable: () => {
+          const node = editorRef.current;
+          return !!node?.isConnected && !disabled && !readOnly;
+        },
+      });
+    }, [applyHtmlFromPlain, disabled, onChange, readOnly]);
+
     const onEditorInput = useCallback(() => {
       if (composingRef.current) {
         onInputCheck?.();
@@ -288,8 +317,20 @@ export const PromptRichInput = forwardRef<PromptRichInputHandle, PromptRichInput
           return;
         }
         onKeyDown?.(e);
+        if (e.defaultPrevented || !onSubmit) return;
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        // IME 组合中不误发：React composing / native isComposing / 旧 IME keyCode 229
+        if (
+          composingRef.current ||
+          e.nativeEvent.isComposing ||
+          (e.nativeEvent as KeyboardEvent).keyCode === 229
+        ) {
+          return;
+        }
+        e.preventDefault();
+        onSubmit();
       },
-      [disabled, readOnly, emitFromDom, onInputCheck, onKeyDown],
+      [disabled, readOnly, emitFromDom, onInputCheck, onKeyDown, onSubmit],
     );
 
     const onPaste = useCallback(
@@ -334,10 +375,13 @@ export const PromptRichInput = forwardRef<PromptRichInputHandle, PromptRichInput
           onCompositionChange?.(true);
         }}
         onCompositionEnd={() => {
+          // 先同步清 IME 标记，再通知父级并检测 @ / ＠（中文输入法常走 composition）
           composingRef.current = false;
           onCompositionChange?.(false);
           emitFromDom();
           onInputCheck?.();
+          // 部分 IME 在 compositionend 之后才落字，再补一次检测
+          setTimeout(() => onInputCheck?.(), 0);
         }}
         onInput={onEditorInput}
         onKeyDown={onEditorKeyDown}

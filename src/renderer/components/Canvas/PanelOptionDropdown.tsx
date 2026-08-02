@@ -15,7 +15,26 @@ export interface PanelOptionDropdownProps {
   minWidthPx?: number;
   /** 拼图模块同系触发器样式 */
   triggerVariant?: 'default' | 'collage';
+  /**
+   * 菜单展开方向：
+   * - auto：视口下方空间不足时改为上拉（全屏底部「比例」等场景）
+   * - up / down：强制上拉或下拉
+   */
+  menuPlacement?: 'auto' | 'up' | 'down';
 }
+
+type MenuPosStyle = {
+  top?: number;
+  bottom?: number;
+  left: number;
+  minWidth: number;
+  maxHeight: number;
+};
+
+const MENU_GAP_PX = 4;
+/** 与 max-h-48 / 每项 py-1.5 text-xs 大致对齐，用于尚未测量时估算 */
+const MENU_ITEM_EST_H = 30;
+const MENU_MAX_H = 192;
 
 /** 画布底部面板用：避免 Electron 在 transform 祖先内渲染原生 select 出现幽灵空框 */
 export const PanelOptionDropdown: React.FC<PanelOptionDropdownProps> = ({
@@ -27,11 +46,12 @@ export const PanelOptionDropdown: React.FC<PanelOptionDropdownProps> = ({
   className = '',
   minWidthPx = 88,
   triggerVariant = 'default',
+  menuPlacement = 'auto',
 }) => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [menuStyle, setMenuStyle] = useState<{ top: number; left: number; minWidth: number } | null>(null);
+  const [menuStyle, setMenuStyle] = useState<MenuPosStyle | null>(null);
 
   const selected = options.find((o) => o.value === value) ?? options[0];
 
@@ -39,19 +59,55 @@ export const PanelOptionDropdown: React.FC<PanelOptionDropdownProps> = ({
     const el = triggerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setMenuStyle({
-      top: rect.bottom + 4,
-      left: rect.left,
-      minWidth: Math.max(minWidthPx, rect.width),
-    });
-  }, [minWidthPx]);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const minWidth = Math.max(minWidthPx, rect.width);
+    const measuredH = menuRef.current?.offsetHeight;
+    const estimatedH = Math.min(
+      MENU_MAX_H,
+      Math.max(measuredH || 0, options.length * MENU_ITEM_EST_H + 8),
+    );
+    const spaceBelow = vh - rect.bottom - MENU_GAP_PX;
+    const spaceAbove = rect.top - MENU_GAP_PX;
+
+    let placeUp = menuPlacement === 'up';
+    if (menuPlacement === 'auto') {
+      placeUp = estimatedH > spaceBelow && spaceAbove > spaceBelow;
+    } else if (menuPlacement === 'down') {
+      placeUp = false;
+    }
+
+    const maxHeight = Math.max(80, Math.min(MENU_MAX_H, placeUp ? spaceAbove : spaceBelow));
+    let left = rect.left;
+    if (left + minWidth > vw - 8) left = Math.max(8, vw - minWidth - 8);
+    if (left < 8) left = 8;
+
+    if (placeUp) {
+      setMenuStyle({
+        bottom: vh - rect.top + MENU_GAP_PX,
+        left,
+        minWidth,
+        maxHeight,
+      });
+    } else {
+      setMenuStyle({
+        top: rect.bottom + MENU_GAP_PX,
+        left,
+        minWidth,
+        maxHeight,
+      });
+    }
+  }, [menuPlacement, minWidthPx, options.length]);
 
   useLayoutEffect(() => {
     if (!open) return;
     updateMenuPos();
+    // 菜单渲染后再测一次真实高度，修正上/下方向
+    const raf = requestAnimationFrame(() => updateMenuPos());
     window.addEventListener('resize', updateMenuPos);
     window.addEventListener('scroll', updateMenuPos, true);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener('resize', updateMenuPos);
       window.removeEventListener('scroll', updateMenuPos, true);
     };
@@ -82,12 +138,18 @@ export const PanelOptionDropdown: React.FC<PanelOptionDropdownProps> = ({
       ? createPortal(
           <div
             ref={menuRef}
-            className={`panel-option-dropdown-menu fixed z-[9999] max-h-48 overflow-y-auto rounded-lg border py-1 shadow-xl shadow-black/30 ${
+            className={`panel-option-dropdown-menu fixed z-[9999] overflow-y-auto rounded-lg border py-1 shadow-xl shadow-black/30 ${
               isDarkMode
                 ? 'border-white/12 text-white'
                 : 'panel-option-dropdown-menu--light border-gray-300/60 text-gray-900'
             }`}
-            style={{ top: menuStyle.top, left: menuStyle.left, minWidth: menuStyle.minWidth }}
+            style={{
+              top: menuStyle.top,
+              bottom: menuStyle.bottom,
+              left: menuStyle.left,
+              minWidth: menuStyle.minWidth,
+              maxHeight: menuStyle.maxHeight,
+            }}
             onMouseDown={(e) => e.stopPropagation()}
           >
             {options.map((opt) => (
@@ -133,7 +195,9 @@ export const PanelOptionDropdown: React.FC<PanelOptionDropdownProps> = ({
         style={{ minWidth: minWidthPx }}
       >
         <span className="truncate">{selected?.label ?? value}</span>
-        <ChevronDown className={`h-3 w-3 shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
       </button>
       {menu}
     </>

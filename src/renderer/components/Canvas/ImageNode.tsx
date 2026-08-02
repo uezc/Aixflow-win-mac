@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo, startTransition } from 'react';
 import { createPortal, flushSync } from 'react-dom';
-import { Handle, Position, NodeProps, Node, addEdge, useReactFlow, useViewport, useStore, useStoreApi, useUpdateNodeInternals } from 'reactflow';
+import { Handle, Position, NodeProps, Node, addEdge, useReactFlow, useStore, useStoreApi, useUpdateNodeInternals } from 'reactflow';
+import { useFrozenFlowViewport, useFrozenFlowZoom } from '../../hooks/useFrozenFlowViewport';
 import { motion } from 'framer-motion';
 import {
   Upload,
   Loader2,
-  Scissors,
   Stamp,
   RotateCcw,
   Box,
@@ -22,7 +22,6 @@ import {
   Maximize2,
   ArrowUp,
   Check,
-  ZoomIn,
 } from 'lucide-react';
 import { ModuleProgressBar } from './ModuleProgressBar';
 import { AiGeneratedBadge } from '../legal/AiGeneratedBadge';
@@ -103,6 +102,51 @@ import {
   messageContainsRefundHint,
 } from '../../utils/userErrorMessageCn';
 import { type ScratchColorId } from '../../theme/scratchColors';
+
+/** 工具栏「放大」：四角取景框 + 中心放大镜（currentColor） */
+function ImageUpscaleToolbarIcon({ className = 'w-4 h-4 shrink-0' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <path d="M4 9V5h4" />
+      <path d="M20 9V5h-4" />
+      <path d="M4 15v4h4" />
+      <path d="M20 15v4h-4" />
+      <circle cx="11" cy="11" r="4.25" />
+      <path d="M14.2 14.2L18 18" />
+      <path d="M11 9.1v3.8" />
+      <path d="M9.1 11h3.8" />
+    </svg>
+  );
+}
+
+/** 工具栏「抠图」：圆角图片框 + 人物上半身（无风景） */
+function ImageMattingToolbarIcon({ className = 'w-4 h-4 shrink-0' }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden
+    >
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <circle cx="12" cy="10" r="2.35" />
+      <path d="M7.5 18c.7-2.6 2.2-3.75 4.5-3.75s3.8 1.15 4.5 3.75" />
+    </svg>
+  );
+}
 
 interface ImageNodeData {
   width?: number;
@@ -762,44 +806,55 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const cropOverlayRef = useRef<ImageCropOverlayHandle>(null);
   /** 裁剪时临时放大模块；结束后还原 */
   const cropSizeBackupRef = useRef<{ w: number; h: number } | null>(null);
+  /** 「九宫格多角度」胶囊激活时临时放大；关闭/离开时还原 */
+  const nineGridSizeBackupRef = useRef<{ w: number; h: number } | null>(null);
 
   const applyCropNodeBox = useCallback(
     (nextW: number, nextH: number) => {
-      const styleDims = nodeStyleDimensions(nextW, nextH);
-      setSize({ w: nextW, h: nextH });
+      const w = Math.round(Number(nextW));
+      const h = Math.round(Number(nextH));
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
+        console.warn('[ImageNode] applyCropNodeBox skipped: invalid size', nextW, nextH);
+        return;
+      }
+      const styleDims = nodeStyleDimensions(w, h);
+      // 先同步 RF store width/height（nodesselection-rect / getNodesBounds 读这里），再改本地 size / DOM
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  width: w,
+                  height: h,
+                  style: {
+                    ...(node.style as object),
+                    ...styleDims,
+                    width: w,
+                    height: h,
+                  },
+                  data: {
+                    ...node.data,
+                    width: w,
+                    height: h,
+                  },
+                }
+              : node,
+          ),
+        );
+      });
+      setSize({ w, h });
       if (nodeRef.current) {
-        nodeRef.current.style.width = `${nextW}px`;
-        nodeRef.current.style.height = `${nextH}px`;
-        nodeRef.current.style.minWidth = `${nextW}px`;
-        nodeRef.current.style.minHeight = `${nextH}px`;
+        nodeRef.current.style.width = `${w}px`;
+        nodeRef.current.style.height = `${h}px`;
+        nodeRef.current.style.minWidth = `${w}px`;
+        nodeRef.current.style.minHeight = `${h}px`;
         const rfNode = nodeRef.current.closest('.react-flow__node') as HTMLElement | null;
         if (rfNode) {
-          rfNode.style.width = `${nextW}px`;
-          rfNode.style.height = `${nextH}px`;
+          rfNode.style.width = `${w}px`;
+          rfNode.style.height = `${h}px`;
         }
       }
-      setNodes((nds) =>
-        nds.map((node) =>
-          node.id === id
-            ? {
-                ...node,
-                width: nextW,
-                height: nextH,
-                style: {
-                  ...(node.style as object),
-                  ...styleDims,
-                  width: nextW,
-                  height: nextH,
-                },
-                data: {
-                  ...node.data,
-                  width: nextW,
-                  height: nextH,
-                },
-              }
-            : node,
-        ),
-      );
       requestAnimationFrame(() => {
         updateNodeInternals(id);
         requestAnimationFrame(() => updateNodeInternals(id));
@@ -808,25 +863,46 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     [id, setNodes, updateNodeInternals],
   );
 
-  /** 无论原图多小，裁剪时都放大到接近视口的固定超大窗口 */
-  const computeLargeCropNodeSize = useCallback(
-    (aspect: number, zoom: number) => {
-      const z = Math.max(zoom, 0.2);
-      const maxFlowW = (window.innerWidth * 0.82) / z;
-      const maxFlowH = (window.innerHeight * 0.7) / z;
-      let w = maxFlowW;
-      let h = w / Math.max(aspect, 0.05);
-      if (h > maxFlowH) {
-        h = maxFlowH;
-        w = h * aspect;
-      }
-      return {
-        w: clampW(Math.round(w)),
-        h: clampH(Math.round(h)),
-      };
-    },
-    [],
-  );
+  /** 无论原图多小，裁剪时都放大到接近视口的超大窗口；外框比例严格跟随图片 aspect，避免黑边 */
+  const computeLargeCropNodeSize = useCallback((aspect: number, zoom: number) => {
+    const zRaw = Number(zoom);
+    const aRaw = Number(aspect);
+    const z = Number.isFinite(zRaw) && zRaw > 0 ? Math.max(zRaw, 0.2) : 1;
+    const a = Number.isFinite(aRaw) && aRaw > 0 ? Math.max(aRaw, 0.05) : DEFAULT_IMAGE_ASPECT_RATIO;
+    const vw = Math.max(320, Number(window.innerWidth) || 1280);
+    const vh = Math.max(240, Number(window.innerHeight) || 720);
+    const maxFlowW = Math.min((vw * 0.82) / z, IMAGE_NODE_MAX_W);
+    const maxFlowH = Math.min((vh * 0.7) / z, IMAGE_NODE_MAX_H);
+    let w = maxFlowW;
+    let h = w / a;
+    if (h > maxFlowH) {
+      h = maxFlowH;
+      w = h * a;
+    }
+    // 独立 clamp 会破坏比例；按短边约束后再反推另一边
+    if (w < IMAGE_NODE_MIN_W) {
+      w = IMAGE_NODE_MIN_W;
+      h = w / a;
+    }
+    if (h < IMAGE_NODE_MIN_H) {
+      h = IMAGE_NODE_MIN_H;
+      w = h * a;
+    }
+    if (w > IMAGE_NODE_MAX_W) {
+      w = IMAGE_NODE_MAX_W;
+      h = w / a;
+    }
+    if (h > IMAGE_NODE_MAX_H) {
+      h = IMAGE_NODE_MAX_H;
+      w = h * a;
+    }
+    const outW = Math.round(w);
+    const outH = Math.round(h);
+    if (!Number.isFinite(outW) || !Number.isFinite(outH) || outW < 2 || outH < 2) {
+      return { w: IMAGE_NODE_MIN_W, h: IMAGE_NODE_MIN_H };
+    }
+    return { w: outW, h: outH };
+  }, []);
 
   /** 模块内 360 环视：本地态保证点击立刻切换（外层 memo 可能漏比 viewMode） */
   const [panorama360Active, setPanorama360Active] = useState(() => data?.viewMode === 'panorama360');
@@ -846,6 +922,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   } | null>(null);
   /** 连续全景截图时，在 getNodes 尚未跟上前用游标避免新节点叠在一起 */
   const panoCaptureSpawnXRef = useRef<number | null>(null);
+
   const registerPanoControls = useCallback(
     (
       api: {
@@ -881,6 +958,68 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
 
   const nodeRef = useRef<HTMLDivElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * 放大裁剪/360 时 RF 的 nodesselection-rect 仍按「旧 measured 宽高」画虚线框，
+   * 会在大窗左上角留下原模块大小的幽灵框。硬方案：会话期间取消节点选中，
+   * 关掉 nodesSelectionActive，并保留 CSS hide 双保险；退出后按需恢复选中。
+   */
+  const wasHidingRfSelectionRef = useRef(false);
+  const rfSessionRestoreSelectedRef = useRef(false);
+  useLayoutEffect(() => {
+    const hide = showCropModal || panorama360Active;
+    const rfNode = nodeRef.current?.closest('.react-flow__node') as HTMLElement | null;
+
+    const clearNodeSelectionHard = () => {
+      flushSync(() => {
+        setNodes((nds) => {
+          let changed = false;
+          const next = nds.map((n) => {
+            if (n.id !== id || !n.selected) return n;
+            changed = true;
+            return { ...n, selected: false };
+          });
+          return changed ? next : nds;
+        });
+      });
+      storeApi.setState({ nodesSelectionActive: false });
+    };
+
+    if (hide) {
+      if (!wasHidingRfSelectionRef.current) {
+        // 入口可能已提前记录；此处兜底（含 selected 尚未被清掉的首帧）
+        rfSessionRestoreSelectedRef.current =
+          rfSessionRestoreSelectedRef.current ||
+          selected ||
+          getNodes().some((n) => n.id === id && n.selected);
+        wasHidingRfSelectionRef.current = true;
+      }
+      // 会话期间若被其它逻辑重新选中，继续强制清掉
+      clearNodeSelectionHard();
+      rfNode?.classList.add('nexflow-hide-rf-selection');
+      return () => {
+        rfNode?.classList.remove('nexflow-hide-rf-selection');
+      };
+    }
+
+    rfNode?.classList.remove('nexflow-hide-rf-selection');
+    if (!wasHidingRfSelectionRef.current) return;
+    wasHidingRfSelectionRef.current = false;
+    const shouldRestore = rfSessionRestoreSelectedRef.current;
+    rfSessionRestoreSelectedRef.current = false;
+    updateNodeInternals(id);
+    const t = window.setTimeout(() => {
+      updateNodeInternals(id);
+      if (!shouldRestore) return;
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((n) => (n.id === id ? { ...n, selected: true } : n)),
+        );
+      });
+      storeApi.setState({ nodesSelectionActive: true });
+    }, 100);
+    return () => window.clearTimeout(t);
+  }, [showCropModal, panorama360Active, selected, storeApi, getNodes, id, updateNodeInternals, setNodes]);
 
   // 外框实际像素变化时持续刷新 Handle；同时把 RF 节点宽高钉死为 size，防止底栏撑大选框
   useEffect(() => {
@@ -942,7 +1081,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   /** 拖出到桌面/资源管理器：pointerdown 起在主进程准备路径，dragstart 内发起原生拖出 */
   const nativeDragPreparePromiseRef = useRef<Promise<string | null> | null>(null);
   const nativeDragPreparedPathRef = useRef<string | null>(null);
-  const viewport = useViewport();
+  const viewport = useFrozenFlowViewport();
   const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
   const isGlobalInteracting = useGlobalInteractionSelector((state) => state.isGlobalInteracting);
   const velocityX = useGlobalInteractionSelector((state) => state.velocityX);
@@ -1101,7 +1240,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     window.setTimeout(() => setSuppressSizeTransition(false), 50);
   }, [applyCropNodeBox]);
 
-  /** 裁剪时抬到画布最上层，避免被其它模块压住选框 */
+  /** 裁剪时抬到画布最上层，避免被其它模块压住选框（勿强制 selected，会画出幽灵选框） */
   const CROP_LAYER_Z = 10000;
   const elevateCropNodeLayer = useCallback(
     (elevate: boolean) => {
@@ -1111,7 +1250,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           if (elevate) {
             return {
               ...n,
-              selected: true,
+              selected: false,
               zIndex: CROP_LAYER_Z,
               style: {
                 ...(n.style as object),
@@ -1149,50 +1288,203 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   }, [elevateCropNodeLayer, restoreCropNodeSize]);
 
   const openCropSession = useCallback(() => {
+    try {
     if (panorama360Active) {
       setPanorama360Active(false);
       updateNodeData({ viewMode: 'flat' });
     }
     if (!cropSizeBackupRef.current) {
-      cropSizeBackupRef.current = { w: size.w, h: size.h };
+      const bw = Number(size.w);
+      const bh = Number(size.h);
+      cropSizeBackupRef.current = {
+        w: Number.isFinite(bw) && bw > 0 ? bw : IMAGE_NODE_MIN_W,
+        h: Number.isFinite(bh) && bh > 0 ? bh : IMAGE_NODE_MIN_H,
+      };
     }
-    const aspect = size.w > 0 && size.h > 0 ? size.w / size.h : DEFAULT_IMAGE_ASPECT_RATIO;
-    const z = getZoom?.() ?? viewport.zoom ?? 1;
+    // 外框比例跟图片 intrinsic / 资源尺寸对齐，避免放大后 object-contain 上下大块黑边
+    const imgEl = imgRef.current;
+    const assetW = Number(data?.imageAsset?.width) || 0;
+    const assetH = Number(data?.imageAsset?.height) || 0;
+    let aspect = DEFAULT_IMAGE_ASPECT_RATIO;
+    if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+      aspect = imgEl.naturalWidth / imgEl.naturalHeight;
+    } else if (assetW > 0 && assetH > 0) {
+      aspect = assetW / assetH;
+    } else {
+      const parsed = parseAspectRatioValue(String(data?.aspectRatio || ''));
+      if (parsed && parsed.w > 0 && parsed.h > 0) aspect = parsed.w / parsed.h;
+      else if (size.w > 0 && size.h > 0) aspect = size.w / size.h;
+    }
+    if (!Number.isFinite(aspect) || aspect <= 0) aspect = DEFAULT_IMAGE_ASPECT_RATIO;
+    let z = 1;
+    try {
+      const gz = getZoom?.();
+      z = Number(gz ?? viewport.zoom ?? 1);
+    } catch {
+      z = Number(viewport.zoom) || 1;
+    }
+    if (!Number.isFinite(z) || z <= 0) z = 1;
     const large = computeLargeCropNodeSize(aspect, z);
+    if (!(large.w > 1 && large.h > 1)) {
+      console.warn('[ImageNode] openCropSession aborted: invalid enlarge size', large);
+      return;
+    }
     setSuppressSizeTransition(true);
+    // 放大前先记下选中态再取消，避免旧 measured 尺寸幽灵框；退出后可恢复
+    if (!wasHidingRfSelectionRef.current) {
+      rfSessionRestoreSelectedRef.current =
+        selected || getNodes().some((n) => n.id === id && n.selected);
+    }
+    flushSync(() => {
+      setNodes((nds) =>
+        nds.map((n) => (n.id === id ? { ...n, selected: false } : n)),
+      );
+    });
+    storeApi.setState({ nodesSelectionActive: false });
     applyCropNodeBox(large.w, large.h);
     setShowCropModal(true);
     elevateCropNodeLayer(true);
 
-    /** 与画布「一键归位」同款 fitView 动画，把裁剪模块放到屏幕正中 */
+    /** 跟手对焦：约 320ms fitBounds；布局就绪后立刻触发，仅短兜底 */
+    const CROP_FOCUS_MS = 320;
     const focusCropModule = () => {
-      elevateCropNodeLayer(true);
-      window.dispatchEvent(
-        new CustomEvent('nexflow-canvas-focus-nodes', {
-          detail: {
-            nodes: [{ id, width: large.w, height: large.h }],
-          },
-        }),
-      );
+      try {
+        elevateCropNodeLayer(true);
+        window.dispatchEvent(
+          new CustomEvent('nexflow-canvas-focus-nodes', {
+            detail: {
+              nodes: [{ id, width: large.w, height: large.h }],
+              duration: CROP_FOCUS_MS,
+              padding: 0.14,
+            },
+          }),
+        );
+      } catch (err) {
+        console.warn('[ImageNode] crop focus failed', err);
+      }
     };
-    // 等放大尺寸写入 RF 后再对焦
+    // 双 rAF：等放大尺寸写入 DOM/RF 后再对焦（不再叠加 100ms）
     requestAnimationFrame(() => {
       requestAnimationFrame(focusCropModule);
     });
-    window.setTimeout(focusCropModule, 120);
-    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+    // 短兜底：布局偶发偏慢时补一次同 bounds（幂等）
+    window.setTimeout(focusCropModule, 64);
+    window.setTimeout(() => setSuppressSizeTransition(false), 40);
+    } catch (err) {
+      console.warn('[ImageNode] openCropSession failed', err);
+      setShowCropModal(false);
+      setSuppressSizeTransition(false);
+    }
   }, [
     panorama360Active,
     updateNodeData,
     size.w,
     size.h,
+    data?.imageAsset?.width,
+    data?.imageAsset?.height,
+    data?.aspectRatio,
     getZoom,
     viewport.zoom,
     computeLargeCropNodeSize,
     applyCropNodeBox,
     elevateCropNodeLayer,
     id,
+    storeApi,
+    selected,
+    getNodes,
+    setNodes,
   ]);
+
+  /** 九宫格多角度：相对当前尺寸 1.5 倍，受视口与模块上限约束 */
+  const computeNineGridEnlargeSize = useCallback((baseW: number, baseH: number, zoom: number) => {
+    const z = Math.max(zoom, 0.2);
+    const maxFlowW = (window.innerWidth * 0.9) / z;
+    const maxFlowH = (window.innerHeight * 0.72) / z;
+    let w = clampW(Math.round(baseW * 1.5));
+    let h = clampH(Math.round(baseH * 1.5));
+    if (w > maxFlowW || h > maxFlowH) {
+      const scale = Math.min(maxFlowW / Math.max(w, 1), maxFlowH / Math.max(h, 1), 1);
+      w = clampW(Math.round(w * scale));
+      h = clampH(Math.round(h * scale));
+    }
+    if (w < baseW || h < baseH) {
+      w = clampW(baseW);
+      h = clampH(baseH);
+    }
+    return { w, h };
+  }, []);
+
+  const applyNineGridEnlarge = useCallback(
+    (active: boolean) => {
+      if (active) {
+        // 裁剪 / 360 会话已占用外框时不抢尺寸
+        if (showCropModal || panorama360Active) return;
+        if (!nineGridSizeBackupRef.current) {
+          nineGridSizeBackupRef.current = { w: sizeRef.current.w, h: sizeRef.current.h };
+        }
+        const base = nineGridSizeBackupRef.current;
+        const z = getZoom?.() ?? viewport.zoom ?? 1;
+        const large = computeNineGridEnlargeSize(base.w, base.h, z);
+        setSuppressSizeTransition(true);
+        applyCropNodeBox(large.w, large.h);
+        const focusNineGrid = () => {
+          window.dispatchEvent(
+            new CustomEvent('nexflow-canvas-focus-nodes', {
+              detail: {
+                nodes: [{ id, width: large.w, height: large.h }],
+                duration: 320,
+                padding: 0.14,
+              },
+            }),
+          );
+        };
+        requestAnimationFrame(() => {
+          requestAnimationFrame(focusNineGrid);
+        });
+        window.setTimeout(focusNineGrid, 64);
+        window.setTimeout(() => setSuppressSizeTransition(false), 40);
+        return;
+      }
+      const backup = nineGridSizeBackupRef.current;
+      nineGridSizeBackupRef.current = null;
+      if (!backup) return;
+      // 若裁剪已接管，把裁剪还原目标改回九宫格前尺寸，避免裁剪结束后留在 1.5×
+      if (cropSizeBackupRef.current) {
+        cropSizeBackupRef.current = backup;
+      }
+      if (showCropModal || panorama360Active) return;
+      setSuppressSizeTransition(true);
+      applyCropNodeBox(backup.w, backup.h);
+      window.setTimeout(() => setSuppressSizeTransition(false), 50);
+    },
+    [
+      showCropModal,
+      panorama360Active,
+      getZoom,
+      viewport.zoom,
+      computeNineGridEnlargeSize,
+      applyCropNodeBox,
+      id,
+    ],
+  );
+
+  useEffect(() => {
+    const onNineGridEnlarge = (e: Event) => {
+      const detail = (e as CustomEvent<{ nodeId?: string; active?: boolean }>).detail;
+      if (!detail || detail.nodeId !== id) return;
+      applyNineGridEnlarge(!!detail.active);
+    };
+    window.addEventListener('nexflow-image-ninegrid-enlarge', onNineGridEnlarge as EventListener);
+    return () => {
+      window.removeEventListener('nexflow-image-ninegrid-enlarge', onNineGridEnlarge as EventListener);
+      // 节点卸载时若仍处放大态则还原，避免留下异常尺寸
+      if (nineGridSizeBackupRef.current) {
+        const backup = nineGridSizeBackupRef.current;
+        nineGridSizeBackupRef.current = null;
+        applyCropNodeBox(backup.w, backup.h);
+      }
+    };
+  }, [id, applyNineGridEnlarge, applyCropNodeBox]);
 
   const persistCameraValue = useCallback(
     (next: CameraControlValue) => {
@@ -1284,7 +1576,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         } else if (nextW >= size.w * 0.95 && nextH >= size.h * 0.95) {
           setSize((prev) => (prev.w === nextW && prev.h === nextH ? prev : { w: nextW, h: nextH }));
         }
-      } else {
+      } else if (!nineGridSizeBackupRef.current && !cropSizeBackupRef.current) {
         setSize((prev) => (prev.w === nextW && prev.h === nextH ? prev : { w: nextW, h: nextH }));
         if (nodeRef.current) {
           nodeRef.current.style.width = `${nextW}px`;
@@ -1292,6 +1584,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         }
         requestAnimationFrame(() => updateNodeInternals(id));
       }
+      // 九宫格 / 裁剪临时放大会话中勿被旧 data 改回原尺寸
     }
     if (data?.outputImage !== undefined || data?.originalImageUrl !== undefined || data?.outputImages !== undefined) {
       const list = Array.isArray(data?.outputImages)
@@ -1983,7 +2276,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
 
   const zoom = viewport.zoom ?? 1;
   // 工具栏反缩放：量化步进，避免 liveZoom 微抖动导致按钮「发抖」
-  const liveZoom = useStore((s) => s.transform?.[2] ?? zoom);
+  const liveZoom = useFrozenFlowZoom(zoom);
   // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
   const zoomInv = useMemo(() => {
     const z = Math.max(liveZoom || zoom || 1, 0.01);
@@ -2795,8 +3088,41 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         panorama360BaseHeight: baseH,
       });
       setPanorama360Active(true);
-      // 先关掉半宽选框，待尺寸落稳后再按新宽高重新打开选区
+      // 放大瞬间记下选中态再取消；会话期间由 wasHidingRfSelectionRef effect 保持
+      if (!wasHidingRfSelectionRef.current) {
+        rfSessionRestoreSelectedRef.current =
+          selected || getNodes().some((n) => n.id === id && n.selected);
+      }
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((n) => (n.id === id ? { ...n, selected: false } : n)),
+        );
+      });
       storeApi.setState({ nodesSelectionActive: false });
+
+      /** 与裁剪打开同级：约 320ms fitBounds 丝滑居中 */
+      const PANO_FOCUS_MS = 320;
+      const focusPanoModule = () => {
+        try {
+          if (!(nextW > 1 && nextH > 1)) return;
+          window.dispatchEvent(
+            new CustomEvent('nexflow-canvas-focus-nodes', {
+              detail: {
+                nodes: [{ id, width: nextW, height: nextH }],
+                duration: PANO_FOCUS_MS,
+                padding: 0.14,
+              },
+            }),
+          );
+        } catch (err) {
+          console.warn('[ImageNode] 360 focus failed', err);
+        }
+      };
+      requestAnimationFrame(() => {
+        requestAnimationFrame(focusPanoModule);
+      });
+      window.setTimeout(focusPanoModule, 64);
+
       window.setTimeout(() => {
         updateNodeInternals(id);
         flushSync(() => {
@@ -2827,11 +3153,9 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           );
         });
         updateNodeInternals(id);
-        const stillSelected = getNodes().some((n) => n.id === id && n.selected);
-        if (stillSelected) {
-          storeApi.setState({ nodesSelectionActive: true });
-        }
-      }, 32);
+        // 不再在此处重新打开 nodesSelectionActive：旧 measured 尺寸会立刻画出左上幽灵框
+        focusPanoModule();
+      }, 48);
     } else {
       const backup =
         panoSizeBackupRef.current ||
@@ -2867,6 +3191,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     imgc.panorama360NoImage,
     storeApi,
     getNodes,
+    selected,
   ]);
 
   /** 360 预览期间持续把 RF node 宽高钉在锁定尺寸，未退出前不允许变小 */
@@ -3193,7 +3518,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   useEffect(() => {
     if (!showCropModal) return;
     elevateCropNodeLayer(true);
-  }, [showCropModal, elevateCropNodeLayer, selected]);
+  }, [showCropModal, elevateCropNodeLayer]);
 
   const persistFlip = useCallback(
     (patch: { flipH?: boolean; flipV?: boolean }) => {
@@ -4252,7 +4577,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
         ) : (
         <>
         {/* 模块上方标签：仅图标 + 标题 + 耗时，不对齐“打印”式状态条 */}
-        {(showDetailedUi || selected) && (
+        {(showDetailedUi || selected || showCropModal || isPanorama360Mode) && (
           <div className="title-area absolute -top-7 left-0 right-0 z-10 flex items-center justify-between gap-2 pointer-events-none">
             <div className="flex min-w-0 items-center gap-1 pointer-events-auto">
               <ImageIcon
@@ -4342,8 +4667,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           borderRadius={16}
         />
 
-        {/* 顶部统一工具栏：360 模式仅保留放大 + 绿色地球退出；平面模式为完整工具 */}
-        {selected && isPanorama360Mode ? (
+        {/* 顶部统一工具栏：360 模式仅保留放大 + 绿色地球退出；平面模式为完整工具（会话期不依赖 RF selected，避免幽灵选框） */}
+        {isPanorama360Mode ? (
           <div
             className={[
               'node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-[80]',
@@ -4400,7 +4725,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
             </button>
           </div>
         ) : null}
-        {selected && !isPanorama360Mode && (
+        {(selected || showCropModal) && !isPanorama360Mode && (
           <div
             className={[
               'node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-[80]',
@@ -4812,7 +5137,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 {isMattingLoading ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  <Scissors className="w-4 h-4 shrink-0" />
+                  <ImageMattingToolbarIcon />
                 )}
               </button>
               <span
@@ -4829,7 +5154,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
               </span>
             </div>
 
-            {/* 超分放大：仅图标，悬停显示价；结果落到右侧新模块 */}
+            {/* 放大：仅图标，悬停显示价；结果落到右侧新模块 */}
             <div
               className="relative inline-flex"
               onMouseEnter={() => setUpscaleV3PriceHover(true)}
@@ -4958,7 +5283,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 {isUpscaleV3Loading ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  <ZoomIn className="w-4 h-4 shrink-0" />
+                  <ImageUpscaleToolbarIcon />
                 )}
               </button>
               <span
@@ -5435,6 +5760,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                     aspectAdaptiveLabel={imgc.panorama360AspectAdaptive}
                     screenshotLabel={imgc.panorama360Screenshot}
                     resetFovLabel={imgc.panorama360ResetFov}
+                    exitLabel={imgc.panorama360ExitFullscreen}
+                    exitTitle={imgc.panorama360ExitFullscreenTitle}
                     dragHint={locale === 'en' ? 'Drag to rotate view' : '拖拽旋转视角'}
                     onRegisterControls={registerPanoControls}
                     expandRatioPickerTitle={imgc.panorama360ExpandRatioPicker}
@@ -5515,7 +5842,9 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                         : '拖到桌面或文件夹以复制图片文件'
                       : undefined
                 }
-                className="absolute inset-0 w-full h-full object-contain rounded-2xl select-none transition-opacity duration-150"
+                className={`absolute inset-0 w-full h-full rounded-2xl select-none transition-opacity duration-150 ${
+                  showCropModal ? 'object-fill' : 'object-contain'
+                }`}
                 style={{
                   display: hasMultiOutputImages ? 'none' : 'block',
                   opacity: isInteractionVisualLock ? 1 : (isImageVisible ? 1 : 0),
@@ -5526,7 +5855,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
                   transitionDuration: isInteractionVisualLock ? '0ms' : '220ms',
                   ...(performanceMode ? { imageRendering: 'crisp-edges' } : {}),
-                  ...(inspectZoom > 1.01
+                  ...(inspectZoom > 1.01 && !showCropModal
                     ? {
                         transform: `translate(${inspectPan.x}px, ${inspectPan.y}px) scale(${inspectZoom})`,
                         transformOrigin: 'center center',
@@ -5692,7 +6021,9 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   alt="buffer"
                   loading="eager"
                   draggable={false}
-                  className="absolute inset-0 w-full h-full object-contain rounded-2xl select-none pointer-events-none transition-opacity duration-150"
+                  className={`absolute inset-0 w-full h-full rounded-2xl select-none pointer-events-none transition-opacity duration-150 ${
+                    showCropModal ? 'object-fill' : 'object-contain'
+                  }`}
                   style={{
                     opacity: isBufferVisible ? 1 : 0,
                     transitionProperty: 'opacity, filter',
@@ -5722,12 +6053,14 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
               )}
               {showCropModal && cropSourceUrl ? (
                 <ImageCropOverlay
+                  key={`crop-overlay-${size.w}x${size.h}`}
                   ref={cropOverlayRef}
                   imageUrl={cropSourceUrl}
                   isDarkMode={isDarkMode}
                   hint=""
                   showHint={false}
                   busy={cropBusy}
+                  layoutRevision={`${size.w}x${size.h}`}
                   onConfirm={(rect) => void handleCropConfirm(rect)}
                   onCancel={() => {
                     if (cropBusy) return;

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, NodeProps, Position, useReactFlow, useStore } from 'reactflow';
+import { Handle, NodeProps, Position, useReactFlow } from 'reactflow';
+import { useFrozenFlowViewport } from '../../hooks/useFrozenFlowViewport';
 import { Cuboid } from 'lucide-react';
 import CubeCameraController, { CameraControlValue } from './CubeCameraController';
 import {
@@ -12,7 +13,8 @@ import {
   CAMERA_PRESETS,
 } from '../../utils/cameraControlUtils';
 import type { CameraPromptMetadata, CameraParams, QwenCameraAPI, CameraOutputPayload } from '../../utils/cameraControlUtils';
-
+import { useAppLocale } from '../../contexts/AppLocaleContext';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 export type { CameraPromptMetadata, CameraParams, QwenCameraAPI, CameraOutputPayload };
 
 interface CameraControlNodeData {
@@ -84,8 +86,8 @@ const DEFAULT_VALUE = DEFAULT_CAMERA_VALUE;
 const MIN_SCALE = 1.2;
 const MAX_SCALE = 6.5;
 
-const NODE_WIDTH = 340;
-const NODE_HEIGHT = 355;
+const NODE_WIDTH = scaleModulePx(340);
+const NODE_HEIGHT = scaleModulePx(355);
 
 const QWEN_PRESETS = CAMERA_PRESETS;
 
@@ -98,11 +100,9 @@ export const CameraControlNode: React.FC<CameraControlNodeProps> = ({
   xPos = 0,
   yPos = 0,
 }) => {
+  const { locale } = useAppLocale();
   const { setNodes } = useReactFlow();
-  const transform = useStore((s) => s.transform);
-  const zoom = transform?.[2] ?? 1;
-  const vx = transform?.[0] ?? 0;
-  const vy = transform?.[1] ?? 0;
+  const { x: vx, y: vy, zoom } = useFrozenFlowViewport();
   const scaleRef = useRef<HTMLInputElement>(null);
   const rotationYTextRef = useRef<HTMLSpanElement>(null);
   const rotationXTextRef = useRef<HTMLSpanElement>(null);
@@ -500,6 +500,7 @@ export const CameraControlNode: React.FC<CameraControlNodeProps> = ({
                 value={controllerValue}
                 inputImageUrl={inputImageUrl}
                 isDarkMode={isDarkMode}
+                locale={locale}
                 onContextLost={() => {
                   setWebglContextLost(true);
                   setWebglAvailable(false);

@@ -16,7 +16,12 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT, type WorkspaceChromeStrings } from '../../i18n/workspaceI18n';
 import type { AppLocale } from '../../i18n/settingsI18n';
-import { assetLibBtnDanger, assetLibBtnPrimary, assetLibBtnSecondary, ASSET_LIBRARY_SIDEBAR_WIDTH_PX } from '../../utils/assetLibraryChrome';
+import {
+  assetLibBtnDanger,
+  assetLibBtnPrimary,
+  assetLibBtnSecondary,
+  ASSET_LIBRARY_SIDEBAR_WIDTH_PX,
+} from '../../utils/assetLibraryChrome';
 
 export interface Task {
   id: string;
@@ -128,16 +133,45 @@ function taskListStatusRunning(isDarkMode: boolean) {
   return isDarkMode ? 'text-sky-300/80' : 'text-sky-600';
 }
 
+function taskLooksLikeAudioMedia(task: { taskType?: string; videoUrl?: string; audioUrl?: string; localFilePath?: string }): boolean {
+  const looksAudio = (u?: string) => !!u && /\.(flac|mp3|wav|aac|m4a|ogg|opus)(?:$|[?#])/i.test(String(u));
+  return looksAudio(task.audioUrl) || looksAudio(task.videoUrl) || looksAudio(task.localFilePath);
+}
+
+function resolveTaskPreviewKind(task: {
+  taskType?: string;
+  videoUrl?: string;
+  audioUrl?: string;
+  localFilePath?: string;
+}): 'video' | 'audio' | 'other' {
+  if (task.taskType === 'audio' && task.audioUrl) return 'audio';
+  if (task.taskType === 'video' && task.videoUrl) {
+    // 误标：音频 SUCCESS 被写成 video + mp3 URL
+    if (taskLooksLikeAudioMedia(task)) return 'audio';
+    return 'video';
+  }
+  if (task.audioUrl && taskLooksLikeAudioMedia(task)) return 'audio';
+  return 'other';
+}
+
 function serializeTaskForCanvasDrag(task: Task): string {
-  const taskType =
+  let taskType =
     task.taskType ||
     (task.imageUrl ? 'image' : task.videoUrl ? 'video' : task.audioUrl ? 'audio' : task.prompt?.trim() ? 'text' : 'image');
+  let videoUrl = task.videoUrl;
+  let audioUrl = task.audioUrl;
+  const looksAudio = (u?: string) => !!u && /\.(flac|mp3|wav|aac|m4a|ogg|opus)(?:$|[?#])/i.test(u);
+  if ((taskType === 'video' || !!videoUrl) && (looksAudio(videoUrl) || looksAudio(audioUrl) || looksAudio(task.localFilePath))) {
+    taskType = 'audio';
+    if (!audioUrl) audioUrl = videoUrl || (task.localFilePath ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : undefined);
+    videoUrl = undefined;
+  }
   return JSON.stringify({
     taskType,
     imageUrl: task.imageUrl,
     outputImages: task.outputImages,
-    videoUrl: task.videoUrl,
-    audioUrl: task.audioUrl,
+    videoUrl,
+    audioUrl,
     localFilePath: task.localFilePath,
     nodeTitle: task.nodeTitle,
     prompt: task.prompt,
@@ -368,30 +402,47 @@ const TaskCard = React.memo(function TaskCard({
               </button>
             ) : (
               <div className={canPlace ? 'pointer-events-none' : undefined}>
-                {task.taskType === 'video' && task.videoUrl ? (
-                  <TaskMediaPreview
-                    task={task}
-                    isDarkMode={isDarkMode}
-                    onPreviewVideo={onPreviewImage}
-                    onPreviewAudio={onPreviewAudio}
-                  />
-                ) : task.taskType === 'audio' && task.audioUrl ? (
-                  <TaskMediaPreview
-                    task={task}
-                    isDarkMode={isDarkMode}
-                    onPreviewVideo={onPreviewImage}
-                    onPreviewAudio={onPreviewAudio}
-                  />
-                ) : (task.imageUrl || (task.outputImages && task.outputImages.length > 0)) ? (
-                  <TaskImageDisplay
-                    task={task}
-                    projectId={projectId}
-                    formatImagePath={formatImagePath}
-                    mapProjectPath={mapProjectPath}
-                    onPreview={onPreviewImage}
-                    isDarkMode={isDarkMode}
-                  />
-                ) : null}
+                {(() => {
+                  const kind = resolveTaskPreviewKind(task);
+                  if (kind === 'video' && task.videoUrl) {
+                    return (
+                      <TaskMediaPreview
+                        task={task}
+                        isDarkMode={isDarkMode}
+                        onPreviewVideo={onPreviewImage}
+                        onPreviewAudio={onPreviewAudio}
+                      />
+                    );
+                  }
+                  if (kind === 'audio') {
+                    const audioTask = {
+                      ...task,
+                      taskType: 'audio' as const,
+                      audioUrl: task.audioUrl || task.videoUrl,
+                    };
+                    return (
+                      <TaskMediaPreview
+                        task={audioTask}
+                        isDarkMode={isDarkMode}
+                        onPreviewVideo={onPreviewImage}
+                        onPreviewAudio={onPreviewAudio}
+                      />
+                    );
+                  }
+                  if (task.imageUrl || (task.outputImages && task.outputImages.length > 0)) {
+                    return (
+                      <TaskImageDisplay
+                        task={task}
+                        projectId={projectId}
+                        formatImagePath={formatImagePath}
+                        mapProjectPath={mapProjectPath}
+                        onPreview={onPreviewImage}
+                        isDarkMode={isDarkMode}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             )
           ) : hasRunningTextPreview ? (

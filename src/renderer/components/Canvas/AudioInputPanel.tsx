@@ -1,7 +1,11 @@
 // @ts-nocheck
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Play, Mic, Loader2, Check, Music2, Package } from 'lucide-react';
-import { useReferenceMicRecording, localResourceUrlFromSavedPath } from '../../hooks/useReferenceMicRecording';
+import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
+import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
+import { bindPushToTalkPointerHandlers } from '../../utils/pushToTalkPointer';
+import { micLevelCssVars } from '../../utils/micInputLevel';
+import VoiceMicGlyph from './VoiceMicGlyph';
 import { useAI } from '../../hooks/useAI';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { isModelNotPricedError } from '../../utils/priceCalc';
@@ -62,48 +66,6 @@ function displayNameFromAudioUrl(url: string): string {
     /* keep raw */
   }
   return name.trim();
-}
-
-/** 苹果风格面板滑块（语速/音量/音调） */
-function ApplePanelRange({
-  isDarkMode,
-  min,
-  max,
-  step,
-  value,
-  onChange,
-  title,
-  'aria-label': ariaLabel,
-}: {
-  isDarkMode: boolean;
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  onChange: (v: number) => void;
-  title?: string;
-  'aria-label'?: string;
-}) {
-  const span = max - min || 1;
-  const pct = Math.max(0, Math.min(100, ((value - min) / span) * 100));
-  const fill = isDarkMode ? '#30D158' : '#34C759';
-  const track = isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(60,60,67,0.18)';
-  return (
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      title={title}
-      aria-label={ariaLabel}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="nexflow-apple-panel-range nodrag w-full cursor-pointer"
-      style={{
-        background: `linear-gradient(to right, ${fill} 0%, ${fill} ${pct}%, ${track} ${pct}%, ${track} 100%)`,
-      }}
-    />
-  );
 }
 
 interface AudioInputPanelProps {
@@ -257,7 +219,6 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   const { locale } = useAppLocale();
   const at = useMemo(() => audioInputPanelT(locale), [locale]);
   const wc = useMemo(() => workspaceChromeT(locale), [locale]);
-  const [micVoiceBusy, setMicVoiceBusy] = useState(false);
   const voiceMergeTargetRef = useRef<'text' | 'lyrics' | 'styleDesc'>('text');
   const isIndexTts2 = model === 'index-tts2';
   const isDoubaoSeedAudio = isDoubaoSeedAudioModel(model);
@@ -286,6 +247,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
 
   // 本地 text + 防抖：修复输入法（IME）问题，避免每次按键触发父组件重渲染打断中文输入
   const [localText, setLocalText] = useState(text);
+  const localTextRef = useRef(localText);
+  localTextRef.current = localText;
   const lastSentTextRef = useRef(text);
   const textDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNodeIdRef = useRef(nodeId);
@@ -394,21 +357,6 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     };
   }, []);
 
-  const mergeVoiceIntoText = useCallback(
-    (recognized: string) => {
-      const t = recognized.trim();
-      if (!t) return;
-      const prev = localText.trim();
-      const next = prev ? `${prev}\n${t}` : t;
-      textInputRef.current?.setPlainText(next);
-      setLocalText(next);
-      lastSentTextRef.current = next;
-      onTextChange(next);
-      textInputRef.current?.focus();
-    },
-    [localText, onTextChange],
-  );
-
   const applyMentionToText = useCallback(
     (next: string) => {
       setLocalText(next);
@@ -419,15 +367,75 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   );
 
   const {
+    status: dictationStatus,
+    isActive: isDictationActive,
+    inputLevel: dictationInputLevel,
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+  } = useCloudRealtimeDictation({
+    getBaseText: () => {
+      const target = voiceMergeTargetRef.current;
+      if (target === 'lyrics') {
+        const prev = (lyricsComposing ? lyricsLocal : lyrics || '').trimEnd();
+        return prev ? `${prev}\n` : '';
+      }
+      if (target === 'styleDesc') {
+        const prev = (styleDescComposing ? styleDescLocal : styleDesc || '').trimEnd();
+        return prev ? `${prev} ` : '';
+      }
+      const prev = (textInputRef.current?.getPlainText() ?? localTextRef.current ?? '').trimEnd();
+      return prev ? `${prev}\n` : '';
+    },
+    onLiveText: (full) => {
+      const target = voiceMergeTargetRef.current;
+      if (target === 'lyrics') {
+        setLyricsComposing(false);
+        onLyricsChange?.(full);
+        return;
+      }
+      if (target === 'styleDesc') {
+        setStyleDescComposing(false);
+        onStyleDescChange?.(full);
+        return;
+      }
+      textInputRef.current?.setPlainText(full);
+      setLocalText(full);
+      lastSentTextRef.current = full;
+      onTextChange(full);
+    },
+    onError: (message) => {
+      showAlert(message);
+    },
+    onMicDenied: () => {
+      showAlert(at.micPermissionDenied);
+    },
+  });
+
+  const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
+  const micVoiceStopping = dictationStatus === 'stopping';
+  const micInputLocked = isDictationActive || micVoiceBusy;
+
+  const { pressStart: dictationPressStart, pressEnd: dictationPressEnd, holdingRef: dictationHoldingRef } =
+    useDictationPushToTalk({
+      start: startRealtimeDictation,
+      stop: stopRealtimeDictation,
+      cancel: cancelRealtimeDictation,
+      status: dictationStatus,
+      disabled: micVoiceStopping,
+    });
+
+  const {
     mentionMenuProps,
     mentionCandidates,
     onMentionKeyDown,
     onMentionInputCheck,
+    onMentionCompositionChange,
   } = usePromptAtMention({
     nodeId,
     value: localText,
     richEditorRef: textInputRef,
-    enabled: !micVoiceBusy && !isTextConnected,
+    enabled: !micInputLocked && !isTextConnected,
     composing: textComposing,
     orderedInputImages: [],
     locale,
@@ -435,158 +443,79 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     onApply: applyMentionToText,
   });
 
-  const mergeVoiceIntoLyrics = useCallback(
-    (recognized: string) => {
-      const t = recognized.trim();
-      if (!t) return;
-      const prev = (lyrics || '').trim();
-      const next = prev ? `${prev}\n${t}` : t;
-      onLyricsChange?.(next);
-    },
-    [lyrics, onLyricsChange],
-  );
-
-  const mergeVoiceIntoStyleDesc = useCallback(
-    (recognized: string) => {
-      const t = recognized.trim();
-      if (!t) return;
-      const prev = (styleDesc || '').trim();
-      const next = prev ? `${prev} ${t}` : t;
-      onStyleDescChange?.(next);
-    },
-    [styleDesc, onStyleDescChange],
-  );
-
-  const runMicTranscribeOnUrl = useCallback(
-    async (localResourceUrl: string) => {
-      if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
-        showAlert(locale === 'en' ? 'Transcription is not available in this build.' : '当前环境不支持语音转写');
-        setMicVoiceBusy(false);
-        return;
-      }
-      const downloadOk = await confirmOptionalEngineDownload('whisper', showConfirm, locale);
-      if (!downloadOk) {
-        setMicVoiceBusy(false);
-        return;
-      }
-      setMicVoiceBusy(true);
-      try {
-        const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
-          projectId || undefined,
-          localResourceUrl,
-          locale === 'zh' ? 'zh' : locale === 'en' ? 'en' : undefined,
-        );
-        const recognized = (out || '').trim();
-        if (!recognized) {
-          showAlert(locale === 'en' ? 'No speech recognized.' : '未识别到文字，请重试。');
-          return;
-        }
-        const target = voiceMergeTargetRef.current;
-        if (target === 'lyrics') mergeVoiceIntoLyrics(recognized);
-        else if (target === 'styleDesc') mergeVoiceIntoStyleDesc(recognized);
-        else mergeVoiceIntoText(recognized);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        showAlert(msg || (locale === 'en' ? 'Transcription failed.' : '语音识别失败'));
-      } finally {
-        setMicVoiceBusy(false);
-      }
-    },
-    [locale, mergeVoiceIntoLyrics, mergeVoiceIntoStyleDesc, mergeVoiceIntoText, projectId, showAlert, showConfirm],
-  );
-
-  const {
-    isRecording: isMicVoiceRecording,
-    startReferenceRecording: startMicVoiceRecording,
-    stopReferenceRecording: stopMicVoiceRecording,
-  } = useReferenceMicRecording({
-    projectId,
-    onSaved: (url) => {
-      void runMicTranscribeOnUrl(url);
-    },
-    onRecordingFailed: () => {
-      setMicVoiceBusy(false);
-    },
-    showAlert,
-    strings: {
-      micPermissionDenied: at.micPermissionDenied,
-      micSaveFailed: at.micSaveFailed,
-      recordTooShort: at.recordTooShort,
-      recordModalTitle: wc.textVoiceModalTitle,
-      recordModalSubtitle: wc.textVoiceModalSubtitle,
-      recordModalStop: at.recordModalStop,
-    },
-    isDarkMode,
-  });
-
-  const handleStopMicVoiceRecording = useCallback(() => {
-    setMicVoiceBusy(true);
-    stopMicVoiceRecording();
-  }, [stopMicVoiceRecording]);
-
-  const handleVoiceInput = useCallback(
-    (target: 'text' | 'lyrics' | 'styleDesc') => (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (micVoiceBusy) return;
-      voiceMergeTargetRef.current = target;
-      if (isMicVoiceRecording) {
-        handleStopMicVoiceRecording();
-        return;
-      }
-      void startMicVoiceRecording();
-    },
-    [isMicVoiceRecording, micVoiceBusy, startMicVoiceRecording, handleStopMicVoiceRecording],
-  );
-
   useEffect(() => {
-    const open = isMicVoiceRecording || micVoiceBusy;
+    const open = isDictationActive;
     (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
     return () => {
       (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
     };
-  }, [isMicVoiceRecording, micVoiceBusy]);
+  }, [isDictationActive]);
 
-  const renderVoiceMicButton = (target: 'text' | 'lyrics' | 'styleDesc') => (
-    <button
-      type="button"
-      onClick={handleVoiceInput(target)}
-      disabled={micVoiceBusy}
-      className={`ml-auto relative flex h-7 w-7 shrink-0 items-center justify-center rounded border transition-colors ${
-        micVoiceBusy
-          ? isDarkMode
-            ? 'cursor-wait border-violet-400/50 bg-violet-500/20 text-violet-200'
-            : 'cursor-wait border-violet-400/60 bg-violet-100 text-violet-700'
-          : isMicVoiceRecording && voiceMergeTargetRef.current === target
-            ? 'border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
+  const renderVoiceMicButton = (target: 'text' | 'lyrics' | 'styleDesc') => {
+    const handlers = bindPushToTalkPointerHandlers({
+      onPressStart: () => {
+        if (
+          micVoiceStopping ||
+          dictationHoldingRef.current ||
+          dictationStatus === 'connecting' ||
+          dictationStatus === 'listening' ||
+          dictationStatus === 'stopping'
+        ) {
+          return;
+        }
+        voiceMergeTargetRef.current = target;
+        dictationPressStart();
+      },
+      onPressEnd: dictationPressEnd,
+      disabled: () => micVoiceStopping,
+    });
+    const activeForTarget =
+      (dictationStatus === 'listening' || dictationStatus === 'connecting') &&
+      voiceMergeTargetRef.current === target;
+    return (
+      <button
+        type="button"
+        {...handlers}
+        disabled={micVoiceStopping}
+        style={activeForTarget ? micLevelCssVars(dictationInputLevel) : undefined}
+        className={`nexflow-voice-mic-btn nodrag nopan relative flex h-7 w-7 shrink-0 items-center justify-center rounded border select-none ${
+          dictationStatus === 'connecting' && activeForTarget
+            ? 'connecting'
+            : dictationStatus === 'listening' && activeForTarget
+              ? 'listening'
+              : ''
+        } ${
+          micVoiceStopping
+            ? isDarkMode
+              ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+              : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
             : isDarkMode
               ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
               : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
-      }`}
-      title={
-        micVoiceBusy
-          ? at.voiceTranscribing
-          : isMicVoiceRecording && voiceMergeTargetRef.current === target
-            ? wc.textVoiceInputStopButton
-            : wc.textVoiceInputTitle
-      }
-      aria-label={
-        micVoiceBusy
-          ? at.voiceTranscribing
-          : isMicVoiceRecording && voiceMergeTargetRef.current === target
-            ? wc.textVoiceInputStopButton
-            : wc.textVoiceInputTitle
-      }
-    >
-      {micVoiceBusy || (isMicVoiceRecording && voiceMergeTargetRef.current === target) ? (
-        <Loader2
-          className={`relative h-3.5 w-3.5 animate-spin ${isMicVoiceRecording && !micVoiceBusy ? 'text-orange-200' : ''}`}
-          strokeWidth={2.25}
+        }`}
+        title={
+          micVoiceBusy
+            ? at.voiceTranscribing
+            : activeForTarget
+              ? wc.textVoiceInputStopButton
+              : wc.textVoiceInputTitle
+        }
+        aria-label={
+          micVoiceBusy
+            ? at.voiceTranscribing
+            : activeForTarget
+              ? wc.textVoiceInputStopButton
+              : wc.textVoiceInputTitle
+        }
+      >
+        <VoiceMicGlyph
+          busy={micVoiceBusy && activeForTarget}
+          active={dictationStatus === 'listening' && activeForTarget}
+          level={dictationInputLevel}
         />
-      ) : (
-        <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
-      )}
-    </button>
-  );
+      </button>
+    );
+  };
 
   // AI Hook
   const { status: aiStatus, execute: executeAI } = useAI({
@@ -715,7 +644,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       const downloadOk = await confirmOptionalEngineDownload('rvc', showConfirm, locale);
       if (!downloadOk) return;
     } else if (isRvcTrain) {
-      if (!(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()) return;
+      if (!(referenceAudioUrl ?? '').trim()) return;
     } else if (!effectiveText) {
       return;
     }
@@ -770,7 +699,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           refUrl = refUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
         }
         requestParams.referenceAudioUrl = refUrl;
-        requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim();
+        // 已去掉面板「模型名称」输入：优先已有值，否则回退节点展示名（Workspace 会注入 title）
+        requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim() || 'audio';
       } else if (isDoubaoSeedAudio) {
         let refUrl = (referenceAudioUrl || '').trim();
         if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
@@ -811,7 +741,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         ? !(sourceSongAudioUrl ?? '').trim() ||
           (!hasRvcCoverModel && !(outputModelUrl || outputModelRemoteUrl || '').trim() && !(libraryRvcVoiceId || '').trim())
         : isRvcTrain
-          ? !(referenceAudioUrl ?? '').trim() || !(rvcTrainModelName ?? '').trim()
+          ? !(referenceAudioUrl ?? '').trim()
           : !localText.trim() || (isIndexTts2 && !(referenceAudioUrl || '').trim()));
 
   const showVoiceEmotionControls =
@@ -937,54 +867,6 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
 
   return (
     <div className="relative flex w-full flex-col nodrag nopan">
-      <style>{`
-        .nexflow-apple-panel-range {
-          -webkit-appearance: none;
-          appearance: none;
-          height: 4px;
-          border-radius: 999px;
-          outline: none;
-        }
-        .nexflow-apple-panel-range::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          appearance: none;
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          background: #ffffff;
-          border: none;
-          box-shadow:
-            0 0.5px 1px rgba(0, 0, 0, 0.12),
-            0 2px 6px rgba(0, 0, 0, 0.18),
-            0 0 0 0.5px rgba(0, 0, 0, 0.06);
-          cursor: pointer;
-          margin-top: -7px;
-        }
-        .nexflow-apple-panel-range::-webkit-slider-runnable-track {
-          height: 4px;
-          border-radius: 999px;
-          background: transparent;
-        }
-        .nexflow-apple-panel-range::-moz-range-thumb {
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          background: #ffffff;
-          border: none;
-          box-shadow:
-            0 0.5px 1px rgba(0, 0, 0, 0.12),
-            0 2px 6px rgba(0, 0, 0, 0.18);
-          cursor: pointer;
-        }
-        .nexflow-apple-panel-range::-moz-range-track {
-          height: 4px;
-          border-radius: 999px;
-          background: transparent;
-        }
-        .nexflow-apple-panel-range:active::-webkit-slider-thumb {
-          transform: scale(1.06);
-        }
-      `}</style>
       {/* 无框贴水：弱边框 + 轻玻璃，与视频/图像/LLM 底栏同系 */}
       <div
         className={[
@@ -996,49 +878,6 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         ].join(' ')}
       >
       <AiGenerateDisclaimerTip isDarkMode={isDarkMode} />
-
-      {/* 无参考音时：Doubao / Index-TTS 提供轻量选文件入口（有 @ 标签后不再占一整行） */}
-      {(isDoubaoSeedAudio || isIndexTts2) &&
-        onReferenceAudioUrlChange &&
-        !referenceAudioDisplayName && (
-        <div className="mb-1 flex items-center justify-end flex-shrink-0">
-          <button
-            type="button"
-            onClick={async () => {
-              if (typeof window.electronAPI?.showOpenAudioDialog !== 'function') return;
-              const res = await window.electronAPI.showOpenAudioDialog();
-              if (res.success && res.filePath) {
-                onReferenceAudioUrlChange(localResourceUrlFromSavedPath(res.filePath));
-              }
-            }}
-            title={isIndexTts2 ? at.selectFileTitle : undefined}
-            aria-label={isIndexTts2 ? at.selectFileAria : undefined}
-            className={`px-2 py-1 rounded-lg text-xs font-medium flex-shrink-0 transition-colors ${
-              isDarkMode
-                ? 'bg-blue-500/90 text-white border border-blue-400/55 hover:bg-blue-500'
-                : 'bg-blue-500 text-white border border-blue-500 hover:bg-blue-600'
-            }`}
-          >
-            {at.selectFileButton}
-          </button>
-        </div>
-      )}
-      {isRvcTrain && onRvcTrainModelNameChange && (
-        <div className="mb-2 flex items-center gap-2 min-w-0 flex-shrink-0">
-          <span className={`text-xs whitespace-nowrap shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
-            {at.rvcTrainModelLabel}
-          </span>
-          <input
-            type="text"
-            value={rvcTrainModelName}
-            onChange={(e) => onRvcTrainModelNameChange(e.target.value)}
-            placeholder={at.rvcTrainModelPlaceholder}
-            className={`flex-1 min-w-0 px-2 py-1 rounded-lg text-xs ${
-              isDarkMode ? 'bg-black/30 text-white border border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border border-gray-300 placeholder:text-gray-500'
-            } outline-none`}
-          />
-        </div>
-      )}
 
       {isAudioCover && onCoverPitchChange && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 flex-shrink-0 pb-2 mb-2">
@@ -1156,75 +995,81 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
                 />
               </div>
               <div className="flex flex-col flex-shrink-0">
-                <div className="mb-1 flex items-center gap-2 min-w-0">
-                  <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.styleDescLabel}</label>
-                  {renderVoiceMicButton('styleDesc')}
+                <label className={`text-xs mb-1 shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.styleDescLabel}</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    data-nexflow-dictation-target="1"
+                    value={styleDescComposing ? styleDescLocal : styleDesc}
+                    readOnly={micInputLocked}
+                    disabled={micInputLocked}
+                    onCompositionStart={(e) => {
+                      setStyleDescComposing(true);
+                      setStyleDescLocal((e.target as HTMLInputElement).value);
+                    }}
+                    onCompositionEnd={(e) => {
+                      setStyleDescComposing(false);
+                      onStyleDescChange?.((e.target as HTMLInputElement).value);
+                    }}
+                    onChange={(e) => {
+                      if (micInputLocked) return;
+                      const v = e.target.value;
+                      if (styleDescComposing) setStyleDescLocal(v);
+                      else onStyleDescChange?.(v);
+                    }}
+                    placeholder={at.styleDescPlaceholder}
+                    className={`w-full px-3 py-2 pr-10 rounded-lg text-sm border ${
+                      isDarkMode ? 'bg-black/30 text-white border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border-gray-300 placeholder:text-gray-500'
+                    } outline-none focus:ring-2 focus:ring-green-500/30 ${micInputLocked ? 'opacity-45 cursor-not-allowed' : ''}`}
+                    style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
+                  />
+                  <div className="absolute top-1/2 -translate-y-1/2 right-1.5 z-10 pointer-events-auto">
+                    {renderVoiceMicButton('styleDesc')}
+                  </div>
                 </div>
-                <input
-                  type="text"
-                  value={styleDescComposing ? styleDescLocal : styleDesc}
-                  readOnly={micVoiceBusy}
-                  disabled={micVoiceBusy}
-                  onCompositionStart={(e) => {
-                    setStyleDescComposing(true);
-                    setStyleDescLocal((e.target as HTMLInputElement).value);
-                  }}
-                  onCompositionEnd={(e) => {
-                    setStyleDescComposing(false);
-                    onStyleDescChange?.((e.target as HTMLInputElement).value);
-                  }}
-                  onChange={(e) => {
-                    if (micVoiceBusy) return;
-                    const v = e.target.value;
-                    if (styleDescComposing) setStyleDescLocal(v);
-                    else onStyleDescChange?.(v);
-                  }}
-                  placeholder={at.styleDescPlaceholder}
-                  className={`w-full px-3 py-2 rounded-lg text-sm border ${
-                    isDarkMode ? 'bg-black/30 text-white border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border-gray-300 placeholder:text-gray-500'
-                  } outline-none focus:ring-2 focus:ring-green-500/30 ${micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''}`}
-                  style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
-                />
               </div>
             </div>
             <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-              <div className="mb-1 flex items-center gap-2 min-w-0 flex-shrink-0">
-                <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.lyricsLabel}</label>
-                {renderVoiceMicButton('lyrics')}
+              <label className={`text-xs mb-1 shrink-0 flex-shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{at.lyricsLabel}</label>
+              <div className="relative flex-1 min-h-0 flex flex-col">
+                <textarea
+                  data-nexflow-dictation-target="1"
+                  value={lyricsComposing ? lyricsLocal : lyrics}
+                  readOnly={micInputLocked}
+                  disabled={micInputLocked}
+                  onCompositionStart={(e) => {
+                    setLyricsComposing(true);
+                    setLyricsLocal((e.target as HTMLTextAreaElement).value);
+                  }}
+                  onCompositionEnd={(e) => {
+                    setLyricsComposing(false);
+                    onLyricsChange?.((e.target as HTMLTextAreaElement).value);
+                  }}
+                  onChange={(e) => {
+                    if (micInputLocked) return;
+                    const v = e.target.value;
+                    if (lyricsComposing) setLyricsLocal(v);
+                    else onLyricsChange?.(v);
+                  }}
+                  placeholder={at.lyricsPlaceholder}
+                  className={`w-full flex-1 min-h-0 custom-scrollbar resize-none rounded-lg p-3 pr-10 pt-10 text-sm border ${
+                    isDarkMode ? 'bg-black/30 text-white border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border-gray-300 placeholder:text-gray-500'
+                  } outline-none focus:ring-2 focus:ring-green-500/30 ${micInputLocked ? 'opacity-45 cursor-not-allowed' : ''}`}
+                  style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
+                />
+                <div className="absolute top-1.5 right-1.5 z-10 pointer-events-auto">
+                  {renderVoiceMicButton('lyrics')}
+                </div>
               </div>
-              <textarea
-                value={lyricsComposing ? lyricsLocal : lyrics}
-                readOnly={micVoiceBusy}
-                disabled={micVoiceBusy}
-                onCompositionStart={(e) => {
-                  setLyricsComposing(true);
-                  setLyricsLocal((e.target as HTMLTextAreaElement).value);
-                }}
-                onCompositionEnd={(e) => {
-                  setLyricsComposing(false);
-                  onLyricsChange?.((e.target as HTMLTextAreaElement).value);
-                }}
-                onChange={(e) => {
-                  if (micVoiceBusy) return;
-                  const v = e.target.value;
-                  if (lyricsComposing) setLyricsLocal(v);
-                  else onLyricsChange?.(v);
-                }}
-                placeholder={at.lyricsPlaceholder}
-                className={`w-full flex-1 min-h-0 custom-scrollbar resize-none rounded-lg p-3 text-sm border ${
-                  isDarkMode ? 'bg-black/30 text-white border-gray-600/50 placeholder:text-white/40' : 'bg-white/90 text-gray-900 border-gray-300 placeholder:text-gray-500'
-                } outline-none focus:ring-2 focus:ring-green-500/30 ${micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''}`}
-                style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
-              />
             </div>
           </div>
         ) : isRvcTrain ? (
-          <div className="flex-1 min-w-0 min-h-0 grid grid-cols-2 gap-2">
+          <div className="flex-1 min-w-0 min-h-0 flex justify-center">
             {(() => {
               const connected = !!(referenceAudioUrl || '').trim();
               return (
                 <div
-                  className={`flex flex-col items-center justify-center gap-2 min-h-[120px] rounded-xl border transition-colors ${
+                  className={`w-1/2 flex flex-col items-center justify-center gap-2 min-h-[120px] rounded-xl border transition-colors ${
                     connected
                       ? isDarkMode
                         ? 'border-emerald-500/45 bg-emerald-500/10'
@@ -1341,155 +1186,69 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
           </div>
         ) : (
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          <div className="mb-1 flex items-center gap-2 min-w-0 flex-shrink-0">
-            {!isTextConnected && !isAudioConnected && !isSourceSongConnected ? (
-              <label className={`text-xs shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
-                {at.textContentLabel}
-              </label>
-            ) : null}
-            <div className="flex-1" />
-            {renderVoiceMicButton('text')}
-          </div>
-          <PromptRichInput
-            ref={textInputRef}
-            value={localText}
-            candidates={mentionCandidates}
-            readOnly={micVoiceBusy || isTextConnected}
-            disabled={micVoiceBusy}
-            isDarkMode={isDarkMode}
-            placeholder={isDoubaoSeedAudio ? (locale === 'en' ? 'Audio generation prompt (≤3000 chars)…' : '输入音频生成提示词（≤3000 字符）…') : at.textContentPlaceholder}
-            title={at.textInputTitle}
-            onFocus={() => {
-              if (micVoiceBusy || isTextConnected) return;
-              textInputFocusedRef.current = true;
-            }}
-            onCompositionChange={setTextComposing}
-            onBlur={() => {
-              textInputFocusedRef.current = false;
-              if (textDebounceRef.current) {
-                clearTimeout(textDebounceRef.current);
-                textDebounceRef.current = null;
-              }
-              const v = textInputRef.current?.getPlainText() ?? localText;
-              if (v !== lastSentTextRef.current) {
-                lastSentTextRef.current = v;
+          {!isTextConnected && !isAudioConnected && !isSourceSongConnected ? (
+            <label className={`mb-1 text-xs shrink-0 flex-shrink-0 ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+              {at.textContentLabel}
+            </label>
+          ) : null}
+          <div className="relative min-w-0 h-[112px]">
+            <PromptRichInput
+              ref={textInputRef}
+              value={localText}
+              candidates={mentionCandidates}
+              readOnly={micInputLocked || isTextConnected}
+              disabled={micInputLocked}
+              isDarkMode={isDarkMode}
+              placeholder={isDoubaoSeedAudio ? (locale === 'en' ? 'Audio generation prompt (≤3000 chars)…' : '输入音频生成提示词（≤3000 字符）…') : at.textContentPlaceholder}
+              title={at.textInputTitle}
+              onFocus={() => {
+                if (micInputLocked || isTextConnected) return;
+                textInputFocusedRef.current = true;
+              }}
+              onCompositionChange={(next) => {
+                onMentionCompositionChange(next);
+                setTextComposing(next);
+              }}
+              onBlur={() => {
+                textInputFocusedRef.current = false;
+                if (textDebounceRef.current) {
+                  clearTimeout(textDebounceRef.current);
+                  textDebounceRef.current = null;
+                }
+                const v = textInputRef.current?.getPlainText() ?? localText;
+                if (v !== lastSentTextRef.current) {
+                  lastSentTextRef.current = v;
+                  setLocalText(v);
+                  onTextChange(v);
+                }
+              }}
+              onKeyDown={onMentionKeyDown}
+              onSubmit={() => {
+                if (micInputLocked || isTextConnected || isRunDisabled) return;
+                void handleExecute();
+              }}
+              onInputCheck={onMentionInputCheck}
+              onChange={(v) => {
+                if (micInputLocked) return;
                 setLocalText(v);
-                onTextChange(v);
-              }
-            }}
-            onKeyDown={onMentionKeyDown}
-            onInputCheck={onMentionInputCheck}
-            onChange={(v) => {
-              if (micVoiceBusy) return;
-              setLocalText(v);
-              if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
-              textDebounceRef.current = setTimeout(() => {
-                textDebounceRef.current = null;
-                lastSentTextRef.current = v;
-                onTextChange(v);
-              }, 250);
-            }}
-            className={`w-full flex-1 min-h-[112px] custom-scrollbar px-0 py-1 ${
-              micVoiceBusy || isTextConnected ? 'opacity-45 cursor-not-allowed' : ''
-            }`}
-            style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
-          />
-          <AtMentionMenu {...mentionMenuProps} />
+                if (textDebounceRef.current) clearTimeout(textDebounceRef.current);
+                textDebounceRef.current = setTimeout(() => {
+                  textDebounceRef.current = null;
+                  lastSentTextRef.current = v;
+                  onTextChange(v);
+                }, 250);
+              }}
+              className={`w-full h-full px-0 py-1 pr-9 pt-8 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden ${
+                micInputLocked || isTextConnected ? 'opacity-45 cursor-not-allowed' : ''
+              }`}
+              style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
+            />
+            <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+              {renderVoiceMicButton('text')}
+            </div>
+            <AtMentionMenu {...mentionMenuProps} />
+          </div>
         </div>
-        )}
-
-        {/* 右侧：语速/音量/音调（MiniMax 或 Doubao）— 苹果风格滑块 */}
-        {isDoubaoSeedAudio && (
-          <div className="w-44 flex-shrink-0 flex flex-col gap-3.5 justify-center pl-1">
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.doubaoSpeechRateLabel(String(clampDoubaoSpeechRate(speechRate)))}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={-50}
-                max={100}
-                step={1}
-                value={clampDoubaoSpeechRate(speechRate)}
-                onChange={(v) => onSpeechRateChange?.(v)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.doubaoLoudnessRateLabel(String(clampDoubaoLoudnessRate(loudnessRate)))}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={-50}
-                max={100}
-                step={1}
-                value={clampDoubaoLoudnessRate(loudnessRate)}
-                onChange={(v) => onLoudnessRateChange?.(v)}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.pitchLabel(`${pitch > 0 ? '+' : ''}${clampDoubaoPitchRate(pitch)}`)}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={-12}
-                max={12}
-                step={1}
-                value={clampDoubaoPitchRate(pitch)}
-                onChange={(v) => onPitchChange(v)}
-              />
-            </div>
-          </div>
-        )}
-        {!isIndexTts2 && !isDoubaoSeedAudio && !isRhartSong && !isAudioCover && !isRvcTrain && (
-          <div className="w-44 flex-shrink-0 flex flex-col gap-3.5 justify-center pl-1">
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.speedLabel(speed.toFixed(1))}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={0.5}
-                max={2}
-                step={0.1}
-                value={speed}
-                onChange={onSpeedChange}
-                title={at.speedLabel(speed.toFixed(1))}
-                aria-label={at.speedAria}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.volumeLabel(volume.toFixed(1))}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={0.1}
-                max={10}
-                step={0.1}
-                value={volume}
-                onChange={onVolumeChange}
-                title={at.volumeLabel(volume.toFixed(1))}
-                aria-label={at.volumeAria}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className={`text-[11px] font-medium tracking-wide ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
-                {at.pitchLabel(`${pitch > 0 ? '+' : ''}${pitch}`)}
-              </label>
-              <ApplePanelRange
-                isDarkMode={isDarkMode}
-                min={-12}
-                max={12}
-                step={1}
-                value={pitch}
-                onChange={onPitchChange}
-                title={at.pitchLabel(`${pitch > 0 ? '+' : ''}${pitch}`)}
-                aria-label={at.pitchAria}
-              />
-            </div>
-          </div>
         )}
       </div>
 

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { BaseEdge, EdgeLabelRenderer, EdgeProps, getSmoothStepPath } from 'reactflow';
-import { Scissors } from 'lucide-react';
+import { Minus } from 'lucide-react';
 
 const EDGE_ATTACH_OVERLAP = 0;
 
@@ -72,12 +72,22 @@ export default function SplitRibbonEdge(props: EdgeProps) {
           aria-label="点击显示删除按钮"
         />
       )}
+      {isSelected && (
+        <path
+          d={path}
+          className="nexflow-edge-aa-soft"
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
       <BaseEdge id={id} path={path} markerEnd={markerEnd} style={{ ...style, strokeDasharray: 'none', strokeLinecap: 'round', strokeLinejoin: 'round' }} />
       {showScissors && onDelete && (
         <EdgeLabelRenderer>
           <button
             type="button"
-            className="nodrag nopan flex items-center justify-center w-8 h-8 rounded-full bg-red-500/90 hover:bg-red-500 text-white shadow-lg border border-red-400/50 transition-colors"
+            className="nodrag nopan nexflow-edge-delete-btn"
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
@@ -90,7 +100,7 @@ export default function SplitRibbonEdge(props: EdgeProps) {
             title="删除连接线"
             aria-label="删除连接线"
           >
-            <Scissors className="w-4 h-4" strokeWidth={2} />
+            <Minus className="w-4 h-4" strokeWidth={2.5} />
           </button>
         </EdgeLabelRenderer>
       )}

@@ -1,11 +1,13 @@
 // @ts-nocheck
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, memo, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Handle, Position, NodeProps, addEdge, useReactFlow, useUpdateNodeInternals, useViewport, type Edge, type Node } from 'reactflow';
-import { Loader2, Mic, Play, Pause, Volume2, Upload, AudioLines, Scissors, Download } from 'lucide-react';
+import { Handle, Position, NodeProps, addEdge, useReactFlow, useUpdateNodeInternals, type Edge, type Node } from 'reactflow';
+import { useFrozenFlowViewport } from '../../hooks/useFrozenFlowViewport';
+import { Loader2, Mic, Play, Pause, Volume2, Upload, AudioLines, Scissors, Download, Check, X } from 'lucide-react';
 import { normalizeVideoUrl } from '../../utils/normalizeVideoUrl';
 import { probeAudioMediaDurationSec } from '../../utils/timelineSourceMedia';
 import { ModuleProgressBar } from './ModuleProgressBar';
+import { AiGeneratedBadge } from '../legal/AiGeneratedBadge';
 import { useGlobalInteractionSelector } from '../../utils/globalInteractionStore';
 import { mapProjectPath } from '../../utils/pathMapper';
 import {
@@ -21,16 +23,20 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import {
   useReferenceMicRecording,
 } from '../../hooks/useReferenceMicRecording';
+import { micLevelCssVars } from '../../utils/micInputLevel';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../../utils/audioSongModels';
 import { isAudioCoverModel } from '../../utils/audioCoverModel';
 import { setAudioNodePlaying } from '../../utils/audioNodePlaybackStore';
 import { dispatchCanvasPickNode, isCanvasPickVoiceTarget } from '../../utils/canvasPickStore';
 import { AudioWaveformVisualizer } from './AudioWaveformVisualizer';
 import { nodeStyleDimensions } from '../../utils/nodeSizeFromAspectRatio';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
+import { useAudioInputPanelAnchor } from '../../contexts/AudioInputPanelContext';
+import VoiceMicGlyph from './VoiceMicGlyph';
 
 /** 声音模块固定尺寸（不可拖拽缩放） */
-export const AUDIO_NODE_WIDTH = 280;
-export const AUDIO_NODE_HEIGHT = 160;
+export const AUDIO_NODE_WIDTH = scaleModulePx(280);
+export const AUDIO_NODE_HEIGHT = scaleModulePx(160);
 
 export type AudioSeparateAllPayload = {
   sourceNodeId: string;
@@ -68,6 +74,8 @@ interface AudioNodeProps extends NodeProps<AudioNodeData> {
   onDataChange?: (nodeId: string, updates: Partial<AudioNodeData>) => void;
   /** 多段音频一键分离：须写入 Workspace 画布状态（勿仅用 useReactFlow().setNodes） */
   onSeparateAllAudios?: (payload: AudioSeparateAllPayload) => void;
+  /** 裁剪导出：新音频节点 + 连线写入 Workspace（原模块不动） */
+  onAddAudioClipNodes?: (payload: { nodes: Node[]; edges: Edge[] }) => void;
   /** 底部 Audio 面板打开时，同步参考音输入框 */
   syncAudioPanelReferenceUrl?: (url: string) => void;
 }
@@ -247,8 +255,8 @@ const TrimRangeBar: React.FC<{
   );
 };
 
-// 全屏背景虚化的音频裁剪专属弹窗
-const AudioTrimModal: React.FC<{
+// 与视频裁剪胶片条同款：挂在节点下方的内联裁剪条（无全屏弹窗）
+const AudioTrimInlineBar: React.FC<{
   audioUrl: string;
   isDarkMode: boolean;
   initialTrimStart: number;
@@ -256,17 +264,33 @@ const AudioTrimModal: React.FC<{
   onConfirm: (trimStart: number, trimEnd: number) => void;
   onCancel: () => void;
   trimming: boolean;
+  trimError?: string | null;
   c: AudioNodeChromeStrings;
-}> = ({ audioUrl, isDarkMode, initialTrimStart, initialTrimEnd, onConfirm, onCancel, trimming, c }) => {
+}> = ({
+  audioUrl,
+  isDarkMode,
+  initialTrimStart,
+  initialTrimEnd,
+  onConfirm,
+  onCancel,
+  trimming,
+  trimError,
+  c,
+}) => {
+  const { locale } = useAppLocale();
   const modalAudioRef = useRef<HTMLAudioElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [trimStart, setTrimStart] = useState(initialTrimStart);
   const [trimEnd, setTrimEnd] = useState(initialTrimEnd);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [volume, setVolume] = useState(1);
+  const dragRef = useRef<{ mode: 'start' | 'end' | 'move'; originX: number; start0: number; end0: number } | null>(
+    null,
+  );
 
   const playbackUrl = useMemo(() => normalizeAudioUrl(audioUrl), [audioUrl]);
+  const MIN_TRIM = 0.1;
 
   useEffect(() => {
     setTrimStart(initialTrimStart);
@@ -279,6 +303,69 @@ const AudioTrimModal: React.FC<{
     }
   }, [duration, trimEnd]);
 
+  const clamp = useCallback((v: number) => Math.max(0, Math.min(duration || 0, v)), [duration]);
+  const pct = (t: number) => (duration > 0 ? (t / duration) * 100 : 0);
+  const selLeft = pct(trimStart);
+  const selWidth = Math.max(pct(trimEnd) - selLeft, 0.8);
+  const selDur = Math.max(0, trimEnd - trimStart);
+
+  const timeFromClientX = useCallback(
+    (clientX: number) => {
+      const track = trackRef.current;
+      if (!track || duration <= 0) return 0;
+      const rect = track.getBoundingClientRect();
+      return clamp(((clientX - rect.left) / Math.max(rect.width, 1)) * duration);
+    },
+    [clamp, duration],
+  );
+
+  const startDrag = useCallback(
+    (mode: 'start' | 'end' | 'move') => (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      dragRef.current = { mode, originX: e.clientX, start0: trimStart, end0: trimEnd };
+    },
+    [trimStart, trimEnd],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || duration <= 0) return;
+      const track = trackRef.current;
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      const dxSec = ((e.clientX - drag.originX) / Math.max(rect.width, 1)) * duration;
+      if (drag.mode === 'start') {
+        const ns = clamp(Math.min(drag.start0 + dxSec, drag.end0 - MIN_TRIM));
+        setTrimStart(ns);
+      } else if (drag.mode === 'end') {
+        const ne = clamp(Math.max(drag.end0 + dxSec, drag.start0 + MIN_TRIM));
+        setTrimEnd(ne);
+      } else {
+        const span = drag.end0 - drag.start0;
+        let ns = drag.start0 + dxSec;
+        let ne = drag.end0 + dxSec;
+        if (ns < 0) {
+          ne -= ns;
+          ns = 0;
+        }
+        if (ne > duration) {
+          ns -= ne - duration;
+          ne = duration;
+        }
+        setTrimStart(clamp(ns));
+        setTrimEnd(clamp(Math.max(ns + Math.min(span, duration), ns + MIN_TRIM)));
+      }
+    },
+    [clamp, duration],
+  );
+
+  const endDrag = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
   const togglePlay = useCallback(() => {
     const el = modalAudioRef.current;
     if (!el) return;
@@ -287,207 +374,182 @@ const AudioTrimModal: React.FC<{
       setIsPlaying(false);
       return;
     }
-    const inTrim = trimEnd > trimStart;
-    if (inTrim && (el.currentTime < trimStart || el.currentTime >= trimEnd)) {
+    if (trimEnd > trimStart && (el.currentTime < trimStart || el.currentTime >= trimEnd)) {
       el.currentTime = trimStart;
       setCurrentTime(trimStart);
     }
     el.play().then(() => setIsPlaying(true)).catch(() => {});
   }, [isPlaying, trimStart, trimEnd]);
 
-  const handleTrimChange = useCallback((start: number, end: number) => {
-    setTrimStart(start);
-    setTrimEnd(end);
-  }, []);
-
-  const handleConfirm = useCallback(() => {
-    onConfirm(trimStart, trimEnd);
-  }, [trimStart, trimEnd, onConfirm]);
-
-  return createPortal(
+  return (
     <div
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-xl"
-      onClick={(e) => { if (e.target === e.currentTarget && !trimming) onCancel(); }}
+      className={`nexflow-video-trim-bar nexflow-audio-trim-bar nodrag nopan mt-1.5 w-full rounded-2xl border px-2.5 py-2.5 outline-none ${
+        isDarkMode
+          ? 'border-white/12 bg-black/70 text-white backdrop-blur-md'
+          : 'border-gray-200 bg-white/95 text-gray-900 shadow-lg'
+      }`}
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     >
-      <style>{`
-        .nexflow-audio-trim-mini-range {
-          -webkit-appearance: none;
-          appearance: none;
-          height: 3px;
-          border-radius: 999px;
-          background: ${isDarkMode ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)'};
-          outline: none;
-        }
-        .nexflow-audio-trim-mini-range::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          width: 9px;
-          height: 9px;
-          border-radius: 50%;
-          background: #a78bfa;
-          border: none;
-          box-shadow: 0 0 0 2px ${isDarkMode ? 'rgba(10,10,12,0.9)' : 'rgba(255,255,255,0.95)'};
-          cursor: pointer;
-        }
-        .nexflow-audio-trim-mini-range::-moz-range-thumb {
-          width: 9px;
-          height: 9px;
-          border-radius: 50%;
-          background: #a78bfa;
-          border: none;
-          cursor: pointer;
-        }
-      `}</style>
-      <div
-        className={`w-full max-w-lg mx-4 overflow-hidden shadow-2xl shadow-black/40 ${
-          isDarkMode
-            ? 'nexflow-glass-panel rounded-[20px] border border-white/[0.08]'
-            : 'rounded-[20px] border border-gray-200 bg-white'
-        }`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className={`px-6 pt-6 pb-5 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-          <div className="mb-5">
-            <div className="flex items-center gap-2.5">
-              <span
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-                  isDarkMode ? 'bg-violet-500/15 text-violet-300' : 'bg-violet-100 text-violet-600'
-                }`}
-              >
-                <AudioLines className="h-5 w-5" strokeWidth={2.25} />
-              </span>
-              <h3 className="text-base font-semibold tracking-tight">{c.trimModalTitle}</h3>
-            </div>
-            <p className={`mt-2 pl-[46px] text-xs leading-relaxed ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
-              {c.trimModalHint}
-            </p>
-          </div>
-          <audio
-            ref={modalAudioRef}
-            src={playbackUrl}
-            preload="metadata"
-            className="hidden"
-            onLoadedMetadata={(e) => {
-              const el = e.currentTarget;
-              const d = pickFiniteAudioDuration(el);
-              setDuration(d);
-              if (d > 0 && (trimEnd <= 0 || trimEnd > d)) setTrimEnd(d);
-            }}
-            onDurationChange={(e) => {
-              const d = pickFiniteAudioDuration(e.currentTarget);
-              if (d > 0) {
-                setDuration(d);
-                setTrimEnd((te) => (te <= 0 || te > d ? d : te));
-              }
-            }}
-            onTimeUpdate={(e) => {
-              const t = e.currentTarget.currentTime;
-              if (trimEnd > trimStart && t >= trimEnd) {
-                e.currentTarget.pause();
-                e.currentTarget.currentTime = trimEnd;
-                setCurrentTime(trimEnd);
-                setIsPlaying(false);
-              } else {
-                setCurrentTime(t);
-              }
-            }}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onEnded={() => {
-              setIsPlaying(false);
-              setCurrentTime(trimEnd > trimStart ? trimEnd : 0);
-            }}
-          />
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={togglePlay}
-              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors ${
-                isDarkMode
-                  ? 'bg-violet-500/15 text-violet-300 hover:bg-violet-500/25'
-                  : 'bg-violet-100 text-violet-600 hover:bg-violet-200'
-              }`}
-              title={isPlaying ? '暂停' : '播放'}
-              aria-label={isPlaying ? '暂停' : '播放'}
-            >
-              {isPlaying ? <Pause className="h-4 w-4" strokeWidth={2.25} /> : <Play className="ml-0.5 h-4 w-4" strokeWidth={2.25} />}
-            </button>
-            <div className="min-w-0 flex-1 pt-0.5">
-              <TrimRangeBar
-                duration={duration}
-                currentTime={currentTime}
-                trimStart={trimStart}
-                trimEnd={trimEnd}
-                isDarkMode={isDarkMode}
-                audioRef={modalAudioRef}
-                setCurrentTime={setCurrentTime}
-                onTrimRangeChange={handleTrimChange}
-              />
-            </div>
-          </div>
-          <div className="mt-3 flex items-end justify-between gap-4 pl-[52px]">
-            <div className={`text-[10px] font-mono tabular-nums leading-snug ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>
-              <span>{formatAudioClock(currentTime)}</span>
-              {duration > 0 ? (
-                <span className={isDarkMode ? 'text-white/35' : 'text-gray-400'}>
-                  {` / ${formatAudioClock(duration)}`}
-                </span>
-              ) : null}
-              <span className={`ml-2 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
-                {c.trimRangeLabel(formatAudioClock(trimStart), formatAudioClock(trimEnd))}
-              </span>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Volume2 className={`h-3 w-3 ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`} />
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={volume}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value);
-                  setVolume(v);
-                  if (modalAudioRef.current) modalAudioRef.current.volume = v;
-                }}
-                className="nexflow-audio-trim-mini-range w-14 cursor-pointer"
-                title="音量"
-                aria-label="音量"
-              />
-            </div>
-          </div>
-        </div>
-        <div
-          className={`flex justify-end gap-4 border-t px-6 py-4 ${
-            isDarkMode ? 'border-white/[0.08]' : 'border-gray-200'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={trimming}
-            className={`px-1 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${
-              isDarkMode ? 'text-white/65 hover:text-white' : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            {c.cancel}
-          </button>
-          <button
-            type="button"
-            onClick={handleConfirm}
-            disabled={trimming || trimEnd <= trimStart}
-            className={`flex min-w-[88px] items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-              isDarkMode
-                ? 'bg-violet-600 hover:bg-violet-500'
-                : 'bg-violet-600 hover:bg-violet-700'
-            }`}
-          >
-            {trimming ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {trimming ? c.trimming : c.confirm}
-          </button>
-        </div>
+      <audio
+        ref={modalAudioRef}
+        src={playbackUrl}
+        preload="metadata"
+        className="hidden"
+        onLoadedMetadata={(e) => {
+          const d = pickFiniteAudioDuration(e.currentTarget);
+          setDuration(d);
+          if (d > 0 && (trimEnd <= 0 || trimEnd > d)) setTrimEnd(d);
+        }}
+        onDurationChange={(e) => {
+          const d = pickFiniteAudioDuration(e.currentTarget);
+          if (d > 0) {
+            setDuration(d);
+            setTrimEnd((te) => (te <= 0 || te > d ? d : te));
+          }
+        }}
+        onTimeUpdate={(e) => {
+          const t = e.currentTarget.currentTime;
+          if (trimEnd > trimStart && t >= trimEnd) {
+            e.currentTarget.pause();
+            e.currentTarget.currentTime = trimEnd;
+            setCurrentTime(trimEnd);
+            setIsPlaying(false);
+          } else {
+            setCurrentTime(t);
+          }
+        }}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => {
+          setIsPlaying(false);
+          setCurrentTime(trimEnd > trimStart ? trimEnd : 0);
+        }}
+      />
+
+      <div className={`mb-1.5 flex items-center justify-between gap-2 text-[11px] ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`}>
+        <span className="flex items-center gap-1.5 shrink-0">
+          {trimming ? <Loader2 className="h-3 w-3 animate-spin text-sky-400" /> : null}
+          {c.trimModalTitle}
+        </span>
+        <span className="truncate">
+          {locale === 'en' ? 'Drag to trim · Confirm exports a new module' : '拖选区间裁剪 · 确认后导出为新模块'}
+        </span>
       </div>
-    </div>,
-    document.body
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={trimming}
+          onClick={() => !trimming && onCancel()}
+          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition-colors ${
+            isDarkMode
+              ? 'border-white/20 bg-white/8 hover:bg-white/14 disabled:opacity-40'
+              : 'border-gray-200 bg-gray-50 hover:bg-gray-100 disabled:opacity-40'
+          }`}
+          title={c.cancel}
+          aria-label={c.cancel}
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <div
+          ref={trackRef}
+          className={`relative h-[64px] min-w-0 flex-1 overflow-hidden rounded-xl ${
+            isDarkMode ? 'bg-white/5 ring-1 ring-white/10' : 'bg-gray-100 ring-1 ring-gray-200'
+          }`}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onClick={(e) => {
+            if (dragRef.current) return;
+            const t = timeFromClientX(e.clientX);
+            if (modalAudioRef.current) {
+              modalAudioRef.current.currentTime = t;
+              setCurrentTime(t);
+            }
+          }}
+        >
+          {duration <= 0 ? (
+            <div className="flex h-full items-center justify-center gap-2 text-[11px] opacity-70">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              {locale === 'en' ? 'Loading…' : '加载中…'}
+            </div>
+          ) : (
+            <>
+              <div
+                className={`pointer-events-none absolute inset-0 opacity-40 ${
+                  isDarkMode
+                    ? 'bg-[repeating-linear-gradient(90deg,transparent,transparent_6px,rgba(255,255,255,0.08)_6px,rgba(255,255,255,0.08)_7px)]'
+                    : 'bg-[repeating-linear-gradient(90deg,transparent,transparent_6px,rgba(0,0,0,0.06)_6px,rgba(0,0,0,0.06)_7px)]'
+                }`}
+              />
+              <div className="pointer-events-none absolute inset-y-0 left-0 bg-black/55" style={{ width: `${selLeft}%` }} />
+              <div
+                className="pointer-events-none absolute inset-y-0 right-0 bg-black/55"
+                style={{ width: `${Math.max(0, 100 - selLeft - selWidth)}%` }}
+              />
+              <div
+                className="absolute inset-y-1 z-10 cursor-grab rounded-lg border-2 border-white active:cursor-grabbing"
+                style={{ left: `${selLeft}%`, width: `${selWidth}%`, boxShadow: '0 0 0 1px rgba(0,0,0,0.35)' }}
+                onPointerDown={startDrag('move')}
+              >
+                <div className="pointer-events-none absolute inset-x-0 top-1/2 flex -translate-y-1/2 justify-center">
+                  <span className="rounded-md bg-black/65 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white">
+                    {selDur.toFixed(2)}s
+                  </span>
+                </div>
+                <div
+                  className="absolute inset-y-0 left-0 z-20 w-3 -translate-x-1/2 cursor-ew-resize"
+                  onPointerDown={startDrag('start')}
+                >
+                  <span className="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white" />
+                </div>
+                <div
+                  className="absolute inset-y-0 right-0 z-20 w-3 translate-x-1/2 cursor-ew-resize"
+                  onPointerDown={startDrag('end')}
+                >
+                  <span className="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white" />
+                </div>
+              </div>
+              <div
+                className="pointer-events-none absolute inset-y-0 z-30 w-0.5 bg-sky-400"
+                style={{ left: `${pct(currentTime)}%` }}
+              />
+              <button
+                type="button"
+                className="absolute bottom-1.5 left-1.5 z-40 flex h-7 w-7 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/70"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePlay();
+                }}
+                title={isPlaying ? '暂停' : '播放'}
+              >
+                {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="ml-0.5 h-3.5 w-3.5" />}
+              </button>
+            </>
+          )}
+        </div>
+
+        <button
+          type="button"
+          disabled={trimming || duration <= 0 || trimEnd - trimStart < MIN_TRIM}
+          onClick={() => onConfirm(trimStart, trimEnd)}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white text-black transition-colors hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-40"
+          title={locale === 'en' ? 'Confirm trim' : '确认裁剪'}
+          aria-label={locale === 'en' ? 'Confirm trim' : '确认裁剪'}
+        >
+          {trimming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" strokeWidth={2.5} />}
+        </button>
+      </div>
+
+      <p className={`mt-1.5 text-center text-[10px] leading-relaxed ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
+        {c.trimRangeLabel(formatAudioClock(trimStart), formatAudioClock(trimEnd))}
+        {' · '}
+        {locale === 'en' ? 'Click track to seek' : '点击轨道跳转试听'}
+      </p>
+      {trimError ? <p className="mt-1 text-[11px] text-red-400">{trimError}</p> : null}
+    </div>
   );
 };
 
@@ -1390,6 +1452,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     onDataChange,
     syncAudioPanelReferenceUrl,
     onSeparateAllAudios,
+    onAddAudioClipNodes,
     // React Flow 专有属性，不应传递给 DOM（显式解构以过滤）
     xPos = 0,
     yPos = 0,
@@ -1451,7 +1514,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
   const titleInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const prevOutputAudioRef = useRef<string>(''); // 用于跟踪音频 URL 变化
-  const viewport = useViewport();
+  const viewport = useFrozenFlowViewport();
   const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
   const { locale } = useAppLocale();
   const wc = workspaceChromeT(locale);
@@ -1741,6 +1804,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
 
   const {
     isRecording: isRecordingRefMic,
+    inputLevel: refMicInputLevel,
     startReferenceRecording,
     stopReferenceRecording,
   } = useReferenceMicRecording({
@@ -1784,18 +1848,6 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     };
   }, [isRecordingRefMic, refMicSaving]);
 
-  const floatTopPillBtn = (extra = '') =>
-    isDarkMode
-      ? `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 hover:bg-white/25 text-white transition-colors ${extra}`
-      : `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/90 hover:bg-white text-gray-800 border border-gray-200/80 shadow-sm transition-colors ${extra}`;
-
-  const floatIconBtn = (extra = '') =>
-    `p-1.5 rounded-lg transition-all disabled:opacity-30 ${
-      isDarkMode
-        ? 'apple-panel hover:bg-white/20 text-white/80'
-        : 'apple-panel-light hover:bg-gray-200/30 text-gray-700'
-    } ${extra}`;
-
   const handleTrimConfirm = useCallback(async (overrideStart?: number, overrideEnd?: number) => {
     const start = overrideStart ?? parseFloat(trimStartSec);
     const end = overrideEnd ?? parseFloat(trimEndSec);
@@ -1816,30 +1868,83 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     setTrimming(true);
     try {
       const res = await window.electronAPI.trimAudio(projectId || undefined, audioUrl, start, end);
-      if (res?.audioUrl) {
-        const newDur = Math.max(0.1, end - start);
-        setOutputAudio(res.audioUrl);
-        updateNodeData({
+      if (!res?.audioUrl) {
+        setTrimError('裁剪未返回结果');
+        return;
+      }
+      const newDur = Math.max(0.1, end - start);
+      const sourceNode = getNode(id);
+      const GAP = 48;
+      const nodeW = AUDIO_NODE_WIDTH;
+      const nodeH = AUDIO_NODE_HEIGHT;
+      const baseX = (sourceNode?.position.x ?? xPos) + nodeW + GAP;
+      const baseY = sourceNode?.position.y ?? yPos;
+      const newNodeId = `audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const clipTitle = locale === 'en' ? 'Trimmed clip' : '裁剪片段';
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'audio',
+        position: { x: baseX, y: baseY },
+        selected: true,
+        width: nodeW,
+        height: nodeH,
+        data: {
+          label: 'audio',
+          title: clipTitle,
           outputAudio: res.audioUrl,
           originalAudioUrl: res.audioUrl,
           mediaDurationSec: newDur,
+          width: nodeW,
+          height: nodeH,
+          aiStatus: 'SUCCESS',
+          audioSourceType: data?.audioSourceType,
+          model: data?.model,
           errorMessage: undefined,
-        });
-        setTrimStartSec('0');
-        setTrimEndSec(String(Math.round(newDur * 10) / 10));
-        setShowTrimModal(false);
+        },
+        style: nodeStyleDimensions(nodeW, nodeH),
+      };
+      const edge: Edge = {
+        id: `e-${id}-${newNodeId}`,
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'audio-input',
+        animated: false,
+      };
+      if (onAddAudioClipNodes) {
+        onAddAudioClipNodes({ nodes: [newNode], edges: [edge] });
       } else {
-        setTrimError('裁剪未返回结果');
+        // 兜底：写入 React Flow（受控画布下可能被 Workspace 覆盖，优先走 onAddAudioClipNodes）
+        setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(newNode));
+        setEdges((eds) => addEdge(edge, eds));
+        console.warn('[AudioNode] onAddAudioClipNodes 未注入，已用本地 setNodes 兜底');
       }
+      setShowTrimModal(false);
     } catch (err: any) {
       const msg = err?.message || '裁剪失败';
       console.error('[AudioNode] 裁剪失败:', err);
       setTrimError(msg);
-      updateNodeData({ errorMessage: msg });
     } finally {
       setTrimming(false);
     }
-  }, [trimStartSec, trimEndSec, data?.outputAudio, outputAudio, data?.referenceAudioUrl, projectId, updateNodeData]);
+  }, [
+    trimStartSec,
+    trimEndSec,
+    data?.outputAudio,
+    outputAudio,
+    data?.referenceAudioUrl,
+    data?.audioSourceType,
+    data?.model,
+    projectId,
+    id,
+    xPos,
+    yPos,
+    getNode,
+    setNodes,
+    setEdges,
+    onAddAudioClipNodes,
+    locale,
+  ]);
 
   const handleUploadReferenceAudio = useCallback(async () => {
     if (typeof window.electronAPI?.showOpenAudioDialog !== 'function') return;
@@ -1940,6 +2045,28 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     !isRecordingRefMic &&
     !refMicSaving;
   const showFloatingTopActions = !showPlaceholder && showNodeChrome;
+  // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
+  const zoomInv = Math.min(1, 1 / Math.max(zoom || 1, 0.01));
+  const audioPromptAnchor = useAudioInputPanelAnchor();
+  const showAudioPromptPanel =
+    !!audioPromptAnchor && audioPromptAnchor.nodeId === id && !!selected;
+
+  /** 与视频/图片模块同款：顶部玻璃胶囊内图标按钮；录制中走绿色话筒态 */
+  const topToolbarIconBtn = (active = false, extra = '', opts?: { micRecording?: boolean }) => {
+    const base =
+      'nodrag inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:opacity-35';
+    if (opts?.micRecording) {
+      return `${base} nexflow-voice-mic-btn listening border border-transparent ${extra}`.trim();
+    }
+    if (isDarkMode) {
+      return `${base} ${
+        active ? 'bg-white/15 text-white' : 'bg-transparent text-white/80 hover:bg-white/10 hover:text-white'
+      } ${extra}`.trim();
+    }
+    return `${base} ${
+      active ? 'bg-black/10 text-gray-900' : 'bg-transparent text-gray-700 hover:bg-black/[0.06] hover:text-gray-900'
+    } ${extra}`.trim();
+  };
 
   useEffect(() => {
     if (!showExternalPlayerControls) {
@@ -2028,6 +2155,9 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           key={data?.updatedAt || 'initial'}
           className="nexflow-audio-node-body absolute inset-0 z-[1] flex min-h-0 w-full flex-col items-stretch overflow-hidden p-0"
         >
+          {(hasMultiOutputAudios || data?.outputAudio || outputAudio) ? (
+            <AiGeneratedBadge isDarkMode={isDarkMode} />
+          ) : null}
           {hasMultiOutputAudios ? (
             <AudioMultiOutputMainPlayer
               urls={outputAudios}
@@ -2114,6 +2244,28 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
 
         </>
         )}
+
+        {/* 对齐 Image/Video：操作台贴主模块下方，随节点平移/缩放 */}
+        {showAudioPromptPanel && audioPromptAnchor ? (
+          <div
+            className="audio-text-prompt-panel nodrag nopan absolute z-[60]"
+            style={{
+              top: showExternalPlayerControls ? 'calc(100% + 48px)' : 'calc(100% + 8px)',
+              left: '50%',
+              width: audioPromptAnchor.width,
+              height: audioPromptAnchor.height === 'auto' ? 'auto' : audioPromptAnchor.height,
+              transform: `translateX(-50%) scale(${zoomInv})`,
+              transformOrigin: 'top center',
+              pointerEvents: 'auto',
+              transition: 'none',
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            {audioPromptAnchor.panel}
+          </div>
+        ) : null}
       </div>
 
         {showDetailedUi && showNodeChrome ? (
@@ -2182,7 +2334,20 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
 
         {showFloatingTopActions ? (
           <div
-            className="nodrag nopan pointer-events-auto absolute -top-14 left-0 right-0 z-10 flex justify-center gap-2"
+            className={[
+              'node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-20',
+              'flex w-max max-w-[min(560px,calc(100vw-2rem))] flex-wrap items-center justify-center gap-1',
+              'overflow-visible rounded-full px-2 py-1.5',
+              isDarkMode
+                ? 'nexflow-glass-panel border border-white/[0.14] shadow-[0_8px_28px_rgba(0,0,0,0.28)]'
+                : 'apple-panel-light border border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.06)]',
+            ].join(' ')}
+            style={{
+              pointerEvents: 'all',
+              transform: `translateX(-50%) scale(${zoomInv})`,
+              transformOrigin: 'bottom center',
+              transition: 'none',
+            }}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             onWheel={(e) => e.stopPropagation()}
@@ -2192,12 +2357,11 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
                 type="button"
                 onClick={handleReferenceMicInput}
                 disabled={refMicSaving}
-                className={floatTopPillBtn(
-                  refMicSaving
-                    ? 'cursor-wait opacity-70'
-                    : isRecordingRefMic
-                      ? 'bg-orange-500/35 hover:bg-orange-500/45'
-                      : '',
+                style={isRecordingRefMic ? micLevelCssVars(refMicInputLevel) : undefined}
+                className={topToolbarIconBtn(
+                  isRecordingRefMic,
+                  refMicSaving ? 'cursor-wait opacity-70' : '',
+                  { micRecording: isRecordingRefMic },
                 )}
                 title={
                   refMicSaving
@@ -2208,11 +2372,12 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
                 }
                 aria-label={refMicAt.recordReferenceAria}
               >
-                {refMicSaving || isRecordingRefMic ? (
-                  <Loader2 className={`h-4 w-4 animate-spin ${isRecordingRefMic && !refMicSaving ? 'text-orange-100' : ''}`} />
-                ) : (
-                  <Mic className="h-4 w-4" strokeWidth={2.25} />
-                )}
+                <VoiceMicGlyph
+                  size="md"
+                  busy={refMicSaving}
+                  active={isRecordingRefMic}
+                  level={refMicInputLevel}
+                />
               </button>
             ) : null}
             {hasDownloadableAudio ? (
@@ -2223,11 +2388,34 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
                   e.preventDefault();
                   handleDownloadAudio();
                 }}
-                className={floatTopPillBtn()}
+                className={topToolbarIconBtn()}
                 title="下载"
                 aria-label="下载"
               >
-                <Download className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                <Download className="h-4 w-4 shrink-0" />
+              </button>
+            ) : null}
+            {hasTrimmableAudio ? (
+              <button
+                type="button"
+                disabled={trimming}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (trimming) return;
+                  setTrimError(null);
+                  setShowTrimModal((v) => !v);
+                }}
+                className={topToolbarIconBtn(showTrimModal, trimming ? '!opacity-50' : '')}
+                title={anc.trimButtonTitle}
+                aria-label={anc.trimButton}
+                aria-pressed={showTrimModal}
+              >
+                {trimming ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                ) : (
+                  <Scissors className="h-4 w-4 shrink-0" strokeWidth={2.25} />
+                )}
               </button>
             ) : null}
             {showDetailedUi && showNodeChrome ? (
@@ -2238,11 +2426,11 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
                   e.preventDefault();
                   handleUploadReferenceAudio();
                 }}
-                className={floatTopPillBtn()}
+                className={topToolbarIconBtn()}
                 title="上传参考音（用于 Index-TTS2 配音）"
                 aria-label="上传参考音"
               >
-                <Upload className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+                <Upload className="h-4 w-4 shrink-0" />
               </button>
             ) : null}
           </div>
@@ -2255,41 +2443,30 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           />
         ) : null}
 
-        {showSelectedChrome && hasTrimmableAudio ? (
+        {showTrimModal ? (
           <div
-            className={`node-floating-toolbar nodrag nopan pointer-events-auto absolute top-full left-0 right-0 z-20 flex items-center justify-center gap-1.5 px-1 overflow-visible ${
-              showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
+            className={`nodrag nopan pointer-events-auto absolute left-1/2 z-30 -translate-x-1/2 ${
+              showExternalPlayerControls ? 'top-full mt-[calc(2.85rem+3mm)]' : 'top-full mt-1.5'
             }`}
+            style={{ width: Math.round(Math.max(AUDIO_NODE_WIDTH, 320) * 1.5) }}
             onPointerDown={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            onWheel={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
-            <button
-              type="button"
-              disabled={trimming}
-              onClick={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                if (trimming) return;
-                setTrimError(null);
-                setShowTrimModal(true);
+            <AudioTrimInlineBar
+              audioUrl={data?.outputAudio || outputAudio || data?.referenceAudioUrl || ''}
+              isDarkMode={isDarkMode}
+              initialTrimStart={parseFloat(trimStartSec) || 0}
+              initialTrimEnd={parseFloat(trimEndSec) || 0}
+              trimming={trimming}
+              trimError={trimError}
+              c={anc}
+              onConfirm={(start, end) => {
+                setTrimStartSec(String(start));
+                setTrimEndSec(String(end));
+                void handleTrimConfirm(start, end);
               }}
-              className={floatIconBtn(
-                trimming
-                  ? 'opacity-50 cursor-not-allowed'
-                  : isDarkMode
-                    ? 'hover:!bg-emerald-500/20 !text-emerald-300'
-                    : 'hover:!bg-emerald-100 !text-emerald-700',
-              )}
-              title={anc.trimButtonTitle}
-              aria-label={anc.trimButton}
-            >
-              {trimming ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Scissors className="w-3.5 h-3.5" />
-              )}
-            </button>
+              onCancel={() => !trimming && setShowTrimModal(false)}
+            />
           </div>
         ) : null}
 
@@ -2297,9 +2474,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           <div
             className={`nodrag nopan pointer-events-auto absolute top-full left-0 right-0 z-20 flex justify-center px-1 ${
               showExternalPlayerControls
-                ? showSelectedChrome && hasTrimmableAudio
-                  ? 'mt-[calc(4.15rem+3mm)]'
-                  : 'mt-[calc(2.85rem+3mm)]'
+                ? 'mt-[calc(2.85rem+3mm)]'
                 : 'mt-1.5'
             }`}
             onPointerDown={(e) => e.stopPropagation()}
@@ -2323,7 +2498,7 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           </div>
         ) : null}
 
-        {trimError && showSelectedChrome ? (
+        {trimError && showSelectedChrome && !showTrimModal ? (
           <div className="nodrag nopan pointer-events-auto absolute -bottom-20 left-0 right-0 z-10 flex justify-center">
             <div className="px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-xs">
               {trimError}
@@ -2331,19 +2506,6 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
           </div>
         ) : null}
       </div>
-
-      {showTrimModal && (
-        <AudioTrimModal
-          audioUrl={data?.outputAudio || outputAudio || data?.referenceAudioUrl || ''}
-          isDarkMode={isDarkMode}
-          initialTrimStart={parseFloat(trimStartSec) || 0}
-          initialTrimEnd={parseFloat(trimEndSec) || 0}
-          trimming={trimming}
-          c={anc}
-          onConfirm={(start, end) => handleTrimConfirm(start, end)}
-          onCancel={() => !trimming && setShowTrimModal(false)}
-        />
-      )}
     </>
   );
 };

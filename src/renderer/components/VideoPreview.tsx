@@ -9,7 +9,7 @@ export interface VideoPreviewRef {
   releaseVideo: () => void;
   /** 截取当前帧并返回 dataUrl，用于纹理缓存 */
   captureCurrentFrame: (videoUrl: string, onCaptured: (url: string, dataUrl: string) => void) => void;
-  /** 预热解码：设置 preload=auto 并调用 load，减少悬停时首帧等待 */
+  /** 预热解码：仅在尚未挂载源时 load；已有源时勿 load（会清零 currentTime） */
   warmupDecode: () => void;
   /**
    * 将当前 currentTime 以 immediate 方式交给 onPlaybackTime（与拖动进度条触发的 seeked、控件 pause 同源）
@@ -24,6 +24,8 @@ export interface VideoPreviewRef {
   getVolume: () => number;
   /** 画布 transform 下通过 body 壳全屏播放 */
   openPortalFullscreen: () => void;
+  /** 当前 <video> 元素（色度预览等） */
+  getVideoElement: () => HTMLVideoElement | null;
 }
 
 interface VideoPreviewProps {
@@ -151,9 +153,14 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
 
   const warmupDecode = React.useCallback(() => {
     const video = videoElRef.current;
-    if (video) {
+    if (!video) return;
+    try {
       video.preload = 'auto';
+      // 已有媒体源时绝不能 load()：会把 currentTime 重置为 0，悬停续播会先闪回片头再 seek 回来
+      if (video.currentSrc || video.getAttribute('src')) return;
       video.load();
+    } catch (_) {
+      /* ignore */
     }
   }, []);
 
@@ -217,7 +224,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
   const initialPlaybackTimeSecRef = React.useRef(initialPlaybackTimeSec);
   initialPlaybackTimeSecRef.current = initialPlaybackTimeSec;
 
-  /** 取消暂停时：若需恢复到 initialPlaybackTimeSec，须等 seek 完成再 play，否则会先从 0 秒开播 */
+  /** 取消暂停时：已挂载且进度有效则直接 play，勿强行 seek（避免与 live currentTime 打架闪回） */
   useEffect(() => {
     const v = videoElRef.current;
     if (!v) return;
@@ -229,6 +236,15 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
 
     const target = initialPlaybackTimeSecRef.current;
     const wantResume = typeof target === 'number' && Number.isFinite(target);
+    const live = v.currentTime;
+    const liveOk = Number.isFinite(live) && live > 0.05;
+
+    // 元素仍停在有效进度上：只恢复播放，不要再 seek（防闪回片头）
+    if (liveOk) {
+      v.playbackRate = 1;
+      v.play().catch(() => {});
+      return;
+    }
 
     const shouldDelayPlayUntilSeeked = (): boolean => {
       if (!wantResume) return false;
@@ -256,6 +272,13 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
         tryPlay();
       };
       v.addEventListener('seeked', onSeeked, { once: true });
+      try {
+        const d = v.duration;
+        const hi = Number.isFinite(d) && d > 0 ? Math.max(0, d - 1e-6) : target!;
+        v.currentTime = Math.min(Math.max(0, target!), hi);
+      } catch {
+        /* ignore */
+      }
       const tmr = window.setTimeout(() => {
         v.removeEventListener('seeked', onSeeked);
         tryPlay();
@@ -270,6 +293,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     v.playbackRate = 1;
     v.play().catch(() => {});
   }, [isPaused]);
+
   // 标准化视频 URL
   const safeUrl = normalizeVideoUrl(src);
   
@@ -753,19 +777,21 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     ? `${cleanSrc}-${retryCount}-${useFallbackUrl}` 
     : cleanSrc; // 正常情况下使用稳定的 key
 
-  /** 悬停恢复播放前在布局阶段对齐 currentTime，避免 play() 先于 seek 从 0 秒起播 */
+  /** 悬停恢复：仅在 currentTime≈0（如刚 remount）时才按 initialPlaybackTimeSec seek */
   useLayoutEffect(() => {
     const v = videoElRef.current;
     if (!v || isPaused) return;
     const t = initialPlaybackTimeSec;
     if (!(typeof t === 'number' && Number.isFinite(t))) return;
+    // 已有有效进度则不要覆盖（否则会与 live 位置来回跳 / 闪回片头）
+    if (Number.isFinite(v.currentTime) && v.currentTime > 0.05) return;
 
     const applySeek = () => {
       const dur = v.duration;
       if (!Number.isFinite(dur) || dur <= 0) return;
       const hi = Math.max(0, dur - 1e-6);
       const target = Math.min(Math.max(0, t), hi);
-      if (Math.abs(v.currentTime - target) > 0.03) {
+      if (Math.abs(v.currentTime - target) > 0.12) {
         try {
           v.currentTime = target;
         } catch {
@@ -970,6 +996,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     setVolume,
     getVolume,
     openPortalFullscreen: () => openPortalFullscreenLayer(),
+    getVideoElement: () => videoElRef.current,
   }), [releaseVideo, captureCurrentFrame, warmupDecode, flushPlaybackTime, getCurrentTimeSec, getDurationSec, seekTo, setVolume, getVolume, openPortalFullscreenLayer]);
 
   const videoEl = (
@@ -994,6 +1021,11 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       onEnded={(e) => {
         if (loop) {
           const v = e.currentTarget;
+          const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+          // 循环重播时把进度重置为 0，避免父组件 resume 仍停在片尾
+          if (onPlaybackTime) {
+            onPlaybackTime(0, dur > 0 ? dur : undefined, true);
+          }
           if (!isPausedRef.current) {
             try {
               v.currentTime = 0;
@@ -1002,7 +1034,7 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
               /* ignore */
             }
           }
-          onUiPlaybackTick?.(0, Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0, !v.paused);
+          onUiPlaybackTick?.(0, dur, !isPausedRef.current && !v.paused);
           return;
         }
         handlePlaybackReport(e, true);

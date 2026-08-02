@@ -10,6 +10,17 @@ import crypto from 'crypto';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  normalizeRhPath,
+  pickRunningHubTarget,
+  isRhQueryPath,
+  extractRhTaskIdFromForwardData,
+  persistRhTaskRegion,
+  resolveRhRegionForQuery,
+  rhAuthErrorMessage,
+  forceOverseasByBillingOrPath,
+} from './lib/runningHubTarget.mjs';
+import { resolveLlmUpstream, buildLlmChatPayload } from './lib/llmUpstream.mjs';
 
 /** 阿里云 FC 自定义运行时 / 事件模式均可能设置 */
 function isAliyunFcRuntime() {
@@ -135,6 +146,9 @@ function extractModelIdFromForward(path, bodyObj) {
   const b = bodyObj && typeof bodyObj === 'object' ? bodyObj : {};
   if (typeof b.model === 'string' && b.model.trim()) return b.model.trim();
   const p = String(path || '').replace(/^\//, '');
+  // /run/ai-app/{appId} → 应用 ID（勿取首段 "run"）
+  const aiApp = p.match(/^run\/ai-app\/([a-zA-Z0-9._-]+)/i);
+  if (aiApp?.[1]) return aiApp[1];
   const seg = p.split('/').filter(Boolean)[0];
   if (seg && /^[a-zA-Z0-9._-]+$/.test(seg)) return seg;
   return '';
@@ -504,22 +518,10 @@ function checkAlipayPaySecret(reqHeaders, body) {
   return { ok: true };
 }
 
-/**
- * RunningHub OpenAPI 实际根路径为 .../openapi/v2。
- * 若仅配置站点根（如 https://www.runninghub.cn），自动补全 /openapi/v2，否则会请求到错误 URL 导致 401。
- */
-function normalizeRunningHubApiBase(raw) {
-  const d = raw?.trim();
-  if (!d) return 'https://www.runninghub.cn/openapi/v2';
-  const noSlash = d.replace(/\/$/, '');
-  if (/\/openapi\/v2(\/|$)/i.test(noSlash)) return noSlash;
-  return `${noSlash}/openapi/v2`;
-}
-
-function resolveForwardUrl(provider, path) {
-  const p = path.startsWith('/') ? path : `/${path}`;
+function resolveForwardUrl(provider, path, rhTarget) {
+  const p = normalizeRhPath(path);
   if (provider === 'runninghub') {
-    const base = normalizeRunningHubApiBase(process.env.RUNNINGHUB_API_BASE).replace(/\/$/, '');
+    const base = (rhTarget?.base || pickRunningHubTarget(path).base).replace(/\/$/, '');
     return `${base}${p}`;
   }
   if (provider === 'bltcy') {
@@ -532,15 +534,16 @@ function resolveForwardUrl(provider, path) {
 /** LLM：BLTCY chat completions */
 async function handleLlmTask(userId, taskId, innerBody, dbModule) {
   const { getFinalPrice } = await ensurePricing();
-  const apiKey = process.env.BLTCY_API_KEY;
-  if (!apiKey?.trim()) throw new Error('BLTCY_API_KEY_NOT_CONFIGURED');
 
   const model = innerBody.model || 'gpt-3.5-turbo';
   const modelId = String(model).trim() || 'gpt-3.5-turbo';
   const messages = Array.isArray(innerBody.messages) ? innerBody.messages : [];
   if (messages.length === 0) throw new Error('messages required');
 
-  const provider = 'bltcy';
+  const upstream = resolveLlmUpstream(modelId);
+  if (!upstream.apiKey) throw new Error(upstream.keyError);
+
+  const provider = upstream.provider;
   const description = innerBody.description || 'chat completion';
   let modelConfigMap = null;
   try {
@@ -550,6 +553,7 @@ async function handleLlmTask(userId, taskId, innerBody, dbModule) {
   }
   const cost = getFinalPrice(modelId, { taskType: 'llm', nodeData: {}, modelConfigMap });
   console.log(`[Billing] User: ${userId} | Model: ${modelId} | Deduct: ${cost} Yuanbao.`);
+  console.log(`[LLM] upstream=${provider} url=${upstream.url}`);
 
   const billingUserLlm = await dbModule.getUserById(userId);
   if (billingUserLlm && typeof dbModule.assertModelCostThreshold === 'function') {
@@ -589,7 +593,7 @@ async function handleLlmTask(userId, taskId, innerBody, dbModule) {
     await dbModule.upsertTask(taskId, userId, {
       status: 'running',
       cost,
-      prompt_json: JSON.stringify({ model, messagesLength: messages.length }),
+      prompt_json: JSON.stringify({ model, messagesLength: messages.length, provider }),
     });
   } catch (e) {
     console.error('[handleLlmTask] upsertTask PROCESSING failed', e);
@@ -598,23 +602,17 @@ async function handleLlmTask(userId, taskId, innerBody, dbModule) {
     throw e;
   }
 
-  const chatPayload = {
-    model,
-    messages,
-    stream: false,
-    ...(innerBody.temperature != null && { temperature: innerBody.temperature }),
-    ...(innerBody.max_tokens != null && { max_tokens: innerBody.max_tokens }),
-  };
+  const chatPayload = buildLlmChatPayload(modelId, innerBody, messages);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
   try {
-    const response = await fetch(BLTCY_CHAT_URL, {
+    const response = await fetch(upstream.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${upstream.apiKey}`,
       },
       body: JSON.stringify(chatPayload),
       signal: controller.signal,
@@ -745,18 +743,39 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
   const bodyObj =
     bodyRaw && typeof bodyRaw === 'object' && !Array.isArray(bodyRaw) ? bodyRaw : {};
 
-  const key =
-    provider === 'runninghub'
-      ? process.env.RUNNINGHUB_API_KEY?.trim()
-      : provider === 'bltcy'
-        ? process.env.BLTCY_API_KEY?.trim()
-        : '';
-  if (!key) throw new Error(`${provider.toUpperCase()}_API_KEY_NOT_CONFIGURED`);
+  /** @type {{ region: 'cn' | 'ai', base: string, apiKey: string } | null} */
+  let rhTarget = null;
+  let key = '';
+  if (provider === 'runninghub') {
+    let regionHint = fwd.rhRegion ?? inner.rhRegion ?? null;
+    const billingModelIdHint =
+      (inner.billingModelId != null && String(inner.billingModelId).trim()) ||
+      (fwd.billingModelId != null && String(fwd.billingModelId).trim()) ||
+      '';
+    if (forceOverseasByBillingOrPath(path, billingModelIdHint)) {
+      regionHint = 'ai';
+    }
+    if (isRhQueryPath(path)) {
+      const resolved = await resolveRhRegionForQuery(dbModule, userId, bodyObj, regionHint);
+      if (resolved) regionHint = resolved;
+    }
+    rhTarget = pickRunningHubTarget(path, { regionHint });
+    key = rhTarget.apiKey;
+    if (!key) throw new Error(rhAuthErrorMessage(rhTarget.region));
+    console.log(
+      `[RH] forward region=${rhTarget.region} path=${normalizeRhPath(path)} base=${rhTarget.base} hint=${regionHint || '-'}`,
+    );
+  } else if (provider === 'bltcy') {
+    key = process.env.BLTCY_API_KEY?.trim() || '';
+    if (!key) throw new Error('BLTCY_API_KEY_NOT_CONFIGURED');
+  } else {
+    throw new Error('UNSUPPORTED_FORWARD_PROVIDER');
+  }
 
   const fwdTaskType = normalizeForwardTaskType(taskType);
 
   async function forwardOnce() {
-    const url = resolveForwardUrl(provider, path);
+    const url = resolveForwardUrl(provider, path, rhTarget);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FORWARD_TIMEOUT_MS);
     try {
@@ -801,6 +820,12 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
           const errMsg = data?.message || data?.error?.message || data?.error || `HTTP ${res.status}`;
           const e = new Error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
           e.response = { status: res.status, data };
+          if (res.status === 401) {
+            e.message =
+              rhTarget?.region === 'ai'
+                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY_AI'
+                : '国内 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY';
+          }
           throw e;
         }
         return data;
@@ -845,6 +870,12 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
           const errMsg = data?.message || data?.error?.message || data?.error || `HTTP ${res.status}`;
           const e = new Error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
           e.response = { status: res.status, data };
+          if (res.status === 401) {
+            e.message =
+              rhTarget?.region === 'ai'
+                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY_AI'
+                : '国内 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY';
+          }
           throw e;
         }
         return data;
@@ -869,7 +900,19 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
         const errMsg = data?.message || data?.error?.message || data?.error || `HTTP ${res.status}`;
         const e = new Error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));
         e.response = { status: res.status, data };
+        if (res.status === 401 && provider === 'runninghub') {
+          e.message =
+            rhTarget?.region === 'ai'
+              ? '海外 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY_AI'
+              : '国内 RunningHub 鉴权失败（HTTP 401）：请检查 FC 环境变量 RUNNINGHUB_API_KEY';
+        }
         throw e;
+      }
+      if (provider === 'runninghub' && rhTarget && !isRhQueryPath(path)) {
+        const rhTid = extractRhTaskIdFromForwardData(data);
+        if (rhTid) {
+          await persistRhTaskRegion(dbModule, userId, rhTid, rhTarget.region);
+        }
       }
       return data;
     } finally {
@@ -2151,7 +2194,289 @@ async function handleRequest(req) {
       };
     }
 
-    // POST /upload-media — 客户端素材代传至 OSS 素材桶（JWT）；mediaRegion=cn|hk
+    // POST /asr/realtime-session — 签发百炼实时 ASR 票据（密钥仅在 FC；主进程建 WS，渲染不接触 key）
+    if (
+      pathNorm.endsWith('/asr/realtime-session') ||
+      pathNorm === '/asr/realtime-session'
+    ) {
+      if (httpMethod !== 'POST' && httpMethod !== 'GET') {
+        return { statusCode: 405, headers, body: JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }) };
+      }
+      const userId = await verifyAccessTokenAsync(auth, dbModule);
+      if (!userId) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      const { handleAsrRealtimeSession } = await import(
+        new URL('./lib/asrRealtimeSession.mjs', import.meta.url)
+      );
+      return handleAsrRealtimeSession({ userId, headers });
+    }
+
+    // POST /asr/file-transcribe — 百炼 fun-asr 异步录音文件识别（密钥仅在 FC；轮询任务并归一化 segments）
+    // 扣费：按次 fun-asr（type=audio），与客户端 getFileTranscribeDisplayPrice 对齐
+    if (
+      pathNorm.endsWith('/asr/file-transcribe') ||
+      pathNorm === '/asr/file-transcribe'
+    ) {
+      if (httpMethod !== 'POST') {
+        return { statusCode: 405, headers, body: JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }) };
+      }
+      const userId = await verifyAccessTokenAsync(auth, dbModule);
+      if (!userId) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+
+      const ASR_FILE_BILLING_MODEL_ID = 'fun-asr';
+      const { getFinalPrice, isModelNotPricedError } = await ensurePricing();
+      let modelConfigMap = null;
+      try {
+        modelConfigMap = await loadNxModelConfigMapForBilling(dbModule);
+      } catch (e) {
+        console.warn('[billing] listModelConfig (asr file) skipped:', e?.message || e);
+      }
+      let cost;
+      try {
+        cost = getFinalPrice(ASR_FILE_BILLING_MODEL_ID, {
+          taskType: 'audio',
+          nodeData: {},
+          modelConfigMap,
+        });
+      } catch (e) {
+        if (isModelNotPricedError(e)) {
+          cost = 5;
+        } else {
+          throw e;
+        }
+      }
+      const billingTaskId = `asr_file_${crypto.randomUUID()}`;
+      const billingUser = await dbModule.getUserById(userId);
+      if (billingUser && typeof dbModule.assertModelCostThreshold === 'function') {
+        try {
+          dbModule.assertModelCostThreshold(billingUser, cost, 'audio');
+        } catch (e) {
+          const msg = e?.message || String(e);
+          if (String(msg).includes('MODEL_COST_THRESHOLD')) {
+            return {
+              statusCode: 403,
+              headers,
+              body: JSON.stringify({ error: 'MODEL_COST_THRESHOLD_EXCEEDED', message: msg }),
+            };
+          }
+          throw e;
+        }
+      }
+      let deductResult;
+      try {
+        deductResult = await dbModule.deductWithTransaction(userId, billingTaskId, cost, {
+          provider: 'dashscope',
+          description: 'fun-asr file transcribe',
+        });
+      } catch (e) {
+        const msg = e?.message || String(e);
+        if (msg === 'BALANCE_INSUFFICIENT') {
+          return {
+            statusCode: 402,
+            headers,
+            body: JSON.stringify({
+              error: 'BALANCE_INSUFFICIENT',
+              message: '元宝不足，请充值后再使用云端转写',
+            }),
+          };
+        }
+        if (msg === 'USER_FROZEN') {
+          return {
+            statusCode: 403,
+            headers,
+            body: JSON.stringify({ error: 'USER_FROZEN', message: '账号已冻结' }),
+          };
+        }
+        throw e;
+      }
+      console.log(
+        `[Billing] User: ${userId} | Model: ${ASR_FILE_BILLING_MODEL_ID} | Deduct: ${cost} Yuanbao (asr/file-transcribe)`,
+      );
+
+      const { handleAsrFileTranscribe } = await import(
+        new URL('./lib/asrFileTranscribe.mjs', import.meta.url)
+      );
+      let result;
+      try {
+        result = await handleAsrFileTranscribe({ userId, headers, body });
+      } catch (e) {
+        try {
+          await dbModule.refundWithLedger(userId, billingTaskId, cost, {
+            provider: 'dashscope',
+            description: 'fun-asr file transcribe failed',
+          });
+        } catch (re) {
+          console.error('[asr/file-transcribe] refund failed', re?.message || re);
+        }
+        throw e;
+      }
+      const ok = result && result.statusCode === 200;
+      if (!ok) {
+        try {
+          await dbModule.refundWithLedger(userId, billingTaskId, cost, {
+            provider: 'dashscope',
+            description: 'fun-asr file transcribe error',
+          });
+        } catch (re) {
+          console.error('[asr/file-transcribe] refund failed', re?.message || re);
+        }
+        return result;
+      }
+      try {
+        const payload = JSON.parse(result.body || '{}');
+        payload.cost = cost;
+        payload.balance = deductResult?.balance;
+        payload.billingModelId = ASR_FILE_BILLING_MODEL_ID;
+        return {
+          ...result,
+          body: JSON.stringify(payload),
+        };
+      } catch {
+        return result;
+      }
+    }
+
+    // POST /viapi/segment-video-body — 阿里云 VIAPI 视频人像分割（密钥仅在 FC；异步轮询 mask URL）
+    // 扣费：viapi-segment-video-body 按输出时长秒级计量，与客户端 getViapiSegmentVideoBodyDisplayPrice 对齐
+    // unitCost = 元宝/分钟（cost_table 2.0 元/分钟 × yuanbao_rate）；nx_model_config.base_price 为「元/分钟」，应填 2
+    // costYuanbao = max(1, ceil(unitCostPerMinute * billableSeconds / 60))；billableSeconds = max(1, ceil(秒))
+    if (
+      pathNorm.endsWith('/viapi/segment-video-body') ||
+      pathNorm === '/viapi/segment-video-body'
+    ) {
+      if (httpMethod !== 'POST') {
+        return { statusCode: 405, headers, body: JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }) };
+      }
+      const userId = await verifyAccessTokenAsync(auth, dbModule);
+      if (!userId) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+
+      const VIAPI_SEG_BILLING_MODEL_ID = 'viapi-segment-video-body';
+      const durationSecRaw = Number(body?.durationSec ?? body?.duration_sec ?? 0);
+      const durationSec = Number.isFinite(durationSecRaw) && durationSecRaw > 0 ? durationSecRaw : 1;
+      const billableSeconds = Math.max(1, Math.ceil(durationSec));
+      const { getFinalPrice, isModelNotPricedError } = await ensurePricing();
+      let modelConfigMap = null;
+      try {
+        modelConfigMap = await loadNxModelConfigMapForBilling(dbModule);
+      } catch (e) {
+        console.warn('[billing] listModelConfig (viapi segment) skipped:', e?.message || e);
+      }
+      let unitCost;
+      try {
+        unitCost = getFinalPrice(VIAPI_SEG_BILLING_MODEL_ID, {
+          taskType: 'audio',
+          nodeData: {},
+          modelConfigMap,
+        });
+      } catch (e) {
+        if (isModelNotPricedError(e)) {
+          unitCost = 20; // 元宝/分钟回退默认
+        } else {
+          throw e;
+        }
+      }
+      const cost = Math.max(1, Math.ceil((unitCost * billableSeconds) / 60));
+      const billingTaskId = `viapi_seg_${crypto.randomUUID()}`;
+      const billingUser = await dbModule.getUserById(userId);
+      if (billingUser && typeof dbModule.assertModelCostThreshold === 'function') {
+        try {
+          dbModule.assertModelCostThreshold(billingUser, cost, 'video');
+        } catch (e) {
+          const msg = e?.message || String(e);
+          if (String(msg).includes('MODEL_COST_THRESHOLD')) {
+            return {
+              statusCode: 403,
+              headers,
+              body: JSON.stringify({ error: 'MODEL_COST_THRESHOLD_EXCEEDED', message: msg }),
+            };
+          }
+          throw e;
+        }
+      }
+      let deductResult;
+      try {
+        deductResult = await dbModule.deductWithTransaction(userId, billingTaskId, cost, {
+          provider: 'viapi',
+          description: 'viapi segment-video-body',
+        });
+      } catch (e) {
+        const msg = e?.message || String(e);
+        if (msg === 'BALANCE_INSUFFICIENT') {
+          return {
+            statusCode: 402,
+            headers,
+            body: JSON.stringify({
+              error: 'BALANCE_INSUFFICIENT',
+              message: '元宝不足，请充值后再使用智能抠像',
+            }),
+          };
+        }
+        if (msg === 'USER_FROZEN') {
+          return {
+            statusCode: 403,
+            headers,
+            body: JSON.stringify({ error: 'USER_FROZEN', message: '账号已冻结' }),
+          };
+        }
+        throw e;
+      }
+      console.log(
+        `[Billing] User: ${userId} | Model: ${VIAPI_SEG_BILLING_MODEL_ID} | Deduct: ${cost} Yuanbao (${billableSeconds}s @ ${unitCost}/min, viapi/segment-video-body)`,
+      );
+
+      const { handleViapiSegmentVideoBody } = await import(
+        new URL('./lib/viapiSegmentVideoBody.mjs', import.meta.url)
+      );
+      let result;
+      try {
+        result = await handleViapiSegmentVideoBody({ userId, headers, body });
+      } catch (e) {
+        try {
+          await dbModule.refundWithLedger(userId, billingTaskId, cost, {
+            provider: 'viapi',
+            description: 'viapi segment-video-body failed',
+          });
+        } catch (re) {
+          console.error('[viapi/segment-video-body] refund failed', re?.message || re);
+        }
+        throw e;
+      }
+      const ok = result && result.statusCode === 200;
+      if (!ok) {
+        try {
+          await dbModule.refundWithLedger(userId, billingTaskId, cost, {
+            provider: 'viapi',
+            description: 'viapi segment-video-body error',
+          });
+        } catch (re) {
+          console.error('[viapi/segment-video-body] refund failed', re?.message || re);
+        }
+        return result;
+      }
+      try {
+        const payload = JSON.parse(result.body || '{}');
+        payload.cost = cost;
+        payload.balance = deductResult?.balance;
+        payload.billingModelId = VIAPI_SEG_BILLING_MODEL_ID;
+        payload.billableSeconds = billableSeconds;
+        payload.billableUnits = billableSeconds; // 兼容旧字段：现为计费秒数
+        payload.billableMinutes = billableSeconds; // 兼容旧字段名
+        payload.durationSec = durationSec;
+        return {
+          ...result,
+          body: JSON.stringify(payload),
+        };
+      } catch {
+        return result;
+      }
+    }
+
+    // POST /upload-media — 客户端素材代传至 OSS 素材桶（JWT）；mediaRegion=cn|hk|sh
     if (pathNorm.endsWith('/upload-media') || pathNorm === '/upload-media') {
       if (httpMethod !== 'POST') {
         return { statusCode: 405, headers, body: JSON.stringify({ error: 'METHOD_NOT_ALLOWED' }) };

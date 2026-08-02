@@ -38,6 +38,8 @@ export interface AIStatusPacket {
     originalVideoUrl?: string; // 原始视频远程 URL（备用，用于视频加载失败时回退）
     progress?: number;  // 0-100 的进度值
     error?: string;     // 错误描述
+    /** 模型结束原因（如 length / stop，用于截断提示） */
+    finishReason?: string;
     balanceInsufficient?: boolean; // 云端元宝不足（用于弹窗提示）
     /** 正式版 SaaS：需要登录云端账号后才能继续调用 FC */
     nxAuthRequired?: boolean;

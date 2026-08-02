@@ -14,7 +14,12 @@ import {
   assetLibGalleryToggleActive,
   assetLibTabActive,
   assetLibTabInactive,
+  type AssetLibTabId,
 } from '../utils/assetLibraryChrome';
+import {
+  OPEN_ASSET_LIBRARY_EVENT,
+  type OpenAssetLibraryDetail,
+} from '../utils/assetLibraryOpenStore';
 
 export type AssetLibraryTab = 'role' | 'model3d' | 'scene' | 'digitalHuman' | 'rvcVoice';
 
@@ -77,6 +82,18 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
     }
   }, [isCollapsed, viewMode, onGalleryModeChange]);
 
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const next = (ev as CustomEvent<OpenAssetLibraryDetail>).detail?.tab as AssetLibTabId | undefined;
+      if (!next) return;
+      if (next === 'role' || next === 'scene' || next === 'model3d' || next === 'digitalHuman' || next === 'rvcVoice') {
+        setTab(next);
+      }
+    };
+    window.addEventListener(OPEN_ASSET_LIBRARY_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ASSET_LIBRARY_EVENT, onOpen);
+  }, []);
+
   const renderTabPanel = (mode: AssetLibraryViewMode) => (
     <>
       {tab === 'role' && (
@@ -86,6 +103,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           viewMode={mode}
           isDarkMode={isDarkMode}
           isCollapsed={false}
+          listActive={!isCollapsed && tab === 'role'}
           onToggleCollapse={onToggleCollapse}
           refreshTrigger={characterListRefreshTrigger}
           onSelectCharacter={onSelectCharacter}
@@ -101,6 +119,7 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           viewMode={mode}
           isDarkMode={isDarkMode}
           isCollapsed={false}
+          listActive={!isCollapsed && tab === 'model3d'}
           onToggleCollapse={onToggleCollapse}
           refreshTrigger={characterListRefreshTrigger}
           onSelectCharacter={onSelectCharacter}
@@ -174,8 +193,9 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
 
     return (
       <div
-        className={`h-full w-12 flex flex-col items-center py-3 gap-2 border-r ${
-          isDarkMode ? 'apple-panel border-white/10' : 'apple-panel-light border-gray-300/30'
+        data-asset-library-sidebar
+        className={`h-full w-12 flex flex-col items-center py-3 gap-2 ${
+          isDarkMode ? 'apple-panel' : 'apple-panel-light border-r border-gray-300/30'
         }`}
       >
         <button
@@ -187,10 +207,10 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
           <ChevronRight className="w-5 h-5" />
         </button>
         {iconBtn('role', User, t.tabRole)}
-        {iconBtn('rvcVoice', Mic2, t.tabRvcVoice)}
-        {iconBtn('digitalHuman', ScanFace, t.tabDigitalHuman)}
         {iconBtn('scene', Mountain, t.tabScene)}
+        {iconBtn('digitalHuman', ScanFace, t.tabDigitalHuman)}
         {iconBtn('model3d', Box, t.tabModel3d)}
+        {iconBtn('rvcVoice', Mic2, t.tabRvcVoice)}
       </div>
     );
   }
@@ -198,15 +218,15 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   const headerChrome = (
     <div
       className={`p-2.5 border-b flex items-center gap-1.5 flex-shrink-0 ${
-        isDarkMode ? 'border-white/10' : 'border-gray-300/30'
+        isDarkMode ? 'border-white/[0.04]' : 'border-gray-300/30'
       }`}
     >
       <div className="grid grid-cols-5 gap-1 flex-1 min-w-0">
         {tabBtn('role', t.tabRole, User)}
-        {tabBtn('rvcVoice', t.tabRvcVoice, Mic2)}
-        {tabBtn('digitalHuman', t.tabDigitalHuman, ScanFace)}
         {tabBtn('scene', t.tabScene, Mountain)}
+        {tabBtn('digitalHuman', t.tabDigitalHuman, ScanFace)}
         {tabBtn('model3d', t.tabModel3d, Box)}
+        {tabBtn('rvcVoice', t.tabRvcVoice, Mic2)}
       </div>
       <button
         type="button"
@@ -230,14 +250,15 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   if (viewMode === 'gallery') {
     return (
       <div
+        data-asset-library-sidebar
         className={`h-full flex flex-col min-w-0 ${
-          isDarkMode ? 'apple-panel border-white/10' : 'apple-panel-light border-gray-300/30'
+          isDarkMode ? 'apple-panel' : 'apple-panel-light border-r border-gray-300/30'
         }`}
       >
         {headerChrome}
         <div
           className={`flex-1 min-w-0 flex flex-col min-h-0 ${
-            isDarkMode ? 'bg-[#0c0c0e]' : 'bg-gray-50'
+            isDarkMode ? 'bg-[#121212]' : 'bg-gray-50'
           }`}
         >
           {renderTabPanel('gallery')}
@@ -249,8 +270,8 @@ const AssetLibrarySidebar: React.FC<AssetLibrarySidebarProps> = ({
   return (
     <div
       data-asset-library-sidebar
-      className={`h-full flex flex-col border-r ${
-        isDarkMode ? 'apple-panel border-white/10' : 'apple-panel-light border-gray-300/30'
+      className={`h-full flex flex-col ${
+        isDarkMode ? 'apple-panel' : 'apple-panel-light border-r border-gray-300/30'
       }`}
       style={{ width: ASSET_LIBRARY_SIDEBAR_WIDTH_PX }}
     >

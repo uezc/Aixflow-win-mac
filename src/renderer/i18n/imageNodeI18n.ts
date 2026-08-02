@@ -108,6 +108,9 @@ export type ImageNodeChromeStrings = {
   panorama360ExpandRatioPicker: string;
   panorama360CollapseRatioPicker: string;
   panorama360RatioShortcutHint: string;
+  /** 360 全屏/放大态右上角退出 */
+  panorama360ExitFullscreen: string;
+  panorama360ExitFullscreenTitle: string;
   /** 将九宫格输出拆成 9 个独立图片节点 */
   splitNineButton: string;
   splitNineTitle: string;
@@ -151,11 +154,11 @@ const zh: ImageNodeChromeStrings = {
   watermarkTitle: '去水印',
   watermarkButton: '去水印',
   watermarkPriceTitle: '预估元宝 = base_price×multiplier×yuanbao_rate×Quantity（单次去水印，优先 nx_model_config）',
-  upscaleV3Progress: (c) => `超分放大中…（约 ${c} 元宝）`,
-  upscaleV3NotSupported: '当前环境不支持超分放大',
-  upscaleV3FailedDefault: '超分放大失败',
-  upscaleV3Title: '超分放大',
-  upscaleV3PriceTitle: '预估元宝 = base_price×multiplier×yuanbao_rate×Quantity（单次超分，优先 nx_model_config）',
+  upscaleV3Progress: (c) => `放大中…（约 ${c} 元宝）`,
+  upscaleV3NotSupported: '当前环境不支持放大',
+  upscaleV3FailedDefault: '放大失败',
+  upscaleV3Title: '放大',
+  upscaleV3PriceTitle: '预估元宝 = base_price×multiplier×yuanbao_rate×Quantity（单次放大，优先 nx_model_config）',
   multiAngleProgress: (c) => `人物多角度生成中…（约 ${c} 元宝）`,
   multiAngleNotSupported: '当前环境不支持人物多角度',
   multiAngleFailedDefault: '人物多角度生成失败',
@@ -237,6 +240,8 @@ const zh: ImageNodeChromeStrings = {
   panorama360ExpandRatioPicker: '展开截图比例',
   panorama360CollapseRatioPicker: '收起比例',
   panorama360RatioShortcutHint: 'C 展开/收起',
+  panorama360ExitFullscreen: '退出',
+  panorama360ExitFullscreenTitle: '退出 360° 全景',
   splitNineButton: '一键拆分',
   splitNineTitle:
     '多图：按张拆成节点；单张合成图：可拆为 2×2 / 2×3 / 3×2 / 3×3 或自定义行列。悬停按钮选择方式，新节点在右侧画布生成。',
@@ -272,10 +277,10 @@ const en: ImageNodeChromeStrings = {
   watermarkTitle: 'Remove watermark',
   watermarkButton: 'Dewatermark',
   watermarkPriceTitle: 'Estimated credits (per run, nx_model_config)',
-  upscaleV3Progress: (c) => `Upscaling… (~${c} credits)`,
-  upscaleV3NotSupported: 'Upscale is not available',
-  upscaleV3FailedDefault: 'Upscale failed',
-  upscaleV3Title: 'Upscale',
+  upscaleV3Progress: (c) => `Enlarging… (~${c} credits)`,
+  upscaleV3NotSupported: 'Enlarge is not available',
+  upscaleV3FailedDefault: 'Enlarge failed',
+  upscaleV3Title: 'Enlarge',
   upscaleV3PriceTitle: 'Estimated credits (per run, nx_model_config)',
   multiAngleProgress: (c) => `Generating multi-angle views… (~${c} credits)`,
   multiAngleNotSupported: 'Multi-angle generation is not available',
@@ -359,6 +364,8 @@ const en: ImageNodeChromeStrings = {
   panorama360ExpandRatioPicker: 'Choose aspect ratio',
   panorama360CollapseRatioPicker: 'Collapse',
   panorama360RatioShortcutHint: 'C to toggle',
+  panorama360ExitFullscreen: 'Exit',
+  panorama360ExitFullscreenTitle: 'Exit 360° panorama',
   splitNineButton: 'Split grid',
   splitNineTitle:
     'Multi-image: one node per URL. Single composite: split into 2×2 / 2×3 / 3×2 / 3×3 or custom rows×cols. Hover the button to choose; new nodes appear to the right.',

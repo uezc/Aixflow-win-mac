@@ -5,9 +5,12 @@
 
 import {
   normalizeGrok3DurationSec,
+  normalizeRhartVideoXDurationSec,
   normalizeGrok3StableDurationSec,
   normalizeLtx23DurationSec,
   normalizeSeedanceDurationSec,
+  normalizeGeminiOmniDurationSec,
+  normalizeGeminiOmniFlashDurationSec,
 } from './cost_table.mjs';
 
 function lc(s) {
@@ -28,6 +31,7 @@ function joinKey(...parts) {
 const IMAGE_REVERSE_KEYS = {
   'gpt-4o': 'gpt-4o-image-reverse',
   'joy-caption-two': 'joy-caption-two-image-reverse',
+  'openai/gpt-5.6-terra': 'openai/gpt-5.6-terra-image-reverse',
 };
 
 function klingO1CapabilitySuffix(model) {
@@ -113,11 +117,40 @@ export function buildVideoBillingSkuKey(baseModel, input) {
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  if (m === 'hey-gem') {
+    return joinKey('hey', 'gem', 'plus');
+  }
+
   if (m === 'seedance-2.0-fast') {
     const resRaw = String(input.resolutionSeedance ?? '').trim().toLowerCase();
     const resSeg = resRaw === '1080p' ? '1080p' : '720p';
     const durNum = normalizeSeedanceDurationSec(input.durationSeedance, 10);
     return joinKey('seedance', '2-0-fast', resSeg, `${durNum}s`);
+  }
+
+  if (m === 'seedance-2.0-mini') {
+    const resRaw = String(input.resolutionSeedance ?? '').trim().toLowerCase();
+    let resSeg = '720p';
+    if (resRaw === '4k' || resRaw === '2160p') resSeg = '4k';
+    else if (resRaw === '2k' || resRaw === '1440p') resSeg = '2k';
+    else if (resRaw === '1080p' || resRaw === '1080') resSeg = '1080p';
+    else if (resRaw === '480p' || resRaw === '480') resSeg = '480p';
+    const durNum = normalizeSeedanceDurationSec(input.durationSeedance, 10);
+    return joinKey('seedance', '2-0-mini', resSeg, `${durNum}s`);
+  }
+
+  if (m === 'gemini-omni') {
+    const resRaw = String(input.resolutionGeminiOmni ?? '').trim().toLowerCase();
+    const resSeg = resRaw === '1080p' || resRaw === '4k' ? resRaw : '720p';
+    const durNum = normalizeGeminiOmniDurationSec(input.durationGeminiOmni, 6);
+    return joinKey('gemini', 'omni', resSeg, `${durNum}s`);
+  }
+
+  if (m === 'gemini-omni-flash') {
+    const resRaw = String(input.resolutionGeminiOmni ?? '').trim().toLowerCase();
+    const resSeg = resRaw === '1080p' || resRaw === '4k' ? resRaw : '720p';
+    const durNum = normalizeGeminiOmniFlashDurationSec(input.durationGeminiOmni, 6);
+    return joinKey('gemini', 'omni', 'flash', resSeg, `${durNum}s`);
   }
 
   if (m === 'kling-v2.6-pro') {
@@ -143,6 +176,11 @@ export function buildVideoBillingSkuKey(baseModel, input) {
   if (m === 'grok-3-stable') {
     const durNum = normalizeGrok3StableDurationSec(input.durationGrok3, 10);
     return joinKey('grok-3-stable', '720p', `${durNum}s`);
+  }
+
+  if (m === 'rhart-video-x') {
+    const durNum = normalizeRhartVideoXDurationSec(input.durationGrok3, 10);
+    return joinKey('rhart-video-x', '720p', `${durNum}s`);
   }
 
   if (m === 'grok-3' || m === 'rhart-video-g') {
@@ -222,6 +260,17 @@ export function buildVideoBillingSkuKey(baseModel, input) {
     const durNum = normalizeLtx23DurationSec(input.durationLtx23HdrMulti, 15);
     const dur = `${durNum}s`;
     return joinKey('ltx', '2-3', 'hdr-multi', res, dur);
+  }
+
+  if (m === 'ltx-2.3-msr-av') {
+    const resRaw =
+      input.resolutionLtx23HdrMulti != null && String(input.resolutionLtx23HdrMulti).trim() !== ''
+        ? String(input.resolutionLtx23HdrMulti).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const durNum = normalizeLtx23DurationSec(input.durationLtx23HdrMulti, 10);
+    const dur = `${durNum}s`;
+    return joinKey('ltx', '2-3', 'msr-av', res, dur);
   }
 
   if (m === 'rh-video-start-end') {

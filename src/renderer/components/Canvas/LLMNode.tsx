@@ -1,14 +1,17 @@
 // @ts-nocheck
 import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
-import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useStoreApi, useViewport } from 'reactflow';
-import { Copy, Check, AlignLeft, AlignCenter, AlignRight, Bold, Italic, Bot, Loader2, ZoomIn, ZoomOut } from 'lucide-react';
+import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useStoreApi } from 'reactflow';
+import { useFrozenFlowViewport, useFrozenFlowZoom } from '../../hooks/useFrozenFlowViewport';
+import { Copy, Check, AlignLeft, AlignCenter, AlignRight, Bold, Italic, Bot, Loader2, ZoomIn, ZoomOut, Type } from 'lucide-react';
 import { useAI } from '../../hooks/useAI';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
+import { useLlmInputPanelAnchor } from '../../contexts/LlmInputPanelContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import type { ScratchColorId } from '../../theme/scratchColors';
 import { ModuleProgressBar } from './ModuleProgressBar';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 
 interface LLMNodeData {
   prompt?: string;
@@ -38,6 +41,10 @@ interface LLMNodeData {
   fontStyle?: 'normal' | 'italic';
   /** 输出区字体大小（px），约 10–28 */
   outputFontSizePx?: number;
+  /** 普通对话选用的聊天模型 */
+  chatModel?: string;
+  /** 最近一次生成耗时（秒） */
+  lastElapsedSec?: number;
 }
 
 interface LLMNodeProps extends NodeProps<LLMNodeData> {
@@ -76,10 +83,10 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
   const updateNodeInternals = useUpdateNodeInternals();
   const store = useStoreApi();
   // 最小尺寸约束（与 Text 模块相同）
-  const MIN_WIDTH = 280;
-  const MIN_HEIGHT = 160;
+  const MIN_WIDTH = scaleModulePx(280);
+  const MIN_HEIGHT = scaleModulePx(160);
   // 默认初始宽度（生成内容后）
-  const DEFAULT_WIDTH = 300;
+  const DEFAULT_WIDTH = scaleModulePx(300);
   
   // 初始化尺寸：用户改过后以 data 为准，避免 props.style 滞后（主题切换/重挂载时回弹）
   const getInitialSize = () => {
@@ -123,6 +130,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const genStartAtRef = useRef<number | null>(null);
   const [textAlign, setTextAlign] = useState<'left' | 'center' | 'right'>(data?.textAlign ?? 'left');
   const [fontWeight, setFontWeight] = useState<'normal' | 'bold'>(data?.fontWeight ?? 'normal');
   const [fontStyle, setFontStyle] = useState<'normal' | 'italic'>(data?.fontStyle ?? 'normal');
@@ -138,7 +146,9 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
   const [outputComposing, setOutputComposing] = useState(false);
   const [outputLocal, setOutputLocal] = useState('');
   const [isHovered, setIsHovered] = useState(false);
-  const viewport = useViewport();
+  const viewport = useFrozenFlowViewport();
+  /** 交互锁期间冻结 zoom，避免缩放/平移时整节点重渲染 */
+  const liveZoom = useFrozenFlowZoom(1);
   const showAlert = useDarkAlert().showAlert;
   const { locale } = useAppLocale();
   const wc = workspaceChromeT(locale);
@@ -164,6 +174,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
       if (packet.status === 'START') {
         setIsTimerRunning(true);
         setElapsedSeconds(0);
+        genStartAtRef.current = Date.now();
         updateNodeData({ aiStatus: 'START', progress: 1, errorMessage: undefined });
       } else if (packet.status === 'PROCESSING') {
         updateNodeData({ aiStatus: 'PROCESSING', progress: Math.max(1, (packet.payload as any)?.progress ?? 1) });
@@ -173,12 +184,16 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           clearInterval(timerIntervalRef.current);
           timerIntervalRef.current = null;
         }
-        updateNodeData({ aiStatus: undefined, progress: 0 });
       }
       
       // SUCCESS 状态：显示结果（aiStatus/progress 已在上面清除）
       if (packet.status === 'SUCCESS') {
         const text = (packet.payload as any)?.text;
+        const elapsed =
+          genStartAtRef.current != null
+            ? Math.round(((Date.now() - genStartAtRef.current) / 1000) * 10) / 10
+            : elapsedSeconds;
+        genStartAtRef.current = null;
         if (text && typeof text === 'string' && text.trim()) {
           setOutputText(text);
           setErrorMessage('');
@@ -188,6 +203,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
             errorMessage: undefined,
             aiStatus: undefined,
             progress: 0,
+            lastElapsedSec: elapsed,
           };
           
           if (!data?.isUserResized && size.w < DEFAULT_WIDTH) {
@@ -196,12 +212,15 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           }
           
           updateNodeData(updateData);
+        } else {
+          updateNodeData({ aiStatus: undefined, progress: 0, lastElapsedSec: elapsed });
         }
         return;
       }
       
       // ERROR 状态：显示错误信息；余额不足时弹窗提示
       if (packet.status === 'ERROR') {
+        genStartAtRef.current = null;
         const errorMsg = packet.payload?.error || '未知错误';
         const balanceInsufficient = (packet.payload as any)?.balanceInsufficient === true;
         setErrorMessage(errorMsg);
@@ -220,12 +239,19 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
       if (result?.text && typeof result.text === 'string' && result.text.trim()) {
         setOutputText(result.text);
         setErrorMessage('');
+        const elapsed =
+          genStartAtRef.current != null
+            ? Math.round(((Date.now() - genStartAtRef.current) / 1000) * 10) / 10
+            : elapsedSeconds;
+        genStartAtRef.current = null;
+        setIsTimerRunning(false);
         
         const updateData: Partial<LLMNodeData> = {
           outputText: result.text,
           errorMessage: undefined,
           aiStatus: undefined,
           progress: 0,
+          lastElapsedSec: elapsed,
         };
         
         if (!data?.isUserResized && size.w < DEFAULT_WIDTH) {
@@ -237,6 +263,8 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
       }
     },
     onError: (error) => {
+      genStartAtRef.current = null;
+      setIsTimerRunning(false);
       const msg =
         typeof error === 'string'
           ? error
@@ -258,13 +286,15 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
   const dataExecuting = data?.aiStatus === 'START' || data?.aiStatus === 'PROCESSING' || (typeof data?.progress === 'number' && data.progress > 0 && data.progress < 100);
   const showTimer = isTimerRunning || isProcessing || dataExecuting;
 
-  // 计时器：生成中每秒更新已用时间
+  // 计时器：生成中按 100ms 刷新已用时间（展示一位小数）
   useEffect(() => {
     if (!showTimer) return;
+    if (genStartAtRef.current == null) genStartAtRef.current = Date.now();
     setElapsedSeconds(0);
     timerIntervalRef.current = setInterval(() => {
-      setElapsedSeconds((s) => s + 1);
-    }, 1000);
+      const start = genStartAtRef.current ?? Date.now();
+      setElapsedSeconds(Math.round(((Date.now() - start) / 1000) * 10) / 10);
+    }, 100);
     return () => {
       if (timerIntervalRef.current) {
         clearInterval(timerIntervalRef.current);
@@ -272,6 +302,18 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
       }
     };
   }, [showTimer]);
+
+  const displayTitle = useMemo(() => {
+    const raw = (title || '').trim();
+    if (!raw || raw.toLowerCase() === 'llm') return wc.llmTextCardTitle;
+    return raw;
+  }, [title, wc.llmTextCardTitle]);
+
+  const displayElapsedSec = showTimer
+    ? elapsedSeconds
+    : typeof data?.lastElapsedSec === 'number' && data.lastElapsedSec > 0
+      ? data.lastElapsedSec
+      : null;
 
   // 同步外部数据变化
   // 注意：编辑模式时不应该改变尺寸，且编辑 output 时不同步 outputText（避免接入 text/llm 时 inputText 同步触发重渲染覆盖用户正在编辑的内容）
@@ -529,7 +571,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
     }
   }, [outputText]);
 
-  const zoom = viewport.zoom ?? 1;
+  const zoom = liveZoom || viewport.zoom || 1;
   const vx = viewport.x ?? 0;
   const vy = viewport.y ?? 0;
   const lodLevel = useMemo<'far' | 'mid' | 'near'>(() => {
@@ -560,6 +602,10 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
   const showFloatingToolbar = (selected || isHovered) && !errorMessage;
   const floatToolBtn = (scratch: ScratchColorId, active: boolean, extra = '') =>
     nodeFloatToolBtn(isDarkMode, active, extra, scratch);
+  const llmPromptAnchor = useLlmInputPanelAnchor();
+  const showLlmPromptPanel = !!llmPromptAnchor && llmPromptAnchor.nodeId === id && selected;
+  /** 镜头拉远随画布缩小；拉近反缩放，避免操作栏撑满屏幕 */
+  const zoomInv = Math.min(1, 1 / Math.max(zoom, 0.01));
 
   return (
     <>
@@ -575,7 +621,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           willChange: isResizing ? 'transform, width, height' : dragging ? 'transform' : 'auto',
           backfaceVisibility: isResizing ? 'hidden' : 'visible',
           transition: isResizing ? 'none' : 'background-color 0.2s, border-color 0.2s',
-          overflow: 'visible', // 使左上角小标题可见；内容区由内部 overflow 控制
+          overflow: 'visible', // 使左上角小标题 / 下方输入条可见；内容区由内部 overflow 控制
           boxSizing: 'border-box', // 确保边框包含在尺寸内
         }}
         onMouseEnter={() => setIsHovered(true)}
@@ -612,14 +658,16 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
             <div className="flex flex-col items-center justify-center gap-1">
               <Bot className={`w-4 h-4 ${isDarkMode ? 'text-white/65' : 'text-gray-500'}`} />
               <span className={`text-[10px] font-medium ${isDarkMode ? 'text-white/60' : 'text-gray-500'}`}>
-                {isHardFrozen ? `${data?.title || 'llm'}（冻结）` : (data?.title || 'llm')}
+                {isHardFrozen ? `${displayTitle}（冻结）` : displayTitle}
               </span>
             </div>
           </div>
         ) : (
         <>
-        {/* 左上角标题区域（在文本框外部，节点边框外） */}
-        {showDetailedUi && <div className="title-area absolute -top-7 left-0 z-10">
+        {/* 左上角标题区域（在文本框外部，节点边框外）+ 右侧耗时 */}
+        {showDetailedUi && <div className="title-area absolute -top-7 left-0 right-0 z-10 flex items-center justify-between gap-2 pointer-events-none">
+          <div className="flex items-center gap-1 min-w-0 pointer-events-auto">
+            <Type className={`w-3 h-3 shrink-0 ${isDarkMode ? 'text-white/55' : 'text-gray-500'}`} strokeWidth={2.25} />
           {isEditingTitle ? (
             <input
               ref={titleInputRef}
@@ -674,11 +722,21 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           ) : (
             <span
               onClick={handleTitleDoubleClick}
-              className={`font-bold text-xs cursor-pointer select-none ${
+              className={`font-bold text-xs cursor-pointer select-none truncate ${
               isDarkMode ? 'text-white/80' : 'text-gray-900'
             } hover:opacity-70 transition-opacity`}
             >
-              {title || 'llm'}
+              {displayTitle}
+            </span>
+          )}
+          </div>
+          {displayElapsedSec != null && (
+            <span
+              className={`shrink-0 text-[10px] font-medium tabular-nums pointer-events-none ${
+                isDarkMode ? 'text-white/45' : 'text-gray-500'
+              }`}
+            >
+              {wc.llmElapsedLabel(displayElapsedSec)}
             </span>
           )}
         </div>}
@@ -693,29 +751,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           onFadeComplete={() => updateNodeData({ progress: 0 })}
         />
 
-        {/* 模块内右上角复制按钮 */}
-        {/* 复制成功后显示勾标记，否则显示复制按钮 */}
-        {showDetailedUi && selected && outputText && (
-          <button
-            onClick={handleCopyOutput}
-            className={`absolute top-2 right-2 p-1.5 rounded-lg transition-all z-10 ${
-              isDarkMode 
-                ? 'apple-panel hover:bg-white/20' 
-                : 'apple-panel-light hover:bg-gray-200/30'
-            }`}
-            title={showCopySuccess ? "已复制" : "复制"}
-          >
-            {showCopySuccess ? (
-              <Check className={`w-3.5 h-3.5 ${
-                isDarkMode ? 'text-green-400' : 'text-green-600'
-              }`} />
-            ) : (
-              <Copy className={`w-3.5 h-3.5 ${
-                isDarkMode ? 'text-white/80' : 'text-gray-700'
-              }`} />
-            )}
-          </button>
-        )}
+        {/* 复制改入悬浮工具条，卡片内不再单独放右上角按钮 */}
 
              {/* 文本内容显示区域（与文本模块样式一致，支持双击编辑） */}
              <div 
@@ -821,7 +857,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
                    }}
                    onDoubleClick={handleOutputDoubleClick}
                  >
-                   {outputText || wc.doubleClickEditText}
+                   {outputText || wc.llmEmptyHint}
                  </p>
                )}
              </div>
@@ -944,18 +980,33 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
         </>
         )}
 
+      {/* 工具条置于模块上方（对齐 AI Canvas），避免与下方输入条重叠 */}
       {showFloatingToolbar && (
         <div
-          className="node-floating-toolbar nodrag nopan absolute top-full left-1/2 z-20 mt-1.5 flex w-max max-w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 overflow-visible"
-          style={{ pointerEvents: 'all' }}
+          className="node-floating-toolbar nodrag nopan absolute bottom-[calc(100%+36px)] left-1/2 z-20 flex w-max max-w-[min(520px,calc(100vw-2rem))] flex-wrap items-center justify-center gap-1.5 overflow-visible"
+          style={{
+            pointerEvents: 'all',
+            transform: `translateX(-50%) scale(${zoomInv})`,
+            transformOrigin: 'bottom center',
+            transition: 'none',
+          }}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
           <button
             type="button"
+            onClick={handleCopyOutput}
+            disabled={!outputText}
+            className={floatToolBtn('motion', showCopySuccess, !outputText ? '!opacity-40' : '')}
+            title={showCopySuccess ? wc.llmCopiedTitle : wc.llmCopyTitle}
+          >
+            {showCopySuccess ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            type="button"
             onClick={() => applyFormat('textAlign', 'left')}
-            className={floatToolBtn('motion', textAlign === 'left')}
+            className={floatToolBtn('looks', textAlign === 'left')}
             title="左对齐"
           >
             <AlignLeft className="w-3.5 h-3.5" />
@@ -963,7 +1014,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           <button
             type="button"
             onClick={() => applyFormat('textAlign', 'center')}
-            className={floatToolBtn('looks', textAlign === 'center')}
+            className={floatToolBtn('sensing', textAlign === 'center')}
             title="居中"
           >
             <AlignCenter className="w-3.5 h-3.5" />
@@ -971,7 +1022,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           <button
             type="button"
             onClick={() => applyFormat('textAlign', 'right')}
-            className={floatToolBtn('sensing', textAlign === 'right')}
+            className={floatToolBtn('control', textAlign === 'right')}
             title="右对齐"
           >
             <AlignRight className="w-3.5 h-3.5" />
@@ -996,7 +1047,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
             type="button"
             onClick={() => adjustOutputFontSize(-2)}
             disabled={outputFontSizePx <= 10}
-            className={floatToolBtn('control', false, outputFontSizePx <= 10 ? '!opacity-40' : '')}
+            className={floatToolBtn('operators', false, outputFontSizePx <= 10 ? '!opacity-40' : '')}
             title={wc.fontZoomOutTitle}
           >
             <ZoomOut className="w-3.5 h-3.5" />
@@ -1005,11 +1056,33 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
             type="button"
             onClick={() => adjustOutputFontSize(2)}
             disabled={outputFontSizePx >= 28}
-            className={floatToolBtn('operators', false, outputFontSizePx >= 28 ? '!opacity-40' : '')}
+            className={floatToolBtn('myBlocks', false, outputFontSizePx >= 28 ? '!opacity-40' : '')}
             title={wc.fontZoomInTitle}
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* 对齐 AI Canvas `.text-prompt-panel`：挂在模块正下方，随节点平移/缩放 */}
+      {showLlmPromptPanel && llmPromptAnchor && (
+        <div
+          className="llm-text-prompt-panel nodrag nopan absolute z-[60]"
+          style={{
+            top: 'calc(100% + 14px)',
+            left: '50%',
+            width: llmPromptAnchor.width,
+            height: llmPromptAnchor.height === 'auto' ? 'auto' : llmPromptAnchor.height,
+            transform: `translateX(-50%) scale(${zoomInv})`,
+            transformOrigin: 'top center',
+            pointerEvents: 'auto',
+            transition: 'none',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          {llmPromptAnchor.panel}
         </div>
       )}
       </div>

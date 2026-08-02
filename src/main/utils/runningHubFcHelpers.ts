@@ -181,12 +181,13 @@ export async function rhPostChargeVideo(
   fullUrl: string,
   payload: Record<string, unknown>,
   fallbackFcId: string,
-  options?: { billingModelId?: string },
+  options?: { billingModelId?: string; rhRegion?: 'cn' | 'ai' },
   prepaidLedgerTaskId?: string | null,
 ): Promise<Record<string, unknown>> {
   const usePrepaid = prepaidLedgerTaskId != null && String(prepaidLedgerTaskId).trim() !== '';
   const taskId = usePrepaid ? String(prepaidLedgerTaskId).trim() : fallbackFcId;
   const billing = usePrepaid ? ('none' as const) : ('charge' as const);
+  const rhRegion = options?.rhRegion === 'ai' || options?.rhRegion === 'cn' ? options.rhRegion : undefined;
   const { data } = await fcForwardRequest(
     taskId,
     'video',
@@ -196,6 +197,7 @@ export async function rhPostChargeVideo(
       path: pathFromRunningHubUrl(fullUrl),
       method: 'POST',
       body: payload,
+      ...(rhRegion ? { rhRegion } : {}),
     },
     options?.billingModelId ? { billingModelId: options.billingModelId } : undefined,
   );
@@ -206,14 +208,17 @@ export async function rhQueryPollVideo(
   rhTaskId: string,
   fcPollId: string,
   ledgerTaskId?: string | null,
+  options?: { rhRegion?: 'cn' | 'ai' },
 ): Promise<Record<string, unknown>> {
   const taskId =
     ledgerTaskId != null && String(ledgerTaskId).trim() !== '' ? String(ledgerTaskId).trim() : fcPollId;
+  const rhRegion = options?.rhRegion === 'ai' || options?.rhRegion === 'cn' ? options.rhRegion : undefined;
   const { data } = await fcForwardRequest(taskId, 'video', 'none', {
     provider: 'runninghub',
     path: '/query',
     method: 'POST',
     body: { taskId: rhTaskId },
+    ...(rhRegion ? { rhRegion } : {}),
   });
   return unwrapRunningHubForwardBody(data as Record<string, unknown>);
 }

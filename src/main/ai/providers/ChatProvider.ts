@@ -272,12 +272,22 @@ export class ChatProvider extends BaseProvider {
 
       console.log('[ChatProvider] 使用 FC run-task 转发（云端扣费）');
       try {
-        const { content } = await callFCChat({
+        const { content, finishReason } = await callFCChat({
           messages: processedMessages,
           model: chatInput.model,
           temperature: chatInput.temperature,
           max_tokens: chatInput.max_tokens,
+          response_format: chatInput.response_format,
         });
+        if (!content) {
+          const reason =
+            finishReason === 'length'
+              ? '模型输出被截断（finish_reason=length），请增大 max_tokens 后重试'
+              : finishReason
+                ? `模型返回空内容（finish_reason=${finishReason}）`
+                : '模型返回空内容';
+          throw new Error(reason);
+        }
         let localPath: string | null = null;
         try {
           const projectId = (chatInput as any)?.projectId;
@@ -298,7 +308,11 @@ export class ChatProvider extends BaseProvider {
         } catch (_e) {
           /* 忽略 */
         }
-        onStatus({ nodeId, status: 'SUCCESS', payload: { text: content, localPath: localPath || undefined } });
+        onStatus({
+          nodeId,
+          status: 'SUCCESS',
+          payload: { text: content, localPath: localPath || undefined, finishReason },
+        });
         return;
       } catch (fcError: any) {
         const needAuth =

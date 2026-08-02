@@ -31,6 +31,8 @@ export interface FcForwardPayload {
     contentType?: string;
     fieldName?: string;
   };
+  /** 显式指定 RunningHub 站点：cn=国内 / ai=海外；省略则由 FC 按 path 白名单与 query 粘性推断 */
+  rhRegion?: 'cn' | 'ai';
 }
 
 function rhTaskIdFromForwardData(d: Record<string, unknown>): string | undefined {
@@ -70,8 +72,13 @@ function mapForwardAxiosError(e: unknown): Error {
     /HTTP\s*401|\b401\b/i.test(combined) ||
     /Unauthorized/i.test(errStr)
   ) {
+    const overseas =
+      /RUNNINGHUB_API_KEY_AI|海外 RunningHub|runninghub\.ai/i.test(combined) ||
+      /RUNNINGHUB_API_KEY_AI/i.test(errStr);
     const out = new Error(
-      '云端 RunningHub 鉴权失败（HTTP 401）：请在 FC 环境变量中配置有效的 RUNNINGHUB_API_KEY，并与 RunningHub 开放平台「插件算力 API Key」一致。',
+      overseas
+        ? '云端 RunningHub 海外站鉴权失败（HTTP 401）：请在 FC 环境变量中配置有效的 RUNNINGHUB_API_KEY_AI（runninghub.ai）。'
+        : '云端 RunningHub 鉴权失败（HTTP 401）：请在 FC 环境变量中配置有效的 RUNNINGHUB_API_KEY（国内 .cn），海外模型还需 RUNNINGHUB_API_KEY_AI。',
     );
     attachResponse(out, e.response);
     return out;
@@ -107,6 +114,7 @@ export async function fcForwardRequest(
       taskId,
       billing,
       forward,
+      ...(forward?.rhRegion ? { rhRegion: forward.rhRegion } : {}),
       ...(billingModelId ? { billingModelId } : {}),
     });
     let out = data as Record<string, unknown>;
@@ -122,6 +130,7 @@ export async function fcForwardRequest(
         taskId: retryId,
         billing,
         forward,
+        ...(forward?.rhRegion ? { rhRegion: forward.rhRegion } : {}),
         ...(billingModelId ? { billingModelId } : {}),
       });
       out = second.data as Record<string, unknown>;

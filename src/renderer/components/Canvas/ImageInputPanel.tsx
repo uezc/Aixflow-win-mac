@@ -1,20 +1,19 @@
 // @ts-nocheck
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Mic, Loader2, ArrowUp, X } from 'lucide-react';
+import { Loader2, ArrowUp, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAI } from '../../hooks/useAI';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
-import {
-  useReferenceMicRecording,
-} from '../../hooks/useReferenceMicRecording';
+import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
+import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
+import { micLevelCssVars } from '../../utils/micInputLevel';
+import VoiceMicGlyph from './VoiceMicGlyph';
 import { isModelNotPricedError } from '../../utils/priceCalc';
 import { getImageDisplayPrice } from '../../utils/cloudModelPricing';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { imageInputPanelT } from '../../i18n/imageInputPanelI18n';
 import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
-import { workspaceChromeT } from '../../i18n/workspaceI18n';
-import { confirmOptionalEngineDownload } from '../../utils/confirmOptionalEngineDownload';
 import { RefImageHoverThumb } from './RefImageHoverThumb';
 import {
   filterImageModelOptionsForMode,
@@ -176,13 +175,11 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   const [isDraggingThumb, setIsDraggingThumb] = useState(false);
   const [hoveredRefFromPillIndex, setHoveredRefFromPillIndex] = useState<number | null>(null);
   const [orderedInputImages, setOrderedInputImages] = useState<string[]>(() => (inputImages || []).slice(0, 10));
-  const { showAlert, showConfirm } = useDarkAlert();
+  const { showAlert } = useDarkAlert();
   const { cloudMap } = useNxModelPricing();
   const { locale } = useAppLocale();
   const it = useMemo(() => imageInputPanelT(locale), [locale]);
   const refMicAt = useMemo(() => audioInputPanelT(locale), [locale]);
-  const wc = useMemo(() => workspaceChromeT(locale), [locale]);
-  const [micVoiceBusy, setMicVoiceBusy] = useState(false);
   const promptTags = useMemo(
     () =>
       PROMPT_TAG_DEFS.map((def) => {
@@ -206,6 +203,29 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   );
   const [promptCapsules, setPromptCapsules] = useState<PromptInputCapsule[]>([]);
   const lastPromptTagClickAtRef = useRef(0);
+  /** 九宫格多角度胶囊是否激活（用于离开面板时还原模块尺寸） */
+  const nineGridEnlargeActiveRef = useRef(false);
+
+  const dispatchNineGridEnlarge = useCallback(
+    (targetNodeId: string, active: boolean) => {
+      window.dispatchEvent(
+        new CustomEvent('nexflow-image-ninegrid-enlarge', {
+          detail: { nodeId: targetNodeId, active },
+        }),
+      );
+    },
+    [],
+  );
+
+  /** 切换节点 / 卸载面板时：若九宫格放大仍开着，通知对应 Image 节点还原 */
+  useEffect(() => {
+    const boundId = nodeId;
+    return () => {
+      if (!nineGridEnlargeActiveRef.current) return;
+      nineGridEnlargeActiveRef.current = false;
+      dispatchNineGridEnlarge(boundId, false);
+    };
+  }, [nodeId, dispatchNineGridEnlarge]);
   // 本地 prompt + 防抖：避免每次按键触发父组件重渲染导致输入框闪动（图生图模式尤为明显）
   const [localPrompt, setLocalPrompt] = useState(prompt);
   const [promptComposing, setPromptComposing] = useState(false);
@@ -337,15 +357,113 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   );
 
   const {
+    status: dictationStatus,
+    isActive: isDictationActive,
+    inputLevel: dictationInputLevel,
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+  } = useCloudRealtimeDictation({
+    getBaseText: () => {
+      const prev = (promptInputRef.current?.getPlainText() ?? localPromptRef.current ?? '').trimEnd();
+      return prev ? `${prev}\n` : '';
+    },
+    onLiveText: (full) => {
+      promptInputRef.current?.setPlainText(full);
+      setLocalPrompt(full);
+      lastSentPromptRef.current = full;
+      onPromptChange(full);
+    },
+    onError: (message) => {
+      showAlert(message);
+    },
+    onMicDenied: () => {
+      showAlert(refMicAt.micPermissionDenied);
+    },
+  });
+
+  const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
+  const micVoiceStopping = dictationStatus === 'stopping';
+  const micInputLocked = isDictationActive || micVoiceBusy;
+
+  const { pointerHandlers: promptMicPointerHandlers } = useDictationPushToTalk({
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+    status: dictationStatus,
+    disabled: micVoiceStopping,
+  });
+
+  useEffect(() => {
+    const open = isDictationActive;
+    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
+    return () => {
+      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
+    };
+  }, [isDictationActive]);
+
+  const hideScrollbarsForVoice = isDictationActive || micVoiceBusy;
+
+  /** 与 VideoInputPanel 同款：输入框内右上角小方角麦克风；按住说话 */
+  const promptVoiceMicButton = (
+    <button
+      type="button"
+      {...promptMicPointerHandlers}
+      disabled={micVoiceStopping}
+      style={
+        dictationStatus === 'listening' || dictationStatus === 'connecting'
+          ? micLevelCssVars(dictationInputLevel)
+          : undefined
+      }
+      className={`nexflow-voice-mic-btn nodrag nopan relative flex h-7 w-7 shrink-0 items-center justify-center rounded border select-none ${
+        dictationStatus === 'connecting'
+          ? 'connecting'
+          : dictationStatus === 'listening'
+            ? 'listening'
+            : ''
+      } ${
+        micVoiceStopping
+          ? isDarkMode
+            ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+            : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
+          : isDarkMode
+            ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+            : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
+      }`}
+      title={
+        micVoiceBusy
+          ? it.voiceTranscribing
+          : isDictationActive
+            ? it.voiceStopTitle
+            : it.voiceStartTitle
+      }
+      aria-label={
+        micVoiceBusy
+          ? it.voiceTranscribing
+          : isDictationActive
+            ? it.voiceStopTitle
+            : it.voiceStartTitle
+      }
+    >
+      <VoiceMicGlyph
+        busy={micVoiceBusy}
+        active={dictationStatus === 'listening'}
+        level={dictationInputLevel}
+      />
+    </button>
+  );
+
+  const {
     mentionMenuProps,
     mentionCandidates,
     onMentionKeyDown,
     onMentionInputCheck,
+    onMentionCompositionChange,
   } = usePromptAtMention({
     nodeId,
     value: localPrompt,
     richEditorRef: promptInputRef,
-    enabled: !micVoiceBusy,
+    enabled: !micInputLocked,
     composing: promptComposing,
     orderedInputImages,
     locale,
@@ -426,8 +544,13 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
 
   const togglePromptCapsule = useCallback(
     (tag: { id: string; label: string; text: string; color: string }) => {
+      const exists = promptCapsules.some((c) => c.id === tag.id);
+      const nextActive = !exists;
+      if (tag.id === 'nineGrid') {
+        nineGridEnlargeActiveRef.current = nextActive;
+        dispatchNineGridEnlarge(nodeId, nextActive);
+      }
       setPromptCapsules((prev) => {
-        const exists = prev.some((c) => c.id === tag.id);
         if (exists) return prev.filter((c) => c.id !== tag.id);
         return [
           ...prev.filter((c) => c.id !== tag.id),
@@ -444,12 +567,26 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
       }
       promptInputRef.current?.focus();
     },
-    [localPrompt, onPromptChange, stripCapsulePromptsFromText],
+    [
+      promptCapsules,
+      localPrompt,
+      onPromptChange,
+      stripCapsulePromptsFromText,
+      dispatchNineGridEnlarge,
+      nodeId,
+    ],
   );
 
-  const removePromptCapsule = useCallback((id: string) => {
-    setPromptCapsules((prev) => prev.filter((c) => c.id !== id));
-  }, []);
+  const removePromptCapsule = useCallback(
+    (id: string) => {
+      if (id === 'nineGrid' && nineGridEnlargeActiveRef.current) {
+        nineGridEnlargeActiveRef.current = false;
+        dispatchNineGridEnlarge(nodeId, false);
+      }
+      setPromptCapsules((prev) => prev.filter((c) => c.id !== id));
+    },
+    [dispatchNineGridEnlarge, nodeId],
+  );
 
   const composePromptWithCapsules = useCallback(
     (base: string) => {
@@ -459,108 +596,6 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
     },
     [promptCapsules],
   );
-
-  const mergeVoiceIntoPrompt = useCallback(
-    (text: string) => {
-      const t = text.trim();
-      if (!t) return;
-      const prev = localPrompt.trim();
-      const next = prev ? `${prev}\n${t}` : t;
-      promptInputRef.current?.setPlainText(next);
-      setLocalPrompt(next);
-      lastSentPromptRef.current = next;
-      onPromptChange(next);
-      promptInputRef.current?.focus();
-    },
-    [localPrompt, onPromptChange],
-  );
-
-  const runMicTranscribeOnUrl = useCallback(
-    async (localResourceUrl: string) => {
-      if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
-        showAlert(locale === 'en' ? 'Transcription is not available in this build.' : '当前环境不支持语音转写');
-        setMicVoiceBusy(false);
-        return;
-      }
-      const downloadOk = await confirmOptionalEngineDownload('whisper', showConfirm, locale);
-      if (!downloadOk) {
-        setMicVoiceBusy(false);
-        return;
-      }
-      setMicVoiceBusy(true);
-      try {
-        const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
-          projectId || undefined,
-          localResourceUrl,
-          locale === 'zh' ? 'zh' : locale === 'en' ? 'en' : undefined,
-        );
-        const recognized = (out || '').trim();
-        if (!recognized) {
-          showAlert(locale === 'en' ? 'No speech recognized.' : '未识别到文字，请重试。');
-          return;
-        }
-        mergeVoiceIntoPrompt(recognized);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        showAlert(msg || (locale === 'en' ? 'Transcription failed.' : '语音识别失败'));
-      } finally {
-        setMicVoiceBusy(false);
-      }
-    },
-    [locale, mergeVoiceIntoPrompt, projectId, showAlert, showConfirm],
-  );
-
-  const {
-    isRecording: isMicVoiceRecording,
-    startReferenceRecording: startMicVoiceRecording,
-    stopReferenceRecording: stopMicVoiceRecording,
-  } = useReferenceMicRecording({
-    projectId,
-    onSaved: (url) => {
-      void runMicTranscribeOnUrl(url);
-    },
-    onRecordingFailed: () => {
-      setMicVoiceBusy(false);
-    },
-    showAlert,
-    strings: {
-      micPermissionDenied: refMicAt.micPermissionDenied,
-      micSaveFailed: refMicAt.micSaveFailed,
-      recordTooShort: refMicAt.recordTooShort,
-      recordModalTitle: wc.textVoiceModalTitle,
-      recordModalSubtitle: wc.textVoiceModalSubtitle,
-      recordModalStop: refMicAt.recordModalStop,
-    },
-    isDarkMode,
-  });
-
-  const handleStopMicVoiceRecording = useCallback(() => {
-    setMicVoiceBusy(true);
-    stopMicVoiceRecording();
-  }, [stopMicVoiceRecording]);
-
-  const handlePromptVoiceInput = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (micVoiceBusy) return;
-      if (isMicVoiceRecording) {
-        handleStopMicVoiceRecording();
-        return;
-      }
-      void startMicVoiceRecording();
-    },
-    [isMicVoiceRecording, micVoiceBusy, startMicVoiceRecording, handleStopMicVoiceRecording],
-  );
-
-  useEffect(() => {
-    const open = isMicVoiceRecording || micVoiceBusy;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
-  }, [isMicVoiceRecording, micVoiceBusy]);
-
-  const hideScrollbarsForVoice = isMicVoiceRecording || micVoiceBusy;
 
   const isImageToImageMode = orderedInputImages.length > 0;
   const refCount = orderedInputImages.length;
@@ -926,6 +961,9 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
         promptDebounceRef.current = null;
       }
       promptInputFocusedRef.current = false;
+      // 切节点时丢掉上一节点的胶囊态（放大还原由 nodeId effect cleanup 负责）
+      nineGridEnlargeActiveRef.current = false;
+      setPromptCapsules([]);
       lastSentPromptRef.current = prompt;
       setLocalPrompt(prompt);
       return;
@@ -1143,11 +1181,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   );
 
   const capsuleRow = (
-    <div
-      className={`mt-2 flex items-center gap-1.5 flex-wrap content-start ${
-        hideScrollbarsForVoice ? '' : ''
-      }`}
-    >
+    <div className="mt-2 flex items-center gap-1.5 flex-wrap content-start">
       {promptTags.map((tag) => (
         <button
           key={tag.id}
@@ -1176,45 +1210,6 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
           {tag.label}
         </button>
       ))}
-      <button
-        type="button"
-        onClick={handlePromptVoiceInput}
-        disabled={micVoiceBusy}
-        className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors ${
-          micVoiceBusy
-            ? isDarkMode
-              ? 'cursor-wait border-violet-400/50 bg-violet-500/20 text-violet-200'
-              : 'cursor-wait border-violet-400/60 bg-violet-100 text-violet-700'
-            : isMicVoiceRecording
-              ? 'border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
-              : isDarkMode
-                ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
-        }`}
-        title={
-          micVoiceBusy
-            ? it.voiceTranscribing
-            : isMicVoiceRecording
-              ? wc.textVoiceInputStopButton
-              : wc.textVoiceInputTitle
-        }
-        aria-label={
-          micVoiceBusy
-            ? it.voiceTranscribing
-            : isMicVoiceRecording
-              ? wc.textVoiceInputStopButton
-              : wc.textVoiceInputTitle
-        }
-      >
-        {micVoiceBusy || isMicVoiceRecording ? (
-          <Loader2
-            className={`relative h-3.5 w-3.5 animate-spin ${isMicVoiceRecording && !micVoiceBusy ? 'text-orange-200' : ''}`}
-            strokeWidth={2.25}
-          />
-        ) : (
-          <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
-        )}
-      </button>
     </div>
   );
 
@@ -1265,55 +1260,67 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
                 ))}
               </div>
             ) : null}
-            <PromptRichInput
-              ref={promptInputRef}
-              value={localPrompt}
-              candidates={mentionCandidates}
-              readOnly={micVoiceBusy}
-              disabled={micVoiceBusy}
-              isDarkMode={isDarkMode}
-              placeholder={it.placeholderPrompt}
-              title={it.titlePromptInput}
-              onFocus={() => {
-                if (micVoiceBusy) return;
-                promptInputFocusedRef.current = true;
-                onPromptFocus?.();
-              }}
-              onCompositionChange={setPromptComposing}
-              onBlur={() => {
-                promptInputFocusedRef.current = false;
-                if (promptDebounceRef.current) {
-                  clearTimeout(promptDebounceRef.current);
-                  promptDebounceRef.current = null;
-                }
-                const v = promptInputRef.current?.getPlainText() ?? localPrompt;
-                if (v !== lastSentPromptRef.current) {
-                  lastSentPromptRef.current = v;
+            <div className="relative flex-1 min-h-0 flex flex-col">
+              <PromptRichInput
+                ref={promptInputRef}
+                value={localPrompt}
+                candidates={mentionCandidates}
+                readOnly={micInputLocked}
+                disabled={micInputLocked}
+                isDarkMode={isDarkMode}
+                placeholder={it.placeholderPrompt}
+                title={it.titlePromptInput}
+                onFocus={() => {
+                  if (micInputLocked) return;
+                  promptInputFocusedRef.current = true;
+                  onPromptFocus?.();
+                }}
+                onCompositionChange={(next) => {
+                  onMentionCompositionChange(next);
+                  setPromptComposing(next);
+                }}
+                onBlur={() => {
+                  promptInputFocusedRef.current = false;
+                  if (promptDebounceRef.current) {
+                    clearTimeout(promptDebounceRef.current);
+                    promptDebounceRef.current = null;
+                  }
+                  const v = promptInputRef.current?.getPlainText() ?? localPrompt;
+                  if (v !== lastSentPromptRef.current) {
+                    lastSentPromptRef.current = v;
+                    setLocalPrompt(v);
+                    onPromptChange(v);
+                  }
+                }}
+                onKeyDown={onMentionKeyDown}
+                onSubmit={() => {
+                  if (micInputLocked || isRunDisabled) return;
+                  void handleExecute();
+                }}
+                onInputCheck={onMentionInputCheck}
+                onChange={(v) => {
+                  if (micInputLocked) return;
                   setLocalPrompt(v);
-                  onPromptChange(v);
-                }
-              }}
-              onKeyDown={onMentionKeyDown}
-              onInputCheck={onMentionInputCheck}
-              onChange={(v) => {
-                if (micVoiceBusy) return;
-                setLocalPrompt(v);
-                if (promptDebounceRef.current) clearTimeout(promptDebounceRef.current);
-                promptDebounceRef.current = setTimeout(() => {
-                  promptDebounceRef.current = null;
-                  lastSentPromptRef.current = v;
-                  onPromptChange(v);
-                }, 450);
-              }}
-              onRefPillHover={(match) => {
-                setHoveredRefFromPillIndex(resolveRefPillToOrderedIndex(match, latestOrderedImagesRef.current));
-              }}
-              className={`w-full flex-1 min-h-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden transition-opacity ${
-                micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''
-              }`}
-              style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
-            />
-            <AtMentionMenu {...mentionMenuProps} />
+                  if (promptDebounceRef.current) clearTimeout(promptDebounceRef.current);
+                  promptDebounceRef.current = setTimeout(() => {
+                    promptDebounceRef.current = null;
+                    lastSentPromptRef.current = v;
+                    onPromptChange(v);
+                  }, 450);
+                }}
+                onRefPillHover={(match) => {
+                  setHoveredRefFromPillIndex(resolveRefPillToOrderedIndex(match, latestOrderedImagesRef.current));
+                }}
+                className={`w-full flex-1 min-h-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden transition-opacity pr-9 pt-8 ${
+                  micInputLocked ? 'opacity-45 cursor-not-allowed' : ''
+                }`}
+                style={{ caretColor: isDarkMode ? '#0A84FF' : '#22c55e' }}
+              />
+              <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+                {promptVoiceMicButton}
+              </div>
+              <AtMentionMenu {...mentionMenuProps} />
+            </div>
           </div>
 
           {orderedInputImages.length > 0 && (

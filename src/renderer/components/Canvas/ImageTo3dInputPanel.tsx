@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { Play, Upload } from 'lucide-react';
+import { Play, Upload, Loader2 } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { imageTo3dT } from '../../i18n/imageTo3dI18n';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
@@ -15,7 +15,8 @@ import { importImageTo3dAssetsToCharacters } from '../../utils/importImageTo3dAs
 import { preloadGlbPreviewUrl } from '../../utils/glbPreviewPreload';
 import type { Character } from '../characterListShared';
 import { promptNxSaasLoginIfNeeded } from '../../utils/cloudAiGateMessage';
-import { canvasBottomInputPanelShell } from '../../theme/canvasBottomInputPanel';
+import { AiGenerateDisclaimerTip } from '../legal/AiGenerateDisclaimerTip';
+import { PanelOptionDropdown } from './PanelOptionDropdown';
 
 const UPLOAD_ACCEPT = 'image/*,.aixflow,.glb,model/gltf-binary,application/octet-stream';
 
@@ -72,9 +73,6 @@ export interface ImageTo3dInputPanelProps {
   onModelChange?: (model: ImageTo3dModelId) => void;
 }
 
-const REF_PANEL_W = 120;
-const INPUT_BOX_HEIGHT = 138;
-
 function formatImagePath(path: string): string {
   if (!path) return '';
   if (
@@ -122,10 +120,16 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
     () =>
       getVisibleImageTo3dModelOptions().map((opt) => ({
         value: opt.value,
-        label: locale === 'en' ? opt.labelEn : opt.labelZh,
+        label:
+          (locale === 'en' ? opt.labelEn : opt.labelZh) +
+          (opt.plus ? ` (${t.modelPlusBadge})` : ''),
         plus: opt.plus,
       })),
-    [locale],
+    [locale, t.modelPlusBadge],
+  );
+  const dropdownOptions = useMemo(
+    () => modelOptions.map((o) => ({ value: o.value, label: o.label })),
+    [modelOptions],
   );
   const showModelSelect = modelOptions.length > 1;
   const selectedModelMeta = modelOptions.find((o) => o.value === model) ?? modelOptions[0];
@@ -290,57 +294,125 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
   }, [inputImageUrl, projectId, nodeId, model, onStart, onComplete, onError, onProgressChange, t]);
 
   return (
-    <div className={canvasBottomInputPanelShell(isDarkMode)}>
+    <div className="relative flex w-full flex-col nodrag nopan">
+      {/* 无框贴水：弱边框 + 轻玻璃，与视频/图像底栏同系 */}
       <div
-        className={`flex items-center justify-between px-2 py-1.5 border-b flex-shrink-0 gap-2 ${
-          isDarkMode ? 'border-gray-700/50' : 'border-gray-300/50'
-        }`}
+        className={[
+          'relative flex flex-col overflow-hidden rounded-[18px] transition-colors',
+          isDarkMode
+            ? 'border border-white/[0.08] bg-[rgba(22,22,26,0.55)] shadow-[0_8px_28px_rgba(0,0,0,0.22)] backdrop-blur-xl'
+            : 'border border-black/[0.06] bg-white/70 shadow-[0_8px_24px_rgba(0,0,0,0.06)] backdrop-blur-xl',
+          'px-3.5 pt-2.5 pb-2',
+        ].join(' ')}
       >
-        <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-          {showModelSelect ? (
-            <>
-              <label
-                className={`text-[10px] font-medium shrink-0 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}
-              >
-                {t.modelLabel}
-              </label>
-              <select
-                value={model}
-                disabled={isBusy}
-                onChange={(e) => onModelChange?.(resolveImageTo3dModelId(e.target.value))}
-                className={`nodrag nopan max-w-[140px] rounded-lg border px-2 py-1 text-xs font-medium outline-none ${
-                  isDarkMode
-                    ? 'border-white/15 bg-white/10 text-white/85'
-                    : 'border-gray-300 bg-white text-gray-800'
-                } disabled:opacity-50`}
-                title={selectedModelMeta?.plus ? '48G PLUS 实例' : '24G 默认实例'}
-              >
-                {modelOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                    {opt.plus ? ` (${t.modelPlusBadge})` : ''}
-                  </option>
-                ))}
-              </select>
-            </>
-          ) : null}
-          {hasRef ? (
+        <AiGenerateDisclaimerTip isDarkMode={isDarkMode} />
+
+        {hasRef ? (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1 flex-shrink-0">
             <span
-              className={`text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${
-                isDarkMode ? 'text-white/80 bg-purple-500/20' : 'text-gray-700 bg-purple-100'
+              className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+              }`}
+              title={t.inputFromEdge}
+            >
+              @{t.refImagesCount(1)}
+            </span>
+          </div>
+        ) : null}
+
+        {errorMessage ? (
+          <p className="mb-1.5 text-[12px] text-red-400 leading-relaxed flex-shrink-0">{errorMessage}</p>
+        ) : null}
+
+        {/* 居中双槽：对齐 RVC 翻唱接入区排版 */}
+        <div className="w-full max-w-[420px] mx-auto grid grid-cols-2 gap-2 flex-shrink-0">
+          <div
+            className={`rounded-xl overflow-hidden flex flex-col min-h-[112px] ${
+              hasRef
+                ? isDarkMode
+                  ? 'border border-emerald-500/45 bg-emerald-500/10'
+                  : 'border border-emerald-400/70 bg-emerald-50/90'
+                : isDarkMode
+                  ? 'border border-white/12 bg-black/30'
+                  : 'border border-gray-300/80 bg-gray-50/90'
+            }`}
+          >
+            <div
+              className={`text-[10px] px-2 py-1 flex-shrink-0 text-center ${
+                isDarkMode ? 'text-white/55' : 'text-gray-600'
               }`}
             >
-              {t.refImagesCount(1)}
-            </span>
-          ) : (
-            <span
-              className={`text-xs px-2 py-1 rounded ${isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'}`}
+              {t.refImageLabel}
+            </div>
+            <div className="flex-1 min-h-0 flex items-center justify-center p-2">
+              {hasRef ? (
+                <img
+                  src={formatImagePath(inputImageUrl)}
+                  alt=""
+                  className="max-w-full max-h-[88px] object-contain rounded"
+                  draggable={false}
+                />
+              ) : (
+                <span className={`text-[11px] text-center px-1 ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
+                  {t.noInput}
+                </span>
+              )}
+            </div>
+          </div>
+          <div
+            className={`rounded-xl overflow-hidden flex flex-col min-h-[112px] ${
+              hasResultTexture
+                ? isDarkMode
+                  ? 'border border-amber-500/45 bg-amber-500/10'
+                  : 'border border-amber-400/70 bg-amber-50/90'
+                : isDarkMode
+                  ? 'border border-amber-500/30 bg-black/30'
+                  : 'border border-amber-400/50 bg-gray-50/90'
+            }`}
+          >
+            <div
+              className={`text-[10px] px-2 py-1 flex-shrink-0 text-center ${
+                isDarkMode ? 'text-amber-200/80' : 'text-amber-900'
+              }`}
             >
-              {t.noInput}
-            </span>
-          )}
+              {t.resultTextureLabel}
+            </div>
+            <div className="flex-1 min-h-0 flex items-center justify-center p-2">
+              {hasResultTexture ? (
+                <img
+                  src={formatImagePath(resultTextureUrl)}
+                  alt=""
+                  className="max-w-full max-h-[88px] object-contain rounded"
+                  draggable={false}
+                />
+              ) : (
+                <span className={`text-[11px] text-center px-1 ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
+                  {hasOutput ? '—' : t.resultTexturePending}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+
+        {/* 底栏：与图像/视频同系 — 下拉左、上传+价格+生成右 */}
+        <div className="mt-2 flex items-center gap-1.5 flex-shrink-0 min-w-0">
+          {showModelSelect ? (
+            <div className="flex items-center gap-1 shrink-0">
+              <PanelOptionDropdown
+                value={model}
+                options={dropdownOptions}
+                onChange={(v) => {
+                  if (isBusy) return;
+                  onModelChange?.(resolveImageTo3dModelId(v));
+                }}
+                isDarkMode={isDarkMode}
+                title={selectedModelMeta?.plus ? '48G PLUS 实例' : '24G 默认实例'}
+                minWidthPx={88}
+                menuPlacement="up"
+              />
+            </div>
+          ) : null}
+          <div className="flex-1" />
           <input
             ref={uploadInputRef}
             type="file"
@@ -352,10 +424,10 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
             type="button"
             onClick={() => void handleUploadClick()}
             disabled={processing}
-            className={`px-2 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition-all ${
+            className={`px-2 py-1 rounded-lg text-xs font-medium flex items-center gap-1 transition-colors shrink-0 ${
               isDarkMode
-                ? 'bg-white/10 text-white/80 hover:bg-white/20 disabled:opacity-40'
-                : 'bg-gray-200 text-gray-700 hover:bg-gray-300 disabled:opacity-40'
+                ? 'bg-black/30 text-white/80 border border-gray-600/50 hover:bg-black/40 disabled:opacity-40'
+                : 'bg-white/90 text-gray-700 border border-gray-300 hover:bg-white disabled:opacity-40'
             }`}
             title={t.uploadRefImage}
           >
@@ -363,115 +435,38 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
             {t.upload}
           </button>
           <span
-            className={`text-xs font-medium px-2 py-1 rounded ${
-              isDarkMode ? 'text-yellow-200 bg-yellow-500/25' : 'text-yellow-800 bg-yellow-100'
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+              isDarkMode
+                ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                : 'text-amber-700 bg-amber-50 border-amber-200'
             }`}
           >
             {priceYuanbao}
+            {locale === 'en' ? ' ' : ''}
             {t.creditsSuffix}
           </span>
           <button
             type="button"
             disabled={isRunDisabled}
             onClick={handleGenerate}
-            className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+            className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
               isRunDisabled
-                ? 'bg-gray-500/50 text-white/50 cursor-not-allowed'
+                ? isDarkMode
+                  ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                  : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
                 : isBusy
-                  ? 'bg-cyan-600 text-white'
-                  : 'bg-cyan-500 text-white hover:bg-cyan-600 shadow-md shadow-cyan-500/25'
+                  ? 'bg-cyan-500/70 text-white cursor-not-allowed'
+                  : 'bg-cyan-500 text-white hover:bg-cyan-600'
             }`}
+            title={isBusy ? progressMessage || t.generating : t.generate}
+            aria-label={t.generate}
           >
             {isBusy ? (
-              <>
-                <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                {progressMessage || t.generating}
-              </>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
-              <>
-                <Play className="w-3 h-3" />
-                {t.generate}
-              </>
+              <Play className="w-3.5 h-3.5" fill="currentColor" />
             )}
           </button>
-        </div>
-      </div>
-
-      <div className="p-3 pt-2 flex-1 min-h-0 flex flex-col">
-        <div className="flex flex-1 min-h-0 gap-3">
-          <div className="flex-1 min-w-0 flex flex-col justify-center">
-            {errorMessage && <p className="text-xs text-red-400 leading-relaxed">{errorMessage}</p>}
-            {hasOutput && !errorMessage && (
-              <p className="text-xs text-emerald-400/90 leading-relaxed">{t.successHint}</p>
-            )}
-            {!hasOutput && (
-              <p className={`text-xs mt-1 ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`}>{t.resultTextureHint}</p>
-            )}
-            {!errorMessage && !hasOutput && hasRef && (
-              <p className={`text-xs ${isDarkMode ? 'text-white/40' : 'text-gray-500'}`}>{t.inputFromEdge}</p>
-            )}
-            {!errorMessage && !hasOutput && !hasRef && (
-              <p className={`text-xs ${isDarkMode ? 'text-white/35' : 'text-gray-500'}`}>{t.noInput}</p>
-            )}
-          </div>
-          <div className="flex flex-shrink-0 gap-2">
-            <div
-              className={`rounded-lg overflow-hidden flex flex-col ${
-                isDarkMode ? 'bg-black/35 border border-gray-600/40' : 'bg-white/80 border border-gray-300'
-              }`}
-              style={{ width: REF_PANEL_W, height: INPUT_BOX_HEIGHT }}
-            >
-              <div
-                className={`text-[10px] px-2 py-1 flex-shrink-0 ${
-                  isDarkMode ? 'text-white/55 bg-black/20' : 'text-gray-600 bg-gray-100'
-                }`}
-              >
-                {t.refImageLabel}
-              </div>
-              <div className="flex-1 min-h-0 flex items-center justify-center p-1.5">
-                {hasRef ? (
-                  <img
-                    src={formatImagePath(inputImageUrl)}
-                    alt=""
-                    className="max-w-full max-h-full object-contain rounded"
-                    draggable={false}
-                  />
-                ) : (
-                  <span className={`text-[10px] text-center px-1 ${isDarkMode ? 'text-white/30' : 'text-gray-400'}`}>
-                    —
-                  </span>
-                )}
-              </div>
-            </div>
-            <div
-              className={`rounded-lg overflow-hidden flex flex-col ${
-                isDarkMode ? 'bg-black/35 border border-amber-500/35' : 'bg-white/80 border border-amber-400/60'
-              }`}
-              style={{ width: REF_PANEL_W, height: INPUT_BOX_HEIGHT }}
-            >
-              <div
-                className={`text-[10px] px-2 py-1 flex-shrink-0 ${
-                  isDarkMode ? 'text-amber-200/80 bg-amber-500/15' : 'text-amber-900 bg-amber-100'
-                }`}
-              >
-                {t.resultTextureLabel}
-              </div>
-              <div className="flex-1 min-h-0 flex items-center justify-center p-1.5">
-                {hasResultTexture ? (
-                  <img
-                    src={formatImagePath(resultTextureUrl)}
-                    alt=""
-                    className="max-w-full max-h-full object-contain rounded"
-                    draggable={false}
-                  />
-                ) : (
-                  <span className={`text-[10px] text-center px-1 ${isDarkMode ? 'text-white/30' : 'text-gray-400'}`}>
-                    {hasOutput ? '—' : t.resultTexturePending}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

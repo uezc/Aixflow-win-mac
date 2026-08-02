@@ -17,6 +17,13 @@
    - npm run generate-nsis-branding 会生成 installerSidebar.bmp（164×314）、installerHeader.bmp（150×57）。
    - electron:build 会自动执行；颜色与官网 #051A24 一致。
 
+5. nsis-web 下载进度（>2GB 负百分比 / 幽灵进度条 / 标题文案）
+   - build/x86-unicode/INetC.dll：INetC 1.0.5.7+（修复大文件进度 MulDiv 溢出）。
+   - build/webPackage.nsh：固定中文标题、半角进度文案、隐藏原生空进度条；主源失败回退北京/香港镜像。
+   - 禁止用 PowerShell HEAD 拼「约 xx MB」（曾把 ParserError「表达式中缺少右 )」灌进窗口标题）。
+   - electron:build 会先跑 scripts/patch-nsis-web-download.mjs，再打包。
+   - 上述改动只影响新打的 stub/在线安装包，需重新 electron:build 并上传 Setup.exe（及 latest.yml）后才对用户生效；.nsis.7z 可复用同版本已上传包。
+
 当前配置（package.json）已指向 build/icon.ico 作为 Windows 图标。
 
 npm run convert-icon -- --force

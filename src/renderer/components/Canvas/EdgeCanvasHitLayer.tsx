@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Edge, Node } from 'reactflow';
-import { Scissors } from 'lucide-react';
+import { Minus } from 'lucide-react';
 import type { CanvasEngine } from '../../utils/CanvasEngine';
 import { buildBezierPathD, getBezierMidpoint, getNodeHandle } from './EdgeCanvasLayer';
 
@@ -162,7 +162,7 @@ export default function EdgeCanvasHitLayer({
           <button
             key={edge.id}
             type="button"
-            className="nodrag nopan absolute flex items-center justify-center w-8 h-8 rounded-full bg-red-500/90 hover:bg-red-500 text-white shadow-lg border border-red-400/50 transition-colors -translate-x-1/2 -translate-y-1/2"
+            className="nodrag nopan absolute nexflow-edge-delete-btn -translate-x-1/2 -translate-y-1/2"
             style={{
               left: screenX,
               top: screenY,
@@ -175,7 +175,7 @@ export default function EdgeCanvasHitLayer({
             title="删除连接线"
             aria-label="删除连接线"
           >
-            <Scissors className="w-4 h-4" strokeWidth={2} />
+            <Minus className="w-4 h-4" strokeWidth={2.5} />
           </button>
         ))}
     </div>

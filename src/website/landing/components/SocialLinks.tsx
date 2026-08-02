@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { SOCIAL_LINKS, type SocialLinkItem } from '../data/content';
+import { useSiteLocale } from '../lib/siteLocale';
 import { SocialPlatformIcon } from './SocialPlatformIcon';
 
 type SocialLinksProps = {
@@ -12,6 +13,7 @@ function ariaLabel(item: SocialLinkItem) {
 }
 
 export function SocialLinks({ theme = 'light', className = '' }: SocialLinksProps) {
+  const { t } = useSiteLocale();
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const btnClass =
@@ -26,9 +28,9 @@ export function SocialLinks({ theme = 'light', className = '' }: SocialLinksProp
       setCopiedId(item.id);
       window.setTimeout(() => setCopiedId(null), 2000);
     } catch {
-      window.prompt('复制微信号', item.detail);
+      window.prompt(t.social.copyWechatPrompt, item.detail);
     }
-  }, []);
+  }, [t.social.copyWechatPrompt]);
 
   const iconWrap = `${btnClass} inline-flex h-12 w-12 items-center justify-center rounded-full border transition`;
 
@@ -36,7 +38,7 @@ export function SocialLinks({ theme = 'light', className = '' }: SocialLinksProp
     <div className={`flex flex-wrap items-center gap-3 ${className}`}>
       {SOCIAL_LINKS.map((item) => {
         const label = ariaLabel(item);
-        const title = copiedId === item.id ? '已复制微信号' : label;
+        const title = copiedId === item.id ? t.social.copiedWechat : label;
 
         if (item.href) {
           return (

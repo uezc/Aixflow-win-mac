@@ -109,10 +109,15 @@ export type SettingsStrings = {
   currentVersion: string;
   checkUpdate: string;
   checkingUpdate: string;
+  /** 更新按钮：与版本号拼成「1.7.2 最新版本」 */
   alreadyLatest: string;
+  /** 更新按钮：有可用更新时与新版本号拼成「1.8.0 可下载」 */
+  updateReadyBtn: string;
   newVersionAvailable: (v: string) => string;
   checkFailedPrefix: string;
   checkFailedGeneric: string;
+  /** 页脚更新按钮：检查失败时的短文案 */
+  checkFailedShort: string;
   downloadInstall: (v: string) => string;
   downloading: string;
   downloadStubLabel: string;
@@ -120,6 +125,8 @@ export type SettingsStrings = {
   downloadingMainPackage: (size: string) => string;
   downloadFailed: string;
   installingUpdate: string;
+  /** 页脚更新按钮：安装中短文案 */
+  installingShort: string;
   preparingDownload: string;
   loadTxFailed: string;
   requestFailed: string;
@@ -257,10 +264,12 @@ const zh: SettingsStrings = {
   currentVersion: '当前版本',
   checkUpdate: '检查更新',
   checkingUpdate: '检查中...',
-  alreadyLatest: '已经是最新版本',
+  alreadyLatest: '最新版本',
+  updateReadyBtn: '可下载',
   newVersionAvailable: (v) => `发现新版本 v${v}`,
   checkFailedPrefix: '检查失败:',
   checkFailedGeneric: '检查失败，请稍后重试',
+  checkFailedShort: '检查失败',
   downloadInstall: (v) => `下载 ${v} 并安装`,
   downloading: '下载中...',
   downloadStubLabel: '引导程序',
@@ -268,6 +277,7 @@ const zh: SettingsStrings = {
   downloadingMainPackage: (size) => `引导包已就绪，正在下载主安装包（约 ${size}），请耐心等待，勿关闭应用`,
   downloadFailed: '下载失败，请检查网络后重试',
   installingUpdate: '下载完成，正在保存并退出以安装更新…',
+  installingShort: '安装中...',
   preparingDownload: '准备下载...',
   loadTxFailed: '加载失败',
   requestFailed: '请求失败',
@@ -403,10 +413,12 @@ const en: SettingsStrings = {
   currentVersion: 'Current version',
   checkUpdate: 'Check for updates',
   checkingUpdate: 'Checking…',
-  alreadyLatest: 'You’re on the latest version',
+  alreadyLatest: 'Latest',
+  updateReadyBtn: 'available',
   newVersionAvailable: (v) => `New version v${v} available`,
   checkFailedPrefix: 'Check failed:',
   checkFailedGeneric: 'Update check failed. Try again later.',
+  checkFailedShort: 'Check failed',
   downloadInstall: (v) => `Download ${v} and install`,
   downloading: 'Downloading…',
   downloadStubLabel: 'Bootstrap installer',
@@ -414,6 +426,7 @@ const en: SettingsStrings = {
   downloadingMainPackage: (size) => `Bootstrap ready. Downloading main installer (~${size}). Please keep the app open.`,
   downloadFailed: 'Download failed. Check your network and try again.',
   installingUpdate: 'Download complete. Saving and quitting to install…',
+  installingShort: 'Installing…',
   preparingDownload: 'Preparing download…',
   loadTxFailed: 'Failed to load',
   requestFailed: 'Request failed',

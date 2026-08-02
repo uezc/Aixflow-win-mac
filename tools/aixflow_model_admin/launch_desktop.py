@@ -9,8 +9,9 @@
 首次使用内嵌窗口请执行：
   pip install -r requirements-desktop.txt
 
-默认端口 8510，避免与本机其他 Streamlit（8501）冲突。可通过环境变量覆盖：
-  set NEXFLOW_ADMIN_PORT=8510
+默认端口 9510（避开本机 Hyper-V / 系统「排除端口范围」常占用的 84xx–91xx）。
+可通过环境变量覆盖：
+  set NEXFLOW_ADMIN_PORT=9510
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def _port() -> int:
         p = int(raw)
         if 1024 <= p <= 65535:
             return p
-    return 8510
+    return 9510
 
 
 def _start_streamlit(port: int) -> subprocess.Popen:
@@ -162,12 +163,32 @@ def main() -> int:
     proc = _start_streamlit(port)
     try:
         if not _wait_http_ok(url):
+            # 子进程 stdout/stderr 被吞掉时，主动探测端口是否可绑定，给出更准的原因
+            bind_hint = ""
+            try:
+                import socket
+
+                s = socket.socket()
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", port))
+                s.close()
+            except OSError as e:
+                bind_hint = (
+                    f"\n\n本机无法绑定端口 {port}：{e}\n"
+                    "常见原因：Windows「排除端口范围」（Hyper-V/WSL 等）占用了该端口。\n"
+                    "可改用：set NEXFLOW_ADMIN_PORT=18510 后再启动，"
+                    "或管理员执行 netsh interface ipv4 show excludedportrange protocol=tcp 查看排除段。"
+                )
+
             msg = (
-                "Streamlit 在约 45 秒内未就绪。\n"
-                "常见原因：依赖损坏、8510 端口被占用、或首次启动过慢。\n\n"
-                "请双击同目录下的 START-with-console.bat 查看详细报错。"
+                f"Streamlit 在约 45 秒内未就绪（端口 {port}）。\n"
+                "常见原因：端口被系统保留/占用、依赖损坏、或首次启动过慢。"
+                f"{bind_hint}\n\n"
+                "请在本目录命令行运行：\n"
+                f"  python -m streamlit run app.py --server.port {port}\n"
+                "以查看完整报错。"
             )
-            print("Streamlit 启动超时，请检查是否已安装依赖：pip install -r requirements.txt", file=sys.stderr)
+            print(msg, file=sys.stderr)
             if _running_without_console():
                 _gui_alert("Aixflow", msg)
             return 1

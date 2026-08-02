@@ -35,17 +35,32 @@ export const AudioWaveformVisualizer: React.FC<{
   variant?: 'main' | 'compact';
   /** 主模块波形：撑满父容器高度 */
   fillContainer?: boolean;
+  /** 覆盖默认条数（宽轨道可传更大值，条仍保持 3px 细，只是分布更密） */
+  barCount?: number;
   seed?: string;
   className?: string;
-}> = ({ isPlaying, isDarkMode, variant = 'main', fillContainer = false, seed = '', className = '' }) => {
+}> = ({
+  isPlaying,
+  isDarkMode,
+  variant = 'main',
+  fillContainer = false,
+  barCount: barCountProp,
+  seed = '',
+  className = '',
+}) => {
   const isMain = variant === 'main';
-  const barCount = isMain ? WAVE_BAR_COUNT_MAIN : WAVE_BAR_COUNT_COMPACT;
+  const barCount =
+    typeof barCountProp === 'number' && barCountProp > 0
+      ? Math.min(240, Math.max(16, Math.round(barCountProp)))
+      : isMain
+        ? WAVE_BAR_COUNT_MAIN
+        : WAVE_BAR_COUNT_COMPACT;
   const stripMinH = isMain ? (fillContainer ? 0 : 120) : 52;
   const trackMinH = isMain ? (fillContainer ? 0 : 104) : 40;
 
   const barHeightsPct = useMemo(() => {
     let h = hashSeed(seed || 'default');
-    const lo = fillContainer ? 52 : 16;
+    const lo = fillContainer ? 28 : 16;
     const hi = 98;
     return Array.from({ length: barCount }, (_, i) => {
       h = (Math.imul(h, 1103515245) + 12345 + i) >>> 0;
@@ -92,15 +107,20 @@ export const AudioWaveformVisualizer: React.FC<{
         style={fillContainer ? undefined : { minHeight: stripMinH }}
       >
         {fillContainer ? (
-          <div className="absolute inset-0 flex items-end gap-px">
+          <div
+            className={`absolute inset-0 grid w-full h-full items-end gap-px px-1 py-1`}
+            style={gridCols}
+          >
             {barHeightsPct.map((hPct, i) => (
               <span
                 key={i}
-                className={`min-w-0 flex-1 rounded-t-sm origin-bottom ${barGrad} max-w-[3px]`}
+                className={`min-w-0 w-full max-w-[3px] justify-self-center rounded-t-sm origin-bottom ${barGrad}`}
                 style={{
                   height: `${hPct}%`,
                   opacity: isPlaying ? 0.98 : 0.88,
-                  animation: isPlaying ? `${waveAnim} 0.38s ease-in-out infinite alternate` : undefined,
+                  animation: isPlaying
+                    ? `${waveAnim} 0.38s ease-in-out infinite alternate`
+                    : undefined,
                   animationDelay: isPlaying ? `${(i % 12) * 35}ms` : undefined,
                 }}
               />

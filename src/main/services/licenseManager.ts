@@ -44,6 +44,11 @@ const SKIP_ACTIVATION =
   process.env.NEXFLOW_SKIP_ACTIVATION === '1' ||
   /^(true|yes)$/i.test(String(process.env.NEXFLOW_SKIP_ACTIVATION ?? ''));
 
+/** 是否已关闭激活页（产品当前默认跳过） */
+export function isActivationSkipped(): boolean {
+  return SKIP_ACTIVATION;
+}
+
 /** lastRunAt 容差（秒）：网络时间波动、新电脑时钟未同步等可能导致 now 略小于 lastRunAt，在此范围内不视为时间篡改 */
 const LAST_RUN_TOLERANCE_SEC = 300;
 

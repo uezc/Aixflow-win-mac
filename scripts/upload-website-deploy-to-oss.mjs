@@ -42,8 +42,18 @@ async function main() {
   await client.put(remoteKey, localPath, { headers: { 'Content-Type': 'application/zip' } });
   const url = `https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/${encodeURIComponent('aixflow uploads/deploy').replace(/%2F/g, '/')}/${encodeURIComponent(zipName)}`;
   const urlFixed = `https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/aixflow%20uploads/deploy/${encodeURIComponent(zipName)}`;
-  console.log('[upload-website-deploy] 完成。在 ECS 终端执行：\n');
-  console.log(`cd ~ && wget -O ${zipName} "${urlFixed}" && unzip -o ${zipName} && sudo cp site/index.html /var/www/aixflow/public/index.html && sudo cp site/icon.png /var/www/aixflow/icon.png && sudo cp -r site/assets/* /var/www/aixflow/assets/ && ls /var/www/aixflow/assets/aixflowLanding-*.js`);
+  console.log(`[upload-website-deploy] 完成。国内站 / 海外站可部署同一包（运行时按域名选北京或香港下载与视频）。\n`);
+  console.log(`wget: ${urlFixed}\n`);
+  console.log(
+    `ECS 示例（路径按实际站点目录改）：\n` +
+      `cd ~ && wget -O ${zipName} "${urlFixed}" && unzip -o ${zipName} && ` +
+      `sudo cp site/index.html /var/www/aixflow/public/index.html && ` +
+      `sudo cp site/recharge.html /var/www/aixflow/public/recharge.html && ` +
+      `sudo cp site/icon.png /var/www/aixflow/icon.png && ` +
+      `sudo cp -r site/assets/* /var/www/aixflow/assets/ && ` +
+      `ls /var/www/aixflow/public/recharge.html /var/www/aixflow/assets/aixflowLanding-*.js /var/www/aixflow/assets/aixflowRecharge-*.js`,
+  );
+  console.log(`\n验证: https://aixflow.com.cn/ 与 https://aixflow.ai/`);
 }
 
 main().catch((e) => {

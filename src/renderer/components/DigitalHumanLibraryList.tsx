@@ -35,7 +35,14 @@ import {
 } from '../utils/assetLibraryChrome';
 import { toElectronVideoElementSrc } from '../utils/normalizeVideoUrl';
 import DigitalHumanLibraryVideoHoverPreview from './DigitalHumanLibraryVideoHoverPreview';
+import AssetLibLazyThumb from './AssetLibLazyThumb';
 import { useIdlePoll } from '../hooks/useIdlePoll';
+import {
+  cancelDigitalHumanLibraryPick,
+  isDigitalHumanLibraryPickActive,
+  resolveDigitalHumanLibraryPick,
+  subscribeDigitalHumanLibraryPick,
+} from '../utils/assetLibraryOpenStore';
 
 const GALLERY_HOVER_DELAY_MS = 220;
 
@@ -117,6 +124,25 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
   const [modalHiddenForCanvasPick, setModalHiddenForCanvasPick] = useState(false);
   const [videoHover, setVideoHover] = useState<{ item: DigitalHumanLibraryItem; rect: DOMRect } | null>(null);
   const [galleryHoveredId, setGalleryHoveredId] = useState<string | null>(null);
+  const [libraryPickActive, setLibraryPickActive] = useState(() => isDigitalHumanLibraryPickActive());
+
+  useEffect(() => subscribeDigitalHumanLibraryPick(setLibraryPickActive), []);
+
+  useEffect(() => {
+    if (!libraryPickActive) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      cancelDigitalHumanLibraryPick();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [libraryPickActive]);
+
+  const tryPickForConsumer = useCallback((item: DigitalHumanLibraryItem) => {
+    if (!isDigitalHumanLibraryPickActive()) return false;
+    return resolveDigitalHumanLibraryPick(item);
+  }, []);
   const listScrollRef = useRef<HTMLDivElement>(null);
   const galleryHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -124,7 +150,33 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
     try {
       if (window.electronAPI?.getDigitalHumans) {
         const list = await window.electronAPI.getDigitalHumans();
-        setItems(list.sort((a, b) => b.createdAt - a.createdAt));
+        const sorted = list.sort((a, b) => b.createdAt - a.createdAt);
+        setItems(sorted);
+        // 无 poster 的条目：后台从视频抽帧生成头像（限流，避免一次打满）
+        void (async () => {
+          const api = window.electronAPI?.ensureDigitalHumanListPoster;
+          if (!api) return;
+          const need = sorted.filter((it) => !digitalHumanPosterUrl(it) && digitalHumanVideoUrl(it));
+          for (const it of need) {
+            try {
+              const r = await api(it.id);
+              if (!r?.success || !r.posterUrl) continue;
+              setItems((prev) =>
+                prev.map((x) =>
+                  x.id === it.id
+                    ? {
+                        ...x,
+                        poster: r.posterUrl,
+                        localPosterPath: r.localPosterPath || x.localPosterPath,
+                      }
+                    : x,
+                ),
+              );
+            } catch (e) {
+              console.warn('[DigitalHumanLibraryList] 生成头像失败', it.id, e);
+            }
+          }
+        })();
       }
     } catch (e) {
       console.error('[DigitalHumanLibraryList] load failed', e);
@@ -137,7 +189,7 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
     loadItems();
   }, [loadItems, refreshTrigger]);
 
-  useIdlePoll(listActive, loadItems, 20000);
+  useIdlePoll(listActive, loadItems, 60000);
 
   useEffect(() => {
     return () => {
@@ -195,16 +247,17 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
     return (
       <div
         key={item.id}
-        draggable={videoOk}
+        draggable={videoOk && !libraryPickActive}
         onDragStart={(e) => handleDragStart(item, e)}
-        onClick={() =>
+        onClick={() => {
+          if (libraryPickActive && videoOk && tryPickForConsumer(item)) return;
           setSelectedIds((prev) => {
             const next = new Set(prev);
             if (next.has(item.id)) next.delete(item.id);
             else next.add(item.id);
             return next;
-          })
-        }
+          });
+        }}
         onMouseEnter={
           videoOk
             ? () => {
@@ -234,34 +287,26 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
               ? 'border-white/10 bg-zinc-900/90'
               : 'border-gray-200 bg-gray-100'
         }`}
-        title={videoOk ? t.dhDragHint : undefined}
+        title={libraryPickActive ? t.dhSelectForPanel : videoOk ? t.dhDragHint : undefined}
       >
         {videoOk ? (
           <DigitalHumanGalleryCardVideo active={isHovered} src={displaySrc} />
         ) : null}
         {!isHovered && thumb ? (
-          thumb.match(/\.(mp4|webm|mov)(\?|$)/i) ? (
-            <video
-              src={toElectronVideoElementSrc(thumb) || thumb}
-              className="absolute inset-0 z-0 h-full w-full object-cover"
-              muted
-              playsInline
-              preload="metadata"
-            />
-          ) : (
-            <img src={thumb} alt="" className="absolute inset-0 z-0 h-full w-full object-cover" draggable={false} />
-          )
-        ) : !isHovered && videoOk ? (
-          <video
-            src={displaySrc}
-            className="absolute inset-0 z-0 h-full w-full object-cover"
-            muted
-            playsInline
-            preload="metadata"
+          <AssetLibLazyThumb
+            src={thumb}
+            className="absolute inset-0 z-0 h-full w-full"
+            imgClassName="absolute inset-0 z-0 h-full w-full object-cover"
+            maxEdge={320}
+            placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
           />
-        ) : !videoOk ? (
+        ) : !isHovered && !videoOk ? (
           <div className="absolute inset-0 z-0 flex items-center justify-center">
             <Video className={`w-10 h-10 ${isDarkMode ? 'text-white/20' : 'text-gray-300'}`} />
+          </div>
+        ) : !isHovered ? (
+          <div className="absolute inset-0 z-0 flex items-center justify-center bg-black/40">
+            <Video className={`w-10 h-10 ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`} />
           </div>
         ) : null}
         <div
@@ -285,15 +330,16 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
           >
             <Pencil className="w-3.5 h-3.5" />
           </button>
-          {onPlaceToCanvas && videoOk ? (
+          {(libraryPickActive || onPlaceToCanvas) && videoOk ? (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onPlaceToCanvas(item);
+                if (libraryPickActive && tryPickForConsumer(item)) return;
+                onPlaceToCanvas?.(item);
               }}
               className={`${assetLibCardActionBtn(isDarkMode, 'operators')} opacity-0 group-hover:opacity-100 transition-opacity`}
-              title={t.dhPlaceOnCanvas}
+              title={libraryPickActive ? t.dhSelectForPanel : t.dhPlaceOnCanvas}
             >
               <Layers className="w-3.5 h-3.5" />
             </button>
@@ -426,23 +472,24 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
     return (
       <div
         key={item.id}
-        draggable={videoOk}
+        draggable={videoOk && !libraryPickActive}
         onDragStart={(e) => handleDragStart(item, e)}
-        onClick={() =>
+        onClick={() => {
+          if (libraryPickActive && videoOk && tryPickForConsumer(item)) return;
           setSelectedIds((prev) => {
             const next = new Set(prev);
             if (next.has(item.id)) next.delete(item.id);
             else next.add(item.id);
             return next;
-          })
-        }
+          });
+        }}
         {...bindVideoHover(item, videoOk)}
         className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-colors ${
           selected
             ? assetLibListCardSelected(isDarkMode)
             : assetLibListCard(isDarkMode)
         }`}
-        title={videoOk ? t.dhHoverVideoPreview : t.dhDragHint}
+        title={libraryPickActive ? t.dhSelectForPanel : videoOk ? t.dhHoverVideoPreview : t.dhDragHint}
       >
         <div
           className={`w-10 h-10 rounded-full overflow-hidden shrink-0 border ${
@@ -450,11 +497,12 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
           }`}
         >
           {thumb ? (
-            thumb.match(/\.(mp4|webm|mov)(\?|$)/i) ? (
-              <video src={thumb} className="w-full h-full object-cover" muted playsInline preload="metadata" />
-            ) : (
-              <img src={thumb} alt="" className="w-full h-full object-cover" draggable={false} />
-            )
+            <AssetLibLazyThumb
+              src={thumb}
+              className="w-full h-full"
+              maxEdge={128}
+              placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
+            />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Video className={`w-4 h-4 ${isDarkMode ? 'text-white/30' : 'text-gray-400'}`} />
@@ -475,15 +523,16 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
           >
             <Pencil className="w-3.5 h-3.5" />
           </button>
-          {onPlaceToCanvas && videoOk ? (
+          {(libraryPickActive || onPlaceToCanvas) && videoOk ? (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onPlaceToCanvas(item);
+                if (libraryPickActive && tryPickForConsumer(item)) return;
+                onPlaceToCanvas?.(item);
               }}
               className={`${assetLibCardActionBtn(isDarkMode, 'operators')} opacity-0 group-hover:opacity-100 transition-opacity`}
-              title={t.dhPlaceOnCanvas}
+              title={libraryPickActive ? t.dhSelectForPanel : t.dhPlaceOnCanvas}
             >
               <Layers className="w-3.5 h-3.5" />
             </button>
@@ -503,6 +552,17 @@ const DigitalHumanLibraryList: React.FC<DigitalHumanLibraryListProps> = ({
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
+      {libraryPickActive ? (
+        <div
+          className={`px-3 py-2 text-[11px] leading-snug border-b flex-shrink-0 ${
+            isDarkMode
+              ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100/90'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+          }`}
+        >
+          {t.dhPickForPanelHint}
+        </div>
+      ) : null}
       <div
         className={`px-3 py-2 border-b flex items-center justify-between gap-2 flex-shrink-0 ${
           isDarkMode ? 'border-white/10' : 'border-gray-200'

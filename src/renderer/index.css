@@ -191,6 +191,16 @@ body.nexflow-settings-page::-webkit-scrollbar {
   border-radius: calc(8px * var(--rf-zoom-inv, 1)) !important;
 }
 
+/* 裁剪/360 放大模块：隐藏 RF 多选虚线框，避免与模块内选区叠成「原尺寸幽灵框」（双保险；主路径已取消节点选中） */
+.react-flow__viewport:has(.nexflow-hide-rf-selection) .react-flow__nodesselection,
+.react-flow__viewport:has(.nexflow-hide-rf-selection) .react-flow__nodesselection-rect,
+.react-flow__viewport:has(.nexflow-crop-top-layer) .react-flow__nodesselection,
+.react-flow__viewport:has(.nexflow-crop-top-layer) .react-flow__nodesselection-rect {
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
+}
+
 /* 强制逃逸按钮：物理层级最高，确保可点击 */
 .nexflow-emergency-exit-btn {
   pointer-events: auto !important;
@@ -685,6 +695,19 @@ html.nexflow-quick-connect-on textarea,
 html.nexflow-quick-connect-on select,
 html.nexflow-quick-connect-on [contenteditable='true'],
 html.nexflow-quick-connect-on .ProseMirror {
+  cursor: text !important;
+}
+
+/* 画板工具绘制区：按工具切换光标（覆盖科技鼠标；输入框仍走上方 text 规则） */
+html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='brush'],
+html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='eraser'] {
+  cursor: none !important;
+}
+html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='rect'],
+html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='circle'] {
+  cursor: crosshair !important;
+}
+html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='text'] {
   cursor: text !important;
 }
 
@@ -1349,6 +1372,45 @@ html.nexflow-quick-connect-on .ProseMirror {
   filter: none !important;
   box-shadow: none !important;
   pointer-events: none !important;
+  /* 大节点各自 will-change 会在平移时占满合成层显存；仅保留 viewport 一层 */
+  will-change: auto !important;
+}
+.react-flow-wrapper--interacting .react-flow__node > div,
+.is-dragging .react-flow__node > div {
+  will-change: auto !important;
+}
+.react-flow-wrapper--interacting .react-flow__nodes,
+.is-dragging .react-flow__nodes {
+  will-change: auto !important;
+}
+.react-flow-wrapper--interacting .react-flow__viewport,
+.is-dragging .react-flow__viewport {
+  will-change: transform;
+}
+
+/* 导演等超大 DOM：平移中收紧重绘范围 */
+.react-flow-wrapper--interacting .react-flow__node-director .nexflow-director-node,
+.react-flow-wrapper--interacting .react-flow__node-videoSplice .custom-node-container {
+  content-visibility: auto;
+  contain: layout paint style;
+}
+
+/* 导演全屏：隐藏背后 Flow 节点/边合成层，减轻 GPU */
+.nexflow-director-overlay-open .react-flow__nodes,
+.nexflow-director-overlay-open .react-flow__edges,
+.nexflow-director-overlay-open .react-flow__edgelist,
+.nexflow-director-overlay-open .nexflow-edge-canvas,
+.nexflow-director-overlay-open .react-flow__background,
+.nexflow-director-overlay-open .react-flow__minimap {
+  visibility: hidden !important;
+  content-visibility: hidden;
+  pointer-events: none !important;
+}
+
+/* 点阵背景：平移时关掉 transition，避免每帧插值 */
+.react-flow-wrapper--interacting .react-flow__background,
+.is-dragging .react-flow__background {
+  transition: none !important;
 }
 /* 快连源模块：拖动画布时仍保留呼吸灯与输出角标 */
 .react-flow-wrapper--interacting .react-flow__node.quick-connect-source > div,
@@ -1910,25 +1972,60 @@ html.nexflow-quick-connect-on .ProseMirror {
   visibility: hidden !important;
   pointer-events: none !important;
 }
+/* 视频暂停态相机截图：锚定本模块右下角（勿居中/靠左）；热区加大并可略伸出右缘 */
+.nexflow-video-capture-hit {
+  position: absolute;
+  left: auto;
+  top: auto;
+  /* 负定位抵消大 padding，使按钮视觉仍约距右/底 10px，并贴靠模块右侧 */
+  right: -14px;
+  bottom: -12px;
+  pointer-events: auto;
+  /* 命中区约 22–24px，明显大于原 10px；右侧/底部可点热区伸出模块外缘 */
+  padding: 24px 24px 22px 24px;
+  z-index: 90;
+  width: auto;
+  height: auto;
+  margin: 0;
+  box-sizing: border-box;
+}
+.nexflow-video-capture-hit .nexflow-video-capture-btn {
+  pointer-events: auto;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+}
+/* 允许相机热区伸出视频右缘，避免被内层 overflow / contain 裁切 */
+.nexflow-video-node > .node-wrapper,
+.nexflow-video-node .nexflow-video-media-area,
+.nexflow-video-node .nexflow-video-media-stage {
+  overflow: visible !important;
+}
 /* 平移/缩放/拖节点：播放与静音保持可见且可点（与左右 + 中线对齐，勿 disabled） */
 .react-flow-wrapper--interacting .react-flow__node .nexflow-video-center-play,
 .react-flow-wrapper--interacting .react-flow__node .nexflow-video-mute-btn,
 .react-flow-wrapper--interacting .react-flow__node .nexflow-video-capture-btn,
+.react-flow-wrapper--interacting .react-flow__node .nexflow-video-capture-hit,
 .react-flow-wrapper--interacting .custom-node-container .nexflow-video-center-play,
 .react-flow-wrapper--interacting .custom-node-container .nexflow-video-mute-btn,
 .react-flow-wrapper--interacting .custom-node-container .nexflow-video-capture-btn,
+.react-flow-wrapper--interacting .custom-node-container .nexflow-video-capture-hit,
 .is-dragging .react-flow__node .nexflow-video-center-play,
 .is-dragging .react-flow__node .nexflow-video-mute-btn,
 .is-dragging .react-flow__node .nexflow-video-capture-btn,
+.is-dragging .react-flow__node .nexflow-video-capture-hit,
 .is-dragging .custom-node-container .nexflow-video-center-play,
 .is-dragging .custom-node-container .nexflow-video-mute-btn,
 .is-dragging .custom-node-container .nexflow-video-capture-btn,
+.is-dragging .custom-node-container .nexflow-video-capture-hit,
 .custom-node-container.is-dragging .nexflow-video-center-play,
 .custom-node-container.is-dragging .nexflow-video-mute-btn,
 .custom-node-container.is-dragging .nexflow-video-capture-btn,
+.custom-node-container.is-dragging .nexflow-video-capture-hit,
 .react-flow__node.dragging .custom-node-container .nexflow-video-center-play,
 .react-flow__node.dragging .custom-node-container .nexflow-video-mute-btn,
-.react-flow__node.dragging .custom-node-container .nexflow-video-capture-btn {
+.react-flow__node.dragging .custom-node-container .nexflow-video-capture-btn,
+.react-flow__node.dragging .custom-node-container .nexflow-video-capture-hit {
   visibility: visible !important;
   pointer-events: auto !important;
 }
@@ -2118,12 +2215,73 @@ html.nexflow-quick-connect-on .ProseMirror {
   pointer-events: auto !important;
 }
 
+/* HeyGem 内嵌双栏：无论是否 selected 都保持可见；静止时可操作（平移锁期间仍让位给画布） */
+.react-flow__node-heyGem .video-heygem-inline-panel {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+.react-flow-wrapper--interacting .react-flow__node-heyGem .video-heygem-inline-panel,
+.react-flow-wrapper--interacting .react-flow__node-heyGem .video-heygem-inline-panel *,
+.is-dragging .react-flow__node-heyGem .video-heygem-inline-panel,
+.is-dragging .react-flow__node-heyGem .video-heygem-inline-panel * {
+  pointer-events: none !important;
+}
+
 /* 语音输入麦克风：画布平移/缩放锁期间仍保持可点（节点内左上角小按钮） */
 .react-flow-wrapper--interacting .nexflow-voice-mic-btn,
 .is-dragging .nexflow-voice-mic-btn,
 .custom-node-container.is-dragging .nexflow-voice-mic-btn {
   visibility: visible !important;
   pointer-events: auto !important;
+}
+
+/* 语音话筒：按下 / connecting|listening 统一绿色录制态；--mic-level(0–1) 驱动外圈波动 */
+.nexflow-voice-mic-btn {
+  --mic-level: 0;
+  position: relative;
+  isolation: isolate;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.nexflow-voice-mic-btn:active:not(:disabled),
+.nexflow-voice-mic-btn.connecting:not(:disabled),
+.nexflow-voice-mic-btn.listening:not(:disabled) {
+  background-color: #22c55e !important;
+  border-color: #4ade80 !important;
+  color: #052e16 !important;
+  box-shadow:
+    0 0 0 1px rgba(74, 222, 128, 0.5),
+    0 4px 18px rgba(34, 197, 94, calc(0.28 + var(--mic-level) * 0.42));
+}
+
+/* 有声音时外圈随电平轻微扩张 */
+.nexflow-voice-mic-btn.listening:not(:disabled)::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: -1;
+  border: 1.5px solid rgba(74, 222, 128, calc(0.2 + var(--mic-level) * 0.65));
+  transform: scale(calc(1 + var(--mic-level) * 0.22));
+  opacity: calc(0.25 + var(--mic-level) * 0.75);
+  transition:
+    transform 60ms linear,
+    opacity 60ms linear,
+    border-color 60ms linear;
+}
+
+.nexflow-voice-mic-bar {
+  display: block;
+  background: currentColor;
+  opacity: 0.92;
+  transform-origin: bottom center;
+  transition: height 55ms linear;
+  min-height: 15%;
 }
 
 /* 导演节点：顶栏缩放/全屏 + 底栏主操作在画布拖动/缩放时保持可见（全局会把 button 藏掉，只剩 select） */
@@ -2518,8 +2676,8 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
 }
 
 .light-mode .react-flow__node-director .custom-node-container.apple-panel-light {
-  /* 导演 / MV：外观 Looks（紫）— 整模块统一色 */
-  background: #9966ff !important;
+  /* 导演 / MV：明亮模式统一浅灰（勿用 Scratch 紫大底，避免刺眼纯白） */
+  background: #e5e7eb !important; /* gray-200 */
   border: none !important;
 }
 
@@ -2877,9 +3035,18 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
   word-break: break-word;
   overflow-wrap: anywhere;
   overflow-y: auto;
+  /* 可滚动但不显示显眼竖向滑轨（对齐图像/视频输入区） */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   line-height: 1.5;
   font-size: 13px;
   caret-color: #0a84ff;
+}
+
+.prompt-rich-input::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none;
 }
 
 .prompt-rich-input.is-light {

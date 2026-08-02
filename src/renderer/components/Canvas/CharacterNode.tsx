@@ -9,13 +9,14 @@ import {
   parseReferenceTransmitSlots,
   resolveReferenceTransmitSlots,
 } from '../../utils/connectionRules';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 
 /** 形象参考四槽位文案（与角色库四视图顺序一致） */
 const VIEW_SLOT_LABELS = ['面部', '正面全身', '侧面全身', '背面全身'] as const;
 
 /** 默认外框 4:3 */
-const DEFAULT_CARD_W = 624;
-const DEFAULT_CARD_H = 468;
+const DEFAULT_CARD_W = scaleModulePx(624);
+const DEFAULT_CARD_H = scaleModulePx(468);
 
 /** 空槽或未解码尺寸前：默认竖图比例（宽/高） */
 const DEFAULT_SLOT_AR = 9 / 16;

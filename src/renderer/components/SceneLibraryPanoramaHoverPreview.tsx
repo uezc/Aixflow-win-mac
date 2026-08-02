@@ -187,9 +187,9 @@ const SceneLibraryPanoramaHoverPreview: React.FC<SceneLibraryPanoramaHoverPrevie
               key={`${scene.id}-${textureUrl.slice(-48)}`}
               className="absolute inset-0 h-full w-full"
               frameloop="always"
-              dpr={Math.min(window.devicePixelRatio || 1, 1.5)}
+              dpr={Math.min(window.devicePixelRatio || 1, 1.25)}
               camera={{ position: [0, 0, 0.01], fov: PANORAMA_FOV, near: 0.001, far: 100 }}
-              gl={{ antialias: true, alpha: false, preserveDrawingBuffer: true }}
+              gl={{ antialias: false, alpha: false, powerPreference: 'low-power' }}
             >
               <PanoramaHoverScene url={textureUrl} />
             </Canvas>

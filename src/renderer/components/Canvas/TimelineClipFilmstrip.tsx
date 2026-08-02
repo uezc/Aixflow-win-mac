@@ -1,11 +1,17 @@
 /**
  * 剪辑时间轴视频/图片素材条：胶片缩略图填充 + 白框选区（对齐 VideoTrimFilmstripBar 视觉）。
+ * 可见区优先抽帧；先出首帧再补胶片；走 videoThumbnails 内存缓存与有限并发。
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, RefreshCw } from 'lucide-react';
 import { normalizeVideoUrl } from '../../utils/normalizeVideoUrl';
 import { mapProjectPath } from '../../utils/pathMapper';
-import { captureVideoFilmstrip, resetVideoExtractQueue } from '../../utils/videoThumbnails';
+import {
+  buildFilmstripCacheKey,
+  captureVideoFilmstrip,
+  invalidateFilmstripCache,
+  resetVideoExtractQueue,
+} from '../../utils/videoThumbnails';
 
 // 模块加载时清掉历史挂死队列（旧 captureVideoFrame 用 loadeddata 易永久卡住）
 resetVideoExtractQueue();
@@ -17,6 +23,7 @@ export type TimelineFilmstripClip = {
   duration: number;
   trimStart?: number;
   trimEnd?: number;
+  lockTrim?: boolean;
 };
 
 type Props = {
@@ -27,30 +34,33 @@ type Props = {
   durationSec: number;
   /** 选区左右把手开始拖 trim；不传则仅展示把手样式、不可拖 */
   onTrimEdgePointerDown?: (edge: 'start' | 'end', e: React.PointerEvent) => void;
+  /** 边缘裁剪把手 title（i18n） */
+  trimEdgeTitle?: string;
   /** 悬浮时左上角音量等控件 */
   overlayTopLeft?: React.ReactNode;
 };
+
+const THUMB_WIDTH = 56;
 
 function formatSelDur(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0.00s';
   return `${sec.toFixed(2)}s`;
 }
 
-/** 按宽度估算胶片格数；上限 24（与裁剪胶片一致），避免过重 */
+/** 按宽度估算胶片格数；上限 12，优先观感与速度平衡 */
 function filmstripFrameCount(width: number): number {
-  const cell = 28;
-  return Math.max(4, Math.min(24, Math.ceil(Math.max(48, width) / cell)));
+  const cell = 36;
+  return Math.max(3, Math.min(12, Math.ceil(Math.max(48, width) / cell)));
 }
 
 function filmstripCountBucket(width: number): number {
-  return Math.round(filmstripFrameCount(width) / 4) * 4 || 4;
+  return Math.round(filmstripFrameCount(width) / 3) * 3 || 3;
 }
 
-/** 与轨道时长算法对齐：trimEnd 占位短值时用 duration */
+/** 与轨道时长算法对齐：尊重显式 trim；未设置则用成片 duration */
 function resolveClipTrimRange(clip: TimelineFilmstripClip): { ts: number; te: number } {
   const ts = Math.max(0, clip.trimStart ?? 0);
-  let te = clip.trimEnd ?? clip.duration;
-  if (clip.duration > te + 0.5) te = clip.duration;
+  let te = clip.trimEnd != null && clip.trimEnd > ts ? clip.trimEnd : clip.duration;
   if (!(te > ts)) te = ts + Math.max(0.1, clip.duration || 0.1);
   return { ts, te };
 }
@@ -65,20 +75,50 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
   selected,
   durationSec,
   onTrimEdgePointerDown,
+  trimEdgeTitle,
   overlayTopLeft,
 }) => {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [inView, setInView] = useState(false);
   const [frames, setFrames] = useState<string[]>([]);
   const [imageSrc, setImageSrc] = useState('');
-  const [loading, setLoading] = useState(clip.type === 'video');
+  const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryToken, setRetryToken] = useState(0);
   const loadGenRef = useRef(0);
+  const framesAccRef = useRef<string[]>([]);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const countBucket = filmstripCountBucket(width);
   const frameCount = filmstripFrameCount(width);
 
   const reload = useCallback(() => {
-    resetVideoExtractQueue();
+    const { ts, te } = resolveClipTrimRange(clip);
+    const rawUrl = normalizeVideoUrl(clip.src);
+    invalidateFilmstripCache(
+      buildFilmstripCacheKey(rawUrl, ts, te, frameCount, THUMB_WIDTH),
+    );
+    setFrames([]);
+    framesAccRef.current = [];
     setRetryToken((n) => n + 1);
+  }, [clip, frameCount]);
+
+  // 可见区优先：进入视口（含左右预加载边距）再抽帧
+  useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        setInView(!!entry?.isIntersecting);
+      },
+      { root: null, rootMargin: '80px 320px', threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
   }, []);
 
   useEffect(() => {
@@ -114,10 +154,19 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
       return;
     }
 
+    // 滚出可视区：中止进行中的抽帧，把并发槽让给可见片段；已出的帧保留不空白
+    if (!inView) {
+      loadGenRef.current += 1;
+      setLoading(false);
+      return;
+    }
+
     const ac = new AbortController();
     const gen = ++loadGenRef.current;
-    setLoading(true);
     setLoadError(null);
+    if (framesAccRef.current.length === 0) {
+      setLoading(true);
+    }
 
     const load = async () => {
       try {
@@ -130,19 +179,46 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
         }
         if (ac.signal.aborted || gen !== loadGenRef.current) return;
         const { ts, te } = resolveClipTrimRange(clip);
-        const { frames: list } = await captureVideoFilmstrip(url, ts, te, frameCount, 72, undefined, ac.signal);
+        framesAccRef.current = [];
+        const knownDur = Math.max(clip.duration || 0, te, 0);
+        const { frames: list } = await captureVideoFilmstrip(url, ts, te, frameCount, THUMB_WIDTH, undefined, {
+          signal: ac.signal,
+          knownDuration: knownDur,
+          skipDurationProbe: true,
+          priority: selectedRef.current ? 2 : 1,
+          onFrame: (frame, index, total) => {
+            if (ac.signal.aborted || gen !== loadGenRef.current) return;
+            const acc = framesAccRef.current;
+            if (acc.length !== total) {
+              framesAccRef.current = Array.from({ length: total }, (_, i) => acc[i] || '');
+            }
+            framesAccRef.current[index] = frame;
+            // 有首帧立刻去掉转圈，避免整条胶片抽完才显示
+            const partial = framesAccRef.current.filter(Boolean);
+            if (partial.length > 0) {
+              setFrames(framesAccRef.current.slice());
+              setLoading(false);
+            }
+          },
+        });
         if (ac.signal.aborted || gen !== loadGenRef.current) return;
         const ok = list.filter(Boolean);
         if (ok.length === 0) {
           setFrames([]);
+          framesAccRef.current = [];
           setLoadError('胶片加载失败');
         } else {
           setFrames(ok);
+          framesAccRef.current = ok;
           setLoadError(null);
         }
         setLoading(false);
       } catch (err) {
         if (ac.signal.aborted || (err as { name?: string })?.name === 'AbortError' || gen !== loadGenRef.current) {
+          return;
+        }
+        if (framesAccRef.current.some(Boolean)) {
+          setLoading(false);
           return;
         }
         setFrames([]);
@@ -161,10 +237,12 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
     clip.trimStart,
     clip.trimEnd,
     clip.duration,
+    clip.lockTrim,
     projectId,
     countBucket,
     frameCount,
     retryToken,
+    inView,
   ]);
 
   const cells =
@@ -180,20 +258,26 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
           </div>
         ))
       : frames.length > 0
-        ? frames.map((src, i) => (
-            <div key={i} className="h-full flex-1 overflow-hidden min-w-0">
-              <img
-                src={src}
-                alt=""
-                draggable={false}
-                className="h-full w-full object-cover pointer-events-none select-none"
-              />
-            </div>
-          ))
+        ? (() => {
+            const display =
+              frames.filter(Boolean).length === 1 && frameCount > 1
+                ? Array.from({ length: frameCount }, () => frames.find(Boolean)!)
+                : frames.filter(Boolean);
+            return display.map((src, i) => (
+              <div key={i} className="h-full flex-1 overflow-hidden min-w-0">
+                <img
+                  src={src}
+                  alt=""
+                  draggable={false}
+                  className="h-full w-full object-cover pointer-events-none select-none"
+                />
+              </div>
+            ));
+          })()
         : null;
 
   return (
-    <div className="relative h-full w-full overflow-hidden rounded-lg bg-zinc-900">
+    <div ref={hostRef} className="relative h-full w-full overflow-hidden rounded-lg bg-zinc-900">
       <div className={`absolute inset-0 flex ${selected ? '' : 'brightness-[0.72]'}`}>
         {cells}
         {!cells && loading ? (
@@ -218,7 +302,9 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
           </button>
         ) : null}
         {!cells && !loading && !loadError ? (
-          <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-[10px] text-white/50">无预览</div>
+          <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-[10px] text-white/50">
+            {inView ? '无预览' : ''}
+          </div>
         ) : null}
       </div>
 
@@ -247,24 +333,40 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
         </div>
       )}
 
-      {selected && onTrimEdgePointerDown ? (
+      {onTrimEdgePointerDown ? (
         <>
           <div
-            className="absolute inset-y-0 left-0 z-20 w-3 cursor-ew-resize nodrag nopan"
+            className="absolute inset-y-0 left-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+            title={trimEdgeTitle}
+            aria-label={trimEdgeTitle}
             onPointerDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
               onTrimEdgePointerDown('start', e);
             }}
-          />
+          >
+            <div
+              className={`pointer-events-none absolute inset-y-0 left-0 w-1.5 rounded-l-[6px] bg-white shadow-sm transition-opacity ${
+                selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+              }`}
+            />
+          </div>
           <div
-            className="absolute inset-y-0 right-0 z-20 w-3 cursor-ew-resize nodrag nopan"
+            className="absolute inset-y-0 right-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+            title={trimEdgeTitle}
+            aria-label={trimEdgeTitle}
             onPointerDown={(e) => {
               e.stopPropagation();
               e.preventDefault();
               onTrimEdgePointerDown('end', e);
             }}
-          />
+          >
+            <div
+              className={`pointer-events-none absolute inset-y-0 right-0 w-1.5 rounded-r-[6px] bg-white shadow-sm transition-opacity ${
+                selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+              }`}
+            />
+          </div>
         </>
       ) : null}
 

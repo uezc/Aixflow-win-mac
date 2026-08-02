@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import Settings from './components/Settings';
 import ActivationView from './components/ActivationView';
-import SplashScreen from './components/SplashScreen';
 import Projects from './components/Projects';
 import Workspace from './components/Workspace';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -16,6 +15,9 @@ import AdminUsersPage from './components/Admin/AdminUsersPage';
 import AdminFinancePage from './components/Admin/AdminFinancePage';
 import RechargeSettledNotifier from './components/RechargeSettledNotifier';
 import { NxSaasAuthPromptBridge } from './components/NxSaasAuthPromptBridge';
+import { AgreementConfirmModal } from './components/legal/AgreementConfirmModal';
+import { isAgreementConfirmed } from './legal/agreementStorage';
+import TechCursor from './components/TechCursor';
 
 /** 鐗囧ご鍚庣殑璐︽埛椤电偣鍑汇€岃繘鍏ャ€嶅悗鎵嶅厑璁歌闂」鐩垪琛?/ 鐢诲竷锛堜笌鏄惁宸茬櫥褰曘€丯X_SAAS_MODE 鏃犲叧锛?*/
 const NX_SAAS_GATE_KEY = 'nexflow_saas_gate_ok';
@@ -103,12 +105,25 @@ const App: React.FC = () => {
         if (mounted) {
           const s = status?.status ?? 'NOT_ACTIVATED';
           setActivationStatus(s);
-          // VALID 与 EXPIRED 均可进入主界面（项目列表）；仅 NOT_ACTIVATED 需要激活
-          setIsActivated(s === 'VALID' || s === 'EXPIRED');
+          // 已关闭激活流程 / 已激活 / 过期（仍可进项目列表）均可进入；勿因 IPC 抖动误弹激活页
+          const ok =
+            status?.skipped === true ||
+            status?.activated === true ||
+            s === 'VALID' ||
+            s === 'EXPIRED';
+          setIsActivated(ok);
         }
       } catch (error) {
-        console.error('妫€鏌ユ縺娲荤姸鎬佸け璐?', error);
-        if (mounted) setIsActivated(false);
+        console.error('[App] checkActivation failed:', error);
+        // 开发态或重建主进程中 IPC 失败时，勿误显示已取消的激活页
+        if (mounted) {
+          const skipByEnv =
+            import.meta.env.DEV ||
+            String((import.meta as { env?: { VITE_SKIP_ACTIVATION?: string } }).env?.VITE_SKIP_ACTIVATION || '') ===
+              '1';
+          setIsActivated(skipByEnv);
+          if (skipByEnv) setActivationStatus('VALID');
+        }
       } finally {
         if (mounted) setCheckingActivation(false);
       }
@@ -137,7 +152,9 @@ const App: React.FC = () => {
       clearTimeout(retryTimerRef.current);
       setCheckingActivation(false);
       setIsElectronReady(false);
-      setIsActivated(false);
+      // 开发环境无 preload 时也不要弹激活页（激活步骤已默认关闭）
+      setIsActivated(!!import.meta.env.DEV);
+      if (import.meta.env.DEV) setActivationStatus('VALID');
     }, 5000);
 
     return () => {
@@ -305,40 +322,41 @@ const App: React.FC = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // 婵€娲诲悗鍏堟樉绀虹墖澶达紝涓嶇洿鎺ヨ繘涓荤晫闈紱杩涘叆涓荤晫闈㈡椂鑷姩鍒囨崲鍏ㄥ睆
+  // 激活后直接进主界面（账户页），跳过片头动画以节省启动与安装体积占用
   useEffect(() => {
     if (!isActivated) {
       setShowSplash(false);
       setShowMainUI(false);
       return;
     }
+    setShowSplash(false);
+    setShowMainUI(true);
     try {
-      if (sessionStorage.getItem(NEXFLOW_SPLASH_SEEN_KEY) === '1') {
-        setShowSplash(false);
-        setShowMainUI(true);
-        return;
-      }
+      sessionStorage.setItem(NEXFLOW_SPLASH_SEEN_KEY, '1');
     } catch {
       /* ignore */
     }
-    setShowSplash(true);
   }, [isActivated]);
 
   // 濡傛灉姝ｅ湪妫€鏌ユ縺娲荤姸鎬侊紝鏄剧ず鍔犺浇
   if (checkingActivation) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-8 h-8 border-4 border-apple-blue border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-white/60">姝ｅ湪妫€鏌ユ縺娲荤姸鎬?..</p>
+      <ErrorBoundary>
+        <TechCursor />
+        <div className="min-h-screen bg-black flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-8 h-8 border-4 border-apple-blue border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-white/60">姝ｅ湪妫€鏌ユ縺娲荤姸鎬?..</p>
+          </div>
         </div>
-      </div>
+      </ErrorBoundary>
     );
   }
 
   // 涓荤晫闈細甯﹁矾鐢憋紙/admin 鏃犻渶婵€娲诲嵆鍙闂級
   return (
     <ErrorBoundary>
+      <TechCursor />
       <HashRouter>
         <AppRouter
           isActivated={isActivated}
@@ -392,6 +410,8 @@ const AppRouter: React.FC<{
   const adminBypass =
     location.pathname === '/admin' || location.pathname.startsWith('/admin/');
   const [adminUnlockBump, setAdminUnlockBump] = useState(0);
+  /** 首次进入：协议确认（localStorage，不落库） */
+  const [agreementOk, setAgreementOk] = useState(() => isAgreementConfirmed());
 
   /** reload 后恢复跳转目标（如画布返回项目列表） */
   useEffect(() => {
@@ -504,12 +524,6 @@ const AppRouter: React.FC<{
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const goBackToSplash = useCallback(() => {
-    void window.electronAPI?.setFullscreen?.(false);
-    setShowMainUI(false);
-    setShowSplash(true);
-  }, [setShowMainUI, setShowSplash]);
-
   if (!isActivated && !adminBypass) {
     return (
       <ActivationView
@@ -522,27 +536,7 @@ const AppRouter: React.FC<{
     );
   }
 
-  // 激活后先显示片头；跳过/播完后固定进入账户页（设置），需登录并点“进入”后才可进项目列表
-  if (showSplash && !adminBypass) {
-    return (
-      <SplashScreen
-        onFinish={() => {
-          setShowSplash(false);
-          window.setTimeout(() => {
-            setShowMainUI(true);
-            try {
-              sessionStorage.setItem(NEXFLOW_SPLASH_SEEN_KEY, '1');
-              sessionStorage.removeItem(NX_SAAS_GATE_KEY);
-            } catch {
-              /* ignore */
-            }
-            navigate('/settings', { replace: true });
-          }, 300);
-        }}
-      />
-    );
-  }
-
+  // 片头已关闭：激活后直接主界面（账户页需登录并点「进入」）
   if (!showMainUI && !adminBypass) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -593,7 +587,7 @@ const AppRouter: React.FC<{
         path="/settings"
         element={
           <div className="min-h-screen bg-black">
-            <SettingsWithNavigate onBackToSplash={goBackToSplash} />
+            <SettingsWithNavigate />
           </div>
         }
       />
@@ -608,6 +602,10 @@ const AppRouter: React.FC<{
     </Routes>
     {showMainUI ? (
       <>
+        <AgreementConfirmModal
+          open={!agreementOk}
+          onConfirmed={() => setAgreementOk(true)}
+        />
         <NxSaasAuthPromptBridge />
         <RechargeSettledNotifier />
       </>
@@ -618,11 +616,10 @@ const AppRouter: React.FC<{
 };
 
 // Settings 组件包装器（用于导航）
-const SettingsWithNavigate: React.FC<{ onBackToSplash?: () => void }> = ({ onBackToSplash }) => {
+const SettingsWithNavigate: React.FC = () => {
   const navigate = useNavigate();
   return (
     <Settings
-      onBackToSplash={onBackToSplash}
       onSaveSuccess={() => {
         try {
           sessionStorage.setItem(NX_SAAS_GATE_KEY, '1');

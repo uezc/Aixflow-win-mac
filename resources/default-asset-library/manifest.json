@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "syncedAt": "2026-07-06T07:11:13.004Z",
+  "syncedAt": "2026-08-02T09:04:21.828Z",
   "sourceUserData": "C:\\Users\\Administrator\\AppData\\Roaming\\NEXFLOW",
   "characters": [
     {
@@ -342,6 +342,32 @@
         "bundled-imports/a4a275e0166bcdfcc741.jpg",
         "bundled-imports/b7c6c5359b2fd5160016.jpg"
       ]
+    },
+    {
+      "id": "character-1783861655940-tnnny75ij",
+      "nickname": "罗马骑士",
+      "name": "罗马骑士",
+      "avatar": "bundled-imports/9eb777365ddb8e8b54d6.jpg",
+      "createdAt": 1783861655940,
+      "viewImages": [
+        "bundled-imports/9eb777365ddb8e8b54d6.jpg",
+        "bundled-imports/fef2d53f03c8eff47f16.jpg",
+        "bundled-imports/613e03ec4f6a121b624c.jpg",
+        "bundled-imports/5e0617bfb5e75ca6aec8.jpg"
+      ]
+    },
+    {
+      "id": "image3d-1785394356114-pb7sze3zz",
+      "assetKind": "imageTo3d",
+      "nickname": "3D 7/30 14:52",
+      "name": "3D 7/30 14:52",
+      "avatar": "bundled-imports/e84d8a9d2df8105cfb2c.png",
+      "localGlbPath": "character-3d/image3d-1785394356114-pb7sze3zz.glb",
+      "localGlbUrl": "character-3d/image3d-1785394356114-pb7sze3zz.glb",
+      "remoteGlbUrl": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/TrellisTextured_00001_npeyl_1785393640.glb",
+      "resultTextureUrl": "character-3d/image3d-1785394356114-pb7sze3zz-tex.png",
+      "localTexturePath": "character-3d/image3d-1785394356114-pb7sze3zz-tex.png",
+      "createdAt": 1785394356132
     }
   ],
   "sceneLibrary": [
@@ -546,6 +572,18 @@
       "display3dImageUrl": "bundled-imports/03b158efa8292b6a95e7.jpg",
       "panoramaUrl": "bundled-imports/03b158efa8292b6a95e7.jpg",
       "createdAt": 1780207769204
+    },
+    {
+      "id": "scene-1783865937370-pgzq826cu",
+      "nickname": "书房",
+      "name": "书房",
+      "avatar": "scene-library/scene-1783865937370-pgzq826cu-normal.png",
+      "localAvatarPath": "scene-library/scene-1783865937370-pgzq826cu-normal.png",
+      "normalImageUrl": "scene-library/scene-1783865937370-pgzq826cu-normal.png",
+      "localNormalImagePath": "scene-library/scene-1783865937370-pgzq826cu-normal.png",
+      "display3dImageUrl": "bundled-imports/525e26536d5700d69e95.jpg",
+      "panoramaUrl": "bundled-imports/525e26536d5700d69e95.jpg",
+      "createdAt": 1783865937373
     }
   ]
 }

@@ -48,6 +48,63 @@ function basenameFromAudioUrl(url: string): string {
   }
 }
 
+/** 从本地文件名得到展示用曲名（去掉扩展名） */
+export function audioDisplayTitleFromFileName(fileName: string): string {
+  const raw = String(fileName || '').trim();
+  if (!raw) return '';
+  const base = raw.replace(/\\/g, '/').split('/').pop() || raw;
+  return sanitizeAudioDownloadBaseName(base);
+}
+
+function isGenericAudioTitle(name: string): boolean {
+  const s = String(name || '').trim();
+  return !s || /^(audio|声音|音频|mv音乐|mv music)$/i.test(s);
+}
+
+/**
+ * 解析音频节点应展示/传给下游的曲名：
+ * songName → 非占位 title → URL/路径文件名 → label → fallback
+ */
+export function resolveAudioNodeDisplayTitle(
+  data:
+    | {
+        title?: string | null;
+        songName?: string | null;
+        label?: string | null;
+        outputAudio?: string | null;
+        originalAudioUrl?: string | null;
+        referenceAudioUrl?: string | null;
+        sourceSongAudioUrl?: string | null;
+      }
+    | undefined
+    | null,
+  fallback = 'audio',
+): string {
+  const song = String(data?.songName || '').trim();
+  if (song) return sanitizeAudioDownloadBaseName(song);
+
+  const title = String(data?.title || '').trim();
+  if (!isGenericAudioTitle(title)) return sanitizeAudioDownloadBaseName(title);
+
+  const url = String(
+    data?.originalAudioUrl ||
+      data?.outputAudio ||
+      data?.sourceSongAudioUrl ||
+      data?.referenceAudioUrl ||
+      '',
+  ).trim();
+  const fromUrl = basenameFromAudioUrl(url);
+  if (fromUrl) {
+    const dot = fromUrl.lastIndexOf('.');
+    return sanitizeAudioDownloadBaseName(dot > 0 ? fromUrl.slice(0, dot) : fromUrl);
+  }
+
+  const label = String(data?.label || '').trim();
+  if (!isGenericAudioTitle(label)) return sanitizeAudioDownloadBaseName(label);
+
+  return sanitizeAudioDownloadBaseName(fallback);
+}
+
 /** 音乐模块另存为：返回不含扩展名的建议文件名（扩展名由主进程另存为 filters 追加） */
 export function buildMusicDownloadSuggestedName(opts: {
   model?: string | null;

@@ -12,6 +12,7 @@ import {
   type SceneLibraryItem,
 } from './characterListShared';
 import SceneLibraryPanoramaHoverPreview from './SceneLibraryPanoramaHoverPreview';
+import AssetLibLazyThumb from './AssetLibLazyThumb';
 import {
   assetLibBtnIcon,
   assetLibBtnPrimary,
@@ -111,7 +112,7 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
     loadScenes();
   }, [loadScenes, refreshTrigger]);
 
-  useIdlePoll(listActive, loadScenes, 20000);
+  useIdlePoll(listActive, loadScenes, 60000);
 
   useEffect(() => {
     if (!scenePanoramaHover) return;
@@ -502,11 +503,12 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                       }`}
                     >
                       {normalThumb ? (
-                        <img
+                        <AssetLibLazyThumb
                           src={normalThumb}
-                          alt=""
-                          className="absolute inset-0 w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-                          draggable={false}
+                          className="absolute inset-0 w-full h-full"
+                          imgClassName="absolute inset-0 w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                          maxEdge={320}
+                          placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
                         />
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center">
@@ -570,7 +572,12 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
                 <div className="flex shrink-0">
                   <div className="relative w-12 h-12 rounded-lg overflow-hidden border border-zinc-600 bg-black/30">
                     {normalThumb ? (
-                      <img src={normalThumb} alt="" className="w-full h-full object-cover" draggable={false} />
+                      <AssetLibLazyThumb
+                        src={normalThumb}
+                        className="w-full h-full"
+                        maxEdge={160}
+                        placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
+                      />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <Mountain className={`w-5 h-5 ${isDarkMode ? 'text-white/30' : 'text-gray-400'}`} />

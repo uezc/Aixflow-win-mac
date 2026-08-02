@@ -7,14 +7,19 @@ type AppUpdateState = ReturnType<typeof useAppUpdate>;
 
 type AppUpdatePanelProps = {
   update: AppUpdateState;
-  /** compact：登录页/激活页；account：已登录账户区 */
+  /** compact：登录页/激活页；account：已登录账户区（布局相同，保留兼容） */
   variant?: 'compact' | 'account';
   align?: 'left' | 'right';
-  /** 紧跟「检查更新」按钮右侧的附加控件（如 FC 线路切换） */
+  /** 主行末尾附加控件（如「交流群」），与更新按钮同一行 */
   trailing?: React.ReactNode;
 };
 
-export default function AppUpdatePanel({ update, variant = 'compact', align = 'right', trailing }: AppUpdatePanelProps) {
+function withVersion(label: string, version?: string | null): string {
+  const v = version?.trim();
+  return v ? `${v} ${label}` : label;
+}
+
+export default function AppUpdatePanel({ update, align = 'right', trailing }: AppUpdatePanelProps) {
   const {
     t,
     supportsUpdate,
@@ -24,153 +29,84 @@ export default function AppUpdatePanel({ update, variant = 'compact', align = 'r
     updateDownloading,
     updateInstalling,
     updateDownloadError,
-    downloadProgress,
     lastCheckResult,
     handleCheckUpdate,
     handleInstallUpdate,
-    formatBytes,
   } = update;
 
-  const alignClass = align === 'right' ? 'items-end text-right' : 'items-start text-left';
-  const overallPercent = Math.min(100, Number.isFinite(downloadProgress?.percent) ? downloadProgress!.percent : 0);
-  const speed = Number.isFinite(downloadProgress?.bytesPerSecond) ? downloadProgress!.bytesPerSecond : 0;
+  /** 与「交流群」入口同高同字号 */
+  const footerCtrlBtnClass =
+    'nexflow-btn-secondary h-[26px] w-fit shrink-0 !gap-1.5 !px-2.5 !py-0 !text-xs !leading-none';
+  const footerCtrlBtnReadyClass =
+    'inline-flex h-[26px] w-fit shrink-0 items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2.5 py-0 text-xs leading-none text-emerald-300 disabled:opacity-50';
 
   // 无更新能力时仍可渲染 trailing（如登录页「交流群」），避免入口被整块吞掉
   if (!supportsUpdate) {
     if (!trailing) return null;
     return (
-      <div className={`flex flex-wrap gap-2 sm:gap-3 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
+      <div className={`flex flex-nowrap items-center gap-1.5 sm:gap-2 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
         {trailing}
       </div>
     );
   }
 
-  const renderDownloadProgress = () => {
-    // 完整下载 UI 由 InstallerDownloadWizard 覆盖层承担；此处仅保留简短状态行
-    if (!updateDownloading) return null;
-    return (
-      <p className={`text-[11px] text-white/45 ${align === 'right' ? 'text-right' : ''}`}>
-        {downloadProgress && downloadProgress.total > 0
-          ? `${formatBytes(downloadProgress.transferred)} / ${formatBytes(downloadProgress.total)} (${overallPercent.toFixed(1)}%)${speed > 1024 ? ` · ${formatBytes(speed)}/s` : ''}`
-          : t.preparingDownload}
-      </p>
-    );
-  };
+  const busy = updateChecking || updateDownloading || updateInstalling;
+  const canInstall = Boolean(updateAvailable) && !busy;
 
-  const wizard = <InstallerDownloadWizard update={update} />;
-
-  if (variant === 'account') {
-    return (
-      <>
-        {wizard}
-        <div className="space-y-3">
-          <div className="space-y-2">
-            <p className="text-xs text-white/45">{t.appUpdate}</p>
-            <div className="flex flex-wrap items-center gap-2">
-              {appVersion ? (
-                <span className="text-xs text-white/40">
-                  {t.currentVersion} v{appVersion}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                onClick={handleCheckUpdate}
-                disabled={updateChecking || updateDownloading || updateInstalling}
-                className="nexflow-btn-secondary nexflow-btn-secondary-sm"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${updateChecking ? 'animate-spin' : ''}`} />
-                {updateChecking ? t.checkingUpdate : t.checkUpdate}
-              </button>
-              {lastCheckResult?.isLatest && !updateChecking && !updateAvailable ? (
-                <span className="text-xs text-white/45">{t.alreadyLatest}</span>
-              ) : null}
-              {lastCheckResult?.error && !updateChecking ? (
-                <span className="text-xs text-amber-400/80" title={lastCheckResult?.errorMessage ?? undefined}>
-                  {lastCheckResult?.errorMessage
-                    ? `${t.checkFailedPrefix} ${lastCheckResult.errorMessage}`
-                    : t.checkFailedGeneric}
-                </span>
-              ) : null}
-            </div>
-            {updateAvailable ? (
-              <div className="flex flex-col gap-2">
-                <span className="text-xs font-medium text-emerald-400/95">{t.newVersionAvailable(updateAvailable)}</span>
-                <button
-                  type="button"
-                  onClick={handleInstallUpdate}
-                  disabled={updateDownloading || updateInstalling}
-                  className="inline-flex w-fit items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-xs text-emerald-300 disabled:opacity-50"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  {updateInstalling ? t.installingUpdate : updateDownloading ? t.downloading : t.downloadInstall(updateAvailable)}
-                </button>
-                {updateInstalling ? (
-                  <span className="text-xs text-white/55">{t.installingUpdate}</span>
-                ) : null}
-                {updateDownloadError ? (
-                  <span className="text-xs text-amber-400/90">{updateDownloadError}</span>
-                ) : null}
-                {renderDownloadProgress()}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </>
-    );
+  let buttonLabel = withVersion(t.checkUpdate, appVersion);
+  let buttonTitle: string | undefined = appVersion ? `${t.currentVersion} v${appVersion}` : undefined;
+  if (updateChecking) {
+    buttonLabel = withVersion(t.checkingUpdate, appVersion);
+  } else if (updateInstalling) {
+    buttonLabel = t.installingShort;
+    buttonTitle = t.installingUpdate;
+  } else if (updateDownloading) {
+    buttonLabel = t.downloading;
+  } else if (updateAvailable) {
+    buttonLabel = withVersion(t.updateReadyBtn, updateAvailable);
+    buttonTitle = t.newVersionAvailable(updateAvailable);
+  } else if (updateDownloadError) {
+    buttonLabel = withVersion(t.checkFailedShort, appVersion);
+    buttonTitle = updateDownloadError;
+  } else if (lastCheckResult?.error) {
+    buttonLabel = withVersion(t.checkFailedShort, appVersion);
+    buttonTitle = lastCheckResult.errorMessage
+      ? `${t.checkFailedPrefix} ${lastCheckResult.errorMessage}`
+      : t.checkFailedGeneric;
+  } else if (lastCheckResult?.isLatest) {
+    buttonLabel = withVersion(t.alreadyLatest, appVersion);
   }
 
+  const onPrimaryClick = () => {
+    if (canInstall) {
+      void handleInstallUpdate();
+      return;
+    }
+    void handleCheckUpdate();
+  };
+
+  const PrimaryIcon = canInstall ? Download : RefreshCw;
+
+  /** 单行：更新按钮（文案含版本/状态）+ 可选 trailing（交流群） */
   return (
     <>
-      {wizard}
-      <div className={`flex flex-col gap-2 ${alignClass}`}>
-        <div className={`flex flex-wrap gap-2 sm:gap-3 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
-          {appVersion ? (
-            <span className="text-xs text-white/40">
-              {t.currentVersion} v{appVersion}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            onClick={handleCheckUpdate}
-            disabled={updateChecking || updateDownloading || updateInstalling}
-            className="nexflow-btn-secondary nexflow-btn-secondary-sm"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${updateChecking ? 'animate-spin' : ''}`} />
-            {updateChecking ? t.checkingUpdate : t.checkUpdate}
-          </button>
-          {trailing}
-          {lastCheckResult?.isLatest && !updateChecking && !updateAvailable ? (
-            <span className="text-xs text-white/45">{t.alreadyLatest}</span>
-          ) : null}
-          {lastCheckResult?.error && !updateChecking ? (
-            <span className="text-xs text-amber-400/80" title={lastCheckResult?.errorMessage ?? undefined}>
-              {lastCheckResult?.errorMessage
-                ? `${t.checkFailedPrefix} ${lastCheckResult.errorMessage}`
-                : t.checkFailedGeneric}
-            </span>
-          ) : null}
-        </div>
-        {updateAvailable && !updateChecking ? (
-          <div className={`flex flex-col gap-2 ${alignClass}`}>
-            <span className="text-xs font-medium text-emerald-400/95">{t.newVersionAvailable(updateAvailable)}</span>
-            <button
-              type="button"
-              onClick={handleInstallUpdate}
-              disabled={updateDownloading || updateInstalling}
-              className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-xs text-emerald-300 disabled:opacity-50"
-            >
-              <Download className="h-3.5 w-3.5" />
-              {updateInstalling ? t.installingUpdate : updateDownloading ? t.downloading : t.downloadInstall(updateAvailable)}
-            </button>
-            {updateInstalling ? (
-              <span className="text-xs text-white/55">{t.installingUpdate}</span>
-            ) : null}
-            {updateDownloadError ? (
-              <span className="text-xs text-amber-400/90">{updateDownloadError}</span>
-            ) : null}
-            {renderDownloadProgress()}
-          </div>
-        ) : null}
+      <InstallerDownloadWizard update={update} />
+      <div
+        className={`flex min-w-0 flex-nowrap items-center gap-1.5 sm:gap-2 ${
+          align === 'right' ? 'justify-end' : 'justify-start'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={onPrimaryClick}
+          disabled={busy}
+          title={buttonTitle}
+          className={canInstall ? footerCtrlBtnReadyClass : footerCtrlBtnClass}
+        >
+          <PrimaryIcon className={`h-3.5 w-3.5 shrink-0 ${updateChecking ? 'animate-spin' : ''}`} />
+          <span className="max-w-[12.5rem] truncate whitespace-nowrap">{buttonLabel}</span>
+        </button>
+        {trailing ? <div className="shrink-0">{trailing}</div> : null}
       </div>
     </>
   );

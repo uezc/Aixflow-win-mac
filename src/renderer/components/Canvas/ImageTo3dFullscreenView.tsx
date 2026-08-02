@@ -59,6 +59,23 @@ const ImageTo3dFullscreenView: React.FC<ImageTo3dFullscreenViewProps> = ({
     return () => root.removeEventListener('wheel', onWheel, { capture: true });
   }, []);
 
+  /** ESC 退出全屏（捕获阶段，避免落到画布触发退出应用确认） */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
   return createPortal(
     <div
       className={`fixed left-0 right-0 bottom-0 z-[920] flex flex-col ${shellBgClass}`}

@@ -11,6 +11,7 @@ import {
   mergeProbedTimelineClipDuration,
   resolveSourceMediaDurationSec,
   needsTimelineDurationProbe,
+  needsDirectorLockedClipDurationProbe,
   effectiveTimelineClipDurationSec,
   probeTimelineMediaDuration,
   resolveTimelineMediaFromSource,
@@ -39,6 +40,9 @@ import {
 } from './VideoSpliceAspectRatioDropdown';
 import { resolveCollage1080pDefaultSize } from './photoCollageAspectRatio';
 import TimelineClipFilmstrip from './TimelineClipFilmstrip';
+import ClipLayoutTransformOverlay from './ClipLayoutTransformOverlay';
+import ClipCropTransformOverlay from './ClipCropTransformOverlay';
+import ClipMediaShell from './ClipMediaShell';
 import {
   DEFAULT_VIDEO_TRACK_COUNT,
   DEFAULT_IMAGE_CLIP_DURATION_SEC,
@@ -62,6 +66,22 @@ import {
   SPLICE_AUDIO_VOLUME_SLIDER_PCT_MAX,
   type TimelineTrackRef,
 } from '../../utils/videoSpliceTracks';
+import {
+  DEFAULT_CLIP_LAYOUT,
+  isDefaultClipLayout,
+  layoutFromSourceRectAndCrop,
+  normalizeClipLayout,
+  sourceRectFromLayoutAndCrop,
+  syncLayoutAfterCropChange,
+  type ClipLayout,
+  type NormRect,
+} from '../../utils/clipLayout';
+import {
+  DEFAULT_CLIP_CROP,
+  isDefaultClipCrop,
+  normalizeClipCrop,
+  type ClipCrop,
+} from '../../utils/clipCrop';
 
 /** 视频剪辑 UI：与登录/账户页一致的 accent / 主按钮色系 */
 const SPLICE_UI_VOLUME_FILL = 'bg-gradient-to-r from-sky-600 to-blue-500';
@@ -86,6 +106,8 @@ export interface TimelineClip {
   startTime: number; // 在时间轴上的起始位置（秒）
   trimStart?: number;
   trimEnd?: number;
+  /** 导演规划裁切：探测不得拉长有效轨长 / 左吸附勿压绝对时间 */
+  lockTrim?: boolean;
   name?: string;
   /** 来源节点 ID，用于从连接同步素材 */
   sourceNodeId?: string;
@@ -93,6 +115,18 @@ export interface TimelineClip {
   volume?: number;
   /** 导演 MV：对应镜号，便于生视频后替换图片占位 */
   directorShotNo?: string;
+  /** 带透明通道（如色度抠像 WebM）；上层透明时下层轨需叠放显示 */
+  hasAlpha?: boolean;
+  /**
+   * 裁切后画面在合成画布上的占位（归一化 0–1）。缺省为铺满画布。
+   * 与 crop 配合：先源裁切，再放入该占位；预览与主轨导出均会应用。
+   */
+  layout?: ClipLayout;
+  /**
+   * 源画面裁剪边距（归一化 0–1，相对源素材）。缺省为不裁。
+   * 预览与主轨导出均会应用；多轨叠放导出尚未接入（EXPORT_GAP）。
+   */
+  crop?: ClipCrop;
 }
 
 type SpliceClipClipboardItem = {
@@ -163,6 +197,11 @@ export interface VideoSpliceNodeData {
   /** 与 previewAspectId 对应的导出分辨率（1080p 档） */
   exportOutputWidth?: number;
   exportOutputHeight?: number;
+  /**
+   * 片段几何模型版本。
+   * 2 = layout 表示裁切后画面占位（与 crop 配套）；缺省/其它 = 旧模型（layout 为未裁源占位）。
+   */
+  clipGeometryModel?: number;
 }
 
 interface VideoSpliceNodeProps extends NodeProps<VideoSpliceNodeData> {
@@ -349,8 +388,8 @@ function splitClipAtTimelineTime(clip: TimelineClip, timelineTime: number): [Tim
     return [clip1, clip2];
   }
   const ts = clip.trimStart ?? 0;
-  let te = clip.trimEnd ?? clip.duration;
-  if (clip.type !== 'image' && clip.duration > te + 0.5) te = clip.duration;
+  let te = clip.trimEnd != null && clip.trimEnd > ts ? clip.trimEnd : clip.duration;
+  if (!(te > ts)) te = ts + Math.max(0.1, clip.duration || 0.1);
   const clipStart = clip.startTime;
   const clipEnd = clipStart + Math.max(0, te - ts);
   if (timelineTime <= clipStart + min || timelineTime >= clipEnd - min) return null;
@@ -674,7 +713,19 @@ const ImageThumbnail: React.FC<{ clip: TimelineClip; projectId?: string; isDarkM
 };
 
 /** 预览区：映射 local-resource 路径后显示图片片段 */
-const PreviewImagePane: React.FC<{ src: string; projectId?: string }> = ({ src, projectId }) => {
+const PreviewImagePane: React.FC<{
+  src: string;
+  projectId?: string;
+  layout?: ClipLayout | NormRect | null;
+  crop?: ClipCrop | null;
+  uncroppedFit?: 'contain' | 'fill';
+}> = ({
+  src,
+  projectId,
+  layout,
+  crop,
+  uncroppedFit,
+}) => {
   const [resolved, setResolved] = useState('');
   useEffect(() => {
     let cancelled = false;
@@ -691,7 +742,11 @@ const PreviewImagePane: React.FC<{ src: string; projectId?: string }> = ({ src, 
     return () => { cancelled = true; };
   }, [src, projectId]);
   if (!resolved) return null;
-  return <img src={resolved} alt="" className="w-full h-full object-contain" />;
+  return (
+    <ClipMediaShell layout={layout} crop={crop} uncroppedFit={uncroppedFit}>
+      <img src={resolved} alt="" />
+    </ClipMediaShell>
+  );
 };
 
 /** 视频缩略图条：首帧或胶片条，每个视频/图片素材在进度条上显示首帧缩略图 */
@@ -1072,24 +1127,36 @@ function findImageClipAtTimeOnTrack(track: TimelineClip[], t: number): TimelineC
   });
 }
 
-/** 上层轨有画面时下层无需解码，避免多路 video 争抢解码器 */
+function findVideoClipAtTimeOnTrackSimple(track: TimelineClip[], t: number): TimelineClip | undefined {
+  return track.find((c) => {
+    if (c.type !== 'video') return false;
+    const start = c.startTime;
+    const dur = clipPlaybackSpanDurationSec(c);
+    if (!Number.isFinite(dur)) return t >= start;
+    return t >= start && t < start + dur;
+  });
+}
+
+/** WebM（色度抠像等）常带 alpha；上层透明时下层必须继续解码叠放 */
+function clipLikelyHasAlpha(clip: TimelineClip): boolean {
+  if ((clip as { hasAlpha?: boolean }).hasAlpha === true) return true;
+  const src = String(clip.src || '');
+  return /\.webm(?:$|[?#])/i.test(src);
+}
+
+/**
+ * 上层轨有「不透明」画面时下层可跳过解码；
+ * 上层为透明 WebM 时下层仍解码，才能叠出背景轨。
+ */
 function computeStackedTrackShouldDecode(videoTracks: TimelineClip[][], t: number): boolean[] {
-  const trackHasVideo = videoTracks.map((track) =>
-    track.some((c) => {
-      if (c.type !== 'video') return false;
-      const start = c.startTime;
-      const dur = clipPlaybackSpanDurationSec(c);
-      if (!Number.isFinite(dur)) return t >= start;
-      return t >= start && t < start + dur;
-    }),
-  );
-  const trackHasVisual = videoTracks.map(
-    (track, i) => trackHasVideo[i] || !!findImageClipAtTimeOnTrack(track, t),
-  );
+  const trackHasVideo = videoTracks.map((track) => !!findVideoClipAtTimeOnTrackSimple(track, t));
   return videoTracks.map((_, trackIdx) => {
     if (!trackHasVideo[trackIdx]) return false;
     for (let upper = 0; upper < trackIdx; upper++) {
-      if (trackHasVisual[upper]) return false;
+      const upperVideo = findVideoClipAtTimeOnTrackSimple(videoTracks[upper]!, t);
+      const upperImage = findImageClipAtTimeOnTrack(videoTracks[upper]!, t);
+      if (upperImage) return false;
+      if (upperVideo && !clipLikelyHasAlpha(upperVideo)) return false;
     }
     return true;
   });
@@ -1110,50 +1177,73 @@ const TimelineDualVideoPreview: React.FC<{
   slot1Ref: React.RefObject<HTMLVideoElement | null>;
   visibleSlot: 0 | 1;
   videoTrackMuted: boolean;
+  layout?: ClipLayout | NormRect | null;
+  crop?: ClipCrop | null;
+  uncroppedFit?: 'contain' | 'fill';
   onTimeUpdate: () => void;
   onEnded: () => void;
-}> = ({ slot0Ref, slot1Ref, visibleSlot, videoTrackMuted, onTimeUpdate, onEnded }) => (
+}> = ({
+  slot0Ref,
+  slot1Ref,
+  visibleSlot,
+  videoTrackMuted,
+  layout,
+  crop,
+  uncroppedFit,
+  onTimeUpdate,
+  onEnded,
+}) => (
   <div className="relative w-full h-full">
-    <video
-      ref={slot0Ref}
-      className="absolute inset-0 w-full h-full object-contain"
+    <ClipMediaShell
+      layout={layout}
+      crop={crop}
+      uncroppedFit={uncroppedFit}
       style={{
         opacity: visibleSlot === 0 ? 1 : 0,
         zIndex: visibleSlot === 0 ? 2 : 1,
         pointerEvents: visibleSlot === 0 ? 'auto' : 'none',
       }}
-      playsInline
-      loop={false}
-      muted={videoTrackMuted}
-      controls={false}
-      preload="auto"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onTimeUpdate={onTimeUpdate}
-      onEnded={onEnded}
-    />
-    <video
-      ref={slot1Ref}
-      className="absolute inset-0 w-full h-full object-contain"
+    >
+      <video
+        ref={slot0Ref}
+        playsInline
+        loop={false}
+        muted={videoTrackMuted}
+        controls={false}
+        preload="auto"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onTimeUpdate={onTimeUpdate}
+        onEnded={onEnded}
+      />
+    </ClipMediaShell>
+    <ClipMediaShell
+      layout={layout}
+      crop={crop}
+      uncroppedFit={uncroppedFit}
       style={{
         opacity: visibleSlot === 1 ? 1 : 0,
         zIndex: visibleSlot === 1 ? 2 : 1,
         pointerEvents: visibleSlot === 1 ? 'auto' : 'none',
       }}
-      playsInline
-      loop={false}
-      muted={videoTrackMuted}
-      controls={false}
-      preload="auto"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-      onTimeUpdate={onTimeUpdate}
-      onEnded={onEnded}
-    />
+    >
+      <video
+        ref={slot1Ref}
+        playsInline
+        loop={false}
+        muted={videoTrackMuted}
+        controls={false}
+        preload="auto"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onTimeUpdate={onTimeUpdate}
+        onEnded={onEnded}
+      />
+    </ClipMediaShell>
   </div>
 );
 
@@ -1162,37 +1252,64 @@ const TimelineStackedVideoPreview: React.FC<{
   trackCount: number;
   layerRefs: React.MutableRefObject<(HTMLVideoElement | null)[]>;
   imageSrcs: (string | null)[];
+  /** 每轨当前片段布局（与 imageSrcs / 视频层对齐；裁剪编辑时可为未裁源占位） */
+  layouts: (ClipLayout | NormRect | null)[];
+  /** 每轨当前片段源画面裁剪 */
+  crops: (ClipCrop | null)[];
+  /** 裁剪编辑轨：源占位需 fill 才能与琥珀遮罩对齐 */
+  uncroppedFitByTrack?: (('contain' | 'fill') | null)[];
   hasVideoLayer: boolean[];
   trackMuted: boolean[];
-}> = ({ trackCount, layerRefs, imageSrcs, hasVideoLayer, trackMuted }) => (
+}> = ({
+  trackCount,
+  layerRefs,
+  imageSrcs,
+  layouts,
+  crops,
+  uncroppedFitByTrack,
+  hasVideoLayer,
+  trackMuted,
+}) => (
   <div className="relative h-full w-full bg-transparent">
     {[...Array(trackCount).keys()].reverse().map((trackIdx) => {
       const zIndex = trackCount - trackIdx;
       const imgSrc = imageSrcs[trackIdx];
       const showVideo = hasVideoLayer[trackIdx] && !imgSrc;
+      const layout = layouts[trackIdx];
+      const crop = crops[trackIdx];
+      const uncroppedFit = uncroppedFitByTrack?.[trackIdx] ?? undefined;
       return (
         <React.Fragment key={`stack-${trackIdx}`}>
           {imgSrc ? (
-            <img
-              src={imgSrc}
-              alt=""
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+            <ClipMediaShell
+              layout={layout}
+              crop={crop}
+              uncroppedFit={uncroppedFit}
               style={{ zIndex }}
-            />
+              mediaClassName="pointer-events-none"
+            >
+              <img src={imgSrc} alt="" />
+            </ClipMediaShell>
           ) : null}
-          <video
-            ref={(el) => {
-              layerRefs.current[trackIdx] = el;
-              if (el) setStackedVideoLayerVisible(el, showVideo);
-            }}
-            className="absolute inset-0 w-full h-full object-contain pointer-events-none"
+          <ClipMediaShell
+            layout={layout}
+            crop={crop}
+            uncroppedFit={uncroppedFit}
             style={{ zIndex: imgSrc ? zIndex + 1 : zIndex }}
-            playsInline
-            loop={false}
-            muted={trackMuted[trackIdx] ?? true}
-            controls={false}
-            preload="metadata"
-          />
+            mediaClassName="pointer-events-none"
+          >
+            <video
+              ref={(el) => {
+                layerRefs.current[trackIdx] = el;
+                if (el) setStackedVideoLayerVisible(el, showVideo);
+              }}
+              playsInline
+              loop={false}
+              muted={trackMuted[trackIdx] ?? true}
+              controls={false}
+              preload="metadata"
+            />
+          </ClipMediaShell>
         </React.Fragment>
       );
     })}
@@ -1476,6 +1593,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   /** 在时间轴空白处按住拖动 scrub */
   const [timelineScrubbing, setTimelineScrubbing] = useState(false);
   const [cutMode, setCutMode] = useState(false);
+  /** 主预览变换：位置尺寸 vs 源画面裁剪（互斥，避免拖拽冲突） */
+  const [previewTransformMode, setPreviewTransformMode] = useState<'layout' | 'crop'>('layout');
   const [exportBusy, setExportBusy] = useState<'save' | 'canvas' | null>(null);
   /** 导出中动画进度（主进程暂无真实进度，用缓动假进度提示用户） */
   const [exportProgress, setExportProgress] = useState(0);
@@ -1555,6 +1674,9 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   /** 按下未移动时暂存，超过阈值才转为 draggingClip，否则视为点击选中 */
   const [pendingClipDrag, setPendingClipDrag] = useState<{ clip: TimelineClip; track: TimelineTrackRef; offsetX: number; offsetY: number; startX: number; startY: number } | null>(null);
   const pendingClipDragRef = useRef<typeof pendingClipDrag>(null);
+  /** 边缘裁剪进行中（供靠前的 compact effect 读取） */
+  const clipEdgeTrimmingLiveRef = useRef(false);
+  const [clipEdgeTrimming, setClipEdgeTrimming] = useState(false);
   /** 吸附对齐线时间（秒），用于自动吸附时显示蓝线 */
   const [snapLineTime, setSnapLineTime] = useState<number | null>(null);
   const { showAlert, showConfirm } = useDarkAlert();
@@ -1878,6 +2000,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   // 片段自动向左吸附：消除间隙、禁止重叠
   const compactTrack = useCallback((clips: TimelineClip[]): TimelineClip[] => {
     if (clips.length === 0) return clips;
+    // 导演绝对时间轴（audioStartSec）：禁止压缝，否则与原曲错位
+    if (clips.some((c) => c.lockTrim)) return clips;
     const sorted = [...clips].sort((a, b) => a.startTime - b.startTime);
     const getEnd = (c: TimelineClip) => c.startTime + clipTimelineDurationSec(c, resolveClipSourceHint(c));
     const hasGapOrOverlap = sorted.some((c, i) => {
@@ -1923,7 +2047,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   const prevTimelineClipCountRef = useRef<number | null>(null);
   const skipNextCompactRef = useRef(false);
   useEffect(() => {
-    if (draggingClip) return;
+    if (draggingClip || clipEdgeTrimmingLiveRef.current) return;
     if (skipNextCompactRef.current) {
       skipNextCompactRef.current = false;
       return;
@@ -1946,7 +2070,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       if (!videoChanged && !audioChanged) return {};
       return { videoTracks: newVideo, videoClips: newVideo[0], audioTracks: newAudio };
     });
-  }, [videoTracks, audioTracks, compactTrack, updateData, draggingClip, videoTrackLeftSnap, audioTrackLeftSnap]);
+  }, [videoTracks, audioTracks, compactTrack, updateData, draggingClip, clipEdgeTrimming, videoTrackLeftSnap, audioTrackLeftSnap]);
 
   // 音频片段接入后加载实际时长，补齐完整信息（含 local-resource 路径映射）
   const probedAudioDurationRef = useRef<Map<string, number>>(new Map());
@@ -2034,15 +2158,22 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       }
       if (sourceHint > c.duration + 0.01) return true;
       const eff = effectiveTimelineClipDurationSec(c);
-      if (needsTimelineDurationProbe(eff, sourceHint)) return true;
+      if (c.lockTrim) {
+        if (needsDirectorLockedClipDurationProbe(c, sourceHint)) return true;
+      } else if (needsTimelineDurationProbe(eff, sourceHint)) {
+        return true;
+      }
       if (videoClipProbeSrcRef.current.get(c.id) !== c.src) {
         videoClipProbeSrcRef.current.set(c.id, c.src);
         probedVideoDurationRef.current.delete(probeKey);
       }
       const lastProbed = probedVideoDurationRef.current.get(probeKey);
       const targetDur = Math.max(c.duration, sourceHint);
-      if (lastProbed != null && lastProbed >= targetDur - 0.01 && !needsTimelineDurationProbe(targetDur, sourceHint)) {
+      if (lastProbed != null && lastProbed >= targetDur - 0.01 && !needsDirectorLockedClipDurationProbe(c, sourceHint) && !needsTimelineDurationProbe(targetDur, sourceHint)) {
         return false;
+      }
+      if (c.lockTrim) {
+        return needsDirectorLockedClipDurationProbe(c, sourceHint) || lastProbed == null;
       }
       return needsTimelineDurationProbe(c.duration, sourceHint) || lastProbed == null || lastProbed < targetDur - 0.01;
     });
@@ -2261,7 +2392,21 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     const clip = findClipAtTimelineTime(track, clipLookupTime, resolveClipSourceHint);
     return clip?.type === 'image' ? clip.src : null;
   });
-  const stackedPreviewHasVideo = videoTracks.map((track) => !!findVideoClipAtTimeOnTrack(track, clipLookupTime));
+  const stackedPreviewLayouts = videoTracks.map((track) => {
+    const clip = findClipAtTimelineTime(track, clipLookupTime, resolveClipSourceHint);
+    if (!clip || (clip.type !== 'video' && clip.type !== 'image')) return null;
+    return normalizeClipLayout(clip.layout);
+  });
+  const stackedPreviewCrops = videoTracks.map((track) => {
+    const clip = findClipAtTimelineTime(track, clipLookupTime, resolveClipSourceHint);
+    if (!clip || (clip.type !== 'video' && clip.type !== 'image')) return null;
+    return normalizeClipCrop(clip.crop);
+  });
+  /** 与 sync 解码掩码一致：透明上层轨下方仍显示下层画面 */
+  const stackedPreviewHasVideo = useMemo(
+    () => computeStackedTrackShouldDecode(videoTracks, clipLookupTime),
+    [videoTracks, clipLookupTime],
+  );
   const useStackedVideoPreview = videoTracks.length > 1;
 
   const activeVideoSrc = activeVideoClip
@@ -2405,10 +2550,96 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     [videoTracks, audioTracks],
   );
 
-  // 选中片段的完整数据（用于 TrimRangeBar、图片时长等）
+  // 选中片段的完整数据（用于 TrimRangeBar、图片时长、画面布局等）
   const selectedClipData: TimelineClip | null = selectedClip
     ? clipFromTrackRef(selectedClip.track, selectedClip.clipId)
     : null;
+
+  /** 选中且当前播放头落在该视频/图片片段上时，可在主预览调节 layout */
+  const layoutEditTarget = useMemo(() => {
+    if (!selectedClip || !isVideoTrackRef(selectedClip.track)) return null;
+    if (selectedClipIds.size > 1) return null;
+    const clip = selectedClipData;
+    if (!clip || (clip.type !== 'video' && clip.type !== 'image')) return null;
+    if (!clipContainsTimelineTime(clip, clipLookupTime, resolveClipSourceHint(clip))) return null;
+    return { clip, track: selectedClip.track, clipId: selectedClip.clipId };
+  }, [
+    selectedClip,
+    selectedClipIds.size,
+    selectedClipData,
+    clipLookupTime,
+    resolveClipSourceHint,
+  ]);
+
+  const updateSelectedClipLayout = useCallback(
+    (nextLayout: ClipLayout) => {
+      if (!selectedClip || !isVideoTrackRef(selectedClip.track)) return;
+      const trackIdx = videoTrackIndexFromRef(selectedClip.track);
+      const clipId = selectedClip.clipId;
+      const layout = normalizeClipLayout(nextLayout);
+      updateData((prev) => {
+        const tracks = normalizeVideoTracks(prev as VideoSpliceNodeData);
+        const nextTracks = tracks.map((t, i) =>
+          i === trackIdx ? t.map((c) => (c.id === clipId ? { ...c, layout } : c)) : t,
+        );
+        return { videoTracks: nextTracks, videoClips: nextTracks[0] ?? [] };
+      });
+    },
+    [selectedClip, updateData],
+  );
+
+  const resetSelectedClipLayout = useCallback(() => {
+    updateSelectedClipLayout({ ...DEFAULT_CLIP_LAYOUT });
+  }, [updateSelectedClipLayout]);
+
+  const updateSelectedClipCrop = useCallback(
+    (nextCrop: ClipCrop) => {
+      if (!selectedClip || !isVideoTrackRef(selectedClip.track)) return;
+      const trackIdx = videoTrackIndexFromRef(selectedClip.track);
+      const clipId = selectedClip.clipId;
+      const crop = normalizeClipCrop(nextCrop);
+      updateData((prev) => {
+        const tracks = normalizeVideoTracks(prev as VideoSpliceNodeData);
+        const nextTracks = tracks.map((t, i) => {
+          if (i !== trackIdx) return t;
+          return t.map((c) => {
+            if (c.id !== clipId) return c;
+            const layout = syncLayoutAfterCropChange(c.layout, c.crop, crop);
+            return { ...c, crop, layout };
+          });
+        });
+        return {
+          clipGeometryModel: 2,
+          videoTracks: nextTracks,
+          videoClips: nextTracks[0] ?? [],
+        };
+      });
+    },
+    [selectedClip, updateData],
+  );
+
+  const resetSelectedClipCrop = useCallback(() => {
+    if (!selectedClip || !isVideoTrackRef(selectedClip.track)) return;
+    const trackIdx = videoTrackIndexFromRef(selectedClip.track);
+    const clipId = selectedClip.clipId;
+    updateData((prev) => {
+      const tracks = normalizeVideoTracks(prev as VideoSpliceNodeData);
+      const nextTracks = tracks.map((t, i) => {
+        if (i !== trackIdx) return t;
+        return t.map((c) => {
+          if (c.id !== clipId) return c;
+          // 清除 crop 时把 layout 扩回未裁源占位，避免可见区突然按旧 crop 比例缩放
+          const layout = normalizeClipLayout(sourceRectFromLayoutAndCrop(c.layout, c.crop));
+          return { ...c, crop: { ...DEFAULT_CLIP_CROP }, layout };
+        });
+      });
+      return {
+        clipGeometryModel: 2,
+        videoTracks: nextTracks,
+        videoClips: nextTracks[0] ?? [],
+      };
+    });
+  }, [selectedClip, updateData]);
 
   /** 播放/拖动时自动滚动时间轴，使播放头保持在可视区内 */
   const setTimelineScrollLeft = useCallback((left: number) => {
@@ -3969,7 +4200,6 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     snapshot: TimelineClip;
     sourceHint: number;
   } | null>(null);
-  const [clipEdgeTrimming, setClipEdgeTrimming] = useState(false);
   const videoTracksLiveRef = useRef(videoTracks);
   videoTracksLiveRef.current = videoTracks;
   const audioTracksLiveRef = useRef(audioTracks);
@@ -4011,6 +4241,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         snapshot: { ...clip },
         sourceHint: resolveClipSourceHint(clip),
       };
+      clipEdgeTrimmingLiveRef.current = true;
       setClipEdgeTrimming(true);
       try {
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -4029,7 +4260,10 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       if (!st) return;
       const deltaSec = (e.clientX - st.startX) / pixelsPerSecond;
       const snap = st.snapshot;
-      if (snap.type === 'image') {
+      const imageUsesDuration =
+        snap.type === 'image' &&
+        !(snap.trimEnd != null && snap.trimEnd > (snap.trimStart ?? 0));
+      if (imageUsesDuration) {
         if (st.edge === 'start') {
           const newDur = Math.max(MIN, snap.duration - deltaSec);
           const used = snap.duration - newDur;
@@ -4046,21 +4280,31 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       }
       const ts0 = snap.trimStart ?? 0;
       const te0 = effectiveClipTrimEnd(snap, st.sourceHint);
-      const mediaDur = Math.max(te0, snap.duration || te0, st.sourceHint || 0);
+      const mediaDur = Math.max(
+        Number.isFinite(snap.duration) ? snap.duration : 0,
+        st.sourceHint || 0,
+        te0 > 0 && Number.isFinite(te0) ? te0 : 0,
+      );
+      const maxTe = mediaDur > 0 ? mediaDur : Number.POSITIVE_INFINITY;
       if (st.edge === 'start') {
         const newTs = Math.max(0, Math.min(te0 - MIN, ts0 + deltaSec));
         const dTs = newTs - ts0;
         applyClipPatchOnTrack(st.track, snap.id, {
           trimStart: newTs,
+          trimEnd: te0,
           startTime: Math.max(0, snap.startTime + dTs),
         });
       } else {
-        const newTe = Math.max(ts0 + MIN, Math.min(mediaDur > 0 ? mediaDur : te0 + Math.abs(deltaSec) + MIN, te0 + deltaSec));
-        applyClipPatchOnTrack(st.track, snap.id, { trimEnd: newTe });
+        const newTe = Math.max(ts0 + MIN, Math.min(maxTe, te0 + deltaSec));
+        applyClipPatchOnTrack(st.track, snap.id, {
+          trimStart: ts0,
+          trimEnd: newTe,
+        });
       }
     };
     const onUp = () => {
       clipEdgeTrimRef.current = null;
+      clipEdgeTrimmingLiveRef.current = false;
       setClipEdgeTrimming(false);
     };
     document.addEventListener('pointermove', onMove);
@@ -4070,6 +4314,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onUp);
+      clipEdgeTrimmingLiveRef.current = false;
     };
   }, [clipEdgeTrimming, pixelsPerSecond, applyClipPatchOnTrack]);
 
@@ -4391,31 +4636,93 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     !playheadDragging &&
     !timelineScrubbing;
 
+  /**
+   * 裁剪编辑：展示未裁源占位（由 layout+crop 反推），暂不套 crop，便于对照调节保留区；
+   * 播放/位置模式仍用 layout=裁切后占位 + crop。
+   */
+  const cropEditPreviewActive =
+    previewTransformMode === 'crop' && !!layoutEditTarget && !isPlaying;
+
+  const isCropEditTrack = useCallback(
+    (trackIdx: number) =>
+      !!(
+        cropEditPreviewActive &&
+        layoutEditTarget &&
+        isVideoTrackRef(layoutEditTarget.track) &&
+        videoTrackIndexFromRef(layoutEditTarget.track) === trackIdx
+      ),
+    [cropEditPreviewActive, layoutEditTarget],
+  );
+
+  const effectiveStackedPreviewLayouts = stackedPreviewLayouts.map((layout, trackIdx) => {
+    if (!layout || !isCropEditTrack(trackIdx)) return layout;
+    return sourceRectFromLayoutAndCrop(layout, stackedPreviewCrops[trackIdx]);
+  });
+  const effectiveStackedPreviewCrops = stackedPreviewCrops.map((crop, trackIdx) =>
+    isCropEditTrack(trackIdx) ? null : crop,
+  );
+
+  const cropEditSourceLayout =
+    cropEditPreviewActive && layoutEditTarget
+      ? sourceRectFromLayoutAndCrop(layoutEditTarget.clip.layout, layoutEditTarget.clip.crop)
+      : null;
+  /**
+   * 已有源裁切时，裁剪编辑用 fill 铺满反推的源占位，才能与琥珀保留框/遮罩共用坐标系；
+   * 尚未裁切时保持 contain，与位置模式一致、避免切换跳变。
+   */
+  const cropEditNeedsFill =
+    cropEditPreviewActive &&
+    !!layoutEditTarget &&
+    !isDefaultClipCrop(layoutEditTarget.clip.crop);
+  const cropEditUncroppedFit = cropEditNeedsFill ? ('fill' as const) : undefined;
+  const stackedUncroppedFitByTrack = videoTracks.map((_, trackIdx) => {
+    if (!isCropEditTrack(trackIdx)) return null;
+    return isDefaultClipCrop(stackedPreviewCrops[trackIdx]) ? null : ('fill' as const);
+  });
+
   const timelinePreviewInner = useStackedVideoPreview ? (
     hasTimelineVisual ? (
       <TimelineStackedVideoPreview
         trackCount={videoTracks.length}
         layerRefs={videoLayerRefs}
         imageSrcs={stackedPreviewImageSrcs}
+        layouts={effectiveStackedPreviewLayouts}
+        crops={effectiveStackedPreviewCrops}
+        uncroppedFitByTrack={stackedUncroppedFitByTrack}
         hasVideoLayer={stackedPreviewHasVideo}
         trackMuted={videoTrackMutedList}
       />
     ) : null
   ) : activeVideoClip && activeVideoSrc ? (
     showPausedStillFrame ? (
-      <img src={pausedFrameDataUrl!} alt="" className="w-full h-full object-contain" />
+      <ClipMediaShell
+        layout={cropEditSourceLayout ?? activeVideoClip.layout}
+        crop={cropEditPreviewActive ? null : activeVideoClip.crop}
+        uncroppedFit={cropEditUncroppedFit}
+      >
+        <img src={pausedFrameDataUrl!} alt="" />
+      </ClipMediaShell>
     ) : (
       <TimelineDualVideoPreview
         slot0Ref={videoSlot0Ref}
         slot1Ref={videoSlot1Ref}
         visibleSlot={visibleVideoSlot}
         videoTrackMuted={videoTrackMuted}
+        layout={cropEditSourceLayout ?? activeVideoClip.layout}
+        crop={cropEditPreviewActive ? null : activeVideoClip.crop}
+        uncroppedFit={cropEditUncroppedFit}
         onTimeUpdate={handleVideoTimeUpdate}
         onEnded={handlePreviewVideoEnded}
       />
     )
   ) : activeImageClip?.src ? (
-    <PreviewImagePane src={activeImageClip.src} projectId={projectId} />
+    <PreviewImagePane
+      src={activeImageClip.src}
+      projectId={projectId}
+      layout={cropEditSourceLayout ?? activeImageClip.layout}
+      crop={cropEditPreviewActive ? null : activeImageClip.crop}
+      uncroppedFit={cropEditUncroppedFit}
+    />
   ) : null;
 
   const timelinePreviewPane = hasTimelineVisual ? (
@@ -4429,7 +4736,15 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     const textCls = emptyIconSize === 'lg' ? 'text-base' : 'text-sm';
     if (timelinePreviewPane) return timelinePreviewPane;
     if (activeImageClip) {
-      return <img src={activeImageClip.src} alt="" className="absolute inset-0 h-full w-full object-contain" />;
+      return (
+        <ClipMediaShell
+          layout={cropEditSourceLayout ?? activeImageClip.layout}
+          crop={cropEditPreviewActive ? null : activeImageClip.crop}
+          uncroppedFit={cropEditUncroppedFit}
+        >
+          <img src={activeImageClip.src} alt="" />
+        </ClipMediaShell>
+      );
     }
     if (isFullscreen) {
       return (
@@ -4453,8 +4768,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   ) => {
     const badgeText = variant === 'fullscreen' ? 'text-xs' : 'text-[10px]';
     const badgePad = variant === 'fullscreen' ? 'px-2 py-0.5' : 'px-1.5 py-0.5';
+    const showTransformOverlay = !!layoutEditTarget && !isPlaying;
+    const cropEditActive = showTransformOverlay && previewTransformMode === 'crop';
+    // 裁剪模式：预览显示未裁源画面 + 保留框；其它时候应用 crop
     return (
       <div
+        data-splice-preview-frame
         className={`relative shrink-0 overflow-hidden shadow-[inset_0_0_0_1px_rgba(0,0,0,0.25)] ${splicePreviewCanvasBg(!!isDarkMode)}`}
         style={{
           width: canvasSize.w,
@@ -4463,6 +4782,97 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         }}
       >
         {renderPreviewCanvasContent(variant === 'fullscreen' ? 'lg' : 'sm')}
+        {showTransformOverlay && previewTransformMode === 'layout' ? (
+          <ClipLayoutTransformOverlay
+            layout={layoutEditTarget.clip.layout}
+            onChange={updateSelectedClipLayout}
+          />
+        ) : null}
+        {cropEditActive ? (
+          <ClipCropTransformOverlay
+            layout={layoutEditTarget.clip.layout}
+            crop={layoutEditTarget.clip.crop}
+            onChange={updateSelectedClipCrop}
+          />
+        ) : null}
+        {showTransformOverlay ? (
+          <div className={`nodrag nopan absolute bottom-1.5 left-1.5 z-[5] flex items-center gap-1`}>
+            <div className={`flex overflow-hidden rounded-md border border-black/25 bg-black/60 ${badgeText}`}>
+              <button
+                type="button"
+                className={`nodrag nopan ${badgePad} font-medium ${
+                  previewTransformMode === 'layout' ? 'bg-sky-500/80 text-white' : 'text-white/75 hover:bg-white/10'
+                }`}
+                title={vs.transformModeLayoutTitle}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setPreviewTransformMode('layout');
+                }}
+              >
+                {vs.transformModeLayout}
+              </button>
+              <button
+                type="button"
+                className={`nodrag nopan ${badgePad} font-medium ${
+                  previewTransformMode === 'crop' ? 'bg-amber-500/80 text-white' : 'text-white/75 hover:bg-white/10'
+                }`}
+                title={vs.transformModeCropTitle}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setPreviewTransformMode('crop');
+                }}
+              >
+                {vs.transformModeCrop}
+              </button>
+            </div>
+            {previewTransformMode === 'layout' && !isDefaultClipLayout(layoutEditTarget.clip.layout) ? (
+              <button
+                type="button"
+                className={`nodrag nopan rounded-md border border-black/20 bg-black/60 ${badgePad} font-medium text-white/90 ${badgeText} hover:bg-black/75`}
+                title={vs.resetClipLayoutTitle}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  resetSelectedClipLayout();
+                }}
+              >
+                {vs.resetClipLayout}
+              </button>
+            ) : null}
+            {previewTransformMode === 'crop' && !isDefaultClipCrop(layoutEditTarget.clip.crop) ? (
+              <button
+                type="button"
+                className={`nodrag nopan rounded-md border border-black/20 bg-black/60 ${badgePad} font-medium text-white/90 ${badgeText} hover:bg-black/75`}
+                title={vs.resetClipCropTitle}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  resetSelectedClipCrop();
+                }}
+              >
+                {vs.resetClipCrop}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         <div className="pointer-events-none absolute inset-0 border border-black/20" aria-hidden />
         <div
           className={`pointer-events-none absolute top-1.5 right-1.5 z-[3] rounded-md border border-black/15 bg-black/55 ${badgePad} font-medium tracking-wide text-white/90 ${badgeText}`}
@@ -4522,6 +4932,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   ]);
 
   const buildExportPayload = useCallback((): VideoSpliceExportPayload => {
+    // EXPORT_GAP: ffmpeg 导出目前只顺序拼接 videoTracks[0]；上层轨叠放合成未接入。
+    // 主轨各 clip.layout / crop 会随 clips 传入并参与单轨 crop→pad/scale；多轨 PiP 仅预览生效。
     const tracks = videoTracks.map((t) => t.filter((c) => c.type === 'video' || c.type === 'image'));
     const clips = tracks[0] ?? [];
     const exportDims = resolveSpliceExportDimensions(data);
@@ -5004,6 +5416,30 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     updateData({ exportOutputWidth: w, exportOutputHeight: h });
   }, [data?.previewAspectId, data?.exportOutputWidth, data?.exportOutputHeight, updateData]);
 
+  /** 旧模型：layout=未裁源占位 + crop inset → 新模型：layout=裁切后占位 */
+  useEffect(() => {
+    if ((data?.clipGeometryModel ?? 0) >= 2) return;
+    updateData((prev) => {
+      if ((prev.clipGeometryModel ?? 0) >= 2) return {};
+      const tracks = normalizeVideoTracks(prev as VideoSpliceNodeData);
+      let changed = false;
+      const nextTracks = tracks.map((track) =>
+        track.map((c) => {
+          if (c.type !== 'video' && c.type !== 'image') return c;
+          if (isDefaultClipCrop(c.crop)) return c;
+          // 旧数据把 layout 当源占位：套 crop 得到裁切后占位
+          const layout = layoutFromSourceRectAndCrop(c.layout, c.crop);
+          changed = true;
+          return { ...c, layout };
+        }),
+      );
+      return {
+        clipGeometryModel: 2,
+        ...(changed ? { videoTracks: nextTracks, videoClips: nextTracks[0] ?? [] } : {}),
+      };
+    });
+  }, [data?.clipGeometryModel, updateData]);
+
   useLayoutEffect(() => {
     if (!isFullscreen) return;
     const el = fullscreenPreviewViewportRef.current;
@@ -5388,6 +5824,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                         selected={isSelected || isDraggingThis}
                         durationSec={dur}
                         onTrimEdgePointerDown={(edge, e) => handleClipTrimEdgePointerDown(clip, trackRef, edge, e)}
+                        trimEdgeTitle={vs.trimClipEdgeTitle}
                         overlayTopLeft={
                           <VolumeFaderHorizontal
                             value={(clip.volume ?? 1) * 100}
@@ -5482,7 +5919,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                       setSelectedClipIds(new Set([clip.id]));
                     }}
                     data-clip
-                    className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing ${uiAudioClipBg} ${
+                    className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing group ${uiAudioClipBg} ${
                       isSelected || isDraggingThis ? 'ring-2 ring-amber-400' : ''
                     }`}
                     style={timelineClipDragStyle(left, w, isDraggingThis, !!draggingClip, clipPointerLeftPx(clip.id, left))}
@@ -5506,6 +5943,30 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                     </div>
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                       <AudioWaveformBars clip={clip} width={Math.max(24, w - 12)} projectId={projectId} isDarkMode={!!isDarkMode} />
+                    </div>
+                    <div
+                      className="absolute inset-y-0 left-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+                      title={vs.trimClipEdgeTitle}
+                      aria-label={vs.trimClipEdgeTitle}
+                      onPointerDown={(e) => handleClipTrimEdgePointerDown(clip, trackIdx, 'start', e)}
+                    >
+                      <div
+                        className={`pointer-events-none absolute inset-y-0 left-0 w-1.5 rounded-l bg-white/90 transition-opacity ${
+                          isSelected || isDraggingThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      />
+                    </div>
+                    <div
+                      className="absolute inset-y-0 right-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+                      title={vs.trimClipEdgeTitle}
+                      aria-label={vs.trimClipEdgeTitle}
+                      onPointerDown={(e) => handleClipTrimEdgePointerDown(clip, trackIdx, 'end', e)}
+                    >
+                      <div
+                        className={`pointer-events-none absolute inset-y-0 right-0 w-1.5 rounded-r bg-white/90 transition-opacity ${
+                          isSelected || isDraggingThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      />
                     </div>
                   </div>
                 );
@@ -5871,6 +6332,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                                   selected={isSelected || isDraggingThis}
                                   durationSec={dur}
                                   onTrimEdgePointerDown={(edge, e) => handleClipTrimEdgePointerDown(clip, trackRef, edge, e)}
+                                  trimEdgeTitle={vs.trimClipEdgeTitle}
                                   overlayTopLeft={
                                     <VolumeFaderHorizontal
                                       value={(clip.volume ?? 1) * 100}
@@ -5963,7 +6425,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                                 setSelectedClipIds(new Set([clip.id]));
                               }}
                               data-clip
-                                className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing ${uiAudioClipBg} ${isSelected || isDraggingThis ? 'ring-2 ring-amber-400' : ''}`}
+                                className={`absolute top-1 bottom-1 rounded-lg nodrag nopan select-none flex flex-col overflow-hidden cursor-grab active:cursor-grabbing group ${uiAudioClipBg} ${isSelected || isDraggingThis ? 'ring-2 ring-amber-400' : ''}`}
                               style={timelineClipDragStyle(left, w, isDraggingThis, !!draggingClip, clipPointerLeftPx(clip.id, left))}
                             >
                               <div className="flex items-center justify-start gap-1 px-1.5 py-0.5 shrink-0 border-b border-white/10">
@@ -5989,6 +6451,30 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
                               </div>
                               <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                                 <AudioWaveformBars clip={clip} width={Math.max(24, w - 12)} projectId={projectId} isDarkMode />
+                              </div>
+                              <div
+                                className="absolute inset-y-0 left-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+                                title={vs.trimClipEdgeTitle}
+                                aria-label={vs.trimClipEdgeTitle}
+                                onPointerDown={(e) => handleClipTrimEdgePointerDown(clip, trackIdx, 'start', e)}
+                              >
+                                <div
+                                  className={`pointer-events-none absolute inset-y-0 left-0 w-1.5 rounded-l bg-white/90 transition-opacity ${
+                                    isSelected || isDraggingThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                                  }`}
+                                />
+                              </div>
+                              <div
+                                className="absolute inset-y-0 right-0 z-20 w-3.5 cursor-ew-resize nodrag nopan"
+                                title={vs.trimClipEdgeTitle}
+                                aria-label={vs.trimClipEdgeTitle}
+                                onPointerDown={(e) => handleClipTrimEdgePointerDown(clip, trackIdx, 'end', e)}
+                              >
+                                <div
+                                  className={`pointer-events-none absolute inset-y-0 right-0 w-1.5 rounded-r bg-white/90 transition-opacity ${
+                                    isSelected || isDraggingThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+                                  }`}
+                                />
                               </div>
                             </div>
                           );

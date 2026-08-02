@@ -8,6 +8,7 @@ import { store } from '../services/store.js';
  *
  * **香港桶** `nexflow-temp-images` @ `oss-cn-hongkong` — 海外用户临时素材
  * **北京桶** `nexflow-temp-images-bj` @ `oss-cn-beijing` — 大陆用户临时素材（与香港不同步）
+ * **上海桶** `nexflow-temp-images-sh` @ `oss-cn-shanghai` — VIAPI 智能抠像专用（须上海地域公网 URL）
  *
  * 1. **Windows 安装包与 latest.yml** — `OSS_INSTALLER_OBJECT_PREFIX`（默认 `aixflow uploads/`）
  *    仅 Windows `.exe` 与 `latest.yml`；与 package.json `build.publish.url`、落地页 Windows 下载一致。
@@ -56,9 +57,15 @@ export const RELEASE_CN_BUCKET = 'nexflow-temp-images-bj';
 export const MEDIA_CN_REGION = RELEASE_CN_REGION;
 export const MEDIA_CN_BUCKET = RELEASE_CN_BUCKET;
 
+/** 临时素材上海桶（VIAPI SegmentVideoBody 要求 videoUrl 为上海 OSS） */
+export const MEDIA_SH_REGION = 'oss-cn-shanghai';
+export const MEDIA_SH_BUCKET = 'nexflow-temp-images-sh';
+
 export type ReleaseFeedRegion = 'hk' | 'cn';
-/** 临时素材存储区域：hk=香港桶，cn=北京桶（各自独立，不同步） */
+/** 双线路临时素材区域：hk=香港桶，cn=北京桶（各自独立，不同步） */
 export type MediaOssRegion = 'hk' | 'cn';
+/** 上传目标区域：含上海（智能抠像专用，不参与双线路切换） */
+export type MediaUploadOssRegion = MediaOssRegion | 'sh';
 
 export type BuiltInOssConfig = {
   accessKeyId: string;
@@ -145,13 +152,20 @@ export function getBuiltInOSSConfig(): BuiltInOssConfig {
   };
 }
 
-/** 按区域返回临时素材 OSS 配置（大陆 cn / 海外 hk，桶独立不同步） */
-export function getBuiltInOSSConfigForMedia(region: MediaOssRegion): BuiltInOssConfig {
+/** 按区域返回临时素材 OSS 配置（大陆 cn / 海外 hk / 上海 sh） */
+export function getBuiltInOSSConfigForMedia(region: MediaUploadOssRegion): BuiltInOssConfig {
   if (region === 'cn') {
     return {
       ...builtInOssCredentials(),
       region: MEDIA_CN_REGION,
       bucket: MEDIA_CN_BUCKET,
+    };
+  }
+  if (region === 'sh') {
+    return {
+      ...builtInOssCredentials(),
+      region: MEDIA_SH_REGION,
+      bucket: MEDIA_SH_BUCKET,
     };
   }
   return getBuiltInOSSConfig();
@@ -162,7 +176,7 @@ export function getDirectOssPublicObjectOrigin(): string {
   return getDirectOssPublicObjectOriginForMedia('hk');
 }
 
-export function getDirectOssPublicObjectOriginForMedia(region: MediaOssRegion): string {
+export function getDirectOssPublicObjectOriginForMedia(region: MediaUploadOssRegion): string {
   const cfg = getBuiltInOSSConfigForMedia(region);
   return `https://${cfg.bucket}.${cfg.region}.aliyuncs.com`;
 }
@@ -172,8 +186,15 @@ export function isOurMediaOssObjectUrl(url: string): boolean {
   const s = String(url || '');
   return (
     s.includes(`${BUCKET}.${REGION}.aliyuncs.com`) ||
-    s.includes(`${MEDIA_CN_BUCKET}.${MEDIA_CN_REGION}.aliyuncs.com`)
+    s.includes(`${MEDIA_CN_BUCKET}.${MEDIA_CN_REGION}.aliyuncs.com`) ||
+    s.includes(`${MEDIA_SH_BUCKET}.${MEDIA_SH_REGION}.aliyuncs.com`)
   );
+}
+
+/** 公网 URL 是否为上海地域 OSS（VIAPI SegmentVideoBody 可拉取） */
+export function isShanghaiOssPublicUrl(url: string): boolean {
+  const s = String(url || '').toLowerCase();
+  return s.includes('.oss-cn-shanghai.aliyuncs.com') || s.includes(`${MEDIA_SH_BUCKET.toLowerCase()}.`);
 }
 
 /**
@@ -254,7 +275,7 @@ export function preferDirectOssUrlForThirdPartyImageRef(url: string): string {
   if (!/^https?:\/\//i.test(s)) return s;
   try {
     const u = new URL(s);
-    for (const region of ['hk', 'cn'] as MediaOssRegion[]) {
+    for (const region of ['hk', 'cn', 'sh'] as MediaUploadOssRegion[]) {
       const directOrigin = getDirectOssPublicObjectOriginForMedia(region);
       if (u.origin === directOrigin) return s;
     }
@@ -273,10 +294,16 @@ export function normalizeOssMediaUrlForGeneration(url: string): string {
   return preferDirectOssUrlForThirdPartyImageRef(rewriteOssPutUrlToPublic(url));
 }
 
-/** 从 OSS 对象 URL 推断素材区域（无法识别时 null） */
+/** 从 OSS 对象 URL 推断素材区域（无法识别时 null；上海不参与双线路） */
 export function inferMediaOssRegionFromUrl(url: string): MediaOssRegion | null {
   const s = String(url || '');
   if (s.includes(`${MEDIA_CN_BUCKET}.${MEDIA_CN_REGION}.aliyuncs.com`)) return 'cn';
   if (s.includes(`${BUCKET}.${REGION}.aliyuncs.com`)) return 'hk';
   return null;
+}
+
+export function mediaUploadRegionLabel(region: MediaUploadOssRegion): string {
+  if (region === 'cn') return '北京';
+  if (region === 'sh') return '上海';
+  return '香港';
 }

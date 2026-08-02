@@ -1,4 +1,5 @@
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../config/sora2UiPolicy';
+import { HIDE_DIRECTOR_STAGE_UI } from '../config/directorUiPolicy';
 import {
   isDigitalHumanAudioOutputHandle,
   isDigitalHumanVideoOutputHandle,
@@ -314,6 +315,9 @@ export function getAllowedMenuTypes(
       if (HIDE_SORA2_AND_SORA_CHARACTER_UI) {
         types = types.filter((t) => t !== 'character');
       }
+      if (HIDE_DIRECTOR_STAGE_UI) {
+        types = types.filter((t) => t !== 'director');
+      }
       types = types.filter((t) => t !== 'imageTo3d' && t !== 'imageComparer');
       return filterHeyGemFromMenuTypes(sourceNodeType, types);
     }
@@ -359,6 +363,9 @@ export function getAllowedMenuTypes(
   }
   if (HIDE_SORA2_AND_SORA_CHARACTER_UI) {
     types = types.filter((t) => t !== 'character');
+  }
+  if (HIDE_DIRECTOR_STAGE_UI) {
+    types = types.filter((t) => t !== 'director');
   }
   // 图片转 3D / 图片对比：仅允许从图片节点拖线创建
   if (sourceNodeType !== 'image') {
@@ -412,6 +419,10 @@ export function isConnectionAllowed(
     return false;
   }
   if (tgt === 'imageTo3d' || tgt === 'imageComparer') {
+    return src === 'image';
+  }
+  // 拼图：仅接受图片模块（超级连线 / 单连均导入图层）
+  if (tgt === 'photoCollage') {
     return src === 'image';
   }
   if (tgt === 'rvcTrain') {

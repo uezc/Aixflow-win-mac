@@ -52,20 +52,19 @@ export function resolveCharacterGlbUrlForPreview(character: Character): string {
 
 /** 3D 模型库卡片/列表/画廊封面：优先参考原图（导入包 reference.png → localAvatarPath） */
 export function resolveImageTo3dLibraryThumbUrl(character: Character): string {
-  const tex = (resolveCharacterTextureUrlForPreview(character) || '').trim();
-
   if (character.localAvatarPath) {
     const local = formatLocalResourceFromFsPath(character.localAvatarPath);
     if (local) return local;
   }
 
   const av = formatCharacterMediaUrl(character.avatar);
-  if (av && (!tex || av !== tex)) return av;
+  if (av) return av;
 
   const fromInput = formatCharacterMediaUrl(character.inputImageUrl);
-  if (fromInput && (!tex || fromInput !== tex)) return fromInput;
+  if (fromInput) return fromInput;
 
-  return tex;
+  // 禁止回退到 3D 贴图（常 2–4MB），列表会解码卡死；无头像时由 UI 占位
+  return '';
 }
 
 function formatCharacterMediaUrl(url?: string): string {
@@ -219,13 +218,9 @@ export function digitalHumanAudioUrl(item: DigitalHumanLibraryItem): string {
   return digitalHumanMediaUrlFromPaths(item.audioUrl, item.localAudioPath, item.originalAudioUrl);
 }
 
-/** 数字人库列表缩略图 */
+/** 数字人库列表缩略图（仅静态图；勿回退到视频，否则列表会并发加载 N 路 video metadata 卡死） */
 export function digitalHumanPosterUrl(item: DigitalHumanLibraryItem): string {
-  const poster = digitalHumanMediaUrlFromPaths(item.poster, item.localPosterPath);
-  if (poster) return poster;
-  const video = digitalHumanVideoUrl(item);
-  if (video && /\.(mp4|webm|mov)(\?|$)/i.test(video)) return video;
-  return '';
+  return digitalHumanMediaUrlFromPaths(item.poster, item.localPosterPath);
 }
 
 /** 从数字人库拖到画布 */

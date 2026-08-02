@@ -57,6 +57,8 @@ export type VideoSpliceStrings = {
   clipNameAudio: string;
   trimAriaLabel: string;
   trimTrackTitle: string;
+  /** 时间轴片段左右边缘裁剪 */
+  trimClipEdgeTitle: string;
   exportNoClips: string;
   exportUnavailable: string;
   exportSilentConfirm: string;
@@ -64,9 +66,25 @@ export type VideoSpliceStrings = {
   exportOk: (path: string) => string;
   exportFailed: string;
   exportFailedMsg: (msg: string) => string;
+  /** 导出进行中文案 */
+  exportingToComputer: string;
+  exportingToCanvas: string;
+  exportingProgress: (pct: number) => string;
   importMediaSkipped: (names: string) => string;
   aspectRatioLabel: string;
   pickAspectRatioTitle: string;
+  /** 预览区：重置片段画面位置/尺寸 */
+  resetClipLayout: string;
+  resetClipLayoutTitle: string;
+  /** 预览变换模式：位置/尺寸 */
+  transformModeLayout: string;
+  transformModeLayoutTitle: string;
+  /** 预览变换模式：画面裁剪 */
+  transformModeCrop: string;
+  transformModeCropTitle: string;
+  /** 预览区：重置源画面裁剪 */
+  resetClipCrop: string;
+  resetClipCropTitle: string;
 };
 
 const zh: VideoSpliceStrings = {
@@ -125,6 +143,7 @@ const zh: VideoSpliceStrings = {
   clipNameAudio: '音频',
   trimAriaLabel: '裁剪范围与播放进度',
   trimTrackTitle: '拖拽前后指针选择裁剪区间，点击轨道跳转播放位置',
+  trimClipEdgeTitle: '拖拽左右边缘裁剪入出点',
   exportNoClips: '暂无视频或图片素材可导出',
   exportUnavailable: '导出功能不可用',
   exportSilentConfirm: '视频轨道已静音且无其他音轨，导出将无声音。是否继续？',
@@ -133,9 +152,20 @@ const zh: VideoSpliceStrings = {
   exportOk: (path) => `视频已导出: ${path}`,
   exportFailed: '导出失败',
   exportFailedMsg: (msg) => msg || '导出失败',
+  exportingToComputer: '正在导出到电脑…',
+  exportingToCanvas: '正在导出到画布…',
+  exportingProgress: (pct) => `导出中 ${Math.max(0, Math.min(100, Math.round(pct)))}%`,
   importMediaSkipped: (names) => `以下文件未能导入剪辑轨道（格式不支持或读取失败）：${names}`,
   aspectRatioLabel: '画面比例',
   pickAspectRatioTitle: '选择预览与导出的画面比例',
+  resetClipLayout: '重置位置',
+  resetClipLayoutTitle: '将画面位置与尺寸恢复为铺满预览',
+  transformModeLayout: '位置',
+  transformModeLayoutTitle: '调节裁切后画面在画布上的位置与尺寸',
+  transformModeCrop: '裁剪',
+  transformModeCropTitle: '裁剪源画面；保留框即位置模式下的画面占位',
+  resetClipCrop: '重置裁剪',
+  resetClipCropTitle: '清除画面裁剪，恢复完整源画面占位',
 };
 
 const en: VideoSpliceStrings = {
@@ -194,6 +224,7 @@ const en: VideoSpliceStrings = {
   clipNameAudio: 'Audio',
   trimAriaLabel: 'Trim range and playback',
   trimTrackTitle: 'Drag handles to trim; click track to seek',
+  trimClipEdgeTitle: 'Drag left/right edge to trim in/out',
   exportNoClips: 'No video or image clips to export',
   exportUnavailable: 'Export is not available',
   exportSilentConfirm:
@@ -203,9 +234,20 @@ const en: VideoSpliceStrings = {
   exportOk: (path) => `Exported: ${path}`,
   exportFailed: 'Export failed',
   exportFailedMsg: (msg) => msg || 'Export failed',
+  exportingToComputer: 'Exporting to computer…',
+  exportingToCanvas: 'Exporting to canvas…',
+  exportingProgress: (pct) => `Exporting ${Math.max(0, Math.min(100, Math.round(pct)))}%`,
   importMediaSkipped: (names) => `Could not import to timeline (unsupported or failed): ${names}`,
   aspectRatioLabel: 'Aspect ratio',
   pickAspectRatioTitle: 'Preview and export aspect ratio',
+  resetClipLayout: 'Reset layout',
+  resetClipLayoutTitle: 'Reset clip position and size to fill the frame',
+  transformModeLayout: 'Layout',
+  transformModeLayoutTitle: 'Move and resize the cropped frame on the canvas',
+  transformModeCrop: 'Crop',
+  transformModeCropTitle: 'Crop the source; the keep box is the layout frame in Layout mode',
+  resetClipCrop: 'Reset crop',
+  resetClipCropTitle: 'Clear crop and restore the full source frame placement',
 };
 
 export function videoSpliceT(locale: AppLocale): VideoSpliceStrings {

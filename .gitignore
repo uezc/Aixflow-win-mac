@@ -102,3 +102,12 @@ splash-videos/*.mov
 backend/.venv/
 __pycache__/
 *.pyc
+
+# 本地临时探测 / 反编译缓存（勿提交）
+.tmp-*/
+.tmp_*
+.tmp-*
+_vision_agent/
+.vision-agent-path.txt
+*.tsbuildinfo
+build/x86-unicode/

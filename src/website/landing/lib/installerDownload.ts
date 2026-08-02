@@ -3,9 +3,12 @@
  * - latest.yml / latest-mac.yml
  * - Windows：优先 Aixflow-Windows-Setup-{version}.exe（在线安装，无需解压）；离线 zip 为备用
  *
- * 选源：VITE_DOWNLOAD_REGION=cn|hk|auto（默认 auto：先试北京，失败回退香港）
+ * 选源：VITE_DOWNLOAD_REGION=cn|hk|auto
+ * auto 默认：aixflow.ai → 香港优先；aixflow.com.cn → 北京优先，失败互相回退
  * 可覆盖：VITE_RELEASE_CN_WIN_BASE / VITE_RELEASE_HK_WIN_BASE 等
  */
+
+import { getSiteMediaRegion } from './siteRegion';
 
 export type ReleaseDownloadRegion = 'cn' | 'hk';
 export type DownloadRegionMode = ReleaseDownloadRegion | 'auto';
@@ -35,8 +38,9 @@ export function getDownloadRegionMode(): DownloadRegionMode {
 
 function regionAttemptOrder(mode: DownloadRegionMode): ReleaseDownloadRegion[] {
   if (mode === 'cn') return ['cn', 'hk'];
-  if (mode === 'hk') return ['hk'];
-  return ['cn', 'hk'];
+  if (mode === 'hk') return ['hk', 'cn'];
+  // auto：海外站香港优先，国内站北京优先
+  return getSiteMediaRegion() === 'hk' ? ['hk', 'cn'] : ['cn', 'hk'];
 }
 
 function basesForRegion(region: ReleaseDownloadRegion): { winBase: string; macBase: string } {
@@ -91,6 +95,14 @@ function buildObjectUrl(base: string, fileName: string): string {
   return normalized + encodeURIComponent(fileName);
 }
 
+/** 给安装包直链加 cache-bust，避免浏览器/代理沿用同名旧 stub */
+function withInstallerCacheBust(url: string, version: string): string {
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  const v = encodeURIComponent(version || 'latest');
+  return `${url}${sep}v=${v}&t=${Date.now()}`;
+}
+
 async function fetchLatestYmlText(ymlUrl: string): Promise<string | null> {
   try {
     const sep = ymlUrl.includes('?') ? '&' : '?';
@@ -125,11 +137,11 @@ async function resolveWindowsFromRegion(region: ReleaseDownloadRegion): Promise<
   const fileName = parseInstallerFileNameFromLatestYml(text);
   if (fileName) {
     const stubUrl = buildObjectUrl(winBase, fileName);
-    if (await headObjectExists(stubUrl)) return stubUrl;
+    if (await headObjectExists(stubUrl)) return withInstallerCacheBust(stubUrl, version || fileName);
   }
   if (version) {
     const offlineUrl = buildObjectUrl(winBase, `Aixflow-Windows-Offline-${version}.zip`);
-    if (await headObjectExists(offlineUrl)) return offlineUrl;
+    if (await headObjectExists(offlineUrl)) return withInstallerCacheBust(offlineUrl, version);
   }
   return null;
 }
@@ -139,8 +151,11 @@ export async function resolveWindowsInstallerUrl(): Promise<string> {
   for (const region of regionAttemptOrder(mode)) {
     const url = await resolveWindowsFromRegion(region);
     if (url) {
-      if (region === 'cn' && mode === 'auto') {
-        console.info('[Aixflow] 官网下载：使用北京 Release', url);
+      if (mode === 'auto') {
+        console.info(
+          `[Aixflow] 官网下载：使用${region === 'cn' ? '北京' : '香港'} Release`,
+          url,
+        );
       }
       return url;
     }

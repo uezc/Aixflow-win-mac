@@ -1,8 +1,9 @@
-import { MARQUEE_VIDEOS } from '../data/content';
+import { getMarqueeVideos } from '../data/content';
 import { landingVideoCardClass, landingVideoInnerClass } from './landingVideoCard';
 
 export function MarqueeVideos() {
-  const videos = [...MARQUEE_VIDEOS, ...MARQUEE_VIDEOS];
+  const list = getMarqueeVideos();
+  const videos = [...list, ...list];
 
   return (
     <section className="mb-16 mt-16 w-full overflow-hidden md:mb-16 md:mt-20">

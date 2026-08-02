@@ -14,8 +14,9 @@ export const YUANBAO_PER_CNY = 10;
 
 export const MODEL_YUANBAO_RATES: Record<string, ModelYuanbaoRate> = {
   'gpt-3.5-turbo': { yuanbao: 1, tier: 'low', label: 'GPT-3.5' },
-  'gpt-4o': { yuanbao: 2, tier: 'low', label: 'GPT-4o' },
+  'gpt-4o': { yuanbao: 1, tier: 'low', label: 'GPT-4o' },
   'gpt-4o-mini': { yuanbao: 1, tier: 'low' },
+  'openai/gpt-5.6-terra': { yuanbao: 1, tier: 'low', label: '大语言模型-5.6' },
   'image-reverse': { yuanbao: 2, tier: 'low', label: '图像反推' },
   'text-to-image-basic': { yuanbao: 4, tier: 'medium', label: '文生图' },
   'mj-stylize': { yuanbao: 8, tier: 'medium', label: 'MJ风格化' },
@@ -25,6 +26,10 @@ export const MODEL_YUANBAO_RATES: Record<string, ModelYuanbaoRate> = {
   'video-15s': { yuanbao: 80, tier: 'high', label: '15秒视频' },
   'video-4k': { yuanbao: 100, tier: 'high', label: '4K视频' },
   'tts-basic': { yuanbao: 5, tier: 'medium', label: 'TTS配音' },
+  /** 云端录音文件转写（百炼 fun-asr）；按次固定价 */
+  'fun-asr': { yuanbao: 5, tier: 'medium', label: '云端转写' },
+  /** 阿里云 VIAPI 视频人像智能抠像；元宝/分钟（按秒折算扣费） */
+  'viapi-segment-video-body': { yuanbao: 20, tier: 'high', label: '智能抠像/分钟' },
   'music-gen': { yuanbao: 15, tier: 'medium', label: '音乐生成' },
   'image-to-3d': { yuanbao: 20, tier: 'high', label: '3D转换' },
   trellis2: { yuanbao: 40, tier: 'high', label: 'Trellis2 3D' },

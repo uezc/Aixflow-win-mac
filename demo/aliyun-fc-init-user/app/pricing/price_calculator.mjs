@@ -9,6 +9,11 @@ import {
   REVERSE_CAPTION_CNY,
   AUDIO_MODEL_CNY,
   mergeVideoPriceDefaults,
+  normalizeGrok3DurationSec,
+  normalizeRhartVideoXDurationSec,
+  normalizeGrok3StableDurationSec,
+  normalizeGeminiOmniDurationSec,
+  normalizeGeminiOmniFlashDurationSec,
   tryComputeRawVideoCny,
   VIDEO_BILLING_SKU_CNY,
 } from './cost_table.mjs';
@@ -21,6 +26,7 @@ import {
 } from './videoBillingCloud.mjs';
 import { applyMarkup } from './markup_table.mjs';
 import { resolveCloudYuanbaoFromEnv } from './price_tiers.mjs';
+import { resolveModelYuanbao } from './model_yuanbao_rates.mjs';
 
 /** 模型在 pricing 表中无定价或参数无法匹配到档位时抛出 */
 export class ModelNotPricedError extends Error {
@@ -65,6 +71,13 @@ export function getImagePrice(params, opts = {}) {
     const t = IMAGE_MODEL_CNY['banana-2.0'];
     if (r === '2k' || r === '4k') base = t['2k'];
     else base = t.default;
+  } else if (model === 'rhart-image-g-2') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['rhart-image-g-2'];
+    if (r === '2k' || r === '4k') base = t['2k'];
+    else base = t.default;
+  } else if (model === 'rhart-image-g') {
+    base = IMAGE_MODEL_CNY['rhart-image-g'];
   } else if (model === 'nano-banana') {
     const r = normRes(resolution);
     const t = IMAGE_MODEL_CNY['nano-banana'];
@@ -73,10 +86,49 @@ export function getImagePrice(params, opts = {}) {
   } else if (model === 'nano-banana-2') base = IMAGE_MODEL_CNY['nano-banana-2'];
   else if (model === 'nano-banana-2-2k') base = IMAGE_MODEL_CNY['nano-banana-2-2k'];
   else if (model === 'nano-banana-2-4k') base = IMAGE_MODEL_CNY['nano-banana-2-4k'];
-  else if (model === 'rhart-image-g-1.5') base = IMAGE_MODEL_CNY['rhart-image-g-1.5'];
+  else if (model === 'mj-v7') base = IMAGE_MODEL_CNY['mj-v7'];
+  else if (model === 'gpt-image-2') base = IMAGE_MODEL_CNY['gpt-image-2'];
   else if (model === 'youchuan-text-to-image-v7') base = IMAGE_MODEL_CNY['youchuan-text-to-image-v7'];
-  else if (model === 'seedream-v4.5') base = IMAGE_MODEL_CNY['seedream-v4.5'];
-  else if (model === 'seedream-v5') base = IMAGE_MODEL_CNY['seedream-v5'];
+  else if (model === 'youchuan-text-to-image-v81') {
+    const t = IMAGE_MODEL_CNY['youchuan-text-to-image-v81'];
+    const r = normRes(resolution);
+    if (r === 'hd' || r === '2k') base = t.hd ?? t.default;
+    else base = t.default;
+  }   else if (model === 'seedream-v4.5') base = IMAGE_MODEL_CNY['seedream-v4.5'];
+  else if (model === 'seedream-v5') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['seedream-v5'];
+    if (t && typeof t === 'object') {
+      if (r === '3k') base = t['3k'] ?? t.default;
+      else if (r === '2k') base = t['2k'] ?? t.default;
+      else base = t.default;
+    } else {
+      base = t;
+    }
+  } else if (model === 'z-image') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['z-image'];
+    if (r === '720p') base = t['720p'];
+    else if (r === '1080p') base = t['1080p'] ?? t.default;
+    else base = t.default;
+  } else if (model === 'z-image-720p') base = IMAGE_MODEL_CNY['z-image']['720p'];
+  else if (model === 'z-image-1080p') base = IMAGE_MODEL_CNY['z-image']['1080p'] ?? IMAGE_MODEL_CNY['z-image'].default;
+  else if (model === 'lens') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['lens'];
+    if (r === '720p') base = t['720p'];
+    else if (r === '1080p') base = t['1080p'] ?? t.default;
+    else base = t.default;
+  } else if (model === 'lens-720p') base = IMAGE_MODEL_CNY['lens']['720p'];
+  else if (model === 'lens-1080p') base = IMAGE_MODEL_CNY['lens']['1080p'] ?? IMAGE_MODEL_CNY['lens'].default;
+  else if (model === 'flux2-klein') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['flux2-klein'];
+    if (r === '720p') base = t['720p'];
+    else if (r === '1080p') base = t['1080p'] ?? t.default;
+    else base = t.default;
+  } else if (model === 'flux2-klein-720p') base = IMAGE_MODEL_CNY['flux2-klein']['720p'];
+  else if (model === 'flux2-klein-1080p') base = IMAGE_MODEL_CNY['flux2-klein']['1080p'] ?? IMAGE_MODEL_CNY['flux2-klein'].default;
   else {
     const scalar = IMAGE_MODEL_CNY[model];
     if (typeof scalar === 'number' && Number.isFinite(scalar)) base = scalar;
@@ -94,13 +146,14 @@ export function getImagePrice(params, opts = {}) {
  * @property {'6'|'10'} [durationHailuo02]
  * @property {'5'|'10'} [durationKlingO1]
  * @property {'std'|'pro'} [modeKlingO1]
- * @property {'6s'|'10s'} [durationRhartVideoG]
  * @property {'720p'|'1080p'|'4k'} [resolutionRhartV31]
  * @property {'720p'|'1080p'} [resolutionWan26]
  * @property {string} [durationWan26Flash]
  * @property {boolean} [enableAudio]
  * @property {'4'|'6'|'8'} [durationVeo31ProOfficial]
  * @property {boolean} [generateAudioVeo31ProOfficial]
+ * @property {'480p'|'720p'} [resolutionWanAnimate]
+ * @property {'5'|'8'|'10'|'15'} [wanAnimateClipSec]
  */
 
 /**
@@ -124,7 +177,7 @@ export function getVideoPrice(params, opts = {}) {
 }
 
 /**
- * @param {'gpt-4o'|'joy-caption-two'|'gpt-4o-image-reverse'|'joy-caption-two-image-reverse'} model
+ * @param {'gpt-4o'|'joy-caption-two'|'openai/gpt-5.6-terra'|'gpt-4o-image-reverse'|'joy-caption-two-image-reverse'|'openai/gpt-5.6-terra-image-reverse'} model
  * @param {{ applyMarkup?: boolean }} [opts]
  */
 export function getImageReversePrice(model, opts = {}) {
@@ -159,8 +212,10 @@ export function getNodePrice(nodeType, data, opts = {}) {
     if (
       reverseModel === 'gpt-4o' ||
       reverseModel === 'joy-caption-two' ||
+      reverseModel === 'openai/gpt-5.6-terra' ||
       reverseModel === 'gpt-4o-image-reverse' ||
-      reverseModel === 'joy-caption-two-image-reverse'
+      reverseModel === 'joy-caption-two-image-reverse' ||
+      reverseModel === 'openai/gpt-5.6-terra-image-reverse'
     ) {
       try {
         return getImageReversePrice(reverseModel, opts);
@@ -191,7 +246,6 @@ export function getNodePrice(nodeType, data, opts = {}) {
           resolutionHailuo: /** @type {'720p'|'1080p'|'4k'|undefined} */ (data.resolutionHailuo),
           durationKlingO1: /** @type {'5'|'10'|undefined} */ (data.durationKlingO1),
           modeKlingO1: /** @type {'std'|'pro'|undefined} */ (data.modeKlingO1),
-          durationRhartVideoG: /** @type {'6s'|'10s'|undefined} */ (data.durationRhartVideoG),
           resolutionRhartV31: /** @type {'720p'|'1080p'|'4k'|undefined} */ (data.resolutionRhartV31),
           resolutionWan26: /** @type {'720p'|'1080p'|undefined} */ (data.resolutionWan26),
           durationWan26Flash: data.durationWan26Flash != null ? String(data.durationWan26Flash) : undefined,
@@ -203,6 +257,9 @@ export function getNodePrice(nodeType, data, opts = {}) {
           resolutionLtx23T2v: data.resolutionLtx23T2v != null ? String(data.resolutionLtx23T2v) : undefined,
           durationLtx23I2v: data.durationLtx23I2v != null ? String(data.durationLtx23I2v) : undefined,
           durationLtx23T2v: data.durationLtx23T2v != null ? String(data.durationLtx23T2v) : undefined,
+          resolutionWanAnimate:
+            data.resolutionWanAnimate != null ? String(data.resolutionWanAnimate) : undefined,
+          wanAnimateClipSec: data.wanAnimateClipSec != null ? String(data.wanAnimateClipSec) : undefined,
         },
         opts,
       );
@@ -249,16 +306,31 @@ export function cnyRetailToYuanbaoInt(cny, env) {
  */
 export const IMAGE_BILLING_MULTIPLIER_BY_MODEL = {
   'banana-2.0': 4,
+  'rhart-image-g-2': 4,
+  'rhart-image-g': 1,
   'nano-banana': 1,
   'nano-banana-2': 1,
   'nano-banana-2-2k': 1,
   'nano-banana-2-4k': 1,
-  'rhart-image-g-1.5': 1,
+  'mj-v7': 1,
+  'gpt-image-2': 1,
   'youchuan-text-to-image-v7': 1,
+  'youchuan-text-to-image-v81': 1,
   'seedream-v4.5': 1,
   'seedream-v5': 1,
+  'z-image': 1,
+  'z-image-720p': 1,
+  'z-image-1080p': 1,
+  'lens': 1,
+  'lens-720p': 1,
+  'lens-1080p': 1,
+  'flux2-klein': 1,
+  'flux2-klein-720p': 1,
+  'flux2-klein-1080p': 1,
   '2021955919764000770': 1,
   '2022127885233950721': 1,
+  '2082378062234214401': 1,
+  '1990056102572290049': 1,
 };
 
 /**
@@ -315,13 +387,36 @@ export const normalizeVideoBillingModelId = normalizeImageBillingModelId;
 /** RunningHub OpenAPI 路径首段（或易混 slug）→ 与 cost_table / 客户端 billingModelId 一致 */
 const RH_IMAGE_SLUG_TO_BILLING_MODEL = {
   'rhart-image-n-g31-flash': 'banana-2.0',
+  'rhart-image-g-2': 'rhart-image-g-2',
+  'rhart-image-g-2-official': 'rhart-image-g-2',
+  'rhart-image-g': 'rhart-image-g',
   /** 路径首段与计费 id 相同，显式列出便于归一后命中、并与文档对齐 */
-  'rhart-image-g-1.5': 'rhart-image-g-1.5',
   'seedream-v4.5': 'seedream-v4.5',
   /** OpenAPI 路径为 seedream-v5-lite/*，定价表为 seedream-v5 */
   'seedream-v5-lite': 'seedream-v5',
-  /** 路径首段仅为 youchuan，扣费表为 youchuan-text-to-image-v7 */
+  /** 路径首段仅为 youchuan 时默认 v7；v8.1 用完整 path 段 */
   youchuan: 'youchuan-text-to-image-v7',
+  'text-to-image-v81': 'youchuan-text-to-image-v81',
+  'youchuan-text-to-image-v81': 'youchuan-text-to-image-v81',
+  /** RunningHub AI App：MJ V7 */
+  'mj-v7': 'mj-v7',
+  'gpt-image-2': 'gpt-image-2',
+  /** Z-image AI App：无 billingModelId 时默认按 1080p 档（与客户端默认一致） */
+  '2059599553522921474': 'z-image-1080p',
+  'z-image-720p': 'z-image-720p',
+  'z-image-1080p': 'z-image-1080p',
+  /** Lens AI App：无 billingModelId 时默认按 1080p 档 */
+  '2063798801864945666': 'lens-1080p',
+  'lens-720p': 'lens-720p',
+  'lens-1080p': 'lens-1080p',
+  '2059939823342936066': 'flux2-klein-1080p',
+  'flux2-klein-720p': 'flux2-klein-720p',
+  'flux2-klein-1080p': 'flux2-klein-1080p',
+  '2059618241806430209': '2059618241806430209',
+  'image-to-3d': 'image-to-3d',
+  '2072903678922674177': '2072903678922674177',
+  trellis2: 'trellis2',
+  'image-to-3d-trellis2': 'image-to-3d-trellis2',
 };
 
 /**
@@ -351,7 +446,14 @@ const VIDEO_BILLING_DEHYDRATED_TO_CANONICAL = {
   'ltx-2-3-lipsync': 'ltx-2.3-lipsync',
   'ltx-2-3-i2v': 'ltx-2.3-i2v',
   'ltx-2-3': 'ltx-2.3-t2v',
-  grok: 'rhart-video-g',
+  'ltx-2-3-hdr-multi': 'ltx-2.3-hdr-multi',
+  'ltx-2-3-msr-av': 'ltx-2.3-msr-av',
+  'grok-3': 'grok-3',
+  'rhart-video-x': 'rhart-video-x',
+  'grok-3-stable': 'grok-3-stable',
+  grok: 'grok-3',
+  'gemini-omni-flash': 'gemini-omni-flash',
+  'gemini-omni': 'gemini-omni',
 };
 
 const VIDEO_BILLING_DEHYDRATED_PREFIXES = Object.keys(VIDEO_BILLING_DEHYDRATED_TO_CANONICAL).sort(
@@ -417,7 +519,7 @@ function tryParseVideoBillingSku(billingId) {
   let s = String(billingId || '').trim().toLowerCase();
   if (!s) return null;
 
-  if (/^(gpt-4o-image-reverse|joy-caption-two-image-reverse)$/.test(s)) {
+  if (/^(gpt-4o-image-reverse|joy-caption-two-image-reverse|openai\/gpt-5\.6-terra-image-reverse)$/.test(s)) {
     return null;
   }
 
@@ -486,8 +588,20 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
     out.sound = audioSuffix === 'audio' ? 'true' : 'false';
     if (durationSec > 0) out.duration = durationSec <= 5 ? '5' : '10';
     else out.duration = '10';
-  } else if (baseModel === 'rhart-video-g') {
-    out.durationRhartVideoG = durationSec >= 10 ? '10s' : '6s';
+  } else if (baseModel === 'rhart-video-x') {
+    out.model = 'rhart-video-x';
+    out.resolutionGrok3 = '720p';
+    if (durationSec > 0) out.durationGrok3 = String(normalizeRhartVideoXDurationSec(durationSec, 10));
+    else out.durationGrok3 = '10';
+  } else if (baseModel === 'grok-3') {
+    out.resolutionGrok3 = '720p';
+    if (durationSec > 0) out.durationGrok3 = String(normalizeGrok3DurationSec(durationSec, 10));
+    else out.durationGrok3 = '10';
+  } else if (baseModel === 'grok-3-stable') {
+    out.model = 'grok-3-stable';
+    out.resolutionGrok3 = '720p';
+    if (durationSec > 0) out.durationGrok3 = String(normalizeGrok3StableDurationSec(durationSec, 10));
+    else out.durationGrok3 = '10';
   } else if (
     baseModel === 'rhart-v3.1-fast' ||
     baseModel === 'rhart-v3.1-fast-se' ||
@@ -513,6 +627,18 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
     else if (durationSec >= 6) out.durationVeo31ProOfficial = '6';
     else if (durationSec >= 4) out.durationVeo31ProOfficial = '4';
     else out.durationVeo31ProOfficial = '4';
+  } else if (baseModel === 'gemini-omni' || baseModel === 'gemini-omni-flash') {
+    out.model = baseModel;
+    if (mid === '720p' || mid === '1080p' || mid === '4k') out.resolutionGeminiOmni = mid;
+    else out.resolutionGeminiOmni = '720p';
+    if (durationSec > 0) {
+      out.durationGeminiOmni =
+        baseModel === 'gemini-omni-flash'
+          ? String(normalizeGeminiOmniFlashDurationSec(durationSec, 6))
+          : String(normalizeGeminiOmniDurationSec(durationSec, 6));
+    } else {
+      out.durationGeminiOmni = '6';
+    }
   } else if (baseModel === 'ltx-2.3-lipsync') {
     if (mid === '720' || mid === '1280' || mid === '1920') out.resolutionLtx23Lipsync = mid;
   } else if (baseModel === 'ltx-2.3-i2v') {
@@ -528,6 +654,20 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
     else out.resolutionLtx23T2v = '720';
     if (durationSec > 0) out.durationLtx23T2v = String(durationSec);
     else out.durationLtx23T2v = '10';
+  } else if (baseModel === 'ltx-2.3-hdr-multi') {
+    const parts = mid.split('-');
+    const res = parts.find((p) => p === '720' || p === '1280' || p === '1920');
+    if (res) out.resolutionLtx23HdrMulti = res;
+    else out.resolutionLtx23HdrMulti = '720';
+    if (durationSec > 0) out.durationLtx23HdrMulti = String(durationSec);
+    else out.durationLtx23HdrMulti = '15';
+  } else if (baseModel === 'ltx-2.3-msr-av') {
+    const parts = mid.split('-');
+    const res = parts.find((p) => p === '720' || p === '1280' || p === '1920');
+    if (res) out.resolutionLtx23HdrMulti = res;
+    else out.resolutionLtx23HdrMulti = '720';
+    if (durationSec > 0) out.durationLtx23HdrMulti = String(durationSec);
+    else out.durationLtx23HdrMulti = '10';
   }
 
   return out;
@@ -561,8 +701,7 @@ function nxModelRowToYuanbao(row, quantity) {
  */
 function tryNxModelConfigById(map, modelId, quantity = 1) {
   if (!map || typeof map !== 'object' || !modelId) return null;
-  const key = String(modelId).trim().toLowerCase();
-  const row = map[key] ?? map[String(modelId).trim()];
+  const row = map[String(modelId).trim()];
   return nxModelRowToYuanbao(row, quantity);
 }
 
@@ -582,6 +721,7 @@ function tryNxModelConfigImage(mNorm, nodeData, map) {
     mapImageSizeHint(nodeData.size);
   const m = String(mNorm || '').trim();
   const r = res ? String(res).trim().toLowerCase() : '';
+  /** Z-image：OTS 主键为 z-image-720p / z-image-1080p，勿仅用裸 z-image */
   let keys;
   if (m === 'z-image-720p' || m === 'z-image-1080p') {
     keys = [m];
@@ -589,6 +729,18 @@ function tryNxModelConfigImage(mNorm, nodeData, map) {
     keys = r
       ? [`z-image-${r}`, 'z-image-1080p', 'z-image-720p', m]
       : ['z-image-1080p', 'z-image-720p', m];
+  } else if (m === 'lens-720p' || m === 'lens-1080p') {
+    keys = [m];
+  } else if (m === 'lens') {
+    keys = r
+      ? [`lens-${r}`, 'lens-1080p', 'lens-720p', m]
+      : ['lens-1080p', 'lens-720p', m];
+  } else if (m === 'flux2-klein-720p' || m === 'flux2-klein-1080p') {
+    keys = [m];
+  } else if (m === 'flux2-klein') {
+    keys = r
+      ? [`flux2-klein-${r}`, 'flux2-klein-1080p', 'flux2-klein-720p', m]
+      : ['flux2-klein-1080p', 'flux2-klein-720p', m];
   } else {
     keys = r ? [`${m}-${r}`, m] : [m];
   }
@@ -669,6 +821,8 @@ export function getFinalPrice(modelId, ctx) {
     const mid = String(modelId || '').trim() || 'gpt-3.5-turbo';
     const fromNx = tryNxModelConfigById(nxMap, mid, 1);
     if (fromNx != null) return fromNx;
+    const rate = resolveModelYuanbao(mid, 0);
+    if (rate && Number(rate.yuanbao) > 0) return Math.max(1, Math.round(Number(rate.yuanbao)));
     return getCloudDeductYuanbao('llm', env);
   }
 
@@ -710,7 +864,6 @@ export function getFinalPrice(modelId, ctx) {
         resolutionHailuo: /** @type {'720p'|'1080p'|'4k'|undefined} */ (nd.resolutionHailuo != null ? String(nd.resolutionHailuo) : undefined),
         durationKlingO1: /** @type {'5'|'10'|undefined} */ (nd.durationKlingO1 != null ? String(nd.durationKlingO1) : undefined),
         modeKlingO1: /** @type {'std'|'pro'|undefined} */ (nd.modeKlingO1 != null ? String(nd.modeKlingO1) : undefined),
-        durationRhartVideoG: /** @type {'6s'|'10s'|undefined} */ (nd.durationRhartVideoG != null ? String(nd.durationRhartVideoG) : undefined),
         resolutionRhartV31: /** @type {'720p'|'1080p'|'4k'|undefined} */ (nd.resolutionRhartV31 != null ? String(nd.resolutionRhartV31) : undefined),
         resolutionWan26: /** @type {'720p'|'1080p'|undefined} */ (nd.resolutionWan26 != null ? String(nd.resolutionWan26) : undefined),
         durationWan26Flash: nd.durationWan26Flash != null ? String(nd.durationWan26Flash) : undefined,

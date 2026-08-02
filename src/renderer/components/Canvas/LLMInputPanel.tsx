@@ -1,22 +1,30 @@
 // @ts-nocheck
 /* eslint-disable react/forbid-dom-props */
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Save, Play, Trash2, Mic, Loader2 } from 'lucide-react';
+import { Save, Play, Trash2, Loader2, ArrowUp, ChevronDown, ChevronUp, X } from 'lucide-react';
 import { useAI } from '../../hooks/useAI';
 import { isModelNotPricedError } from '../../utils/priceCalc';
 import {
   getImageReverseDisplayPrice,
   getLlmChatDisplayPrice,
   getVideoAnalysisDisplayPrice,
+  IMAGE_REVERSE_DEFAULT_MODEL,
+  LLM_CHAT_DISPLAY_MODEL_ID,
+  LLM_CHAT_MODEL_GPT56_TERRA,
+  LLM_CHAT_MODEL_IDS,
+  normalizeImageReverseCaptionModel,
+  type ImageReverseCaptionModel,
 } from '../../utils/cloudModelPricing';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { llmInputPanelT } from '../../i18n/llmInputPanelI18n';
 import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
-import { workspaceChromeT } from '../../i18n/workspaceI18n';
-import { useReferenceMicRecording } from '../../hooks/useReferenceMicRecording';
-import { canvasBottomInputPanelShell } from '../../theme/canvasBottomInputPanel';
+import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
+import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
+import { micLevelCssVars } from '../../utils/micInputLevel';
+import { AiGenerateDisclaimerTip } from '../legal/AiGenerateDisclaimerTip';
+import VoiceMicGlyph from './VoiceMicGlyph';
 
 interface LLMInputPanelProps {
   nodeId: string;
@@ -25,6 +33,12 @@ interface LLMInputPanelProps {
   userInput: string;
   // 当 true 且存在来自 Text 节点的连线时，底部"用户输入"框变为只读灰色，显示 Text 文本
   isInputLocked?: boolean;
+  /** 是否有上游文本连入（显示标题标签；连线正文不进入底栏） */
+  hasLinkedText?: boolean;
+  /** 上游连入的正文，仅作为 user 消息发送，不填入底栏 */
+  linkedInputText?: string;
+  /** 上游文本节点标题（角标 + 输入区内标签） */
+  linkedTextTitle?: string;
   savedPrompts: Array<{
     id: string;
     name: string;
@@ -34,9 +48,9 @@ interface LLMInputPanelProps {
   imageUrlForReverse?: string;
   isVideoAnalysisMode?: boolean;
   videoUrlForAnalysis?: string;
-  /** 图像反推模型：gpt-4o | joy-caption-two */
-  reverseCaptionModel?: 'gpt-4o' | 'joy-caption-two';
-  onReverseCaptionModelChange?: (value: 'gpt-4o' | 'joy-caption-two') => void;
+  /** 图像反推模型：openai/gpt-5.6-terra | joy-caption-two（旧 gpt-4o 会规范为 Terra） */
+  reverseCaptionModel?: ImageReverseCaptionModel;
+  onReverseCaptionModelChange?: (value: ImageReverseCaptionModel) => void;
   projectId?: string;
   // 节点标题，用于资源保存
   nodeTitle?: string;
@@ -48,7 +62,12 @@ interface LLMInputPanelProps {
   onPersonaChange?: (personaName: string | null) => void;
   /** 点击运行立即调用，用于显示进度条动画 */
   onRunStart?: () => void;
+  /** 普通对话选用的聊天模型（如 gpt-3.5-turbo） */
+  chatModel?: string;
+  onChatModelChange?: (model: string) => void;
 }
+
+import { STORYBOARD_SCRIPT_TEXT_ONLY_SYSTEM_PROMPT } from '../../../shared/storyboardScript';
 
 /** LLM 快捷标签：点击可快速填入系统人设文案（按钮文案由 llmInputPanelT 提供） */
 const LLM_QUICK_TAG_DEFS: { content: string; color: string }[] = [
@@ -331,6 +350,108 @@ const LLM_QUICK_TAG_DEFS: { content: string; color: string }[] = [
 格式案例：
 周一川：男性  中等偏瘦，略显单薄，肌肉线条不明显，稍显疲。26岁。黑色短发，贴着额头，因雨水显得凌乱。湿透的黄色外卖服，肩膀和背部有明显雨水痕迹，裤脚沾泥，运动鞋老旧但干净，未佩戴任何饰品，脸颊有刮胡血痕，双眼布满血丝但神情冷静，手上握着手机，手机屏幕有裂痕&&&`,
   },
+  {
+    color: 'bg-sky-500/90 hover:bg-sky-500 text-white border-sky-400/50',
+    content: `# Role
+
+You are a professional Film Production Designer, Environment Concept Artist, and Storyboard Planner.
+
+Your job is to transform novels and scripts into professional film pre-production assets.
+
+Always complete the user's requested task first.
+
+---
+
+# Environment Mode
+
+When the user requests environment extraction:
+
+- Extract every unique filming location.
+- Merge duplicate locations.
+- Treat different weather or time of day as variants.
+- Focus only on the environment.
+- Ignore characters, dialogue, and actions.
+
+---
+
+# Environment Description
+
+Include when appropriate:
+
+- Architecture
+- Terrain
+- Buildings
+- Roads
+- Rivers
+- Mountains
+- Forests
+- Rooms
+- Weather
+- Lighting
+- Atmosphere
+- Props
+
+Maintain a unified visual style throughout the project.
+
+---
+
+# Output
+
+For each environment provide:
+
+- Name
+- Type
+- Description
+- Story Function
+- Visual Style
+- AI Image Prompt
+- Negative Prompt
+
+Each environment must end with:
+
+&&&
+
+followed by a blank line.
+
+---
+
+# Output Rules
+
+- Output only the final result.
+- Do not generate titles, introductions, summaries, explanations, notes, or additional comments.
+- Do not explain your reasoning.
+- Use Chinese only.
+- Keep the output format consistent.
+
+---
+
+# AI Prompt
+
+Describe only:
+
+environment, architecture, materials, lighting, composition, atmosphere, weather, color.
+
+Default negative prompt:
+
+people, crowd, portrait, animal, text, logo, watermark, blurry, low quality.
+
+---
+
+Generate production-ready cinematic environment documents suitable for AI image generation.
+
+The separator "&&&" is mandatory.
+
+Every environment must end with exactly:
+
+&&&
+
+Do not omit it.`,
+  },
+  {
+    color: 'bg-rose-500/90 hover:bg-rose-500 text-white border-rose-400/50',
+    /** AI Canvas 分镜脚本 text-only system（含图片提示词/视频提示词规则） */
+    content: STORYBOARD_SCRIPT_TEXT_ONLY_SYSTEM_PROMPT,
+  },
 ];
 
 const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
@@ -342,9 +463,12 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   imageUrlForReverse,
   isVideoAnalysisMode,
   videoUrlForAnalysis,
-  reverseCaptionModel = 'gpt-4o',
+  reverseCaptionModel = IMAGE_REVERSE_DEFAULT_MODEL,
   onReverseCaptionModelChange,
   isInputLocked,
+  hasLinkedText = false,
+  linkedInputText = '',
+  linkedTextTitle = '',
   savedPrompts,
   projectId,
   nodeTitle,
@@ -354,10 +478,13 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   onOutputTextChange,
   onPersonaChange,
   onRunStart,
+  chatModel = LLM_CHAT_DISPLAY_MODEL_ID,
+  onChatModelChange,
 }) => {
   const userInputRef = useRef<HTMLTextAreaElement>(null);
-  const promptInputRef = useRef<HTMLInputElement>(null);
+  const promptInputRef = useRef<HTMLTextAreaElement>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const isSpecialMode = !!isImageReverseMode || !!isVideoAnalysisMode;
   /** IME 输入法组合状态：组合中不立即同步到父级，避免中文输入被截断 */
   const [userInputComposing, setUserInputComposing] = useState(false);
   const [userInputLocal, setUserInputLocal] = useState('');
@@ -372,11 +499,76 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   const [personaToDelete, setPersonaToDelete] = useState<{ id: string; name: string } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { locale } = useAppLocale();
-  const { showAlert } = useDarkAlert();
+  const { showAlert, showConfirm } = useDarkAlert();
   const lt = llmInputPanelT(locale);
+  const displayLinkedTitle =
+    (linkedTextTitle || '').trim() || (hasLinkedText ? (locale === 'en' ? 'Text' : '文本') : '');
   const refMicAt = useMemo(() => audioInputPanelT(locale), [locale]);
-  const wc = useMemo(() => workspaceChromeT(locale), [locale]);
-  const [micVoiceBusy, setMicVoiceBusy] = useState(false);
+  /** 提示词区「文本走廊」芯片：只显示名称，完整人设进 system */
+  const [corridorChips, setCorridorChips] = useState<
+    Array<{ id: string; name: string; content: string; color: string }>
+  >([]);
+  /** 长按进入胶囊管理态：抖动 + 右上角删除 */
+  const [capsuleManageMode, setCapsuleManageMode] = useState(false);
+  const capsuleLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const capsuleLongPressFiredRef = useRef(false);
+  const capsuleBarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setCorridorChips([]);
+    setCapsuleManageMode(false);
+  }, [nodeId]);
+
+  useEffect(() => {
+    if (!capsuleManageMode) return;
+    const onDocPointer = (e: PointerEvent) => {
+      const root = capsuleBarRef.current;
+      if (root && e.target instanceof Node && root.contains(e.target)) return;
+      setCapsuleManageMode(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCapsuleManageMode(false);
+    };
+    document.addEventListener('pointerdown', onDocPointer, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDocPointer, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [capsuleManageMode]);
+
+  const clearCapsuleLongPress = useCallback(() => {
+    if (capsuleLongPressTimerRef.current) {
+      clearTimeout(capsuleLongPressTimerRef.current);
+      capsuleLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  const startCapsuleLongPress = useCallback(() => {
+    clearCapsuleLongPress();
+    capsuleLongPressFiredRef.current = false;
+    capsuleLongPressTimerRef.current = setTimeout(() => {
+      capsuleLongPressTimerRef.current = null;
+      capsuleLongPressFiredRef.current = true;
+      setCapsuleManageMode(true);
+    }, 520);
+  }, [clearCapsuleLongPress]);
+
+  const endCapsuleLongPress = useCallback(() => {
+    clearCapsuleLongPress();
+  }, [clearCapsuleLongPress]);
+
+  const CAPSULE_COLORS = useMemo(
+    () => [
+      'bg-emerald-500/90 hover:bg-emerald-500 text-white border-emerald-400/50',
+      'bg-violet-500/90 hover:bg-violet-500 text-white border-violet-400/50',
+      'bg-amber-500/90 hover:bg-amber-500 text-white border-amber-400/50',
+      'bg-sky-500/90 hover:bg-sky-500 text-white border-sky-400/50',
+      'bg-rose-500/90 hover:bg-rose-500 text-white border-rose-400/50',
+      'bg-indigo-500/90 hover:bg-indigo-500 text-white border-indigo-400/50',
+    ],
+    [],
+  );
   const quickTags = useMemo(
     () =>
       LLM_QUICK_TAG_DEFS.map((def, i) => {
@@ -384,11 +576,32 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
           lt.quickTagScriptRewrite,
           lt.quickTagCharacterReplace,
           lt.quickTagCharacterAnalysis,
+          lt.quickTagSceneAnalysis,
+          lt.quickTagStoryboard,
         ] as const;
-        return { ...def, label: labels[i] };
+        return { ...def, label: labels[i], id: `quick-${i}` };
       }),
     [lt],
   );
+
+  /** 底栏胶囊 = 内置快捷标签 + 已保存人设 */
+  const footerCapsules = useMemo(() => {
+    const builtin = quickTags.map((t) => ({
+      id: t.id,
+      name: t.label,
+      content: t.content,
+      color: t.color,
+      isBuiltin: true as const,
+    }));
+    const saved = savedPrompts.map((p, i) => ({
+      id: p.id,
+      name: p.name,
+      content: p.content,
+      color: CAPSULE_COLORS[i % CAPSULE_COLORS.length],
+      isBuiltin: false as const,
+    }));
+    return [...builtin, ...saved];
+  }, [quickTags, savedPrompts, CAPSULE_COLORS]);
 
   // 获取光标颜色样式（caretColor 必须通过内联样式设置，CSS 类无法实现）
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -396,144 +609,133 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     caretColor: isDarkMode ? '#0A84FF' : '#22c55e',
   }), [isDarkMode]);
 
-  /** 将快捷标签内容填入系统人设（追加） */
+  const syncCorridorToSystem = useCallback(
+    (chips: Array<{ id: string; name: string; content: string; color: string }>) => {
+      // 底栏 textarea 专用于自由系统文；胶囊只影响标题与发送时的 system 拼接
+      onPersonaChange?.(chips.length ? chips.map((c) => c.name).join(' · ') : null);
+    },
+    [onPersonaChange],
+  );
+
+  const toggleCorridorChip = useCallback(
+    (chip: { id: string; name: string; content: string; color: string }) => {
+      setCorridorChips((prev) => {
+        const exists = prev.some((c) => c.id === chip.id);
+        const next = exists ? prev.filter((c) => c.id !== chip.id) : [...prev, chip];
+        syncCorridorToSystem(next);
+        return next;
+      });
+    },
+    [syncCorridorToSystem],
+  );
+
+  const removeCorridorChip = useCallback(
+    (chipId: string) => {
+      setCorridorChips((prev) => {
+        const next = prev.filter((c) => c.id !== chipId);
+        syncCorridorToSystem(next);
+        return next;
+      });
+    },
+    [syncCorridorToSystem],
+  );
+
+  /** 将快捷标签内容填入系统人设（追加）— 特殊模式仍用 */
   const appendQuickTagToPersona = useCallback((content: string) => {
     const sep = userInput.trim() ? '\n\n' : '';
     onUserInputChange(userInput + sep + content);
     userInputRef.current?.focus();
   }, [userInput, onUserInputChange]);
 
-  const mergeVoiceIntoPersona = useCallback(
-    (text: string) => {
-      const t = text.trim();
-      if (!t) return;
-      const prev = (userInput || '').trim();
-      const next = prev ? `${prev}\n${t}` : t;
-      onUserInputChange(next);
-      userInputRef.current?.focus();
-    },
-    [userInput, onUserInputChange],
-  );
-
-  const runMicTranscribeOnUrl = useCallback(
-    async (localResourceUrl: string) => {
-      if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
-        showAlert(locale === 'en' ? 'Transcription is not available in this build.' : '当前环境不支持语音转写');
-        setMicVoiceBusy(false);
-        return;
-      }
-      setMicVoiceBusy(true);
-      try {
-        const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
-          projectId || undefined,
-          localResourceUrl,
-          locale === 'zh' ? 'zh' : locale === 'en' ? 'en' : undefined,
-        );
-        const recognized = (out || '').trim();
-        if (!recognized) {
-          showAlert(locale === 'en' ? 'No speech recognized.' : '未识别到文字，请重试。');
-          return;
-        }
-        mergeVoiceIntoPersona(recognized);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        showAlert(msg || (locale === 'en' ? 'Transcription failed.' : '语音识别失败'));
-      } finally {
-        setMicVoiceBusy(false);
-      }
-    },
-    [locale, mergeVoiceIntoPersona, projectId, showAlert],
-  );
-
   const {
-    isRecording: isMicVoiceRecording,
-    startReferenceRecording: startMicVoiceRecording,
-    stopReferenceRecording: stopMicVoiceRecording,
-  } = useReferenceMicRecording({
-    projectId,
-    onSaved: (url) => {
-      void runMicTranscribeOnUrl(url);
+    status: dictationStatus,
+    isActive: isDictationActive,
+    inputLevel: dictationInputLevel,
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+  } = useCloudRealtimeDictation({
+    getBaseText: () => {
+      const prev = (userInputRef.current?.value ?? userInput ?? '').trimEnd();
+      return prev ? `${prev}\n` : '';
     },
-    onRecordingFailed: () => {
-      setMicVoiceBusy(false);
+    onLiveText: (full) => {
+      onUserInputChange(full);
     },
-    showAlert,
-    strings: {
-      micPermissionDenied: refMicAt.micPermissionDenied,
-      micSaveFailed: refMicAt.micSaveFailed,
-      recordTooShort: refMicAt.recordTooShort,
-      recordModalTitle: wc.textVoiceModalTitle,
-      recordModalSubtitle: wc.textVoiceModalSubtitle,
-      recordModalStop: refMicAt.recordModalStop,
+    onError: (message) => {
+      showAlert(message);
     },
-    isDarkMode,
+    onMicDenied: () => {
+      showAlert(refMicAt.micPermissionDenied);
+    },
   });
 
-  const handleStopMicVoiceRecording = useCallback(() => {
-    setMicVoiceBusy(true);
-    stopMicVoiceRecording();
-  }, [stopMicVoiceRecording]);
+  const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
+  const micVoiceStopping = dictationStatus === 'stopping';
+  const micInputLocked = isDictationActive || micVoiceBusy;
 
-  const handlePersonaVoiceInput = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (micVoiceBusy) return;
-      if (isMicVoiceRecording) {
-        handleStopMicVoiceRecording();
-        return;
-      }
-      void startMicVoiceRecording();
-    },
-    [isMicVoiceRecording, micVoiceBusy, startMicVoiceRecording, handleStopMicVoiceRecording],
-  );
+  const { pointerHandlers: personaMicPointerHandlers } = useDictationPushToTalk({
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+    status: dictationStatus,
+    disabled: micVoiceStopping,
+  });
 
   useEffect(() => {
-    const open = isMicVoiceRecording || micVoiceBusy;
+    const open = isDictationActive;
     (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
     return () => {
       (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
     };
-  }, [isMicVoiceRecording, micVoiceBusy]);
+  }, [isDictationActive]);
 
+  /** 与 VideoInputPanel 提示词区麦克风同款：小方角、输入框内右上角；按住说话 */
   const personaVoiceMicButton = (
     <button
       type="button"
-      onClick={handlePersonaVoiceInput}
-      disabled={micVoiceBusy}
-      className={`ml-auto relative flex h-7 w-7 shrink-0 items-center justify-center rounded border transition-colors ${
-        micVoiceBusy
+      {...personaMicPointerHandlers}
+      disabled={micVoiceStopping}
+      style={
+        dictationStatus === 'listening' || dictationStatus === 'connecting'
+          ? micLevelCssVars(dictationInputLevel)
+          : undefined
+      }
+      className={`nexflow-voice-mic-btn nodrag nopan relative flex h-7 w-7 shrink-0 items-center justify-center rounded border select-none ${
+        dictationStatus === 'connecting'
+          ? 'connecting'
+          : dictationStatus === 'listening'
+            ? 'listening'
+            : ''
+      } ${
+        micVoiceStopping
           ? isDarkMode
-            ? 'cursor-wait border-violet-400/50 bg-violet-500/20 text-violet-200'
-            : 'cursor-wait border-violet-400/60 bg-violet-100 text-violet-700'
-          : isMicVoiceRecording
-            ? 'border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
-            : isDarkMode
-              ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-              : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
+            ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+            : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
+          : isDarkMode
+            ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+            : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
       }`}
       title={
         micVoiceBusy
           ? lt.voiceTranscribing
-          : isMicVoiceRecording
-            ? wc.textVoiceInputStopButton
-            : wc.textVoiceInputTitle
+          : isDictationActive
+            ? lt.voiceStopTitle
+            : lt.voiceStartTitle
       }
       aria-label={
         micVoiceBusy
           ? lt.voiceTranscribing
-          : isMicVoiceRecording
-            ? wc.textVoiceInputStopButton
-            : wc.textVoiceInputTitle
+          : isDictationActive
+            ? lt.voiceStopTitle
+            : lt.voiceStartTitle
       }
     >
-      {micVoiceBusy || isMicVoiceRecording ? (
-        <Loader2
-          className={`relative h-3.5 w-3.5 animate-spin ${isMicVoiceRecording && !micVoiceBusy ? 'text-orange-200' : ''}`}
-          strokeWidth={2.25}
-        />
-      ) : (
-        <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
-      )}
+      <VoiceMicGlyph
+        busy={micVoiceBusy}
+        active={dictationStatus === 'listening'}
+        level={dictationInputLevel}
+      />
     </button>
   );
 
@@ -594,26 +796,26 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     },
   });
 
-  // 保存人设提示词（userInput区域的内容）
+  // 保存：普通对话把「系统提示」收成胶囊；特殊模式仍保存系统人设
   const handleSavePrompt = useCallback(() => {
     if (!userInput.trim()) return;
     setShowSaveDialog(true);
     setSavePromptName('');
   }, [userInput]);
 
-  // 确认保存人设提示词
+  // 确认保存
   const handleConfirmSave = useCallback(async () => {
-    if (!savePromptName.trim() || !userInput.trim()) {
+    const contentSource = userInput.trim();
+    if (!savePromptName.trim() || !contentSource) {
       return;
     }
     
     const newPrompt = {
       id: `prompt-${Date.now()}`,
       name: savePromptName.trim(),
-      content: userInput.trim(),
+      content: contentSource,
     };
     
-    // 保存到全局人设列表
     if (window.electronAPI) {
       try {
         await window.electronAPI.saveGlobalLLMPersona(newPrompt);
@@ -622,11 +824,33 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
       }
     }
     
-    // 更新本地状态
     onSavedPromptsChange([...savedPrompts, newPrompt]);
+
+    // 普通对话：收成胶囊后清空系统文，并自动挂到走廊
+    if (!isSpecialMode) {
+      const color = CAPSULE_COLORS[savedPrompts.length % CAPSULE_COLORS.length];
+      const chip = { id: newPrompt.id, name: newPrompt.name, content: newPrompt.content, color };
+      setCorridorChips((prev) => {
+        if (prev.some((c) => c.id === chip.id)) return prev;
+        const next = [...prev, chip];
+        syncCorridorToSystem(next);
+        return next;
+      });
+      onUserInputChange('');
+    }
+
     setShowSaveDialog(false);
     setSavePromptName('');
-  }, [savePromptName, userInput, savedPrompts, onSavedPromptsChange]);
+  }, [
+    savePromptName,
+    userInput,
+    isSpecialMode,
+    savedPrompts,
+    onSavedPromptsChange,
+    onUserInputChange,
+    CAPSULE_COLORS,
+    syncCorridorToSystem,
+  ]);
 
   // 取消保存
   const handleCancelSave = useCallback(() => {
@@ -668,13 +892,21 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
           onPersonaChange(null);
         }
       }
+      setCorridorChips((prev) => {
+        const next = prev.filter((c) => c.id !== personaToDelete.id);
+        if (next.length !== prev.length) {
+          syncCorridorToSystem(next);
+        }
+        return next;
+      });
 
       setShowDeleteConfirm(false);
       setPersonaToDelete(null);
+      setCapsuleManageMode(false);
     } catch (error) {
       console.error('删除人设失败:', error);
     }
-  }, [personaToDelete, savedPrompts, onSavedPromptsChange, userInput, onUserInputChange, onPersonaChange]);
+  }, [personaToDelete, savedPrompts, onSavedPromptsChange, userInput, onUserInputChange, onPersonaChange, syncCorridorToSystem]);
 
   // 取消删除
   const handleCancelDelete = useCallback(() => {
@@ -698,6 +930,10 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     }
   }, [showPersonaDropdown]);
 
+  const resolvedChatModel = useMemo(() => {
+    const raw = (chatModel || LLM_CHAT_DISPLAY_MODEL_ID).trim();
+    return (LLM_CHAT_MODEL_IDS as readonly string[]).includes(raw) ? raw : LLM_CHAT_DISPLAY_MODEL_ID;
+  }, [chatModel]);
 
   // 执行 AI
   const handleExecuteAI = useCallback(async () => {
@@ -721,7 +957,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     // 图像反推模式：构造带 image_url 的消息
     if (isImageReverseMode && imageUrlForReverse) {
       const question = (userInput.trim() || lt.placeholderImageReverse).trim();
-      const model = reverseCaptionModel || 'gpt-4o';
+      const model = normalizeImageReverseCaptionModel(reverseCaptionModel);
 
       const messages: Array<{ role: 'user'; content: any }> = [
         {
@@ -753,22 +989,26 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
       return;
     }
 
-    // 普通文本对话模式
+    // 普通文本对话：底栏专供系统文；上游连线正文作 user（不写入底栏）
+    // 无上游连线时：胶囊 → system，底栏自由文 → user，便于单独对话
     const messages: Array<{ role: 'system' | 'user'; content: string }> = [];
+    const chipSystem = corridorChips.map((c) => c.content.trim()).filter(Boolean);
+    const freeSystem = userInput.trim();
+    const linkedUser = (linkedInputText || '').trim();
 
-    if (userInput.trim()) {
-      messages.push({
-        role: 'system',
-        content: userInput.trim(),
-      });
-    }
-
-    const finalUserInput = inputText.trim();
-    if (finalUserInput) {
-      messages.push({
-        role: 'user',
-        content: finalUserInput,
-      });
+    if (linkedUser) {
+      const systemParts = [...chipSystem, freeSystem].filter(Boolean);
+      if (systemParts.length) {
+        messages.push({ role: 'system', content: systemParts.join('\n\n') });
+      }
+      messages.push({ role: 'user', content: linkedUser });
+    } else {
+      if (chipSystem.length) {
+        messages.push({ role: 'system', content: chipSystem.join('\n\n') });
+      }
+      if (freeSystem) {
+        messages.push({ role: 'user', content: freeSystem });
+      }
     }
 
     if (messages.length === 0) {
@@ -777,7 +1017,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
 
     try {
       await executeAI({
-        model: 'gpt-3.5-turbo',
+        model: resolvedChatModel,
         messages,
         temperature: 0.7,
         max_tokens: 2000,
@@ -790,13 +1030,15 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     }
   }, [
     userInput,
-    inputText,
+    linkedInputText,
+    corridorChips,
     executeAI,
     isImageReverseMode,
     imageUrlForReverse,
     isVideoAnalysisMode,
     videoUrlForAnalysis,
     reverseCaptionModel,
+    resolvedChatModel,
     projectId,
     nodeTitle,
     onRunStart,
@@ -808,6 +1050,8 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     (isImageReverseMode ? !!imageUrlForReverse : false) ||
     (isVideoAnalysisMode ? !!videoUrlForAnalysis : false) ||
     userInput.trim().length > 0 ||
+    corridorChips.length > 0 ||
+    (linkedInputText || '').trim().length > 0 ||
     inputText.trim().length > 0;
   // 处理运行中状态：除了 idle/SUCCESS/ERROR 之外的状态都视为运行中（包括 START / PROCESSING）
   // 按钮禁用逻辑：只基于当前模块自己的状态
@@ -820,7 +1064,10 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     try {
       return {
         ok: true as const,
-        value: getImageReverseDisplayPrice(reverseCaptionModel as 'gpt-4o' | 'joy-caption-two', cloudMap),
+        value: getImageReverseDisplayPrice(
+          normalizeImageReverseCaptionModel(reverseCaptionModel),
+          cloudMap,
+        ),
       };
     } catch (e) {
       if (isModelNotPricedError(e)) return { ok: false as const };
@@ -835,173 +1082,18 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   }, [isImageReverseMode, isVideoAnalysisMode, cloudMap]);
 
   return (
+    <div className="relative flex w-full flex-col">
     <div 
-      className={canvasBottomInputPanelShell(isDarkMode)}
+      className={[
+        'relative flex flex-col overflow-hidden rounded-[18px] border transition-colors',
+        isVideoAnalysisMode ? 'h-[72px]' : 'h-[170px]',
+        isDarkMode
+          ? 'nexflow-glass-panel border-white/[0.14] shadow-[0_8px_28px_rgba(0,0,0,0.28)]'
+          : 'apple-panel-light border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.06)]',
+        isVideoAnalysisMode ? 'px-3.5 py-2.5' : 'px-3.5 pt-2.5 pb-2',
+      ].join(' ')}
     >
-      {/* 顶部按钮栏：保存按钮+选择人设框（左侧），运行按钮（右侧） */}
-      <div className={`flex items-center justify-between px-2 py-1.5 border-b flex-shrink-0 gap-2 ${isDarkMode ? 'border-gray-700/50' : 'border-gray-300/50'}`}>
-        {/* 左侧：保存按钮 + 选择人设框 */}
-        <div className="flex items-center gap-2 flex-1">
-          <button
-            onClick={handleSavePrompt}
-            disabled={!userInput.trim()}
-            className={`px-2 py-1 rounded-lg text-xs flex items-center gap-1 flex-shrink-0 ${
-              !userInput.trim()
-                ? 'opacity-50 cursor-not-allowed'
-                : isDarkMode 
-                  ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30' 
-                  : 'bg-green-500/10 text-green-600 hover:bg-green-500/20'
-            } transition-colors`}
-          >
-            <Save className="w-3 h-3" />
-            {lt.saveButton}
-          </button>
-          {/* 选择人设下拉菜单（自定义） */}
-          <div className="relative flex-1 min-w-0" ref={dropdownRef}>
-            <button
-              type="button"
-              onClick={() => setShowPersonaDropdown(!showPersonaDropdown)}
-              className={`w-full px-2 py-1 rounded-lg text-xs text-left flex items-center justify-between ${
-                isDarkMode 
-                  ? 'bg-black/30 text-white border border-gray-600/50' 
-                  : 'bg-white/90 text-gray-900 border border-gray-300'
-              } outline-none hover:opacity-80 transition-opacity`}
-              title={lt.selectPersonaTitle}
-            >
-              <span className="truncate">
-                {savedPrompts.find((p: { id: string; content: string }) => p.content === userInput)?.name ||
-                  lt.selectPersona}
-              </span>
-              <span className={`ml-2 transition-transform ${showPersonaDropdown ? 'rotate-180' : ''}`}>▼</span>
-            </button>
-            
-            {/* 下拉菜单列表 */}
-            {showPersonaDropdown && (
-              <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border z-50 max-h-60 overflow-y-auto nexflow-glass-panel border-white/15 shadow-lg">
-                <div
-                  className="px-2 py-1.5 text-xs cursor-pointer hover:bg-opacity-50 hover:bg-white/10 text-white/60"
-                  onClick={() => {
-                    onUserInputChange('');
-                    if (onPersonaChange) {
-                      onPersonaChange(null);
-                    }
-                    setShowPersonaDropdown(false);
-                  }}
-                >
-                  {lt.selectPersona}
-                </div>
-                {savedPrompts.map((saved: { id: string; name: string; content: string }) => {
-                  const isSelected = saved.content === userInput;
-                  return (
-                    <div
-                      key={saved.id}
-                      className={`px-2 py-1.5 text-xs flex items-center justify-between group ${
-                        isSelected ? 'bg-green-500/20 text-green-400' : 'hover:bg-white/10 text-white'
-                      } cursor-pointer`}
-                      onClick={() => {
-                        handleLoadPrompt(saved.content);
-                        if (onPersonaChange) {
-                          onPersonaChange(saved.name);
-                        }
-                      }}
-                    >
-                      <span className="flex-1 truncate">{saved.name}</span>
-                      <button
-                        type="button"
-                        onClick={(e) => handleDeletePersona(e, saved.id, saved.name)}
-                        className="ml-2 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/20 text-red-400"
-                        title={lt.deletePersonaTitle}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-        {/* 视频分析模式下：显示标识 */}
-        {isVideoAnalysisMode && (
-          <span className={`text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${isDarkMode ? 'text-blue-200 bg-blue-500/20' : 'text-blue-700 bg-blue-100'}`}>
-            {lt.videoAnalysisBadge}
-          </span>
-        )}
-        {/* 图像反推模式下：反推模型选择 */}
-        {isImageReverseMode && (
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-600'}`}>{lt.reverseModelLabel}</span>
-            <select
-              value={reverseCaptionModel}
-              onChange={(e) => onReverseCaptionModelChange?.(e.target.value as 'gpt-4o' | 'joy-caption-two')}
-              className={`px-2 py-1 rounded-lg text-xs ${
-                isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-              } outline-none`}
-              title={lt.chooseReverseModelTitle}
-            >
-              <option value="gpt-4o">{lt.gpt4oOptionLabel}</option>
-              <option value="joy-caption-two">Joy Caption Two</option>
-            </select>
-          </div>
-        )}
-        {isImageReverseMode ? (
-          reversePriceLabel?.ok ? (
-            <span
-              className={`w-24 text-center text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${
-                isDarkMode ? 'text-yellow-200 bg-yellow-500/25' : 'text-yellow-700 bg-yellow-100'
-              }`}
-              title={lt.reversePriceTooltip}
-            >
-              {reversePriceLabel.value}
-              {locale === 'en' ? ' ' : ''}
-              {lt.creditsSuffix}
-            </span>
-          ) : reversePriceLabel && !reversePriceLabel.ok ? (
-            <span
-              className={`w-24 text-center text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${
-                isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
-              }`}
-              title={lt.noPricingReverseModelTitle}
-            >
-              {lt.noPricingYet}
-            </span>
-          ) : null
-        ) : runPriceYuanbao != null ? (
-          <span
-            className={`w-24 text-center text-xs font-medium px-2 py-1 rounded flex-shrink-0 ${
-              isDarkMode ? 'text-yellow-200 bg-yellow-500/25' : 'text-yellow-700 bg-yellow-100'
-            }`}
-            title={lt.runPriceTooltip}
-          >
-            {runPriceYuanbao}
-            {locale === 'en' ? ' ' : ''}
-            {lt.creditsSuffix}
-          </span>
-        ) : null}
-        {/* 右侧：运行按钮 */}
-        <button
-          onClick={handleExecuteAI}
-          disabled={isRunDisabled}
-          className={`px-3 py-1 rounded-lg text-xs flex items-center gap-1.5 flex-shrink-0 ${
-            isRunDisabled
-              ? 'bg-gray-500/50 text-white/50 cursor-not-allowed'
-              : isProcessing
-                ? 'bg-green-500 text-white'
-                : 'bg-green-500 text-white hover:bg-green-600'
-          } transition-colors`}
-        >
-          {isProcessing ? (
-            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <Play className="w-3 h-3" />
-          )}
-          {isImageReverseMode
-            ? lt.runImageReverse
-            : isVideoAnalysisMode
-              ? lt.runVideoAnalysis
-              : lt.run}
-        </button>
-      </div>
+      {isImageReverseMode && <AiGenerateDisclaimerTip isDarkMode={isDarkMode} />}
 
       {/* 删除确认对话框 */}
       {showDeleteConfirm && personaToDelete && (
@@ -1091,9 +1183,11 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
               </button>
               <button
                 onClick={handleConfirmSave}
-                disabled={!savePromptName.trim()}
+                disabled={
+                  !savePromptName.trim() || !userInput.trim()
+                }
                 className={`px-4 py-2 rounded-lg text-sm ${
-                  !savePromptName.trim()
+                  !savePromptName.trim() || !userInput.trim()
                     ? 'opacity-50 cursor-not-allowed bg-gray-500/50 text-white/50'
                     : 'bg-green-500 text-white hover:bg-green-600'
                 } transition-colors`}
@@ -1105,37 +1199,63 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
         </div>
       )}
 
-      {/* 系统提示词输入区域 */}
-      <div className="p-3 flex-1 min-h-0 flex flex-col">
-        {/* 系统人设提示词标签 */}
-        <div className="mb-2 flex-shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
-              {lt.systemPersonaLabel}
-            </label>
-            {personaVoiceMicButton}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {quickTags.map((tag, qi) => (
-              <button
-                key={qi}
-                type="button"
-                onClick={() => appendQuickTagToPersona(tag.content)}
-                className={`px-2 py-1 text-xs rounded border font-medium transition-colors ${tag.color}`}
-                title={tag.label}
-              >
-                {tag.label}
-              </button>
-            ))}
-          </div>
+      {/* 视频分析：仅标签 + 元宝价签 + 运行 */}
+      {isVideoAnalysisMode && (
+        <div className="flex flex-1 min-h-0 items-center gap-2">
+          <span
+            className={`text-sm font-medium px-2.5 py-1 rounded-lg flex-shrink-0 ${
+              isDarkMode ? 'text-blue-200 bg-blue-500/20' : 'text-blue-700 bg-blue-100'
+            }`}
+          >
+            {lt.videoAnalysisBadge}
+          </span>
+          <div className="flex-1" />
+          {runPriceYuanbao != null ? (
+            <span
+              className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+                isDarkMode
+                  ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                  : 'text-amber-700 bg-amber-50 border-amber-200'
+              }`}
+              title={lt.runPriceTooltip}
+            >
+              {runPriceYuanbao}
+              {locale === 'en' ? ' ' : ''}
+              {lt.creditsSuffix}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleExecuteAI}
+            disabled={isRunDisabled}
+            className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+              isRunDisabled
+                ? isDarkMode
+                  ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                  : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                : 'bg-green-500 text-white hover:bg-green-600'
+            }`}
+            title={lt.runVideoAnalysis}
+            aria-label={lt.runVideoAnalysis}
+          >
+            {isProcessing ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Play className="w-3.5 h-3.5" strokeWidth={2.5} />
+            )}
+          </button>
         </div>
-        {/* 系统提示词输入框 */}
-        {/* eslint-disable-next-line react/forbid-dom-props */}
+      )}
+
+      {/* 图像反推：上方输入，下方人设/模型/运行（胶囊在框外） */}
+      {isImageReverseMode && (
+      <>
+      <div className="relative flex-1 min-h-0 flex flex-col pt-1">
         <textarea
           ref={userInputRef}
+          data-nexflow-dictation-target="1"
           value={userInputComposing ? userInputLocal : (userInput ?? '')}
-          readOnly={micVoiceBusy}
-          disabled={micVoiceBusy}
+          readOnly={micInputLocked}
           onCompositionStart={(e) => {
             setUserInputComposing(true);
             setUserInputLocal(e.target.value);
@@ -1145,7 +1265,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
             onUserInputChange(e.target.value);
           }}
           onChange={(e) => {
-            if (micVoiceBusy) return;
+            if (micInputLocked) return;
             const v = e.target.value;
             if (userInputComposing) {
               setUserInputLocal(v);
@@ -1153,70 +1273,434 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
               onUserInputChange(v);
             }
           }}
-          className={`w-full flex-1 custom-scrollbar bg-transparent resize-none outline-none text-sm rounded-lg p-2 border ${
+          className={`w-full flex-1 min-h-0 custom-scrollbar bg-transparent resize-none outline-none text-sm leading-[1.5] p-0 pr-9 pt-8 border-0 ${
             isDarkMode 
-              ? 'text-white placeholder:text-white/40 border-gray-600/50' 
-              : 'text-gray-900 placeholder:text-gray-500 border-gray-300/50'
-          } ${micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''}`}
-          placeholder={
-            isImageReverseMode
-              ? lt.placeholderImageReverse
-              : isVideoAnalysisMode
-                ? lt.placeholderVideoAnalysis
-                : lt.placeholderSystemPersona
-          }
+              ? 'text-white placeholder:text-white/40' 
+              : 'text-gray-900 placeholder:text-gray-500'
+          } ${micInputLocked ? 'opacity-45 cursor-not-allowed' : ''}`}
+          placeholder={lt.placeholderImageReverse}
           title={lt.systemPersonaInputTitle}
           style={getCaretColorStyle()}
         />
-        {/* 底部用户输入框（可手动输入或由 Text 节点连线自动填充，图像反推模式下隐藏） */}
-        <div className={`mt-2 flex-shrink-0 ${(isImageReverseMode || isVideoAnalysisMode) ? 'hidden' : ''}`}>
-          <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-white/80' : 'text-gray-900'} flex items-center gap-2`}>
-            <span>{lt.userInputLabel}</span>
-            {isImageReverseMode && (
-              <span className={`px-2 py-0.5 rounded text-[11px] ${isDarkMode ? 'bg-purple-500/20 text-purple-200' : 'bg-purple-100 text-purple-700'}`}>
-                {lt.imageSourceBadge}
-              </span>
-            )}
-          </label>
-          {/* eslint-disable-next-line react/forbid-dom-props */}
-          <input
-            ref={promptInputRef}
-            type="text"
-            value={inputTextComposing ? inputTextLocal : (inputText ?? '')}
-            onCompositionStart={(e) => {
-              if (isInputLocked) return;
-              setInputTextComposing(true);
-              setInputTextLocal(e.target.value);
-            }}
-            onCompositionEnd={(e) => {
-              setInputTextComposing(false);
-              if (isInputLocked) return;
-              onInputTextChange(e.target.value);
-            }}
-            onChange={(e) => {
-              if (isInputLocked) return;
-              const v = e.target.value;
-              if (inputTextComposing) {
-                setInputTextLocal(v);
-              } else {
-                onInputTextChange(v);
-              }
-            }}
-            className={`w-full px-2 py-1.5 rounded-lg text-xs ${
-              isInputLocked
-                ? isDarkMode
-                  ? 'bg-black/40 text-white/70 border border-gray-700/70 cursor-not-allowed'
-                  : 'bg-gray-100 text-gray-500 border border-gray-300 cursor-not-allowed'
-                : isDarkMode 
-                  ? 'bg-black/30 text-white placeholder:text-white/40 border border-gray-600/50' 
-                  : 'bg-white/90 text-gray-900 placeholder:text-gray-500 border border-gray-300'
-            } outline-none`}
-            placeholder={isInputLocked ? lt.userInputLockedPlaceholder : lt.userInputPlaceholder}
-            disabled={!!isInputLocked}
-            style={getCaretColorStyle()}
-          />
+        <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+          {personaVoiceMicButton}
         </div>
       </div>
+      <div className="mt-1 flex items-center gap-1.5 flex-shrink-0 min-w-0">
+        <button
+          type="button"
+          onClick={handleSavePrompt}
+          disabled={!userInput.trim()}
+          className={`px-2 py-1 rounded-lg text-xs flex items-center gap-1 flex-shrink-0 ${
+            !userInput.trim()
+              ? 'opacity-50 cursor-not-allowed'
+              : isDarkMode
+                ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                : 'bg-green-500/10 text-green-600 hover:bg-green-500/20'
+          } transition-colors`}
+        >
+          <Save className="w-3 h-3" />
+          {lt.saveButton}
+        </button>
+        <div className="relative min-w-0 max-w-[140px] flex-shrink" ref={dropdownRef}>
+          <button
+            type="button"
+            onClick={() => setShowPersonaDropdown(!showPersonaDropdown)}
+            className={`w-full px-2 py-1 rounded-lg text-xs text-left flex items-center justify-between gap-1 ${
+              isDarkMode ? 'bg-white/[0.06] text-white' : 'bg-black/[0.04] text-gray-900'
+            } outline-none hover:opacity-80 transition-opacity`}
+            title={lt.selectPersonaTitle}
+          >
+            <span className="truncate">
+              {savedPrompts.find((p: { id: string; content: string }) => p.content === userInput)?.name ||
+                lt.selectPersona}
+            </span>
+            <span className={`shrink-0 transition-transform ${showPersonaDropdown ? 'rotate-180' : ''}`}>▼</span>
+          </button>
+          {showPersonaDropdown && (
+            <div className="absolute bottom-full left-0 right-0 mb-1 rounded-lg border z-50 max-h-48 overflow-y-auto nexflow-glass-panel border-white/15 shadow-lg">
+              <div
+                className="px-2 py-1.5 text-xs cursor-pointer hover:bg-white/10 text-white/60"
+                onClick={() => {
+                  onUserInputChange('');
+                  if (onPersonaChange) onPersonaChange(null);
+                  setShowPersonaDropdown(false);
+                }}
+              >
+                {lt.selectPersona}
+              </div>
+              {savedPrompts.map((saved: { id: string; name: string; content: string }) => {
+                const isSelected = saved.content === userInput;
+                return (
+                  <div
+                    key={saved.id}
+                    className={`px-2 py-1.5 text-xs flex items-center justify-between group ${
+                      isSelected ? 'bg-green-500/20 text-green-400' : 'hover:bg-white/10 text-white'
+                    } cursor-pointer`}
+                    onClick={() => {
+                      handleLoadPrompt(saved.content);
+                      if (onPersonaChange) onPersonaChange(saved.name);
+                    }}
+                  >
+                    <span className="flex-1 truncate">{saved.name}</span>
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeletePersona(e, saved.id, saved.name)}
+                      className="ml-2 p-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/20 text-red-400"
+                      title={lt.deletePersonaTitle}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <select
+          value={normalizeImageReverseCaptionModel(reverseCaptionModel)}
+          onChange={(e) =>
+            onReverseCaptionModelChange?.(normalizeImageReverseCaptionModel(e.target.value))
+          }
+          className={`px-2 py-1 rounded-lg text-xs flex-shrink-0 max-w-[140px] ${
+            isDarkMode ? 'bg-white/[0.06] text-white' : 'bg-black/[0.04] text-gray-900'
+          } outline-none`}
+          title={lt.chooseReverseModelTitle}
+        >
+          <option value={LLM_CHAT_MODEL_GPT56_TERRA}>{lt.gpt4oOptionLabel}</option>
+          <option value="joy-caption-two">Joy Caption Two</option>
+        </select>
+        <div className="flex-1" />
+        {reversePriceLabel?.ok ? (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+              isDarkMode
+                ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                : 'text-amber-700 bg-amber-50 border-amber-200'
+            }`}
+            title={lt.reversePriceTooltip}
+          >
+            {reversePriceLabel.value}
+            {locale === 'en' ? ' ' : ''}
+            {lt.creditsSuffix}
+          </span>
+        ) : reversePriceLabel && !reversePriceLabel.ok ? (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+              isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+            }`}
+            title={lt.noPricingReverseModelTitle}
+          >
+            {lt.noPricingYet}
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={handleExecuteAI}
+          disabled={isRunDisabled}
+          className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+            isRunDisabled
+              ? isDarkMode
+                ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+              : 'bg-green-500 text-white hover:bg-green-600'
+          }`}
+          title={lt.runImageReverse}
+          aria-label={lt.runImageReverse}
+        >
+          {isProcessing ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Play className="w-3.5 h-3.5" strokeWidth={2.5} />
+          )}
+        </button>
+      </div>
+      </>
+      )}
+
+      {/* 普通对话：半高输入卡；@接入标签在系统提示区内；胶囊在卡片外 */}
+      {!isSpecialMode && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div
+            className="flex-1 min-h-0 flex flex-col"
+            onClick={() => {
+              if (micInputLocked) return;
+              userInputRef.current?.focus();
+            }}
+          >
+            <div className="flex-1 min-h-0 overflow-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden flex flex-col">
+              {/* 红框区：@接入 + 已选胶囊标签与手输系统文同一输入处，可穿插 */}
+              {(hasLinkedText && !!displayLinkedTitle) || corridorChips.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5 content-start flex-shrink-0 mb-1">
+                  {hasLinkedText && !!displayLinkedTitle && (
+                    <span
+                      className={`inline-flex items-center max-w-[90%] px-1.5 py-0.5 rounded-md text-[12px] font-semibold tracking-tight ${
+                        isDarkMode
+                          ? 'bg-sky-500/25 text-sky-300'
+                          : 'bg-sky-100 text-sky-700'
+                      }`}
+                      title={locale === 'en' ? 'Linked as user message' : '已接入为用户消息'}
+                    >
+                      @{displayLinkedTitle}
+                    </span>
+                  )}
+                  {corridorChips.map((chip) => (
+                    <span
+                      key={chip.id}
+                      className={`inline-flex items-center gap-0.5 max-w-[160px] px-1.5 py-0.5 rounded-md text-[11px] font-medium border ${chip.color}`}
+                      title={chip.name}
+                    >
+                      <span className="truncate">@{chip.name}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeCorridorChip(chip.id);
+                        }}
+                        className="shrink-0 opacity-80 hover:opacity-100 leading-none ml-0.5"
+                        aria-label="remove"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="relative flex-1 min-h-0 flex flex-col">
+                <textarea
+                  ref={userInputRef}
+                  data-nexflow-dictation-target="1"
+                  value={userInputComposing ? userInputLocal : (userInput ?? '')}
+                  readOnly={micInputLocked}
+                  onCompositionStart={(e) => {
+                    setUserInputComposing(true);
+                    setUserInputLocal(e.target.value);
+                  }}
+                  onCompositionEnd={(e) => {
+                    setUserInputComposing(false);
+                    onUserInputChange(e.target.value);
+                  }}
+                  onChange={(e) => {
+                    if (micInputLocked) return;
+                    const v = e.target.value;
+                    if (userInputComposing) {
+                      setUserInputLocal(v);
+                    } else {
+                      onUserInputChange(v);
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (micInputLocked) return;
+                    if (e.key !== 'Enter' || e.shiftKey || isRunDisabled) return;
+                    if (userInputComposing || e.nativeEvent.isComposing || e.keyCode === 229) return;
+                    e.preventDefault();
+                    void handleExecuteAI();
+                  }}
+                  className={`w-full flex-1 min-h-[40px] bg-transparent resize-none outline-none text-[13px] leading-[1.5] overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden pr-9 pt-8 ${
+                    isDarkMode
+                      ? 'text-white/90 placeholder:text-white/35'
+                      : 'text-gray-900 placeholder:text-gray-400'
+                  } ${micInputLocked ? 'opacity-45 cursor-not-allowed' : ''}`}
+                  placeholder={lt.placeholderSystemPersona}
+                  title={lt.systemPersonaInputTitle}
+                  style={getCaretColorStyle()}
+                />
+                <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+                  {personaVoiceMicButton}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-1 flex items-center gap-1.5 flex-shrink-0 min-w-0">
+            <label
+              className={`nodrag nopan nowheel relative inline-flex items-center gap-1.5 max-w-[200px] px-1 py-1 rounded-md text-[12px] cursor-pointer ${
+                isDarkMode ? 'text-white/80 hover:bg-white/5' : 'text-gray-700 hover:bg-black/5'
+              }`}
+              title={lt.chatModelLabel}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <span
+                className={`pointer-events-none inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px] text-[9px] font-bold ${
+                  resolvedChatModel === LLM_CHAT_MODEL_GPT56_TERRA
+                    ? 'bg-violet-500/90 text-white'
+                    : resolvedChatModel === 'gpt-4o'
+                      ? 'bg-emerald-500/90 text-white'
+                      : 'bg-sky-500/90 text-white'
+                }`}
+              >
+                {resolvedChatModel === LLM_CHAT_MODEL_GPT56_TERRA
+                  ? '5'
+                  : resolvedChatModel === 'gpt-4o'
+                    ? '4'
+                    : '3'}
+              </span>
+              <select
+                value={resolvedChatModel}
+                onChange={(e) => onChatModelChange?.(e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                className={`nodrag nopan nowheel appearance-none bg-transparent border-0 outline-none cursor-pointer pr-4 font-medium truncate max-w-[140px] ${
+                  isDarkMode ? 'text-white/80' : 'text-gray-700'
+                }`}
+                aria-label={lt.chatModelLabel}
+              >
+                <option value={LLM_CHAT_DISPLAY_MODEL_ID}>{lt.chatModelGpt35}</option>
+                <option value="gpt-4o">{lt.chatModelGpt4o}</option>
+                <option value={LLM_CHAT_MODEL_GPT56_TERRA}>{lt.chatModelGpt56Terra}</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 opacity-55" />
+            </label>
+
+            <button
+              type="button"
+              onClick={handleSavePrompt}
+              disabled={!userInput.trim()}
+              className={`shrink-0 px-2 py-1 rounded-lg text-[11px] flex items-center gap-0.5 ${
+                !userInput.trim()
+                  ? 'opacity-40 cursor-not-allowed'
+                  : isDarkMode
+                    ? 'text-white/70 hover:bg-white/10'
+                    : 'text-gray-600 hover:bg-gray-100'
+              }`}
+              title={lt.saveButton}
+            >
+              <Save className="w-3 h-3" />
+              {lt.saveButton}
+            </button>
+
+            <div className="flex-1" />
+
+            {runPriceYuanbao != null && (
+              <span
+                className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+                  isDarkMode
+                    ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                    : 'text-amber-700 bg-amber-50 border-amber-200'
+                }`}
+                title={lt.runPriceTooltip}
+              >
+                {runPriceYuanbao}
+                {locale === 'en' ? ' ' : ''}
+                {lt.creditsSuffix}
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={handleExecuteAI}
+              disabled={isRunDisabled}
+              className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+                isRunDisabled
+                  ? isDarkMode
+                    ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                    : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                  : isDarkMode
+                    ? 'bg-white text-black hover:bg-white/90'
+                    : 'bg-gray-900 text-white hover:bg-gray-800'
+              }`}
+              title={lt.send}
+              aria-label={lt.send}
+            >
+              {isProcessing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+    </div>
+
+      {/* 图像反推：胶囊标签在输入框外（对齐文生图排版） */}
+      {isImageReverseMode && (
+        <div className="mt-2 flex flex-shrink-0 flex-wrap items-center gap-1.5 content-start px-0.5">
+          {quickTags.map((tag, qi) => (
+            <button
+              key={qi}
+              type="button"
+              onClick={() => appendQuickTagToPersona(tag.content)}
+              className={`px-2 py-0.5 rounded-full text-[11px] font-medium border transition-opacity ${tag.color} opacity-90 hover:opacity-100`}
+              title={tag.label}
+            >
+              {tag.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 胶囊在输入框卡片外（红框位置），换行无横向滚动；视频分析模式不显示 */}
+      {!isSpecialMode && (
+        <div
+          ref={capsuleBarRef}
+          className="mt-2 flex flex-wrap items-center gap-1.5 content-start px-0.5"
+        >
+          {footerCapsules.map((cap) => {
+            const active = corridorChips.some((c) => c.id === cap.id);
+            const canDelete = !cap.isBuiltin;
+            const showDelete = capsuleManageMode && canDelete;
+            return (
+              <span key={cap.id} className="relative inline-flex">
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    startCapsuleLongPress();
+                  }}
+                  onPointerUp={endCapsuleLongPress}
+                  onPointerLeave={endCapsuleLongPress}
+                  onPointerCancel={endCapsuleLongPress}
+                  onClick={() => {
+                    if (capsuleLongPressFiredRef.current) {
+                      capsuleLongPressFiredRef.current = false;
+                      return;
+                    }
+                    if (capsuleManageMode) return;
+                    toggleCorridorChip({
+                      id: cap.id,
+                      name: cap.name,
+                      content: cap.content,
+                      color: cap.color,
+                    });
+                  }}
+                  className={`relative px-2 py-0.5 rounded-full text-[11px] font-medium border transition-opacity select-none ${cap.color} ${
+                    active ? 'ring-2 ring-offset-1 ring-sky-400/50 opacity-100' : 'opacity-90 hover:opacity-100'
+                  } ${showDelete ? 'animate-llm-capsule-wiggle' : ''}`}
+                  title={
+                    canDelete
+                      ? locale === 'en'
+                        ? `${cap.name} (long-press to manage)`
+                        : `${cap.name}（长按管理删除）`
+                      : cap.name
+                  }
+                >
+                  {cap.name}
+                </button>
+                {showDelete && (
+                  <button
+                    type="button"
+                    className="absolute -top-1.5 -right-1.5 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white shadow ring-1 ring-white/90"
+                    title={lt.deletePersonaTitle}
+                    aria-label={lt.deletePersonaTitle}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      handleDeletePersona(e, cap.id, cap.name);
+                    }}
+                  >
+                    <X className="h-2.5 w-2.5" strokeWidth={3} />
+                  </button>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

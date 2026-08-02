@@ -28,7 +28,7 @@ export type RvcTrainStrings = {
 };
 
 const zh: RvcTrainStrings = {
-  moduleTitle: 'RVC 音色训练',
+  moduleTitle: '音色训练',
   trainAudioLabel: '训练音频',
   trainAudioPreview: '试听训练音频',
   trainAudioPreviewEmpty: '暂无训练音频',
@@ -55,7 +55,7 @@ const zh: RvcTrainStrings = {
 };
 
 const en: RvcTrainStrings = {
-  moduleTitle: 'RVC Voice Train',
+  moduleTitle: 'Voice training',
   trainAudioLabel: 'Training audio',
   trainAudioPreview: 'Preview training audio',
   trainAudioPreviewEmpty: 'No training audio',

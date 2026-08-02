@@ -21,7 +21,7 @@ if errorlevel 1 (
     )
 )
 
-echo [提示] 默认端口 8510。内嵌窗口需先执行: pip install -r requirements-desktop.txt
+echo [提示] 默认端口 9510。内嵌窗口需先执行: pip install -r requirements-desktop.txt
 echo.
 
 python "%~dp0launch_desktop.py"

@@ -22,6 +22,8 @@ function joinKey(...parts: (string | undefined | null | false)[]): string {
 }
 
 const GROK3_DURATION_SEC_OPTIONS = [6, 10, 15, 30] as const;
+/** 全能视频X：文生/图生时长 6|8|10|15|30 */
+const RHART_VIDEO_X_DURATION_SEC_OPTIONS = [6, 8, 10, 15, 30] as const;
 const GROK3_STABLE_DURATION_SEC_OPTIONS = [6, 10] as const;
 const LTX23_DURATION_SEC_OPTIONS = [5, 10, 15] as const;
 export const SEEDANCE_DURATION_SEC_OPTIONS = [5, 10, 15] as const;
@@ -59,9 +61,37 @@ export function coerceSeedanceResolution(
   return seedanceFastResSeg(String(raw ?? ''));
 }
 
+/** Seedance API ratio：adaptive | 16:9 | 4:3 | 1:1 | 3:4 | 9:16 | 21:9 */
+export const SEEDANCE_RATIO_OPTIONS = [
+  'adaptive',
+  '16:9',
+  '4:3',
+  '1:1',
+  '3:4',
+  '9:16',
+  '21:9',
+] as const;
+
+export type SeedanceRatioChoice = (typeof SEEDANCE_RATIO_OPTIONS)[number];
+
+export function coerceSeedanceRatio(
+  raw: string | undefined | null,
+  fallback: SeedanceRatioChoice = 'adaptive',
+): SeedanceRatioChoice {
+  const s = String(raw ?? '').trim();
+  return (SEEDANCE_RATIO_OPTIONS as readonly string[]).includes(s)
+    ? (s as SeedanceRatioChoice)
+    : fallback;
+}
+
 export const GEMINI_OMNI_DURATION_SEC_OPTIONS = [6, 8, 10] as const;
 
 export type GeminiOmniDurationChoice = `${(typeof GEMINI_OMNI_DURATION_SEC_OPTIONS)[number]}`;
+
+/** 全能视频 Omni Flash：6 / 8 / 10 秒 */
+export const GEMINI_OMNI_FLASH_DURATION_SEC_OPTIONS = [6, 8, 10] as const;
+
+export type GeminiOmniFlashDurationChoice = `${(typeof GEMINI_OMNI_FLASH_DURATION_SEC_OPTIONS)[number]}`;
 
 export function normalizeGeminiOmniDurationSec(raw: string | number | undefined, fallback = 6): number {
   const allowed = GEMINI_OMNI_DURATION_SEC_OPTIONS;
@@ -85,6 +115,30 @@ export function normalizeGeminiOmniDurationChoice(
   fallback = 6,
 ): GeminiOmniDurationChoice {
   return String(normalizeGeminiOmniDurationSec(raw, fallback)) as GeminiOmniDurationChoice;
+}
+
+export function normalizeGeminiOmniFlashDurationSec(raw: string | number | undefined, fallback = 6): number {
+  const allowed = GEMINI_OMNI_FLASH_DURATION_SEC_OPTIONS;
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if ((allowed as readonly number[]).includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best = fallback;
+  let minDist = Infinity;
+  for (const v of allowed) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+export function normalizeGeminiOmniFlashDurationChoice(
+  raw: string | number | undefined,
+  fallback = 6,
+): GeminiOmniFlashDurationChoice {
+  return String(normalizeGeminiOmniFlashDurationSec(raw, fallback)) as GeminiOmniFlashDurationChoice;
 }
 
 export function normalizeSeedanceDurationSec(raw: string | number | undefined, fallback = 10): number {
@@ -171,11 +225,33 @@ export function normalizeGrok3DurationSec(raw: string | number | undefined, fall
   }
   return best;
 }
+export function normalizeRhartVideoXDurationSec(raw: string | number | undefined, fallback = 10): number {
+  const allowed = RHART_VIDEO_X_DURATION_SEC_OPTIONS;
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if ((allowed as readonly number[]).includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best = fallback;
+  let minDist = Infinity;
+  for (const v of allowed) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+export function normalizeRhartVideoXDurationStr(raw: string | number | undefined, fallback = '10'): string {
+  return String(normalizeRhartVideoXDurationSec(raw, parseInt(fallback, 10) || 10));
+}
+
 
 /** 图像反推：与视频 SKU 分离，便于云端单独配置一行 model_id */
 const IMAGE_REVERSE_KEYS: Record<string, string> = {
   'gpt-4o': 'gpt-4o-image-reverse',
   'joy-caption-two': 'joy-caption-two-image-reverse',
+  'openai/gpt-5.6-terra': 'openai/gpt-5.6-terra-image-reverse',
 };
 
 function klingO1CapabilitySuffix(model: string): string {
@@ -276,6 +352,16 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     return joinKey('gemini', 'omni', resSeg, `${durNum}s`);
   }
 
+  if (m === 'gemini-omni-flash') {
+    const resRaw = String(input.resolutionGeminiOmni ?? '').trim().toLowerCase();
+    const resSeg = resRaw === '1080p' || resRaw === '4k' ? resRaw : '720p';
+    const durNum = normalizeGeminiOmniFlashDurationSec(
+      input.durationGeminiOmni as string | number | undefined,
+      6,
+    );
+    return joinKey('gemini', 'omni', 'flash', resSeg, `${durNum}s`);
+  }
+
   if (m === 'kling-v2.6-pro') {
     let durNum: number | undefined;
     if (input.duration === '10') durNum = 10;
@@ -301,7 +387,13 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     return joinKey('grok-3-stable', '720p', `${durNum}s`);
   }
 
-  /** Grok video3 文生/图生（标准 rhart-video-g text-to-video | image-to-video）：固定 720p，时长 6|10|15|30s */
+  /** 全能视频X：固定 720p，时长 6|8|10|15|30s */
+  if (m === 'rhart-video-x') {
+    const durNum = normalizeRhartVideoXDurationSec(input.durationGrok3 as string | number | undefined, 10);
+    return joinKey('rhart-video-x', '720p', `${durNum}s`);
+  }
+
+  /** Grok video3 文生/图生（标准 rhart-video-g）：固定 720p，时长 6|10|15|30s */
   if (m === 'grok-3' || m === 'rhart-video-g') {
     if (m === 'rhart-video-g') {
       const dg = String(input.durationRhartVideoG || '').toLowerCase();
@@ -364,6 +456,18 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     const durNum = normalizeLtx23DurationSec(input.durationLtx23HdrMulti as string | number | undefined, 15);
     const dur = `${durNum}s`;
     return joinKey('ltx', '2-3', 'hdr-multi', res, dur);
+  }
+
+  if (m === 'ltx-2.3-msr-av') {
+    const resRaw =
+      input.resolutionLtx23HdrMulti != null && String(input.resolutionLtx23HdrMulti).trim() !== ''
+        ? String(input.resolutionLtx23HdrMulti).trim()
+        : '';
+    let res = resRaw === '720' || resRaw === '1280' ? lc(resRaw) : '';
+    if (resRaw === '1920' || resRaw === '1080') res = '1280';
+    const durNum = normalizeLtx23DurationSec(input.durationLtx23HdrMulti as string | number | undefined, 10);
+    const dur = `${durNum}s`;
+    return joinKey('ltx', '2-3', 'msr-av', res, dur);
   }
 
   if (m === 'rh-video-start-end') {

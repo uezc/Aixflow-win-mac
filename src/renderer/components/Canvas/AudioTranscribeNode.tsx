@@ -2,7 +2,6 @@
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Handle, Position, NodeProps, useReactFlow, useUpdateNodeInternals, useStore } from 'reactflow';
 import { Loader2, Mic2 } from 'lucide-react';
-import { ModuleProgressBar } from './ModuleProgressBar';
 
 export interface AudioTranscribeNodeData {
   audioUrl?: string;
@@ -233,7 +232,7 @@ export const AudioTranscribeNode: React.FC<AudioTranscribeNodeProps> = (props) =
       <div className="px-3 pt-3 pb-2 flex items-center gap-2 border-b border-white/10">
         <Mic2 className="w-4 h-4 text-emerald-500 shrink-0" />
         <span className={`text-sm font-semibold truncate ${textMain}`}>语音转文字</span>
-        <span className={`text-[10px] ml-auto ${textMuted}`}>whisper.cpp</span>
+        <span className={`text-[10px] ml-auto ${textMuted}`}>云端转写</span>
       </div>
 
       <div className="p-3 space-y-2">

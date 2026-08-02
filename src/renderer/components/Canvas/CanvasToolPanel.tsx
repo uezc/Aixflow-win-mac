@@ -9,6 +9,13 @@ import { type ScratchColorId } from '../../theme/scratchColors';
 
 type ToolMode = 'brush' | 'eraser' | 'rect' | 'circle' | 'text';
 
+/** 画板绘制区光标：随工具变化；离开 canvas 后由浏览器自动恢复 */
+function canvasToolSurfaceCursorClass(mode: ToolMode): string {
+  if (mode === 'eraser' || mode === 'brush') return 'cursor-none';
+  if (mode === 'text') return 'cursor-text';
+  return 'cursor-crosshair';
+}
+
 function canvasToolPill(isDarkMode: boolean, scratch: ScratchColorId, extra = '') {
   if (!isDarkMode) {
     return nodeFloatPillBtn(isDarkMode, extra, scratch);
@@ -394,22 +401,30 @@ const CanvasToolPanel: React.FC<CanvasToolPanelProps> = ({
     };
   };
 
-  const updateEraserCursor = useCallback(
+  const updateToolCursor = useCallback(
     (clientX: number, clientY: number) => {
       const el = eraserCursorRef.current;
       const canvas = canvasRef.current;
-      if (!el || !canvas || toolModeRef.current !== 'eraser') return;
+      const mode = toolModeRef.current;
+      if (!el || !canvas || (mode !== 'eraser' && mode !== 'brush')) return;
       const rect = canvas.getBoundingClientRect();
       const scale = rect.width / canvasSize.w;
-      const size = (eraserSizeRef.current * ERASER_SIZE_SCALE * scale);
+      const size =
+        mode === 'eraser'
+          ? eraserSizeRef.current * ERASER_SIZE_SCALE * scale
+          : Math.max(brushSizeRef.current * scale, 4);
       const x = clientX - rect.left - size / 2;
       const y = clientY - rect.top - size / 2;
       el.style.display = 'block';
       el.style.width = `${size}px`;
       el.style.height = `${size}px`;
       el.style.transform = `translate(${x}px, ${y}px)`;
+      el.style.borderColor =
+        mode === 'eraser' ? (isDarkMode ? 'rgba(148,163,184,0.95)' : 'rgba(100,116,139,0.95)') : colorRef.current;
+      el.style.backgroundColor =
+        mode === 'eraser' ? 'rgba(148,163,184,0.12)' : `${colorRef.current}22`;
     },
-    [canvasSize.w]
+    [canvasSize.w, isDarkMode]
   );
 
   const hideEraserCursor = useCallback(() => {
@@ -540,8 +555,8 @@ const CanvasToolPanel: React.FC<CanvasToolPanelProps> = ({
   const handleMouseMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const pos = getCanvasPos(e);
     if (pos) lastMousePosRef.current = pos;
-    if (toolModeRef.current === 'eraser') {
-      updateEraserCursor(e.clientX, e.clientY);
+    if (toolModeRef.current === 'eraser' || toolModeRef.current === 'brush') {
+      updateToolCursor(e.clientX, e.clientY);
     } else {
       hideEraserCursor();
     }
@@ -638,7 +653,7 @@ const CanvasToolPanel: React.FC<CanvasToolPanelProps> = ({
     if (textPos) {
       handleTextConfirm();
     }
-    if (mode !== 'eraser') {
+    if (mode !== 'eraser' && mode !== 'brush') {
       hideEraserCursor();
     }
     setToolMode(mode);
@@ -897,7 +912,8 @@ const CanvasToolPanel: React.FC<CanvasToolPanelProps> = ({
                 ref={canvasRef}
                 width={canvasSize.w}
                 height={canvasSize.h}
-                className={`touch-none rounded-lg bg-white block cursor-crosshair absolute inset-0 w-full h-full ${isDarkMode ? 'border-0' : 'border'}`}
+                data-tool={toolMode}
+                className={`nexflow-canvas-tool-surface touch-none rounded-lg bg-white block absolute inset-0 w-full h-full ${canvasToolSurfaceCursorClass(toolMode)} ${isDarkMode ? 'border-0' : 'border'}`}
                 style={{
                   ...stackedCanvasStyle,
                   boxShadow: isDarkMode ? undefined : '0 2px 8px rgba(0,0,0,0.15)',

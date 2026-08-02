@@ -5,4 +5,4 @@
 export const HIDE_SORA2_AND_SORA_CHARACTER_UI = true;
 
 /** 新建视频节点 / 文生视频 / 隐藏 Sora 时的默认模型 */
-export const DEFAULT_VIDEO_MODEL_REPLACING_SORA2 = 'grok-3' as const;
+export const DEFAULT_VIDEO_MODEL_REPLACING_SORA2 = 'rhart-video-x' as const;

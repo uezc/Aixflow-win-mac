@@ -27,6 +27,8 @@ type InteractionSnapshot = {
   isExiting: boolean;
   /** 视频剪辑节点全屏时的节点 ID，全屏时按退格键不删除该节点 */
   videoSpliceFullscreenNodeId: string | null;
+  /** 导演节点全屏时的节点 ID；用于降级背后 React Flow 合成 */
+  directorFullscreenNodeId: string | null;
 };
 
 let snapshot: InteractionSnapshot = {
@@ -47,6 +49,7 @@ let snapshot: InteractionSnapshot = {
   videoViewportSnapshot: { x: 0, y: 0, zoom: 1 },
   isExiting: false,
   videoSpliceFullscreenNodeId: null,
+  directorFullscreenNodeId: null,
 };
 
 let activeVideoClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +81,35 @@ export function setGlobalInteracting(next: boolean) {
   if (wasInteracting && !next && snapshot.hoveredVideoNodeId == null) {
     scheduleClearActiveVideoNodeId();
   }
+}
+
+/** 紧急解除画布拖拽/缩放交互锁（Esc / pointerup / blur 自救） */
+export function resetGlobalInteractionLocks() {
+  // 平移时会暂停 sharp；锁状态与 sharp 可能不同步，自救时必须恢复，否则上传/资源区会永久排队
+  try {
+    void window.electronAPI?.setSharpQueuePaused?.(false)?.catch?.(() => undefined);
+  } catch {
+    /* ignore */
+  }
+
+  const needsReset =
+    snapshot.isGlobalInteracting ||
+    snapshot.isInteracting ||
+    snapshot.isVisualInteractionLocked ||
+    snapshot.visualLockState !== 'unlocked' ||
+    snapshot.velocityX !== 0 ||
+    snapshot.velocityY !== 0;
+  if (!needsReset) return;
+  snapshot = {
+    ...snapshot,
+    isGlobalInteracting: false,
+    isInteracting: false,
+    visualLockState: 'unlocked',
+    isVisualInteractionLocked: false,
+    velocityX: 0,
+    velocityY: 0,
+  };
+  emit();
 }
 
 /** 更新 VideoNode 视口快照，仅当 !isInteracting 时更新，交互期间冻结 */
@@ -206,6 +238,17 @@ export function scheduleClearActiveDigitalHumanVideoNodeId() {
 export function setVideoSpliceFullscreenNodeId(nodeId: string | null) {
   if (snapshot.videoSpliceFullscreenNodeId === nodeId) return;
   snapshot = { ...snapshot, videoSpliceFullscreenNodeId: nodeId };
+  emit();
+}
+
+export function setDirectorFullscreenNodeId(nodeId: string | null) {
+  if (snapshot.directorFullscreenNodeId === nodeId) return;
+  snapshot = { ...snapshot, directorFullscreenNodeId: nodeId };
+  try {
+    document.documentElement.classList.toggle('nexflow-director-overlay-open', nodeId != null);
+  } catch {
+    /* ignore */
+  }
   emit();
 }
 

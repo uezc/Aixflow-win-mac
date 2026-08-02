@@ -24,6 +24,12 @@ import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/f
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
+import {
+  DOUBAO_SEED_AUDIO_MODEL_ID,
+  clampDoubaoSpeechRate,
+  clampDoubaoLoudnessRate,
+  clampDoubaoPitchRate,
+} from '../../../shared/doubaoSeedAudioUtils.js';
 
 /**
  * 轮询 FC→RunningHub 时：525（CDN SSL）、网络抖动等应重试，避免「第三方已成功但本地误判失败并退款」。
@@ -44,7 +50,7 @@ function isRetriableAudioPollError(pollError: unknown): boolean {
 
 interface AudioInput {
   text: string;
-  model?: string; // 'speech-2.8-hd' | 'index-tts2' | 'ai-voice-cover' | 'rhart-song-v5.5'
+  model?: string; // 'speech-2.8-hd' | 'index-tts2' | 'ai-voice-cover' | 'rhart-song-v5.5' | 'doubao-seed-audio-1.0'
   voice_id?: string;
   speed?: number;
   volume?: number;
@@ -56,6 +62,20 @@ interface AudioInput {
   projectId?: string;
   nodeTitle?: string;
   referenceAudioUrl?: string;
+  /** Doubao：参考音频 URL 列表（最多 3）；未传时回退 referenceAudioUrl */
+  doubaoAudioUrls?: string[];
+  /** Doubao：音色 ID（与 audio_url / image_url 互斥） */
+  doubaoSpeaker?: string;
+  /** Doubao：参考图片 URL（与 speaker / audio_url 互斥） */
+  doubaoImageUrl?: string;
+  /** Doubao：语速 [-50,100] */
+  speechRate?: number;
+  /** Doubao：音量 [-50,100] */
+  loudnessRate?: number;
+  /** Doubao：输出格式 */
+  doubaoFormat?: string;
+  /** Doubao：采样率 */
+  doubaoSampleRate?: string;
   indexTts2Select?: string;
   /** 全能写歌：歌曲名 */
   songName?: string;
@@ -106,13 +126,22 @@ function resolveEffectiveAudioModel(rawModel: string | undefined, audioInput: Au
     m !== 'index-tts2' &&
     m !== 'rhart-song-v5.5' &&
     m !== 'rhart-song' &&
-    m !== 'rvc-voice-train'
+    m !== 'rvc-voice-train' &&
+    m !== DOUBAO_SEED_AUDIO_MODEL_ID
   ) {
     return 'ai-voice-cover';
   }
   const ref = String(audioInput.referenceAudioUrl ?? '').trim();
   const hasText = String(audioInput.text ?? '').trim().length > 0;
-  if (ref && !hasText && !sourceSong && m !== 'index-tts2' && m !== 'rhart-song-v5.5' && m !== 'rhart-song') {
+  if (
+    ref &&
+    !hasText &&
+    !sourceSong &&
+    m !== 'index-tts2' &&
+    m !== 'rhart-song-v5.5' &&
+    m !== 'rhart-song' &&
+    m !== DOUBAO_SEED_AUDIO_MODEL_ID
+  ) {
     return 'rvc-voice-train';
   }
   return m;
@@ -122,6 +151,15 @@ export class AudioProvider extends BaseProvider {
   readonly modelId = 'audio';
 
   private readonly runningHubApiBaseUrl = 'https://nexflow-fc-rh.stub/openapi/v2';
+
+  /** 本地/URL 图片 → 公网 OSS URL（Doubao image_url） */
+  private async resolveImageUrlForRh(urlOrPath: string): Promise<string> {
+    const raw = (urlOrPath || '').trim();
+    if (!raw) throw new Error('参考图片 URL 为空');
+    const { VideoProvider } = await import('./VideoProvider.js');
+    const vp = new VideoProvider();
+    return vp.processImageToOssUrl(raw);
+  }
 
   /** 本地/URL 音频 → RH ai-app fieldValue（必要时上传 OSS） */
   private async resolveAudioUrlForRhApp(urlOrPath: string): Promise<string> {
@@ -462,6 +500,94 @@ export class AudioProvider extends BaseProvider {
           projectId,
           nodeTitle,
         );
+        return;
+      }
+
+      // Doubao 音频生成 1.0：POST /bytedance/doubao-seed-audio-1.0（路径首段 bytedance，须显式 billingModelId）
+      if (model === DOUBAO_SEED_AUDIO_MODEL_ID) {
+        const textPrompt = String(text ?? '').trim();
+        if (!textPrompt) throw new Error('Doubao 音频生成需要填写文本提示词（text_prompt）');
+        if (textPrompt.length > 3000) throw new Error('文本提示词不能超过 3000 字符');
+
+        const speaker = String(audioInput.doubaoSpeaker ?? '').trim();
+        const imageRaw = String(audioInput.doubaoImageUrl ?? '').trim();
+        const audioListRaw = Array.isArray(audioInput.doubaoAudioUrls)
+          ? audioInput.doubaoAudioUrls.map((u) => String(u ?? '').trim()).filter(Boolean)
+          : [];
+        const singleRef = String(referenceAudioUrl ?? '').trim();
+        if (audioListRaw.length === 0 && singleRef) audioListRaw.push(singleRef);
+        if (audioListRaw.length > 3) throw new Error('Doubao 参考音频最多 3 段');
+
+        const hasSpeaker = !!speaker;
+        const hasAudio = audioListRaw.length > 0;
+        const hasImage = !!imageRaw;
+        const refModes = [hasSpeaker, hasAudio, hasImage].filter(Boolean).length;
+        if (refModes > 1) {
+          throw new Error('Doubao 音色(speaker)、参考音频(audio_url)、参考图片(image_url) 三者只能选其一');
+        }
+
+        const speechRate = clampDoubaoSpeechRate(audioInput.speechRate ?? 0);
+        const loudnessRate = clampDoubaoLoudnessRate(audioInput.loudnessRate ?? 0);
+        const pitchRate = clampDoubaoPitchRate(audioInput.pitch ?? 0);
+        const format = 'mp3';
+        const sampleRate = '24000';
+
+        const payload: Record<string, unknown> = {
+          text_prompt: textPrompt,
+          speech_rate: speechRate,
+          loudness_rate: loudnessRate,
+          pitch_rate: pitchRate,
+          format,
+          sample_rate: sampleRate,
+        };
+        if (hasSpeaker) {
+          payload.speaker = speaker;
+          payload.audio_url = [];
+          payload.image_url = null;
+        } else if (hasAudio) {
+          const resolved: string[] = [];
+          for (const u of audioListRaw) {
+            resolved.push(await this.resolveAudioUrlForRhApp(u));
+          }
+          payload.speaker = null;
+          payload.audio_url = resolved;
+          payload.image_url = null;
+        } else if (hasImage) {
+          payload.speaker = null;
+          payload.audio_url = [];
+          payload.image_url = await this.resolveImageUrlForRh(imageRaw);
+        } else {
+          payload.speaker = null;
+          payload.audio_url = [];
+          payload.image_url = null;
+        }
+
+        console.log('[音频生成] Doubao-seed-audio-1.0 提交', {
+          textLen: textPrompt.length,
+          speechRate,
+          hasSpeaker,
+          audioCount: hasAudio ? audioListRaw.length : 0,
+          hasImage,
+          format,
+          sampleRate,
+        });
+
+        const fcBaseId = randomUUID();
+        const ledgerDoubao = await this.ensureLedgerAudioTask(nodeId, DOUBAO_SEED_AUDIO_MODEL_ID, audioInput);
+        const data = await rhPostChargeAudio(
+          `${this.runningHubApiBaseUrl}/bytedance/doubao-seed-audio-1.0`,
+          payload,
+          fcBaseId,
+          { billingModelId: DOUBAO_SEED_AUDIO_MODEL_ID },
+          ledgerDoubao,
+        );
+        fcChargedTaskId = ledgerDoubao || fcBaseId;
+        const taskId = this.requireRhTaskIdFromSubmit(data, 'Doubao-音频生成-1.0');
+        onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
+        const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerDoubao);
+        if (pollResult.audioUrls.length > 0) {
+          await this.handleAudioResults(pollResult.audioUrls, nodeId, onStatus, projectId, nodeTitle);
+        }
         return;
       }
 

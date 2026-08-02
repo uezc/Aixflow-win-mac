@@ -11,7 +11,6 @@ import ReactFlow, {
   Connection,
   useNodesState,
   useEdgesState,
-  useViewport,
   Background,
   Controls,
   MiniMap,
@@ -22,6 +21,7 @@ import ReactFlow, {
   Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { useFrozenFlowZoom } from '../hooks/useFrozenFlowViewport';
 import { User, Image, Film, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Minimize2, Trash2, FolderOpen, Power, X } from 'lucide-react';
 import { TextNode } from './Canvas/TextNode';
 import { MinimalistTextNode } from './Canvas/MinimalistTextNode';
@@ -43,7 +43,13 @@ import StoryboardScriptNode from './Canvas/StoryboardScriptNode';
 import ScriptNode from './Canvas/ScriptNode';
 import DirectorNode, { DIRECTOR_DEFAULT_H, DIRECTOR_DEFAULT_W } from './Canvas/DirectorNode';
 import { collageLayerSourceNodeId } from '../utils/collageLayerTransform';
-import { buildPhotoCollageLayersFromEdges } from '../utils/photoCollageFromEdges';
+import {
+  buildPhotoCollageLayersFromEdges,
+  MAX_PHOTO_COLLAGE_LAYERS,
+  photoCollageRemainingImportSlots,
+  resolveImageUrlFromNodeForPhotoCollage,
+} from '../utils/photoCollageFromEdges';
+import { photoCollageT } from '../i18n/photoCollageI18n';
 import {
   buildImageComparerUrlsFromEdges,
   pickImageComparerTargetHandle,
@@ -51,6 +57,7 @@ import {
 import {
   buildGridMapCellsFromEdges,
   emptyGridMapCells,
+  formatGridMapImagePath,
   DEFAULT_GRID_MAP_CANVAS_H,
   DEFAULT_GRID_MAP_CANVAS_W,
   DEFAULT_GRID_MAP_COLS,
@@ -59,7 +66,7 @@ import {
 } from '../utils/gridMapCompose';
 import { isLikelyVideoMediaUrl } from '../utils/mediaPreviewUrl';
 import WanAnimateNode from './Canvas/WanAnimateNode';
-import HeyGemNode from './Canvas/HeyGemNode';
+import HeyGemNode, { HEYGEM_SHELL_W, HEYGEM_SHELL_H } from './Canvas/HeyGemNode';
 import FlowContent from './Canvas/FlowContent';
 import LLMInputPanel from './Canvas/LLMInputPanel';
 import StoryboardScriptInputPanel from './Canvas/StoryboardScriptInputPanel';
@@ -104,6 +111,7 @@ import {
 } from '../utils/nodeSizeFromAspectRatio';
 import {
   applyBuiltClipsToSpliceData,
+  collapseDirectorAbsoluteVideoTracks,
   collectSpliceIncomingSourceIds,
   normalizeVideoTracks,
   spliceBuiltHasNewConnectedSources,
@@ -203,6 +211,10 @@ import { StoryboardScriptInputPanelProvider } from '../contexts/StoryboardScript
 import { DirectorInputPanelProvider } from '../contexts/DirectorInputPanelContext';
 import { ImageInputPanelProvider } from '../contexts/ImageInputPanelContext';
 import { VideoInputPanelProvider } from '../contexts/VideoInputPanelContext';
+import {
+  HeyGemInlinePanelProvider,
+  type HeyGemInlinePanelApi,
+} from '../contexts/HeyGemInlinePanelContext';
 import { AudioInputPanelProvider } from '../contexts/AudioInputPanelContext';
 import { ImageTo3dInputPanelProvider } from '../contexts/ImageTo3dInputPanelContext';
 import { workspaceChromeT } from '../i18n/workspaceI18n';
@@ -210,6 +222,7 @@ import { assetLibraryT } from '../i18n/assetLibraryI18n';
 import { imageNodeChromeT } from '../i18n/imageNodeI18n';
 import { PERF_POLICY } from '../config/perfPolicy';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI, DEFAULT_VIDEO_MODEL_REPLACING_SORA2 } from '../config/sora2UiPolicy';
+import { HIDE_DIRECTOR_STAGE_UI } from '../config/directorUiPolicy';
 import { isRetiredVideoModel, normalizeVideoModelIfRetired } from '../config/videoModelUiPolicy';
 import { isRetiredImageModel, normalizeImageModelIfRetired } from '../config/imageModelUiPolicy';
 import { zImageDimensionsForAspect } from '../../common/zImageDimensions';
@@ -301,6 +314,8 @@ import { isAudioCoverModel, AI_VOICE_COVER_MODEL_ID, resolveRvcCoverModelPath, d
 import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from '../utils/audioRvcTrainModel';
 import { isRvcModelPackageUrl } from '../../shared/rvcVoiceTrainUtils';
 import { CANVAS_PICK_NODE_EVENT, syncCanvasPickState } from '../utils/canvasPickStore';
+import { OPEN_ASSET_LIBRARY_EVENT } from '../utils/assetLibraryOpenStore';
+import { syncQuickConnectState, showQuickConnectToast } from '../utils/quickConnectStore';
 
 /** 旧存盘分辨率与面板挡位 720P/1080P 对齐 */
 function coerceVideoWanAnimateResolution(v) {
@@ -898,6 +913,89 @@ function collectImageTargetInputImagesFromEdges(imageId: string, nds: Node[], ed
     }
   }
   return collected.slice(0, 10);
+}
+
+function urlsRoughlyEqual(a: string, b: string): boolean {
+  const x = String(a || '').trim();
+  const y = String(b || '').trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  try {
+    return decodeURIComponent(x) === decodeURIComponent(y);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 面板删除某张参考图时：断开提供该 URL 的入边（图片源整边删除；角色源取消对应槽勾选）。
+ * 返回是否改动了边或角色槽位（调用方仍应同步更新 target.inputImages）。
+ */
+function disconnectIncomingRefImageEdges(
+  targetId: string,
+  wantUrl: string,
+  nds: Node[],
+  eds: Edge[],
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>,
+  setEdges: React.Dispatch<React.SetStateAction<Edge[]>>,
+): void {
+  const want = String(wantUrl || '').trim();
+  if (!targetId || !want) return;
+
+  // 角色节点：取消对应视图传出勾选
+  for (const edge of eds) {
+    if (edge.target !== targetId) continue;
+    const th = edge.targetHandle || 'input';
+    if (th !== 'input' && th !== 'video-input' && th !== 'image-input') continue;
+    const src = nds.find((n) => n.id === edge.source);
+    if (!src || src.type !== 'character') continue;
+    const sh = edge.sourceHandle || '';
+    if (sh === CHARACTER_OUTPUT_AUDIO_HANDLE || sh === 'output-audio') continue;
+    const vi = Array.isArray(src.data?.viewImages) ? (src.data.viewImages as string[]) : [];
+    const mask = resolveReferenceTransmitSlots(src.data?.referenceTransmitSlots);
+    let hit = -1;
+    for (let i = 0; i < 4; i++) {
+      const u = typeof vi[i] === 'string' ? vi[i].trim() : '';
+      if (u && mask[i] && urlsRoughlyEqual(u, want)) {
+        hit = i;
+        break;
+      }
+    }
+    if (hit < 0) continue;
+    const nextMask = [...mask];
+    nextMask[hit] = false;
+    if (nextMask.every((x) => !x)) {
+      setEdges((prev) => prev.filter((e) => e.id !== edge.id));
+    } else {
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === src.id ? { ...n, data: { ...n.data, referenceTransmitSlots: nextMask } } : n,
+        ),
+      );
+    }
+    return;
+  }
+
+  // 图片 / 其它可出图源：删除提供该 URL 的入边
+  setEdges((prev) =>
+    prev.filter((edge) => {
+      if (edge.target !== targetId) return true;
+      const th = edge.targetHandle || 'input';
+      if (th !== 'input' && th !== 'video-input' && th !== 'image-input') return true;
+      const src = nds.find((n) => n.id === edge.source);
+      if (!src) return true;
+      if (src.type === 'character') return true;
+      const u =
+        pickPreviewFromEdgeOrNode(edge, src.data) ||
+        (src.data?.outputImage as string) ||
+        (typeof src.data?.avatar === 'string' ? src.data.avatar.trim() : '') ||
+        (src.data?.originalImageUrl as string) ||
+        (src.data?.inputImages as string[])?.[0] ||
+        '';
+      if (!u) return true;
+      return !urlsRoughlyEqual(String(u), want);
+    }),
+  );
 }
 
 /**
@@ -1527,6 +1625,31 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const [selectedEdge, setSelectedEdge] = useState<Edge | null>(null);
   const [projectReloadNonce, setProjectReloadNonce] = useState(0);
   const [edgeDeleteModeId, setEdgeDeleteModeId] = useState<string | null>(null);
+  /** Ctrl+点击快速连线：已选源模块 */
+  const [quickConnectSourceId, setQuickConnectSourceId] = useState<string | null>(null);
+  const quickConnectSourceIdRef = useRef<string | null>(null);
+  quickConnectSourceIdRef.current = quickConnectSourceId;
+  const cancelQuickConnect = useCallback(() => {
+    if (!quickConnectSourceIdRef.current) return;
+    setQuickConnectSourceId(null);
+    syncQuickConnectState(false, null);
+  }, []);
+  const beginQuickConnect = useCallback(
+    (nodeId: string) => {
+      setQuickConnectSourceId(nodeId);
+      syncQuickConnectState(true, nodeId);
+      setNodes((nds) =>
+        nds.map((n) => ({
+          ...n,
+          selected: n.id === nodeId,
+        })),
+      );
+      setSelectedEdge(null);
+      setEdgeDeleteModeId(null);
+    },
+    [setNodes],
+  );
+  useEffect(() => () => syncQuickConnectState(false, null), []);
   const positionChangeRafRef = useRef<number | null>(null);
   const pendingPositionChangesRef = useRef<any[]>([]);
   const selectionChangeRafRef = useRef<number | null>(null);
@@ -2057,6 +2180,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           cancelCharacterCanvasPick();
           return;
         }
+        if (quickConnectSourceIdRef.current) {
+          cancelQuickConnect();
+          return;
+        }
         if (previewImage) {
           setPreviewImage(null);
           setPreviewImageNodeId(null);
@@ -2077,7 +2204,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp, previewImage, previewAudio, cancelCharacterCanvasPick]);
+  }, [handleUndo, handleRedo, selectedEdge, edgeDeleteModeId, setEdges, showConfirm, handleQuitApp, previewImage, previewAudio, cancelCharacterCanvasPick, cancelQuickConnect]);
 
   // 画布上删除节点时，仅从任务列表中移除该节点下的任务；不删除项目文件夹内的图片/视频文件
   const removeTasksForNodeIds = useCallback((nodeIds: string[]) => {
@@ -3134,8 +3261,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     reverseCaptionModel?: ImageReverseCaptionModel;
     /** 普通对话聊天模型 */
     chatModel?: string;
-    /** 人设区是否展开（影响面板高度） */
-    personaExpanded?: boolean;
   } | null>(null);
   const llmInputPanelDataRef = useRef<typeof llmInputPanelData>(null);
   useEffect(() => {
@@ -3255,6 +3380,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     /** 视频生成进度 0–100，用于面板内立即显示进度条 */
     progress?: number;
     progressMessage?: string;
+    /** HeyGem 一体化：台词 / TTS / 克隆参考音 */
+    heyGemScript?: string;
+    heyGemTtsModel?: string;
+    heyGemCloneAudioUrl?: string;
   } | null>(null);
   const videoInputPanelDataRef = useRef<typeof videoInputPanelData>(null);
   useEffect(() => {
@@ -3952,7 +4081,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (isVideoModuleNodeType(node.type) && nodeData.model === 'rhart-video-g') {
               nodeData = {
                 ...nodeData,
-                model: 'grok-3',
+                model: 'rhart-video-x',
                 durationGrok3:
                   (nodeData.durationGrok3 as string) ||
                   (nodeData.durationRhartVideoG === '10s' ? '10' : '6'),
@@ -4778,6 +4907,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
 
     failedVideoTasks.forEach((task) => {
+      const target = latestNodesRef.current.find((n) => n.id === task.nodeId);
+      // HeyGem：失败改 DarkAlert 弹窗，勿把 errorMessage 写回节点（避免透明双栏透出内联「生成失败」）
+      if (target?.type === 'heyGem') {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === task.nodeId
+              ? { ...node, data: { ...node.data, progress: 0, errorMessage: undefined } }
+              : node,
+          ),
+        );
+        handleVideoNodeDataChange(task.nodeId, { progress: 0, errorMessage: undefined });
+        return;
+      }
       // 更新对应的 VideoNode：停止进度条并显示错误信息
       setNodes((nds) =>
         nds.map((node) =>
@@ -4798,6 +4940,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     if (successVideoTasks.length === 0) return;
 
     const toSync: Array<{ nodeId: string; url: string; networkUrl?: string }> = [];
+    const heyGemToSpawn: Array<{ nodeId: string; url: string; networkUrl?: string }> = [];
 
     setNodes((nds) => {
       let changed = false;
@@ -4805,10 +4948,50 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (!isVideoModuleNodeType(node.type)) return node;
         const task = successVideoTasks.find((t) => t.nodeId === node.id);
         if (!task?.videoUrl) return node;
+        const url = String(task.videoUrl);
+        const networkUrl =
+          (typeof task.originalVideoUrl === 'string' &&
+          (task.originalVideoUrl.startsWith('http://') || task.originalVideoUrl.startsWith('https://'))
+            ? task.originalVideoUrl
+            : undefined) ||
+          (url.startsWith('http://') || url.startsWith('https://') ? url : undefined);
+
+        // HeyGem：成片应 spawn 到右侧视频节点；任务已成功但漏 spawn / loading 未清时在此补救
+        if (node.type === 'heyGem') {
+          const urlsToMatch = [url, networkUrl].filter(Boolean) as string[];
+          const hasSpawnedChild = latestEdgesRef.current
+            .filter((e) => e.source === node.id)
+            .some((e) => {
+              const child =
+                nds.find((n) => n.id === e.target) ??
+                latestNodesRef.current.find((n) => n.id === e.target);
+              if (child?.type !== 'video') return false;
+              const childUrls = [
+                String(child.data?.outputVideo || '').trim(),
+                String(child.data?.originalVideoUrl || '').trim(),
+              ].filter(Boolean);
+              return childUrls.some((u) => urlsToMatch.includes(u));
+            });
+          if (!hasSpawnedChild) {
+            heyGemToSpawn.push({ nodeId: node.id, url, networkUrl });
+          }
+          const progressBusy = typeof node.data?.progress === 'number' && node.data.progress > 0;
+          const hasErr = !!(node.data?.errorMessage || '').trim();
+          if (!progressBusy && !hasErr) return node;
+          changed = true;
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              progress: 0,
+              progressMessage: undefined,
+              errorMessage: undefined,
+            },
+          };
+        }
+
         if (node.data?.outputVideo || node.data?.originalVideoUrl) return node;
         changed = true;
-        const url = String(task.videoUrl);
-        const networkUrl = url.startsWith('http://') || url.startsWith('https://') ? url : undefined;
         toSync.push({ nodeId: node.id, url, networkUrl });
         return {
           ...node,
@@ -4823,6 +5006,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         };
       });
       return changed ? next : nds;
+    });
+
+    heyGemToSpawn.forEach(({ nodeId, url, networkUrl }) => {
+      spawnHeyGemResultVideoNodeRef.current?.({
+        sourceNodeId: nodeId,
+        outputVideo: url,
+        originalVideoUrl: networkUrl,
+      });
+      handleVideoNodeDataChange(nodeId, {
+        progress: 0,
+        progressMessage: undefined,
+        errorMessage: undefined,
+      });
     });
 
     toSync.forEach(({ nodeId, url, networkUrl }) => {
@@ -5343,11 +5539,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     [setNodes, saveHistory],
   );
 
-  /** 视频智能剪辑 / 裁剪导出：新视频节点 + 连线（不改原视频） */
+  /** 视频智能剪辑 / 裁剪导出 / 深度转换：新节点 + 连线（同 id 则覆盖，便于占位→结果回填） */
   const handleAddVideoClipNodes = useCallback(
     (payload: { nodes: Node[]; edges: Edge[] }) => {
       if (!payload.nodes?.length) return;
-      setNodes((nds) => nds.map((n) => ({ ...n, selected: false })).concat(payload.nodes));
+      const incomingIds = new Set(payload.nodes.map((n) => n.id));
+      setNodes((nds) =>
+        nds
+          .filter((n) => !incomingIds.has(n.id))
+          .map((n) => ({ ...n, selected: false }))
+          .concat(payload.nodes),
+      );
       setEdges((eds) => {
         let next = eds;
         for (const edge of payload.edges || []) {
@@ -6867,7 +7069,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
       const newNodes: Node[] = [];
       const autoRunIds: string[] = [];
-      const storyboardGeneratingWrites: Array<{ shotNo: string; videoNodeId: string }> = [];
+      const storyboardGeneratingWrites: Array<{
+        shotNo: string;
+        videoNodeId: string;
+        audioStartSec: number;
+        audioEndSec: number;
+      }> = [];
       const lipsyncTrimErrors: string[] = [];
       const songClipCacheWrites: Array<{
         shotNo: string;
@@ -6903,6 +7110,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             packText: lyricPacks[rowIdx >= 0 ? rowIdx : spawnIndex]?.text || String(shot['对白旁白'] || ''),
             audioStartSec: rangeStartSec,
             songDurationSec: songDurSec,
+            closeUpFramingOn: director.mvCloseUpFraming !== false,
           });
         const shotModel = preferLipsync ? batchLipsyncModel : batchModel;
         const shotResolution = normalizeDirectorVideoBatchResolution(
@@ -7075,7 +7283,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           data: nodeData,
           style: { opacity: 0, pointerEvents: 'none', width: 1, height: 1 },
         });
-        storyboardGeneratingWrites.push({ shotNo, videoNodeId: newId });
+        storyboardGeneratingWrites.push({
+          shotNo,
+          videoNodeId: newId,
+          // 生视频瞬间冻结本镜歌曲区间，入轨时优先读分镜绑定而非重算 packs
+          audioStartSec: rangeStartSec,
+          audioEndSec: rangeEndSec,
+        });
         autoRunIds.push(newId);
       }
 
@@ -7109,6 +7323,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 videoNodeId: w.videoNodeId,
                 videoError: '',
                 videoUrl: '',
+                audioStartSec: w.audioStartSec,
+                audioEndSec: w.audioEndSec,
               });
             }
             if (summary) {
@@ -7257,6 +7473,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         window.setTimeout(fire, 160);
       };
 
+      // 整轨替换（勿 merge 旧轨）：merge 曾把每镜踢到独立轨，造成同时间多轨叠播
+      const nextSpliceTracks = {
+        ...applyBuiltClipsToSpliceData(undefined, {
+          videoTracks: [videoClips],
+          videoClips,
+          audioTracks: [audioClips],
+        }),
+        videoTrackLeftSnap: false,
+        videoTrackLeftSnapList: [false],
+        audioTrackLeftSnap: [false],
+        mainTrackMagnet: false,
+        trackLeftSnap: false,
+        videoTrackMuted: [true],
+      };
+
       if (existing) {
         setNodes((nds) =>
           nds.map((n) => {
@@ -7267,11 +7498,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 data: {
                   ...n.data,
                   previewAspectId,
-                  ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
-                    videoTracks: [videoClips],
-                    videoClips,
-                    audioTracks: [audioClips],
-                  }),
+                  ...nextSpliceTracks,
                 },
               };
             }
@@ -7304,11 +7531,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           height: spliceH,
           title: 'MV剪辑',
           previewAspectId,
-          ...applyBuiltClipsToSpliceData(undefined, {
-            videoTracks: [videoClips],
-            videoClips,
-            audioTracks: [audioClips],
-          }),
+          ...nextSpliceTracks,
         },
       };
 
@@ -7402,11 +7625,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const spliceH = 500;
       const previewAspectId = String(director.mvAspectRatio || '16:9').replace(':', '-');
       // 一键铺轨：整轨替换（勿 merge 旧分镜图占位），避免「点了没反应」
-      const nextSpliceTracks = applyBuiltClipsToSpliceData(undefined, {
-        videoTracks: [videoClips],
-        videoClips,
-        audioTracks: [audioClips],
-      });
+      // 关闭视频轨左吸附：导演用 audioStartSec 绝对时间，压缝会与原曲错位
+      // 静音视频轨：成片/对口型可能自带音轨，与原曲叠播会听感错位
+      const nextSpliceTracks = {
+        ...applyBuiltClipsToSpliceData(undefined, {
+          videoTracks: [videoClips],
+          videoClips,
+          audioTracks: [audioClips],
+        }),
+        videoTrackLeftSnap: false,
+        videoTrackLeftSnapList: [false],
+        audioTrackLeftSnap: [false],
+        mainTrackMagnet: false,
+        trackLeftSnap: false,
+        videoTrackMuted: [true],
+      };
 
       const focusSpliceModule = (spliceId: string) => {
         const fire = () => {
@@ -7617,24 +7850,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             videoClips?: TimelineClip[];
             audioTracks?: TimelineClip[][];
           };
-          const tracks =
-            d.videoTracks && d.videoTracks.length > 0
+          const tracks = collapseDirectorAbsoluteVideoTracks(
+            (d.videoTracks && d.videoTracks.length > 0
               ? d.videoTracks.map((t) => [...t])
-              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []];
+              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []]) as TimelineClip[][],
+          );
           const nextTrack0 = replaceDirectorMvPlaceholdersWithVideos(tracks[0] || [], [
             { shotNo, videoUrl: url, sourceNodeId: videoNodeId },
           ]) as TimelineClip[];
           tracks[0] = nextTrack0;
-          const audioTracks = d.audioTracks || [[]];
+          // 直接写回单轨，避免 merge 因 sourceNodeId 从占位换成成片节点而开新轨
           return {
             ...n,
             data: {
               ...n.data,
-              ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
-                videoTracks: tracks,
-                videoClips: nextTrack0,
-                audioTracks,
-              }),
+              videoTracks: tracks,
+              videoClips: nextTrack0,
             },
           };
         }),
@@ -7890,24 +8121,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             videoClips?: TimelineClip[];
             audioTracks?: TimelineClip[][];
           };
-          const tracks =
-            d.videoTracks && d.videoTracks.length > 0
+          const tracks = collapseDirectorAbsoluteVideoTracks(
+            (d.videoTracks && d.videoTracks.length > 0
               ? d.videoTracks.map((t) => [...t])
-              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []];
+              : [Array.isArray(d.videoClips) ? [...d.videoClips] : []]) as TimelineClip[][],
+          );
           const nextTrack0 = replaceDirectorMvPlaceholdersWithVideos(tracks[0] || [], [
             { shotNo: r.shotNo, videoUrl: r.url, sourceNodeId: r.videoNodeId },
           ]) as TimelineClip[];
           tracks[0] = nextTrack0;
-          const audioTracks = d.audioTracks || [[]];
           return {
             ...n,
             data: {
               ...n.data,
-              ...applyBuiltClipsToSpliceData(n.data as Record<string, unknown>, {
-                videoTracks: tracks,
-                videoClips: nextTrack0,
-                audioTracks,
-              }),
+              videoTracks: tracks,
+              videoClips: nextTrack0,
             },
           };
         });
@@ -8320,7 +8548,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     (NodeComp: React.ComponentType<any>, areEqual?: (prev: any, next: any) => boolean, skipPlaceholder = false) => {
       const Wrapped = React.memo((props: any) => {
         if (skipPlaceholder) return <NodeComp {...props} />;
-        const zoom = useViewport().zoom ?? 1;
+        const zoom = useFrozenFlowZoom(1);
         if (zoom < TINY_ZOOM_THRESHOLD_VALUE) return <MinimalNodePlaceholder {...props} />;
         return <NodeComp {...props} />;
       }, areEqual);
@@ -8446,6 +8674,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (pa.referenceVideoUrl !== na.referenceVideoUrl) return false;
       if (pa.width !== na.width || pa.height !== na.height) return false;
       if (pa.progress !== na.progress || pa.progressMessage !== na.progressMessage || pa.errorMessage !== na.errorMessage) return false;
+      // HeyGem 内嵌面板从 node.data 读取，需参与 memo 比较
+      if (prev.type === 'heyGem' || next.type === 'heyGem') {
+        if (pa.inputAudioUrl !== na.inputAudioUrl) return false;
+        if (pa.heyGemScript !== na.heyGemScript) return false;
+        if (pa.heyGemTtsModel !== na.heyGemTtsModel) return false;
+        if (pa.heyGemCloneAudioUrl !== na.heyGemCloneAudioUrl) return false;
+      }
       const pImgs = JSON.stringify((pa.inputImages as string[]) || []);
       const nImgs = JSON.stringify((na.inputImages as string[]) || []);
       return pImgs === nImgs;
@@ -8829,7 +9064,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (pa.width !== na.width || pa.height !== na.height) return false;
       if (pa.isGenerating !== na.isGenerating || pa.error !== na.error) return false;
       if (pa.userPrompt !== na.userPrompt || pa.title !== na.title) return false;
-      if (JSON.stringify(pa.director) !== JSON.stringify(na.director)) return false;
+      if (pa.director !== na.director) return false;
       return true;
     };
     const DirectorNodeWrapper = withTinyZoomStatic(
@@ -10608,58 +10843,152 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   /** 超级连线后：按全部入边一次性重建拼图图层（避免逐条连线时 layers 被覆盖） */
   const finalizePhotoCollageLayers = useCallback(
-    (targetNodeId: string) => {
+    (targetNodeId: string, edgesOverride?: Edge[]) => {
       flushSync(() => {
-        setEdges((eds) => {
-          setNodes((nds) => {
-            const target = nds.find((n) => n.id === targetNodeId);
-            if (!target || target.type !== 'photoCollage') return nds;
-            const prevLayers = ((target.data?.layers || []) as CollageLayer[]).slice();
-            const nextLayers = buildPhotoCollageLayersFromEdges(
-              targetNodeId,
-              eds as Edge[],
-              nds,
-              prevLayers,
-            );
-            return nds.map((n) =>
-              n.id === targetNodeId ? { ...n, data: { ...n.data, layers: nextLayers } } : n,
-            );
-          });
-          return eds;
+        setNodes((nds) => {
+          const target = nds.find((n) => n.id === targetNodeId);
+          if (!target || target.type !== 'photoCollage') return nds;
+          const edgesNow = edgesOverride ?? (latestEdgesRef.current as Edge[]);
+          const prevLayers = ((target.data?.layers || []) as CollageLayer[]).slice();
+          const nextLayers = buildPhotoCollageLayersFromEdges(
+            targetNodeId,
+            edgesNow,
+            nds,
+            prevLayers,
+          );
+          return nds.map((n) =>
+            n.id === targetNodeId ? { ...n, data: { ...n.data, layers: nextLayers } } : n,
+          );
         });
       });
     },
-    [setNodes, setEdges],
+    [setNodes],
   );
 
   /** 超级连线后：按入边一次性填充宫格空位 */
   const finalizeGridMapCells = useCallback(
-    (targetNodeId: string) => {
+    (targetNodeId: string, edgesOverride?: Edge[]) => {
       flushSync(() => {
-        setEdges((eds) => {
-          setNodes((nds) => {
-            const target = nds.find((n) => n.id === targetNodeId);
-            if (!target || target.type !== 'gridMap') return nds;
-            const cols = Number(target.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
-            const rows = Number(target.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
-            const prevCells = ((target.data?.cells || []) as GridMapCell[]).slice();
-            const nextCells = buildGridMapCellsFromEdges(
-              targetNodeId,
-              eds as Edge[],
-              nds,
-              prevCells,
-              cols,
-              rows,
-            );
-            return nds.map((n) =>
-              n.id === targetNodeId ? { ...n, data: { ...n.data, cells: nextCells } } : n,
-            );
-          });
-          return eds;
+        setNodes((nds) => {
+          const target = nds.find((n) => n.id === targetNodeId);
+          if (!target || target.type !== 'gridMap') return nds;
+          const edgesNow = edgesOverride ?? (latestEdgesRef.current as Edge[]);
+          const cols = Number(target.data?.gridCols) || DEFAULT_GRID_MAP_COLS;
+          const rows = Number(target.data?.gridRows) || DEFAULT_GRID_MAP_ROWS;
+          const prevCells = ((target.data?.cells || []) as GridMapCell[]).slice();
+          const nextCells = buildGridMapCellsFromEdges(
+            targetNodeId,
+            edgesNow,
+            nds,
+            prevCells,
+            cols,
+            rows,
+          );
+          return nds.map((n) =>
+            n.id === targetNodeId ? { ...n, data: { ...n.data, cells: nextCells } } : n,
+          );
         });
       });
     },
-    [setNodes, setEdges],
+    [setNodes],
+  );
+
+  /** 框选多图：按所选比例/宫格在右侧生成宫格图（直接填格，不建连线） */
+  const handleCreateGridMapFromSelection = useCallback(
+    (opts: {
+      nodeIds: string[];
+      cols: number;
+      rows: number;
+      canvasW: number;
+      canvasH: number;
+    }) => {
+      const ids = [...new Set((opts.nodeIds || []).filter(Boolean))];
+      if (ids.length < 2) return;
+      const cols = Math.max(1, Math.floor(Number(opts.cols) || DEFAULT_GRID_MAP_COLS));
+      const rows = Math.max(1, Math.floor(Number(opts.rows) || DEFAULT_GRID_MAP_ROWS));
+      const canvasW = Math.max(64, Math.floor(Number(opts.canvasW) || DEFAULT_GRID_MAP_CANVAS_W));
+      const canvasH = Math.max(64, Math.floor(Number(opts.canvasH) || DEFAULT_GRID_MAP_CANVAS_H));
+      const slotCount = cols * rows;
+
+      const allNodes = latestNodesRef.current;
+      const selected = sortNodesByReadingOrder(
+        allNodes.filter(
+          (n) =>
+            ids.includes(n.id) &&
+            n.type === 'image' &&
+            !!resolveImageUrlFromNodeForPhotoCollage(n.data as Record<string, unknown>),
+        ),
+      );
+      if (selected.length < 2) {
+        showAlert(locale === 'en' ? 'Select at least 2 image modules' : '请至少框选 2 个图片模块');
+        return;
+      }
+      if (selected.length > slotCount) {
+        showAlert(
+          locale === 'en'
+            ? `Grid ${cols}×${rows} holds ${slotCount} images; extra selected images were skipped.`
+            : `宫格 ${cols}×${rows} 仅 ${slotCount} 格，多余选中图片已跳过。`,
+        );
+      }
+      const sources = selected.slice(0, slotCount);
+
+      const GAP = 48;
+      let maxRight = -Infinity;
+      let minY = Infinity;
+      let maxBottom = -Infinity;
+      for (const node of sources) {
+        const w = Number(node.data?.width) || Number((node.style as { width?: number })?.width) || 280;
+        const h = Number(node.data?.height) || Number((node.style as { height?: number })?.height) || 280;
+        maxRight = Math.max(maxRight, node.position.x + w);
+        minY = Math.min(minY, node.position.y);
+        maxBottom = Math.max(maxBottom, node.position.y + h);
+      }
+      const outer = nodeOuterSizeForCanvas(canvasW, canvasH);
+      const newNodeId = `gridMap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newPosition = {
+        x: maxRight + GAP,
+        y: minY + Math.max(0, (maxBottom - minY - outer.h) / 2),
+      };
+      const label = locale === 'en' ? 'Grid map' : '宫格图';
+      const initialCells = emptyGridMapCells(cols, rows);
+      sources.forEach((node, i) => {
+        const url = resolveImageUrlFromNodeForPhotoCollage(node.data as Record<string, unknown>);
+        if (!url || i >= initialCells.length) return;
+        // 仅写 src，不写 sourceNodeId：框选导入不建边，避免 buildGridMapCellsFromEdges 清空格子
+        initialCells[i] = {
+          ...initialCells[i],
+          src: formatGridMapImagePath(url),
+        };
+      });
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'gridMap',
+        position: newPosition,
+        selected: true,
+        data: {
+          label,
+          title: 'gridMap',
+          width: outer.w,
+          height: outer.h,
+          isUserResized: true,
+          gridCols: cols,
+          gridRows: rows,
+          canvasW,
+          canvasH,
+          cells: initialCells,
+        },
+        style: nodeStyleDimensions(outer.w, outer.h),
+      };
+
+      flushSync(() => {
+        setNodes((nds) => [
+          ...nds.map((n) => ({ ...n, selected: false })),
+          newNode,
+        ]);
+      });
+      setTimeout(() => saveHistory('general'), 0);
+    },
+    [locale, showAlert, setNodes, saveHistory],
   );
 
   /** 超级连线后：按入边一次性写入对比节点 A/B（最多两路） */
@@ -10710,6 +11039,35 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (targetNode.type === 'imageComparer') {
         allowed = allowed.slice(0, 2);
       }
+      // 拼图：仅图片源、按阅读顺序、遵守图层上限
+      if (targetNode.type === 'photoCollage') {
+        const imageSources = allowed
+          .map((id) => nodes.find((n) => n.id === id))
+          .filter((n): n is Node => !!n && n.type === 'image')
+          .filter((n) => !!resolveImageUrlFromNodeForPhotoCollage(n.data as Record<string, unknown>));
+        const ordered = sortNodesByReadingOrder(imageSources);
+        const prevLayers = ((targetNode.data?.layers || []) as CollageLayer[]).slice();
+        const remaining = photoCollageRemainingImportSlots(
+          prevLayers,
+          ordered.map((n) => n.id),
+        );
+        const reconnectIds = new Set(
+          prevLayers
+            .map((L) => collageLayerSourceNodeId(L))
+            .filter((id): id is string => !!id),
+        );
+        const reconnecting = ordered.filter((n) => reconnectIds.has(n.id));
+        const fresh = ordered.filter((n) => !reconnectIds.has(n.id));
+        const skipped = Math.max(0, fresh.length - remaining);
+        const acceptedFresh = fresh.slice(0, remaining);
+        allowed = [...reconnecting, ...acceptedFresh].map((n) => n.id);
+        if (skipped > 0) {
+          const msg = photoCollageT(locale)
+            .superConnectOverflow.replace('{max}', String(MAX_PHOTO_COLLAGE_LAYERS))
+            .replace('{n}', String(skipped));
+          showAlert(msg);
+        }
+      }
       if (allowed.length === 0) return;
       // 每条连线的 onConnect 会在 setEdges 回调里再调 setNodes；flushSync 保证逐条落盘。
       allowed.forEach((sourceId) => {
@@ -10733,14 +11091,47 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
         finalizeVideoSpliceTimeline(targetNodeId, edgesNow);
       } else if (targetNode.type === 'photoCollage') {
-        finalizePhotoCollageLayers(targetNodeId);
+        let edgesNow = [...(latestEdgesRef.current as Edge[])];
+        for (const sourceId of allowed) {
+          if (!edgesNow.some((e) => e.source === sourceId && e.target === targetNodeId)) {
+            edgesNow.push({
+              id: `e-${sourceId}-${targetNodeId}-finalize`,
+              source: sourceId,
+              target: targetNodeId,
+              sourceHandle: null,
+              targetHandle: 'input',
+            } as Edge);
+          }
+        }
+        finalizePhotoCollageLayers(targetNodeId, edgesNow);
       } else if (targetNode.type === 'gridMap') {
-        finalizeGridMapCells(targetNodeId);
+        let edgesNow = [...(latestEdgesRef.current as Edge[])];
+        for (const sourceId of allowed) {
+          if (!edgesNow.some((e) => e.source === sourceId && e.target === targetNodeId)) {
+            edgesNow.push({
+              id: `e-${sourceId}-${targetNodeId}-finalize`,
+              source: sourceId,
+              target: targetNodeId,
+              sourceHandle: null,
+              targetHandle: 'input',
+            } as Edge);
+          }
+        }
+        finalizeGridMapCells(targetNodeId, edgesNow);
       } else if (targetNode.type === 'imageComparer') {
         finalizeImageComparerUrls(targetNodeId);
       }
     },
-    [nodes, onConnect, finalizeVideoSpliceTimeline, finalizePhotoCollageLayers, finalizeGridMapCells, finalizeImageComparerUrls],
+    [
+      nodes,
+      onConnect,
+      finalizeVideoSpliceTimeline,
+      finalizePhotoCollageLayers,
+      finalizeGridMapCells,
+      finalizeImageComparerUrls,
+      locale,
+      showAlert,
+    ],
   );
 
   /** 反向超级连线：单一源模块输出 → 批量接入各选中目标（不含源） */
@@ -10815,6 +11206,64 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         } else {
           cancelCharacterCanvasPick();
         }
+        return;
+      }
+
+      const ctrlHeld = !!(
+        _event &&
+        typeof _event === 'object' &&
+        (('ctrlKey' in _event && _event.ctrlKey) || ('metaKey' in _event && _event.metaKey))
+      );
+      const qcSource = quickConnectSourceIdRef.current;
+
+      // 快速连线第二步：点击目标模块
+      if (qcSource) {
+        if (node.id === qcSource) {
+          cancelQuickConnect();
+          return;
+        }
+        const sourceNode =
+          latestNodesRef.current.find((n) => n.id === qcSource) ?? nodes.find((n) => n.id === qcSource);
+        const sourceType = sourceNode?.type ?? '';
+        const targetType = node.type ?? '';
+        const allowed =
+          !!sourceType &&
+          !!targetType &&
+          isConnectionAllowed(sourceType, targetType) &&
+          !(targetType === 'videoSplice' && !isTimelineMediaSourceNodeType(sourceType));
+        if (!allowed) {
+          showAlert(
+            locale === 'en'
+              ? 'These modules cannot be connected.'
+              : '这两个模块无法连线',
+          );
+          return;
+        }
+        onConnect({
+          source: qcSource,
+          target: node.id,
+          sourceHandle: null,
+          targetHandle: null,
+        });
+        if (targetType === 'videoSplice') {
+          finalizeVideoSpliceTimeline(node.id);
+        } else if (targetType === 'photoCollage') {
+          finalizePhotoCollageLayers(node.id);
+        } else if (targetType === 'gridMap') {
+          finalizeGridMapCells(node.id);
+        } else if (targetType === 'imageComparer') {
+          finalizeImageComparerUrls(node.id);
+        }
+        showQuickConnectToast(locale === 'en' ? 'Connected' : '已连线', isDarkMode);
+        cancelQuickConnect();
+        setSelectedNode(node);
+        return;
+      }
+
+      // 快速连线第一步：Ctrl/Cmd + 点击源模块
+      if (ctrlHeld) {
+        beginQuickConnect(node.id);
+        setSelectedNode(node);
         return;
       }
 
@@ -10947,7 +11396,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             node.data?.reverseCaptionModel as string | undefined,
           ),
           chatModel: (node.data?.chatModel as string) || 'gpt-3.5-turbo',
-          personaExpanded: false,
         });
         if (cleanedUserInput !== rawUserInput) {
           setNodes((nds) =>
@@ -11265,9 +11713,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
         // 可灵参考生视频o1：从连线解析参考视频 URL（统一 input 把手，按源类型识别）
         // 裁剪导出成片不写入 reference，避免播放回退到上游源片
+        // HeyGem 一体化：优先使用节点内已设置的 referenceVideoUrl（上传/画布选/数字人库），连线仅作回退
         let referenceVideoUrl = '';
         const isExportedMediaClip = !!(node.data as { exportedMediaClip?: boolean } | undefined)?.exportedMediaClip;
-        if (!isExportedMediaClip) {
+        if (isHeyGemOnlyNode) {
+          referenceVideoUrl = String(node.data?.referenceVideoUrl || '').trim();
+        }
+        if (!isExportedMediaClip && !referenceVideoUrl) {
           const refEdge = incomingEdges.find((e) => {
             const src = nodes.find((n) => n.id === e.source);
             if (src?.type === 'digitalHuman') return isDigitalHumanVideoOutputHandle(e.sourceHandle);
@@ -11289,6 +11741,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               referenceVideoUrl = t;
             }
           }
+        }
+        if (!referenceVideoUrl) {
+          referenceVideoUrl = String(node.data?.referenceVideoUrl || '').trim();
         }
 
         // 从连线解析输入音频；导演对口型写入的 data.inputAudioUrl（无音频连线）也必须保留
@@ -11381,7 +11836,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           );
         }
         if (!isWanAnimateOnlyNode && !isHeyGemOnlyNode && videoPanelModel === 'rhart-video-g') {
-          videoPanelModel = 'grok-3';
+          videoPanelModel = 'rhart-video-x';
           setNodes((nds) =>
             nds.map((n) =>
               n.id === node.id && n.data?.model === 'rhart-video-g'
@@ -11389,7 +11844,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     ...n,
                     data: {
                       ...n.data,
-                      model: 'grok-3',
+                      model: 'rhart-video-x',
                       durationGrok3:
                         (n.data?.durationGrok3 as string) ||
                         (n.data?.durationRhartVideoG === '10s' ? '10' : '6'),
@@ -11478,6 +11933,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           referenceVideoUrl: referenceVideoUrl || undefined,
           keepOriginalSound: !!node.data?.keepOriginalSound,
           inputAudioUrl: inputAudioUrl || undefined,
+          heyGemScript: String((node.data as { heyGemScript?: string } | undefined)?.heyGemScript || ''),
+          heyGemTtsModel: String((node.data as { heyGemTtsModel?: string } | undefined)?.heyGemTtsModel || DOUBAO_SEED_AUDIO_MODEL_ID),
+          heyGemCloneAudioUrl: String((node.data as { heyGemCloneAudioUrl?: string } | undefined)?.heyGemCloneAudioUrl || ''),
           resolutionLtx23Lipsync: (() => {
             const r = (node.data?.resolutionLtx23Lipsync ?? node.data?.resolutionWan22Lipsync) as string | undefined;
             if (r === '720' || r === '1280' || r === '1920') return r;
@@ -11709,6 +12167,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       finishSceneImagePick,
       finishDigitalHumanVideoPick,
       cancelCharacterCanvasPick,
+      cancelQuickConnect,
+      beginQuickConnect,
+      onConnect,
+      finalizeVideoSpliceTimeline,
+      finalizePhotoCollageLayers,
+      finalizeGridMapCells,
+      finalizeImageComparerUrls,
+      showAlert,
+      locale,
+      isDarkMode,
     ]
   );
 
@@ -11727,6 +12195,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     };
     window.addEventListener(CANVAS_PICK_NODE_EVENT, onPickNode);
     return () => window.removeEventListener(CANVAS_PICK_NODE_EVENT, onPickNode);
+  }, []);
+
+  /** HeyGem「数字人库」等：打开左侧素材库时展开侧栏 */
+  useEffect(() => {
+    const onOpenAssetLibrary = () => {
+      setCharacterListCollapsed(false);
+    };
+    window.addEventListener(OPEN_ASSET_LIBRARY_EVENT, onOpenAssetLibrary);
+    return () => window.removeEventListener(OPEN_ASSET_LIBRARY_EVENT, onOpenAssetLibrary);
   }, []);
 
   const onNodeClickStable = useCallback((e: React.MouseEvent, node: Node) => {
@@ -11784,6 +12261,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (current.nodes.length === 1 && node?.id && HAS_PANEL_TYPES.includes(nodeType)) {
         // 角色库「画布点选」期间：禁止用 selection 回调再走 onNodeClick，否则会误当成用户点击节点而直接完成选取
         if (characterAvatarPickPendingRef.current) {
+          return;
+        }
+        // Ctrl 快速连线期间：勿用 selection 回调补开面板 / 误触发连线
+        if (quickConnectSourceIdRef.current) {
           return;
         }
         // 避免 React Flow 在节点数据（进度等）更新时重复触发 selection，导致 onNodeClick 再次
@@ -12552,15 +13033,21 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         }
 
         if (payload.model === 'hey-gem') {
-          const refEdgeHg = edges.find((e) => {
-            if (e.target !== nodeId) return false;
-            const src = nodes.find((n) => n.id === e.source);
-            return isVideoTrackSourceNodeType(src?.type);
-          });
-          const refSourceHg = refEdgeHg ? nodes.find((n) => n.id === refEdgeHg.source) : null;
-          const refUrlHg = isVideoTrackSourceNodeType(refSourceHg?.type)
-            ? ((refSourceHg.data?.originalVideoUrl || refSourceHg.data?.outputVideo) as string | undefined)
-            : (nodeData.referenceVideoUrl as string | undefined);
+          // 一体化模块：优先节点内 referenceVideoUrl / inputAudioUrl，连线仅作回退
+          let refUrlHg = String(nodeData.referenceVideoUrl || '').trim();
+          if (!refUrlHg) {
+            const refEdgeHg = edges.find((e) => {
+              if (e.target !== nodeId) return false;
+              const src = nodes.find((n) => n.id === e.source);
+              return isVideoTrackSourceNodeType(src?.type);
+            });
+            const refSourceHg = refEdgeHg ? nodes.find((n) => n.id === refEdgeHg.source) : null;
+            if (isVideoTrackSourceNodeType(refSourceHg?.type)) {
+              refUrlHg = String(
+                (refSourceHg.data?.originalVideoUrl || refSourceHg.data?.outputVideo) as string | undefined || '',
+              ).trim();
+            }
+          }
           const tHg = (refUrlHg || '').trim();
           if (
             !tHg ||
@@ -12571,11 +13058,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               tHg.startsWith('file://')
             )
           ) {
-            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 需连接参考视频，跳过`);
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 缺少参考视频，跳过`);
             continue;
           }
           payload.referenceVideoUrl = tHg;
-          let inputAudioUrl = nodeData.inputAudioUrl as string | undefined;
+          let inputAudioUrl = String(nodeData.inputAudioUrl || '').trim() || undefined;
           if (!inputAudioUrl) {
             const audioEdge = edges.find((e) => {
               if (e.target !== nodeId) return false;
@@ -12588,7 +13075,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             }
           }
           if (!inputAudioUrl) {
-            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 需连接音频，跳过`);
+            console.warn(`[Workspace] HeyGem 节点 ${nodeId} 缺少驱动音频，跳过`);
             continue;
           }
           payload.inputAudioUrl = inputAudioUrl;
@@ -13255,10 +13742,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         return prevTasks;
       }
 
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) return prevTasks;
+      // 刚 spawn 的下游视频节点可能尚未写入 React state，优先 latestNodesRef；节点缺失时仍入库
+      const node =
+        latestNodesRef.current.find((n) => n.id === nodeId) ?? nodes.find((n) => n.id === nodeId);
 
-      const nodeTitle = node.data?.title || 'video';
+      const nodeTitle = node?.data?.title || 'video';
       const runtimeTask = prevTasks.find((t) => t.id === `runtime-${nodeId}`);
       const durationSec =
         runtimeTask != null
@@ -13323,6 +13811,269 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       return [newTask, ...prevTasks.filter((t) => t.id !== `runtime-${nodeId}`)];
     });
   }, [nodes, projectId, handleVideoNodeDataChange]);
+
+  const heyGemSpawnedUrlRef = useRef<Map<string, Set<string>>>(new Map());
+  const spawnHeyGemResultVideoNodeRef = useRef<
+    (opts: {
+      sourceNodeId: string;
+      outputVideo: string;
+      originalVideoUrl?: string;
+      videoAsset?: { poster?: string; ghost?: string; width?: number; height?: number };
+      localPath?: string;
+      prompt?: string;
+    }) => string | null
+  >(() => null);
+
+  /** HeyGem 生成成功：在源模块右侧新建视频节点并连线；多次生成横向排列 */
+  const spawnHeyGemResultVideoNode = useCallback(
+    (opts: {
+      sourceNodeId: string;
+      outputVideo: string;
+      originalVideoUrl?: string;
+      videoAsset?: { poster?: string; ghost?: string; width?: number; height?: number };
+      localPath?: string;
+      prompt?: string;
+    }) => {
+      const { sourceNodeId, outputVideo, originalVideoUrl, videoAsset, localPath, prompt } = opts;
+      const urlsToCheck = [String(outputVideo || '').trim(), String(originalVideoUrl || '').trim()].filter(
+        Boolean,
+      );
+      if (urlsToCheck.length === 0) return null;
+
+      const rememberUrls = () => {
+        let set = heyGemSpawnedUrlRef.current.get(sourceNodeId);
+        if (!set) {
+          set = new Set<string>();
+          heyGemSpawnedUrlRef.current.set(sourceNodeId, set);
+        }
+        for (const u of urlsToCheck) set.add(u);
+      };
+
+      const clearSourceProgress = () => {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === sourceNodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    progress: 0,
+                    progressMessage: undefined,
+                    errorMessage: undefined,
+                  },
+                }
+              : n,
+          ),
+        );
+      };
+
+      const GAP = 48;
+      const allNodes = latestNodesRef.current;
+      const allEdges = latestEdgesRef.current;
+      const source = allNodes.find((n) => n.id === sourceNodeId && n.type === 'heyGem');
+      if (!source) return null;
+
+      // Dedup: if a connected video already has any of these URLs, skip（可升级为本地 URL）
+      const existingChild = allEdges
+        .filter((e) => e.source === sourceNodeId)
+        .map((e) => allNodes.find((n) => n.id === e.target))
+        .find((n) => {
+          if (n?.type !== 'video') return false;
+          const childUrls = [
+            String(n.data?.outputVideo || '').trim(),
+            String(n.data?.originalVideoUrl || '').trim(),
+          ].filter(Boolean);
+          return childUrls.some((u) => urlsToCheck.includes(u));
+        });
+      if (existingChild) {
+        rememberUrls();
+        const localOut = String(outputVideo || '').trim();
+        const childOut = String(existingChild.data?.outputVideo || '').trim();
+        const preferLocal =
+          localOut.startsWith('local-resource://') &&
+          !!childOut &&
+          !childOut.startsWith('local-resource://') &&
+          urlsToCheck.includes(childOut);
+        if (preferLocal) {
+          setNodes((nds) =>
+            nds.map((n) => {
+              if (n.id === existingChild.id) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    outputVideo: localOut,
+                    originalVideoUrl: originalVideoUrl || n.data?.originalVideoUrl,
+                    ...(videoAsset ? { videoAsset } : {}),
+                    ...(localPath ? { localPath } : {}),
+                    progress: 0,
+                    errorMessage: undefined,
+                  },
+                };
+              }
+              if (n.id === sourceNodeId) {
+                return {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    progress: 0,
+                    progressMessage: undefined,
+                    errorMessage: undefined,
+                  },
+                };
+              }
+              return n;
+            }),
+          );
+        } else {
+          const srcProgress = Number(source.data?.progress || 0);
+          const srcErr = !!(source.data?.errorMessage || '').trim();
+          if (srcProgress > 0 || srcErr) clearSourceProgress();
+        }
+        return existingChild.id;
+      }
+
+      // 内存去重曾标记已 spawn，但画布上并无对应子节点（双链路 SUCCESS 误伤）→ 清标记后继续创建
+      const seen = heyGemSpawnedUrlRef.current.get(sourceNodeId);
+      if (seen && urlsToCheck.some((u) => seen.has(u))) {
+        for (const u of urlsToCheck) seen.delete(u);
+      }
+
+      const srcW =
+        Number(source.width) ||
+        Number((source.style as { width?: number } | undefined)?.width) ||
+        Number(source.data?.width) ||
+        VIDEO_NODE_DEFAULT_W;
+      const srcH =
+        Number(source.height) ||
+        Number((source.style as { height?: number } | undefined)?.height) ||
+        Number(source.data?.height) ||
+        VIDEO_NODE_DEFAULT_H;
+
+      const pixelW = Number(videoAsset?.width) || 1280;
+      const pixelH = Number(videoAsset?.height) || 720;
+      const adapted =
+        computeNodeSizeFromMedia(
+          pixelW,
+          pixelH,
+          VIDEO_NODE_MIN_W,
+          VIDEO_NODE_MIN_H,
+          VIDEO_NODE_MAX_W,
+          VIDEO_NODE_MAX_H,
+        ) || { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H };
+      const nodeW = adapted.w;
+      const nodeH = adapted.h;
+      const aspectRatio = snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(pixelW, pixelH));
+
+      const anchorX = source.position.x + srcW + GAP;
+      let newX = anchorX;
+      let newY = source.position.y + Math.max(0, (srcH - nodeH) / 2);
+
+      const priorTargets = allEdges
+        .filter((e) => e.source === sourceNodeId && e.target && e.target !== sourceNodeId)
+        .map((e) => allNodes.find((n) => n.id === e.target))
+        .filter((n): n is Node => !!n && n.type === 'video' && n.position.x >= anchorX - 8);
+      for (const n of priorTargets) {
+        const w =
+          Number(n.width) ||
+          Number((n.style as { width?: number } | undefined)?.width) ||
+          Number(n.data?.width) ||
+          VIDEO_NODE_DEFAULT_W;
+        newX = Math.max(newX, n.position.x + w + GAP);
+      }
+
+      const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const title = locale === 'en' ? 'HeyGem result' : 'HeyGem 成片';
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'video',
+        position: { x: newX, y: newY },
+        selected: true,
+        data: {
+          label: 'video',
+          title,
+          outputVideo,
+          originalVideoUrl: originalVideoUrl || undefined,
+          ...(localPath ? { localPath } : {}),
+          ...(videoAsset ? { videoAsset } : {}),
+          width: nodeW,
+          height: nodeH,
+          aspectRatio,
+          preserveExportLayout: true,
+          isUserResized: true,
+          prompt: prompt || '',
+          model: DEFAULT_VIDEO_MODEL_REPLACING_SORA2,
+          progress: 0,
+          errorMessage: undefined,
+        },
+        style: nodeStyleDimensions(nodeW, nodeH),
+      };
+      const newEdge: Edge = {
+        id: `edge-${sourceNodeId}-${newNodeId}`,
+        source: sourceNodeId,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+        animated: false,
+        data: { videoSrc: outputVideo },
+      };
+
+      // 先写入 ref，供紧随其后的 handleAddVideoTask 能解析到新节点标题
+      latestNodesRef.current = [
+        ...allNodes.map((n) =>
+          n.id === sourceNodeId
+            ? {
+                ...n,
+                selected: false,
+                data: {
+                  ...n.data,
+                  outputVideo: undefined,
+                  originalVideoUrl: undefined,
+                  progress: 0,
+                  progressMessage: undefined,
+                  errorMessage: undefined,
+                },
+              }
+            : { ...n, selected: false },
+        ),
+        newNode,
+      ];
+      latestEdgesRef.current = addEdge(newEdge, allEdges);
+
+      setNodes((nds) =>
+        nds
+          .map((n) => {
+            if (n.id !== sourceNodeId) return { ...n, selected: false };
+            return {
+              ...n,
+              selected: false,
+              data: {
+                ...n.data,
+                // 结果展示在下游视频节点，源模块只保留进度清理
+                outputVideo: undefined,
+                originalVideoUrl: undefined,
+                progress: 0,
+                progressMessage: undefined,
+                errorMessage: undefined,
+              },
+            };
+          })
+          .concat(newNode),
+      );
+      setEdges((eds) => addEdge(newEdge, eds));
+      rememberUrls();
+      setTimeout(() => saveHistory('general'), 0);
+
+      const taskUrl =
+        originalVideoUrl ||
+        (outputVideo.startsWith('local-resource://') ? undefined : outputVideo) ||
+        outputVideo;
+      handleAddVideoTask(newNodeId, taskUrl || outputVideo, prompt || '', originalVideoUrl);
+      return newNodeId;
+    },
+    [setNodes, setEdges, saveHistory, locale, handleAddVideoTask],
+  );
+  spawnHeyGemResultVideoNodeRef.current = spawnHeyGemResultVideoNode;
 
   // 音频生成完成时，创建任务记录并自动保存到本地
   const handleAddAudioTask = useCallback((nodeId: string, audioUrl: string, prompt: string, originalAudioUrl?: string) => {
@@ -13770,6 +14521,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       cancelCharacterCanvasPick();
       return;
     }
+    if (quickConnectSourceIdRef.current) {
+      cancelQuickConnect();
+      return;
+    }
     setSelectedNode(null);
     setSelectedEdge(null);
     setEdgeDeleteModeId(null);
@@ -13784,7 +14539,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     setAudioInputPanelData(null); // 点击画布时关闭 Audio 输入面板
     setRvcTrainInputPanelData(null);
     window.dispatchEvent(new CustomEvent('nexflow-close-3d-popover')); // 点击画布时关闭 3D 视角弹窗
-  }, [cancelCharacterCanvasPick]);
+    window.dispatchEvent(new CustomEvent('nexflow-exit-video-trim-sessions')); // 退出视频裁剪/智能剪辑
+  }, [cancelCharacterCanvasPick, cancelQuickConnect]);
 
   // 3D 视角模块生成的提示词自动填入该 Image 节点下方的提示词输入框
   useEffect(() => {
@@ -13846,8 +14602,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handleMenuSelect = useCallback((type: string, position: { x: number; y: number }, connectFrom?: { sourceNodeId: string; sourceHandleId: string | null; handleType: string | null }) => {
     console.log('[Workspace] handleMenuSelect 收到位置:', { type, position, connectFrom });
 
-    // 分镜脚本 / 剧本节点已由「导演」模块替代，禁止新建
+    // 分镜脚本 / 剧本节点已下线（禁止新建）；导演台由 HIDE_DIRECTOR_STAGE_UI 控制
     if (type === 'storyboardScript' || type === 'script') {
+      setContextMenu(null);
+      return;
+    }
+    if (HIDE_DIRECTOR_STAGE_UI && type === 'director') {
       setContextMenu(null);
       return;
     }
@@ -13889,6 +14649,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ? scaleModulePx(240)
             : isImageType
               ? IMAGE_NODE_DEFAULT_W
+              : isHeyGemType
+                ? HEYGEM_SHELL_W
               : isVideoLikeType
                 ? VIDEO_NODE_DEFAULT_W
                 : type === 'character'
@@ -13923,6 +14685,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             ? scaleModulePx(200)
             : isImageType
               ? IMAGE_NODE_DEFAULT_H
+              : isHeyGemType
+                ? HEYGEM_SHELL_H
               : isVideoLikeType
                 ? VIDEO_NODE_DEFAULT_H
                 : type === 'character'
@@ -14152,6 +14916,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     : isImageTo3dType
                       ? DEFAULT_IMAGE_TO_3D_MODEL
                     : undefined,
+        heyGemScript: isHeyGemType ? '' : undefined,
+        heyGemTtsModel: isHeyGemType ? DOUBAO_SEED_AUDIO_MODEL_ID : undefined,
         hd: isVideoLikeType ? false : undefined,
         duration: isVideoLikeType ? '10' : undefined,
         resolutionSeedance: isVideoLikeType ? '720p' : undefined,
@@ -14712,15 +15478,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
     }
 
-    // 新建视频节点时自动选中并弹出下方操作框
-    if (type === 'video' || isWanAnimateType) {
+    // 新建视频 / 视频换人 / HeyGem 时自动选中并打开操作面板（HeyGem 双栏嵌在主框内）
+    if (type === 'video' || isWanAnimateType || isHeyGemType) {
       setSelectedNode(nodeToAdd);
       const inputImages = (nodeToAdd.data?.inputImages as string[] | undefined) || [];
       setVideoInputPanelData({
         nodeId: nodeToAdd.id,
         prompt: (nodeToAdd.data?.prompt as string) || '',
         aspectRatio: (nodeToAdd.data?.aspectRatio as '16:9' | '9:16' | '1:1' | '2:3' | '3:2') || '16:9',
-        model: (isWanAnimateType ? 'wan-animate' : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
+        model: (isHeyGemType
+          ? 'hey-gem'
+          : isWanAnimateType
+            ? 'wan-animate'
+            : ((nodeToAdd.data?.model as string) || (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'))) as 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'rhart-v3.1-fast' | 'rhart-v3.1-pro' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end',
         hd: !!(nodeToAdd.data?.hd),
         duration: ((nodeToAdd.data?.duration as string) || '10') as '5' | '10' | '15' | '25',
         inputImages,
@@ -14746,9 +15516,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         enableAudio: nodeToAdd.data?.enableAudio !== false,
         durationVeo31ProOfficial: ((nodeToAdd.data?.durationVeo31ProOfficial as string) || '4') as '4' | '6' | '8',
         generateAudioVeo31ProOfficial: !!nodeToAdd.data?.generateAudioVeo31ProOfficial,
-        referenceVideoUrl: undefined,
+        referenceVideoUrl: isHeyGemType
+          ? String((nodeToAdd.data as { referenceVideoUrl?: string } | undefined)?.referenceVideoUrl || '') || undefined
+          : undefined,
         keepOriginalSound: !!nodeToAdd.data?.keepOriginalSound,
-        inputAudioUrl: undefined,
+        inputAudioUrl: isHeyGemType
+          ? String((nodeToAdd.data as { inputAudioUrl?: string } | undefined)?.inputAudioUrl || '') || undefined
+          : undefined,
+        heyGemScript: isHeyGemType
+          ? String((nodeToAdd.data as { heyGemScript?: string } | undefined)?.heyGemScript || '')
+          : undefined,
+        heyGemTtsModel: isHeyGemType
+          ? String((nodeToAdd.data as { heyGemTtsModel?: string } | undefined)?.heyGemTtsModel || DOUBAO_SEED_AUDIO_MODEL_ID)
+          : undefined,
+        heyGemCloneAudioUrl: isHeyGemType
+          ? String((nodeToAdd.data as { heyGemCloneAudioUrl?: string } | undefined)?.heyGemCloneAudioUrl || '') || undefined
+          : undefined,
         resolutionLtx23Lipsync: '720',
         durationLtx23I2v: normalizeLtx23DurationChoice(nodeToAdd.data?.durationLtx23I2v, 10),
         resolutionLtx23I2v: ((nodeToAdd.data?.resolutionLtx23I2v as string) || '720') as '720' | '1280' | '1920',
@@ -16177,23 +16960,25 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         height: data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
         data: {
           label: data.label,
-          width: data.type === 'text' ? IMAGE_NODE_DEFAULT_W : data.type === 'llm' ? AUDIO_NODE_WIDTH : data.type === 'textSplit' ? scaleModulePx(240) : data.type === 'image' ? IMAGE_NODE_DEFAULT_W : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_W : data.type === 'character' ? scaleModulePx(624) : data.type === 'audio' ? AUDIO_NODE_WIDTH : undefined,
-          height: data.type === 'text' ? IMAGE_NODE_DEFAULT_H : data.type === 'llm' ? AUDIO_NODE_HEIGHT : data.type === 'textSplit' ? scaleModulePx(200) : data.type === 'image' ? IMAGE_NODE_DEFAULT_H : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_H : data.type === 'character' ? scaleModulePx(468) : data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
+          width: data.type === 'text' ? IMAGE_NODE_DEFAULT_W : data.type === 'llm' ? AUDIO_NODE_WIDTH : data.type === 'textSplit' ? scaleModulePx(240) : data.type === 'image' ? IMAGE_NODE_DEFAULT_W : data.type === 'heyGem' ? HEYGEM_SHELL_W : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_W : data.type === 'character' ? scaleModulePx(624) : data.type === 'audio' ? AUDIO_NODE_WIDTH : undefined,
+          height: data.type === 'text' ? IMAGE_NODE_DEFAULT_H : data.type === 'llm' ? AUDIO_NODE_HEIGHT : data.type === 'textSplit' ? scaleModulePx(200) : data.type === 'image' ? IMAGE_NODE_DEFAULT_H : data.type === 'heyGem' ? HEYGEM_SHELL_H : (data.type === 'video' || data.type === 'wanAnimate') ? VIDEO_NODE_DEFAULT_H : data.type === 'character' ? scaleModulePx(468) : data.type === 'audio' ? AUDIO_NODE_HEIGHT : undefined,
           moduleSizeScaleVersion: MODULE_SIZE_SCALE_VERSION,
-          prompt: data.type === 'llm' || data.type === 'image' || data.type === 'video' || data.type === 'wanAnimate' ? '' : undefined,
-          title: data.type === 'llm' ? 'llm' : data.type === 'image' ? 'image' : data.type === 'video' ? 'video' : data.type === 'wanAnimate' ? 'wanAnimate' : data.type === 'character' ? 'character' : data.type === 'audio' ? 'audio' : data.type === 'textSplit' ? 'textSplit' : undefined,
+          prompt: data.type === 'llm' || data.type === 'image' || data.type === 'video' || data.type === 'wanAnimate' || data.type === 'heyGem' ? '' : undefined,
+          title: data.type === 'llm' ? 'llm' : data.type === 'image' ? 'image' : data.type === 'video' ? 'video' : data.type === 'wanAnimate' ? 'wanAnimate' : data.type === 'heyGem' ? 'heyGem' : data.type === 'character' ? 'character' : data.type === 'audio' ? 'audio' : data.type === 'textSplit' ? 'textSplit' : undefined,
           isUserResized: false,
           inputText: data.type === 'textSplit' ? '' : undefined,
           separator: data.type === 'textSplit' ? '\n' : undefined,
           trimAndFilterEmpty: data.type === 'textSplit' ? true : undefined,
           convertType: data.type === 'textSplit' ? 'string' : undefined,
           resolution: data.type === 'image' ? '1k' : undefined,
-          aspectRatio: data.type === 'image' ? DEFAULT_IMAGE_ASPECT_RATIO : (data.type === 'video' || data.type === 'wanAnimate') ? DEFAULT_VIDEO_ASPECT_RATIO : undefined,
+          aspectRatio: data.type === 'image' ? DEFAULT_IMAGE_ASPECT_RATIO : (data.type === 'video' || data.type === 'wanAnimate' || data.type === 'heyGem') ? DEFAULT_VIDEO_ASPECT_RATIO : undefined,
           seedreamWidth: data.type === 'image' ? 2048 : undefined,
           seedreamHeight: data.type === 'image' ? 2048 : undefined,
-          model: data.type === 'image' ? 'banana-2.0' : data.type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : data.type === 'wanAnimate' ? 'wan-animate' : data.type === 'audio' ? 'speech-2.8-hd' : undefined,
-          hd: (data.type === 'video' || data.type === 'wanAnimate') ? false : undefined,
-          duration: (data.type === 'video' || data.type === 'wanAnimate') ? '10' : undefined,
+          model: data.type === 'image' ? 'banana-2.0' : data.type === 'video' ? (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2') : data.type === 'wanAnimate' ? 'wan-animate' : data.type === 'heyGem' ? 'hey-gem' : data.type === 'audio' ? 'speech-2.8-hd' : undefined,
+          hd: (data.type === 'video' || data.type === 'wanAnimate' || data.type === 'heyGem') ? false : undefined,
+          duration: (data.type === 'video' || data.type === 'wanAnimate' || data.type === 'heyGem') ? '10' : undefined,
+          heyGemScript: data.type === 'heyGem' ? '' : undefined,
+          heyGemTtsModel: data.type === 'heyGem' ? DOUBAO_SEED_AUDIO_MODEL_ID : undefined,
           videoUrl: data.type === 'character' ? '' : undefined,
           nickname: data.type === 'character' ? '' : undefined,
           timestamp: data.type === 'character' ? '1,3' : undefined,
@@ -16214,14 +16999,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
       // 侧栏拖入后保持当前视口，不自动一键归位
 
-      // 侧栏拖入视频节点时自动选中并弹出下方操作框
-      if (data.type === 'video' || data.type === 'wanAnimate') {
+      // 侧栏拖入视频 / 视频换人 / HeyGem 时自动选中并弹出下方操作框
+      if (data.type === 'video' || data.type === 'wanAnimate' || data.type === 'heyGem') {
         setSelectedNode(newNode);
         setVideoInputPanelData({
           nodeId: newNode.id,
           prompt: '',
           aspectRatio: '16:9',
-          model: data.type === 'wanAnimate' ? 'wan-animate' : (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'),
+          model: data.type === 'heyGem' ? 'hey-gem' : data.type === 'wanAnimate' ? 'wan-animate' : (HIDE_SORA2_AND_SORA_CHARACTER_UI ? DEFAULT_VIDEO_MODEL_REPLACING_SORA2 : 'sora-2'),
           hd: false,
           duration: '10',
           inputImages: [],
@@ -16250,6 +17035,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           referenceVideoUrl: undefined,
           keepOriginalSound: false,
           inputAudioUrl: undefined,
+          heyGemScript: data.type === 'heyGem' ? '' : undefined,
+          heyGemTtsModel: data.type === 'heyGem' ? DOUBAO_SEED_AUDIO_MODEL_ID : undefined,
+          heyGemCloneAudioUrl: undefined,
           resolutionLtx23Lipsync: '720',
           durationLtx23I2v: '10',
           resolutionLtx23I2v: '720',
@@ -16753,6 +17541,69 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           return prev;
         });
         
+        // 格式化视频路径（HeyGem 与普通视频共用）
+        let formattedVideoUrl = videoUrl;
+        if (localPath) {
+          let filePath = localPath.replace(/\\/g, '/');
+          if (filePath.match(/^\/[a-zA-Z]:/)) {
+            filePath = filePath.substring(1);
+          }
+          formattedVideoUrl = `local-resource://${filePath}`;
+        } else {
+          if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
+            formattedVideoUrl = videoUrl;
+          } else if (videoUrl.startsWith('data:')) {
+            formattedVideoUrl = videoUrl;
+          } else {
+            const cleanPath = videoUrl.replace(/^(file:\/\/|local-resource:\/\/)/, '');
+            let filePath = cleanPath.replace(/\\/g, '/');
+            if (filePath.match(/^\/[a-zA-Z]:/)) {
+              filePath = filePath.substring(1);
+            }
+            formattedVideoUrl = `local-resource://${filePath}`;
+          }
+        }
+
+        let networkUrl = originalVideoUrl;
+        if (!networkUrl && (formattedVideoUrl.startsWith('http://') || formattedVideoUrl.startsWith('https://'))) {
+          networkUrl = formattedVideoUrl;
+        }
+
+        // HeyGem SUCCESS: spawn child video node instead of writing output onto heyGem
+        const targetForSpawn = latestNodesRef.current.find((n) => n.id === nodeId);
+        if (targetForSpawn?.type === 'heyGem') {
+          setTimeout(() => {
+            spawnHeyGemResultVideoNodeRef.current({
+              sourceNodeId: nodeId,
+              outputVideo: formattedVideoUrl,
+              originalVideoUrl: networkUrl,
+              localPath: localPath || undefined,
+              prompt: String(targetForSpawn.data?.prompt || videoInputPanelData?.prompt || ''),
+            });
+            if (handleVideoNodeDataChangeRef.current) {
+              handleVideoNodeDataChangeRef.current(nodeId, {
+                progress: 0,
+                progressMessage: undefined,
+                errorMessage: undefined,
+              });
+            }
+          }, 0);
+          setNodes((nds) =>
+            nds.map((node) =>
+              node.id === nodeId
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      progress: 0,
+                      progressMessage: undefined,
+                      errorMessage: undefined,
+                    },
+                  }
+                : node,
+            ),
+          );
+        } else {
         // 使用函数式更新，确保基于最新状态
         setNodes((nds) => {
           const targetNode = nds.find((n) => n.id === nodeId);
@@ -16762,39 +17613,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           
           // 打通双链路：始终执行全局更新，即使子组件也在处理，确保 props 强制更新
           console.log(`[Workspace] 批量运行：视频模块节点 ${nodeId} 生成成功，执行全局更新（双链路保障）`);
-          
-          // 格式化视频路径
-          let formattedVideoUrl = videoUrl;
-          if (localPath) {
-            // 如果有本地路径，使用本地路径
-            let filePath = localPath.replace(/\\/g, '/');
-            // 确保 Windows 路径格式正确（C:/Users 而不是 /C:/Users）
-            if (filePath.match(/^\/[a-zA-Z]:/)) {
-              filePath = filePath.substring(1); // 移除开头的 / 
-            }
-            formattedVideoUrl = `local-resource://${filePath}`;
-          } else {
-            // 格式化远程 URL
-            if (videoUrl.startsWith('http://') || videoUrl.startsWith('https://')) {
-              formattedVideoUrl = videoUrl;
-            } else if (videoUrl.startsWith('data:')) {
-              formattedVideoUrl = videoUrl;
-            } else {
-              const cleanPath = videoUrl.replace(/^(file:\/\/|local-resource:\/\/)/, '');
-              let filePath = cleanPath.replace(/\\/g, '/');
-              // 确保 Windows 路径格式正确
-              if (filePath.match(/^\/[a-zA-Z]:/)) {
-                filePath = filePath.substring(1); // 移除开头的 /
-              }
-              formattedVideoUrl = `local-resource://${filePath}`;
-            }
-          }
-          
-          // 确定网络 URL：优先使用 originalVideoUrl，如果没有则检查 formattedVideoUrl 是否是网络 URL
-          let networkUrl = originalVideoUrl;
-          if (!networkUrl && (formattedVideoUrl.startsWith('http://') || formattedVideoUrl.startsWith('https://'))) {
-            networkUrl = formattedVideoUrl; // formattedVideoUrl 本身就是网络 URL
-          }
           
           // 更新节点数据
           const updatedNodes = nds.map((node) =>
@@ -16845,6 +17663,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           
           return updatedNodes;
         });
+        }
       }
       }
       
@@ -17632,9 +18451,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     selectedNode.type === 'llm'
       ? {
           nodeId: llmInputPanelData.nodeId,
-          width:
-            llmInputPanelData.isImageReverseMode || llmInputPanelData.isVideoAnalysisMode
-              ? 840
+          width: llmInputPanelData.isImageReverseMode
+            ? 840
+            : llmInputPanelData.isVideoAnalysisMode
+              ? 360
               : 780,
           height: 'auto' as const,
           panel: (
@@ -17675,13 +18495,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   )
                 );
                 setLlmInputPanelData((prev) => (prev && prev.nodeId === nid ? { ...prev, chatModel: value } : prev));
-              }}
-              onPersonaExpandedChange={(expanded) => {
-                const nid = llmInputPanelData.nodeId;
-                setLlmInputPanelData((prev) => {
-                  if (!prev || prev.nodeId !== nid || prev.personaExpanded === expanded) return prev;
-                  return { ...prev, personaExpanded: expanded };
-                });
               }}
               savedPrompts={llmInputPanelData.savedPrompts}
               projectId={projectId}
@@ -17912,17 +18725,108 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       : null;
 
 
+  /** HeyGem：面板常驻节点内，经 context 注入生成/点选回调（不依赖 selected） */
+  const heyGemInlinePanelApi = useMemo<HeyGemInlinePanelApi>(
+    () => ({
+      projectId,
+      onPickReferenceVideoFromCanvas: () => invokePickVideoFromCanvas(),
+      onOutputVideoReady: (nodeId, url, originalUrl, localAsset, prompt) => {
+        if (!url) return;
+        void (async () => {
+          let outputVideoFinal = url;
+          let networkUrl =
+            originalUrl ||
+            (url.startsWith('http://') || url.startsWith('https://') ? url : undefined);
+          let videoAsset:
+            | { poster?: string; ghost?: string; width?: number; height?: number }
+            | undefined;
+
+          if (localAsset && (localAsset.poster || localAsset.ghost)) {
+            videoAsset = {
+              poster: localAsset.poster,
+              ghost: localAsset.ghost,
+              width: localAsset.width,
+              height: localAsset.height,
+            };
+          }
+
+          if (
+            networkUrl &&
+            (networkUrl.startsWith('http://') || networkUrl.startsWith('https://')) &&
+            window.electronAPI?.createVideoLocalResourceFromUrl
+          ) {
+            try {
+              const resource = await window.electronAPI.createVideoLocalResourceFromUrl(
+                projectId || undefined,
+                networkUrl,
+              );
+              outputVideoFinal = resource.originalUrl || outputVideoFinal;
+              videoAsset = {
+                poster: resource.posterUrl,
+                ghost: resource.ghostBase64,
+                width: resource.width,
+                height: resource.height,
+              };
+            } catch (error) {
+              console.warn('[Workspace] HeyGem 成片本地资源化失败，回退原 URL:', error);
+            }
+          }
+
+          spawnHeyGemResultVideoNodeRef.current({
+            sourceNodeId: nodeId,
+            outputVideo: outputVideoFinal,
+            originalVideoUrl: networkUrl,
+            videoAsset,
+            prompt: prompt || '',
+          });
+          handleVideoNodeDataChange(nodeId, { progress: 0, errorMessage: undefined });
+        })();
+      },
+      onErrorTask: (nodeId, message) => {
+        const node = latestNodesRef.current.find((n) => n.id === nodeId);
+        const nodeTitle = node?.data?.title || 'HeyGem';
+        const errMsg = message || '视频生成失败，请检查提示词或稍后重试';
+        const errorTask: Task = {
+          id: `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          nodeId,
+          nodeTitle,
+          videoUrl: undefined,
+          prompt: String(node?.data?.prompt || ''),
+          createdAt: Date.now(),
+          status: 'error',
+          taskType: 'video',
+          errorMessage: errMsg,
+        };
+        setTasks((prev) => [errorTask, ...prev]);
+        // 写入 errorMessage 供 VideoNode 弹 DarkAlert，随后由节点侧清除内联态
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, progress: 0, errorMessage: errMsg } }
+              : n,
+          ),
+        );
+        handleVideoNodeDataChange(nodeId, {
+          progress: 0,
+          errorMessage: errMsg,
+        });
+      },
+    }),
+    [projectId, invokePickVideoFromCanvas, handleVideoNodeDataChange, setNodes],
+  );
+
   const videoInputPanelAnchor =
     !previewImage &&
     !previewAudio &&
     !characterAvatarPickOverlay &&
     videoInputPanelData &&
     selectedNode &&
-    isVideoModuleNodeType(selectedNode.type)
+    isVideoModuleNodeType(selectedNode.type) &&
+    selectedNode.type !== 'heyGem'
       ? {
           nodeId: videoInputPanelData.nodeId,
           width: 840,
-          height: 'auto' as const,
+          height: 'auto' as number | 'auto',
           panel: (
             <VideoInputPanel
               nodeId={videoInputPanelData.nodeId}
@@ -17972,7 +18876,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               progress={videoInputPanelData.progress ?? 0}
               progressMessage={videoInputPanelData.progressMessage}
               wanAnimateStandalone={selectedNode?.type === 'wanAnimate'}
-              heyGemStandalone={selectedNode?.type === 'heyGem'}
+              heyGemStandalone={false}
+              embedInNode={false}
               onKeepOriginalSoundChange={(value) => {
                 setNodes((nds) =>
                   nds.map((node) =>
@@ -18133,75 +19038,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               }}
               onDisconnectHdrSlotImage={(imageUrl) => {
                 const videoId = videoInputPanelData.nodeId;
-                const want = String(imageUrl || '').trim();
-                if (!videoId || !want) return;
-                const urlsEqual = (a: string, b: string) => {
-                  const x = String(a || '').trim();
-                  const y = String(b || '').trim();
-                  if (!x || !y) return false;
-                  if (x === y) return true;
-                  try {
-                    return decodeURIComponent(x) === decodeURIComponent(y);
-                  } catch {
-                    return false;
-                  }
-                };
-                const nds = latestNodesRef.current || nodes;
-                const eds = latestEdgesRef.current || edges;
-
-                // 角色节点：取消对应视图传出勾选（不断整条边，避免误删其它分镜）
-                for (const edge of eds) {
-                  if (edge.target !== videoId) continue;
-                  const th = edge.targetHandle || 'input';
-                  if (th !== 'input' && th !== 'video-input') continue;
-                  const src = nds.find((n) => n.id === edge.source);
-                  if (!src || src.type !== 'character') continue;
-                  const sh = edge.sourceHandle || '';
-                  if (sh === CHARACTER_OUTPUT_AUDIO_HANDLE || sh === 'output-audio') continue;
-                  const vi = Array.isArray(src.data?.viewImages) ? (src.data.viewImages as string[]) : [];
-                  const mask = resolveReferenceTransmitSlots(src.data?.referenceTransmitSlots);
-                  let hit = -1;
-                  for (let i = 0; i < 4; i++) {
-                    const u = typeof vi[i] === 'string' ? vi[i].trim() : '';
-                    if (u && mask[i] && urlsEqual(u, want)) {
-                      hit = i;
-                      break;
-                    }
-                  }
-                  if (hit < 0) continue;
-                  const nextMask = [...mask];
-                  nextMask[hit] = false;
-                  if (nextMask.every((x) => !x)) {
-                    setEdges((prev) => prev.filter((e) => e.id !== edge.id));
-                  } else {
-                    setNodes((prev) =>
-                      prev.map((n) =>
-                        n.id === src.id
-                          ? { ...n, data: { ...n.data, referenceTransmitSlots: nextMask } }
-                          : n,
-                      ),
-                    );
-                  }
-                  return;
-                }
-
-                // 图片节点：删除提供该 URL 的入边
-                setEdges((prev) =>
-                  prev.filter((edge) => {
-                    if (edge.target !== videoId) return true;
-                    const th = edge.targetHandle || 'input';
-                    if (th !== 'input' && th !== 'video-input') return true;
-                    const src = nds.find((n) => n.id === edge.source);
-                    if (!src || src.type !== 'image') return true;
-                    const u =
-                      pickPreviewFromEdgeOrNode(edge, src.data) ||
-                      (src.data?.outputImage as string) ||
-                      (typeof src.data?.avatar === 'string' ? src.data.avatar.trim() : '') ||
-                      (src.data?.originalImageUrl as string) ||
-                      (src.data?.inputImages as string[])?.[0] ||
-                      '';
-                    return !urlsEqual(String(u), want);
-                  }),
+                if (!videoId) return;
+                disconnectIncomingRefImageEdges(
+                  videoId,
+                  imageUrl,
+                  latestNodesRef.current || nodes,
+                  latestEdgesRef.current || edges,
+                  setNodes,
+                  setEdges,
                 );
               }}
               onDurationLtx23HdrMultiChange={(value) => {
@@ -18516,6 +19360,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     }
                   }
 
+                  const srcType = latestNodesRef.current.find((n) => n.id === targetNodeId)?.type;
+                  if (srcType === 'heyGem') {
+                    spawnHeyGemResultVideoNodeRef.current({
+                      sourceNodeId: targetNodeId,
+                      outputVideo: outputVideoFinal,
+                      originalVideoUrl: networkUrl,
+                      videoAsset,
+                      prompt: videoInputPanelData.prompt || '',
+                    });
+                    handleVideoNodeDataChange(targetNodeId, { progress: 0, errorMessage: undefined });
+                    return;
+                  }
+
                   setNodes((nds) =>
                     nds.map((node) => {
                       if (node.id !== targetNodeId) return node;
@@ -18633,6 +19490,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   )
                 );
                 setImageInputPanelData((prev) => (prev ? { ...prev, inputImages: images } : prev));
+              }}
+              onDisconnectRefImage={(imageUrl) => {
+                const targetId = imageInputPanelData.nodeId;
+                if (!targetId) return;
+                disconnectIncomingRefImageEdges(
+                  targetId,
+                  imageUrl,
+                  latestNodesRef.current || nodes,
+                  latestEdgesRef.current || edges,
+                  setNodes,
+                  setEdges,
+                );
               }}
               projectId={projectId}
               onSeedreamWidthChange={(value) => {
@@ -18858,6 +19727,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       : null;
 
 
+  // 与视频底栏对齐：相对 preview 节点同比例（视频 840÷VIDEO_NODE_DEFAULT_W）
+  const audioInputPanelWidth = Math.round(
+    (AUDIO_NODE_WIDTH / Math.max(VIDEO_NODE_DEFAULT_W, 1)) * 840,
+  );
+
   const audioInputPanelAnchor =
     !previewImage &&
     !previewAudio &&
@@ -18867,7 +19741,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     selectedNode.type === 'audio'
       ? {
           nodeId: audioInputPanelData.nodeId,
-          width: 840,
+          width: audioInputPanelWidth,
           height: 'auto' as const,
           panel: (
             <AudioInputPanel
@@ -19320,6 +20194,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   return (
     <div
+      data-nexflow-workspace-root
       className={`fixed inset-0 w-full h-full ${isDarkMode ? 'bg-[#121212] dark-mode' : 'light-mode'} flex flex-col overflow-hidden`}
       style={{
         top: 0, left: 0, right: 0, bottom: 0,
@@ -19519,11 +20394,28 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               </div>
             </>
           )}
+          {quickConnectSourceId && !characterAvatarPickOverlay ? (
+            <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[55] pointer-events-auto flex flex-col items-center gap-3">
+              <p className="rounded-lg bg-black/55 px-4 py-2 text-sm text-white/90 shadow-lg backdrop-blur-sm">
+                {locale === 'en'
+                  ? 'Output module selected → click a module to connect (Esc / empty cancel)'
+                  : '已选输出模块 → 请点击要接入的模块（Esc / 点空白取消）'}
+              </p>
+              <button
+                type="button"
+                onClick={() => cancelQuickConnect()}
+                className="rounded-xl border border-white/30 bg-white/15 px-8 py-3.5 text-base font-semibold text-white shadow-xl backdrop-blur-sm transition-colors hover:bg-white/25 hover:border-white/50 active:scale-[0.98]"
+              >
+                {locale === 'en' ? 'Cancel connect' : '取消连线'}
+              </button>
+            </div>
+          ) : null}
           <LlmInputPanelProvider value={llmInputPanelAnchor}>
           <StoryboardScriptInputPanelProvider value={storyboardScriptInputPanelAnchor}>
           <DirectorInputPanelProvider value={directorInputPanelAnchor}>
           <ImageInputPanelProvider value={imageInputPanelAnchor}>
           <VideoInputPanelProvider value={videoInputPanelAnchor}>
+          <HeyGemInlinePanelProvider value={heyGemInlinePanelApi}>
           <AudioInputPanelProvider value={audioInputPanelAnchor}>
           <ImageTo3dInputPanelProvider value={imageTo3dInputPanelAnchor}>
           <CanvasThemeProvider isDarkMode={isDarkMode} performanceMode={isPerformanceMode}>
@@ -19531,6 +20423,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             <FlowContent
               characterAvatarPickActive={characterAvatarPickOverlay}
               characterCanvasPickTarget={characterCanvasPickTarget}
+              quickConnectSourceId={quickConnectSourceId}
               nodes={nodes}
               edges={edges}
               selectedEdgeId={selectedEdge?.id ?? null}
@@ -19569,6 +20462,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               onReverseSuperConnect={handleReverseSuperConnect}
               onJoinSelectedVideos={handleJoinSelectedVideos}
               videoJoinBusy={videoJoinBusy}
+              onCreateGridMapFromSelection={handleCreateGridMapFromSelection}
               setNodes={setNodes}
               setEdges={setEdges}
               flowContentApiRef={flowContentApiRef}
@@ -19582,6 +20476,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           </CanvasThemeProvider>
           </ImageTo3dInputPanelProvider>
           </AudioInputPanelProvider>
+          </HeyGemInlinePanelProvider>
           </VideoInputPanelProvider>
           </ImageInputPanelProvider>
           </DirectorInputPanelProvider>

@@ -5,10 +5,15 @@
  */
 
 import {
+  VIDEO_FLAT_CNY,
   normalizeGrok3DurationSec,
+  normalizeRhartVideoXDurationSec,
   normalizeGrok3StableDurationSec,
   normalizeLtx23DurationSec,
 } from './cost_table.mjs';
+
+/** VIDEO_FLAT 裸 model_id：按次打包价，查表 Quantity=1（与客户端 cloudModelPricing 一致） */
+const VIDEO_FLAT_PACK_PRICE_MODEL_IDS = new Set(Object.keys(VIDEO_FLAT_CNY));
 
 function lc(s) {
   return String(s || '').trim().toLowerCase();
@@ -28,6 +33,7 @@ function joinKey(...parts) {
 const IMAGE_REVERSE_KEYS = {
   'gpt-4o': 'gpt-4o-image-reverse',
   'joy-caption-two': 'joy-caption-two-image-reverse',
+  'openai/gpt-5.6-terra': 'openai/gpt-5.6-terra-image-reverse',
 };
 
 function klingO1CapabilitySuffix(model) {
@@ -112,10 +118,6 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
-  if (m === 'hey-gem') {
-    return joinKey('hey', 'gem', 'plus');
-  }
-
   if (m === 'kling-v2.6-pro') {
     let durNum;
     if (inp.duration === '10') durNum = 10;
@@ -139,6 +141,11 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
   if (m === 'grok-3-stable') {
     const durNum = normalizeGrok3StableDurationSec(inp.durationGrok3, 10);
     return joinKey('grok-3-stable', '720p', `${durNum}s`);
+  }
+
+  if (m === 'rhart-video-x') {
+    const durNum = normalizeRhartVideoXDurationSec(input.durationGrok3, 10);
+    return joinKey('rhart-video-x', '720p', `${durNum}s`);
   }
 
   if (m === 'grok-3' || m === 'rhart-video-g') {
@@ -218,6 +225,17 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('ltx', '2-3', 'hdr-multi', res, dur);
   }
 
+  if (m === 'ltx-2.3-msr-av') {
+    const resRaw =
+      inp.resolutionLtx23HdrMulti != null && String(inp.resolutionLtx23HdrMulti).trim() !== ''
+        ? String(inp.resolutionLtx23HdrMulti).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const durNum = normalizeLtx23DurationSec(inp.durationLtx23HdrMulti, 10);
+    const dur = `${durNum}s`;
+    return joinKey('ltx', '2-3', 'msr-av', res, dur);
+  }
+
   if (m === 'rh-video-start-end') {
     const resRaw =
       inp.resolutionRhartV31 != null && String(inp.resolutionRhartV31).trim() !== ''
@@ -248,13 +266,16 @@ export function getVideoBillingQuantity(baseModel, input) {
 
 /**
  * 与 src/renderer/utils/cloudModelPricing.getVideoQuantityForCloudKey 一致。
+ * SKU 以 -{N}s 结尾或 VIDEO_FLAT 裸 id → Quantity=1；否则按 uiSeconds（按秒基价）。
  */
 export function getVideoQuantityForCloudKey(cloudKey, uiSeconds) {
-  const m = String(cloudKey || '').match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
+  const key = String(cloudKey || '').trim();
+  const m = key.match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
   if (m) {
     const n = parseInt(m[1], 10);
     if (Number.isFinite(n) && n > 0) return 1;
   }
+  if (VIDEO_FLAT_PACK_PRICE_MODEL_IDS.has(key)) return 1;
   return Math.max(1, uiSeconds);
 }
 

@@ -1,9 +1,11 @@
 // @ts-nocheck
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Handle, Position, NodeProps } from 'reactflow';
+import { useFrozenFlowZoom } from '../../hooks/useFrozenFlowViewport';
 import { Maximize2, Download, Save, Check } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
+import { useImageTo3dInputPanelAnchor } from '../../contexts/ImageTo3dInputPanelContext';
 import { imageTo3dT } from '../../i18n/imageTo3dI18n';
 import { userFacingErrorMessage } from '../../utils/userErrorMessageCn';
 import ImageTo3dFullscreenView from './ImageTo3dFullscreenView';
@@ -78,9 +80,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
   const prevSelectedRef = useRef(!!selected);
   const prevGlbKeyRef = useRef('');
   const wasGeneratingRef = useRef(false);
-  /** 鼠标在节点主体内：挂载 WebGL；离开时用静态截图保持当前画面 */
-  const [pointerInsideNode, setPointerInsideNode] = useState(false);
-  /** 离开节点瞬间截帧（与持久化 snapshot 同步，避免 WebGL 卸载后抓不到） */
+  /** 离开/失焦时截帧，供持久化缩略图（界面展示始终用实时 WebGL） */
   const [freezeFrameUrl, setFreezeFrameUrl] = useState<string | null>(null);
 
   const previewGlbUrl =
@@ -243,24 +243,15 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     return frame;
   }, [id, onDataChange]);
 
-  const handleNodeBodyMouseEnter = useCallback(() => {
-    setPointerInsideNode(true);
-    setFreezeFrameUrl(null);
-  }, []);
-
+  /** 离开节点时可选截帧，供持久化缩略图（展示始终用实时 WebGL，不再切静态图） */
   const handleNodeBodyMouseLeave = useCallback(() => {
     if (selected && hasOutput && !fullscreen && !isGenerating) {
       capturePreviewFrame();
     }
-    setPointerInsideNode(false);
   }, [selected, hasOutput, fullscreen, isGenerating, capturePreviewFrame]);
 
-  /** 画布预览：
-   * - 选中节点 → 立即挂载 WebGL（不需要等鼠标移入）
-   * - 未选中 → 仅鼠标在节点内时才挂载（性能优化）
-   */
-  const mountWebGL =
-    !!selected ? !fullscreen && !isGenerating : pointerInsideNode && !fullscreen && !isGenerating;
+  /** 画布预览：有结果时也常驻 WebGL（含地面网格），不因悬停/失焦切到无网格静态截图 */
+  const mountWebGL = !fullscreen && !isGenerating;
 
   const persistPreviewSnapshot = useCallback(() => {
     const dataUrl = captureRef.current?.();
@@ -326,7 +317,6 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     if (wasSelected && !selected && hasOutput && !fullscreen && !isGenerating) {
       capturePreviewFrame() || schedulePersistPreviewSnapshot();
     }
-    if (!selected) setPointerInsideNode(false);
     prevSelectedRef.current = !!selected;
   }, [
     selected,
@@ -347,14 +337,8 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
   }, [isGenerating, hasOutput, selected, mountWebGL, schedulePersistPreviewSnapshot]);
 
   const frozenSnapshotUrl = (freezeFrameUrl || snapshotUrl || '').trim();
-  /** 只要节点被选中，就强制显示实时 3D，不显示静态截图 */
-  const showFrozenSnapshot =
-    hasOutput &&
-    !isGenerating &&
-    !fullscreen &&
-    !!frozenSnapshotUrl &&
-    !selected &&
-    !pointerInsideNode;
+  /** 始终用实时 WebGL（图一：模型+地面网格），不再用无网格静态截图顶替 */
+  const showFrozenSnapshot = false;
   const showInputStill =
     !mountWebGL &&
     hasOutput &&
@@ -362,6 +346,17 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
     !!inputStillUrl &&
     !isGenerating;
   const showLiveGlbPreview = mountWebGL && hasOutput;
+
+  const liveZoom = useFrozenFlowZoom(1);
+  // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
+  const zoomInv = useMemo(() => {
+    const z = Math.max(liveZoom || 1, 0.01);
+    const raw = Math.min(1, 1 / z);
+    return Math.round(raw * 50) / 50;
+  }, [liveZoom]);
+  const imageTo3dPromptAnchor = useImageTo3dInputPanelAnchor();
+  const showImageTo3dPromptPanel =
+    !!imageTo3dPromptAnchor && imageTo3dPromptAnchor.nodeId === id && !!selected && !fullscreen;
 
   return (
     <>
@@ -396,7 +391,6 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
         <div
           className="node-body absolute inset-0 rounded-2xl overflow-hidden"
           style={panelStyle}
-          onMouseEnter={handleNodeBodyMouseEnter}
           onMouseLeave={handleNodeBodyMouseLeave}
         >
           {showFrozenSnapshot ? (
@@ -426,8 +420,8 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
           >
             {showLiveGlbPreview ? (
               <div
-                className="absolute inset-0 z-[2] nodrag nopan"
-                title={t.rotateHintHover}
+                className="absolute inset-0 z-[2] h-full w-full min-h-0 min-w-0 nodrag nopan nowheel"
+                title={t.rotateHint}
               >
                 <ImageTo3dInlineGlbPreview
                   glbUrl={previewGlbUrl}
@@ -436,10 +430,12 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
                   previewKey={id}
                   // 鼠标在节点内时，优先显示 3D 模型，不显示参考图占位
                   showReferencePlaceholder={false}
-                  wrapperClassName="relative h-full w-full"
+                  wrapperClassName="absolute inset-0 h-full w-full min-h-0 min-w-0"
+                  className="absolute inset-0 h-full w-full"
                   cameraFraming={IMAGE_TO_3D_PREVIEW_CAMERA_FRAMING}
                   gridStyle="showcase"
-                  turntableRotate={pointerInsideNode}
+                  showGrid
+                  turntableRotate={false}
                   turntableSpeed={Math.PI / 12}
                   useStudioEnvironment={false}
                   showFog={false}
@@ -448,7 +444,7 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
                   captureRef={captureRef}
                   showGridWhenEmpty
                   showGizmo={false}
-                  controlsInteractive={false}
+                  controlsInteractive
                 />
               </div>
             ) : (
@@ -544,7 +540,6 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
                 onClick={(e) => {
                   e.stopPropagation();
                   capturePreviewFrame() || persistPreviewSnapshot();
-                  setPointerInsideNode(false);
                   setFullscreen(true);
                 }}
                 onMouseDown={(e) => {
@@ -563,6 +558,28 @@ const ImageTo3dNode: React.FC<ImageTo3dNodeProps> = ({
             </>
           )}
         </div>
+
+        {/* 对齐 Image/Video：操作台贴主模块下方，随节点平移/缩放 */}
+        {showImageTo3dPromptPanel && imageTo3dPromptAnchor ? (
+          <div
+            className="image-to-3d-text-prompt-panel nodrag nopan absolute z-[60]"
+            style={{
+              top: 'calc(100% + 8px)',
+              left: '50%',
+              width: imageTo3dPromptAnchor.width,
+              height: imageTo3dPromptAnchor.height === 'auto' ? 'auto' : imageTo3dPromptAnchor.height,
+              transform: `translateX(-50%) scale(${zoomInv})`,
+              transformOrigin: 'top center',
+              pointerEvents: 'auto',
+              transition: 'none',
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+          >
+            {imageTo3dPromptAnchor.panel}
+          </div>
+        ) : null}
       </div>
 
       {fullscreen && hasOutput && (

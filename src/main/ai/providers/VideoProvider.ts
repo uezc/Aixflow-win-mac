@@ -16,7 +16,8 @@ import {
   isOurOssOrCdnObjectUrl,
   preferDirectOssUrlForThirdPartyImageRef,
   normalizeOssMediaUrlForGeneration,
-  type MediaOssRegion,
+  mediaUploadRegionLabel,
+  type MediaUploadOssRegion,
 } from '../../config/ossConfig.js';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
@@ -132,7 +133,7 @@ interface VideoInput {
   modeKlingO1?: 'std' | 'pro';
   // ltx-2.3-lipsync 数字人对口型
   inputAudioUrl?: string;
-  resolutionLtx23Lipsync?: '720' | '1280' | '1920'; // 内部档；UI 展示为 480p / 720p / 1080p
+  resolutionLtx23Lipsync?: '720' | '1280' | '1920'; // API 档；UI 展示为 720p / 1280 / 1920
   actionPrompt?: string;
   // ltx-2.3-i2v 图生视频：时长 5|10|15 秒，分辨率 720|1280|1920（标准/高清/超清），工作流默认保持参考图比例
   durationLtx23I2v?: '5' | '10' | '15';
@@ -206,24 +207,31 @@ export class VideoProvider extends BaseProvider {
     return true;
   }
 
-  /** 优先 FC 代传或直连失败后 FC 兜底 */
+  /** 优先 FC 代传或直连失败后 FC 兜底；forcedMediaRegion 用于智能抠像强制上海桶 */
   private async uploadBufferViaOssOrFcProxy(
     buffer: Buffer,
     mimeType: string,
     buildObjectName: () => string,
+    forcedMediaRegion?: MediaUploadOssRegion,
   ): Promise<string> {
-    const mediaRegion = getActiveMediaOssRegion();
-    const regionLabel = mediaRegion === 'cn' ? '北京' : '香港';
+    const mediaRegion: MediaUploadOssRegion = forcedMediaRegion ?? getActiveMediaOssRegion();
+    const regionLabel = mediaUploadRegionLabel(mediaRegion);
     const withinFcLimit = buffer.length <= OSS_MAX_IMAGE_UPLOAD_BYTES;
     const objectName = buildOssUploadObjectKey(buildObjectName());
     const toPublicUrl = (url: string) => normalizeOssMediaUrlForGeneration(url);
+    // 上海桶配置主要在 FC；智能抠像优先走 FC 代传
+    const preferFc = mediaRegion === 'sh' || shouldPreferFcProxyUpload();
 
-    if (shouldPreferFcProxyUpload() && withinFcLimit) {
+    if (preferFc && withinFcLimit) {
       try {
         const url = await uploadMediaBufferViaFcProxy(buffer, mimeType, { objectKey: objectName, mediaRegion });
         console.log(`[OSS上传] 北京 FC 代传成功（${regionLabel}素材桶），公网 URL: ${url}`);
         return url;
       } catch (fcErr) {
+        const code = (fcErr as { code?: string })?.code;
+        if (mediaRegion === 'sh' && code === 'OSS_SH_NOT_CONFIGURED') {
+          throw fcErr;
+        }
         console.warn('[OSS上传] FC 代传失败，尝试直连 OSS…', fcErr instanceof Error ? fcErr.message : fcErr);
       }
     }
@@ -233,18 +241,41 @@ export class VideoProvider extends BaseProvider {
       console.log(`[OSS上传] 直连${regionLabel}素材桶成功`);
       return toPublicUrl(result.url);
     } catch (error) {
+      if (mediaRegion === 'sh') {
+        const msg = String(error instanceof Error ? error.message : error);
+        if (/NoSuchBucket|AccessDenied|InvalidBucketName|does not exist/i.test(msg)) {
+          throw Object.assign(
+            new Error(
+              '请配置上海 OSS 素材桶供智能抠像使用（FC 环境变量 OSS_MEDIA_SH_BUCKET、OSS_MEDIA_SH_REGION=oss-cn-shanghai）',
+            ),
+            { code: 'OSS_SH_NOT_CONFIGURED' },
+          );
+        }
+      }
       if (this.shouldTryFcProxyAfterDirectFailure(buffer, error)) {
         try {
           console.warn(`[OSS上传] 直连${regionLabel}失败，尝试北京 FC 代传…`);
           const url = await uploadMediaBufferViaFcProxy(buffer, mimeType, { objectKey: objectName, mediaRegion });
-          markSessionFcProxyUpload(mediaRegion);
-          if (this.isRetryableOSSError(error)) {
-            markMediaOssDirectUnreachable('直连上传失败');
+          if (mediaRegion === 'cn' || mediaRegion === 'hk') {
+            markSessionFcProxyUpload(mediaRegion);
+            if (this.isRetryableOSSError(error)) {
+              markMediaOssDirectUnreachable('直连上传失败');
+            }
           }
           console.log(`[OSS上传] FC 代传成功，本会话后续将固定走 FC（${regionLabel}素材桶）: ${url}`);
           return url;
         } catch (fcErr) {
           console.error('[OSS上传] FC 代传亦失败:', fcErr);
+          if (mediaRegion === 'sh') {
+            const code = (fcErr as { code?: string })?.code;
+            if (code === 'OSS_SH_NOT_CONFIGURED') throw fcErr;
+            throw Object.assign(
+              new Error(
+                '请配置上海 OSS 素材桶供智能抠像使用（FC 环境变量 OSS_MEDIA_SH_BUCKET、OSS_MEDIA_SH_REGION=oss-cn-shanghai）',
+              ),
+              { code: 'OSS_SH_NOT_CONFIGURED' },
+            );
+          }
         }
       }
       throw error;
@@ -256,7 +287,7 @@ export class VideoProvider extends BaseProvider {
     objectName: string,
     buffer: Buffer,
     options: { mime: string },
-    mediaRegion: MediaOssRegion,
+    mediaRegion: MediaUploadOssRegion,
   ): Promise<{ url: string }> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= OSS_RETRY_COUNT; attempt++) {
@@ -563,9 +594,14 @@ export class VideoProvider extends BaseProvider {
    * 上传视频到阿里云 OSS
    * @param videoBuffer 视频 Buffer
    * @param mimeType 视频 MIME 类型，默认为 video/mp4
+   * @param options.mediaRegion 强制上传区域（智能抠像须传 'sh' 上海桶）
    * @returns 公网 URL
    */
-  async uploadVideoToOSS(videoBuffer: Buffer, mimeType: string = 'video/mp4'): Promise<string> {
+  async uploadVideoToOSS(
+    videoBuffer: Buffer,
+    mimeType: string = 'video/mp4',
+    options?: { mediaRegion?: MediaUploadOssRegion },
+  ): Promise<string> {
     try {
       const timestamp = Date.now();
       const randomStr = Math.random().toString(36).slice(-5);
@@ -575,16 +611,20 @@ export class VideoProvider extends BaseProvider {
       else if (mimeType.includes('avi')) fileExt = 'avi';
       else if (mimeType.includes('mkv')) fileExt = 'mkv';
 
-      console.log(`[OSS上传] 开始上传视频… 大小: ${videoBuffer.length} bytes`);
+      const forced = options?.mediaRegion;
+      const regionHint = forced ? `（${mediaUploadRegionLabel(forced)}桶）` : '';
+      console.log(`[OSS上传] 开始上传视频${regionHint}… 大小: ${videoBuffer.length} bytes`);
       const publicUrl = await this.uploadBufferViaOssOrFcProxy(
         videoBuffer,
         mimeType,
         () => `${timestamp}-${randomStr}.${fileExt}`,
+        forced,
       );
       console.log(`[OSS上传] 视频上传成功，公网 URL: ${publicUrl}`);
       return publicUrl;
     } catch (error: any) {
       console.error('[OSS上传] 视频上传失败:', error);
+      if (error?.code === 'OSS_SH_NOT_CONFIGURED') throw error;
       throw this.formatOSSError(error);
     }
   }
@@ -953,7 +993,7 @@ export class VideoProvider extends BaseProvider {
         onStatus({
           nodeId,
           status: 'ERROR',
-          payload: { error: 'Grok 1.5（全能视频 G）已下线，请在面板中选择 Grok video3（grok-3）或全能视频X（rhart-video-x）。' },
+          payload: { error: 'Grok 1.5（全能视频 G）已下线，请在面板中选择全能视频X（rhart-video-x）或其他可用模型。' },
         });
         return;
       }
@@ -969,13 +1009,24 @@ export class VideoProvider extends BaseProvider {
         'hailuo-2.3-t2v-standard',
         'hailuo-02-i2v-standard',
         'hailuo-2.3-i2v-standard',
+        'rhart-v3.1-fast',
+        'rhart-v3.1-fast-se',
+        'grok-3',
+        'gemini-omni',
       ]);
       if (retiredVideoModels.has(String(model))) {
         onStatus({
           nodeId,
           status: 'ERROR',
           payload: {
-            error: '该视频模型（可灵 / 万相 / 海螺）已从前端下架，请在面板中改用 Grok video3、Veo 3.1 或 LTX2.3 等模型。',
+            error:
+              model === 'gemini-omni'
+                ? 'Gemini Omni（gemini-omni）已从前端下架，请在面板中改用全能视频 Omni Flash、全能视频X 或其他可用模型。'
+                : model === 'grok-3'
+                  ? 'Grok video3（grok-3）已从前端下架，请在面板中改用全能视频X、Seedance 或 LTX2.3 等模型。'
+                  : model === 'rhart-v3.1-fast' || model === 'rhart-v3.1-fast-se'
+                    ? 'Veo 3.1 fast（含首尾帧）已下架，请改用全能视频X 或 全能视频V3.1-pro-首尾帧生视频。'
+                    : '该视频模型（可灵 / 万相 / 海螺）已从前端下架，请在面板中改用全能视频X、Veo 3.1 或 LTX2.3 等模型。',
           },
         });
         return;
@@ -1085,13 +1136,13 @@ export class VideoProvider extends BaseProvider {
         }
       }
 
-      // HeyGem 数字人：参考视频 + 驱动音频
+      // HeyGem 数字人：参考视频 + 驱动音频（模块内设置，无需外部连线）
       if (isHeyGemModel) {
         if (!String(inputReferenceVideoUrl || '').trim()) {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: 'HeyGem 数字人需连接参考视频节点。' },
+            payload: { error: 'HeyGem 数字人需设置参考视频。' },
           });
           return;
         }
@@ -1099,7 +1150,7 @@ export class VideoProvider extends BaseProvider {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: 'HeyGem 数字人需连接音频节点。' },
+            payload: { error: 'HeyGem 数字人需设置驱动音频（可一键配音）。' },
           });
           return;
         }
@@ -1317,14 +1368,23 @@ export class VideoProvider extends BaseProvider {
         return;
       }
 
-      // 全能视频V3.1-fast / V3.1-pro 首尾帧生视频仅支持恰好 2 张图片（首帧+尾帧）
-      if ((isRhartV31FastSEModel || isRhartV31ProSEModel) && isImageToVideo) {
+      // 全能视频V3.1-fast 首尾帧须恰好 2 张；V3.1-pro 首尾帧：首帧必填、尾帧可选（1–2）
+      if (isRhartV31FastSEModel && isImageToVideo) {
         if (images!.length !== 2) {
-          const name = isRhartV31ProSEModel ? '全能视频V3.1-pro' : '全能视频V3.1-fast';
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: `${name} 首尾帧生视频需要恰好 2 张图片（首帧、尾帧），当前提供了 ${images!.length} 张。` },
+            payload: { error: `全能视频V3.1-fast 首尾帧生视频需要恰好 2 张图片（首帧、尾帧），当前提供了 ${images!.length} 张。` },
+          });
+          return;
+        }
+      }
+      if (isRhartV31ProSEModel && isImageToVideo) {
+        if (images!.length < 1 || images!.length > 2) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: `全能视频V3.1-pro-首尾帧生视频需要 1–2 张图片（首帧必填、尾帧可选），当前提供了 ${images!.length} 张。` },
           });
           return;
         }
@@ -1570,7 +1630,7 @@ export class VideoProvider extends BaseProvider {
               nodeId,
               status: 'ERROR',
               payload: {
-                error: '2 张参考图时请选择支持首尾帧或多参考图的模型（如 Seedance 2.0 Mini、Grok video3、全能视频V3.1-fast 等）。',
+                error: '2 张参考图时请选择支持首尾帧或多参考图的模型（如 Seedance 2.0 Mini、全能视频X、全能视频V3.1-fast 等）。',
               },
             });
             return;
@@ -3500,7 +3560,7 @@ export class VideoProvider extends BaseProvider {
           apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/alibaba/wan-2.6/text-to-video`;
         }
       } else if (isRhartV31ProSEModel) {
-        // 全能视频V3.1-pro 首尾帧生视频：https://www.runninghub.cn/openapi/v2/rhart-video-v3.1-pro/start-end-to-video
+        // 全能视频V3.1-pro 首尾帧生视频（海外）：https://www.runninghub.ai/openapi/v2/rhart-video-v3.1-pro/start-end-to-video
         // 参数：prompt(必填), firstFrameUrl(必填), lastFrameUrl(可选), aspectRatio(16:9|9:16), duration(可选 仅8), resolution(必填 720p|1080p|4k)
         const ratio = aspect_ratio === '9:16' || aspect_ratio === '16:9' ? aspect_ratio : '16:9';
         const toProcess = (images || []).slice(0, 2);
@@ -3552,12 +3612,12 @@ export class VideoProvider extends BaseProvider {
             else lastFrameUrl = processed;
           }
         }
-        if (!firstFrameUrl || !lastFrameUrl) throw new Error('首尾帧生视频需要恰好两张有效图片（首帧、尾帧）');
+        if (!firstFrameUrl) throw new Error('全能视频V3.1-pro-首尾帧生视频需要有效首帧图片');
         const resProSe = inputResolutionRhartV31 === '720p' || inputResolutionRhartV31 === '1080p' || inputResolutionRhartV31 === '4k' ? inputResolutionRhartV31 : '1080p';
         payload = {
           prompt: prompt || '',
           firstFrameUrl,
-          lastFrameUrl,
+          ...(lastFrameUrl ? { lastFrameUrl } : {}),
           aspectRatio: ratio,
           duration: '8',
           resolution: resProSe,
@@ -4516,7 +4576,7 @@ export class VideoProvider extends BaseProvider {
             fcVideoSessionId,
             {
               billingModelId: videoBillingId,
-              ...(isRhartVideoXModel || isGrok3Model || isGrok3StableModel ? { rhRegion: 'ai' as const } : {}),
+              ...(isRhartVideoXModel || isGrok3Model || isGrok3StableModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isRhartV31ProOfficialI2vModel ? { rhRegion: 'ai' as const } : {}),
             },
             ledgerVideoId,
           );
@@ -4720,7 +4780,7 @@ export class VideoProvider extends BaseProvider {
                   String(taskId),
                   `${fcVideoSessionId}:poll:${attempt}`,
                   ledgerVideoId,
-                  isRhartVideoXModel || isGrok3Model || isGrok3StableModel ? { rhRegion: 'ai' } : undefined,
+                  isRhartVideoXModel || isGrok3Model || isGrok3StableModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isRhartV31ProOfficialI2vModel ? { rhRegion: 'ai' } : undefined,
                 ),
               };
             } else {

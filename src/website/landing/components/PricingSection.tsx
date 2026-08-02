@@ -1,4 +1,4 @@
-import { FEATURE_CARDS } from '../data/content';
+import { useSiteLocale } from '../lib/siteLocale';
 import { animClass, useInViewAnimation } from '../hooks/useInViewAnimation';
 
 function FeatureGroups({
@@ -23,8 +23,9 @@ function FeatureGroups({
 }
 
 export function PricingSection() {
+  const { t } = useSiteLocale();
   const { ref, inView } = useInViewAnimation();
-  const [canvasCard, productionCard] = FEATURE_CARDS;
+  const [canvasCard, productionCard] = t.featureCards;
 
   return (
     <section ref={ref as React.RefObject<HTMLElement>} className="w-full px-6 py-12">

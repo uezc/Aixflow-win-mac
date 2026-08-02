@@ -26,7 +26,7 @@ const ActivationView: React.FC<{
       if (window.electronAPI) {
         try {
           const status = await window.electronAPI.checkActivation();
-          if (status.activated) {
+          if (status.skipped || status.activated) {
             onActivated();
             return;
           }

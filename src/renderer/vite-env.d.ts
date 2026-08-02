@@ -462,7 +462,28 @@ interface Window {
     }>;
     extractAudioFromVideo: (projectId: string | undefined, videoUrl: string) => Promise<{ audioUrl: string }>;
     separateVocalsFromAudio: (projectId: string | undefined, audioUrl: string, mode: 'vocals' | 'accompaniment') => Promise<{ audioUrl: string }>;
+    /** 取消人声分离 / Whisper 子进程 */
+    cancelAudioTranscribeJobs: () => Promise<{ success: boolean; killed: number }>;
+    /** 百炼实时听写：主进程 WebSocket，渲染只收发 PCM/文本 */
+    asrRealtimeStart: () => Promise<
+      { ok: true; sessionId: string } | { ok: false; message: string; code?: string }
+    >;
+    /** 单向发送 PCM（无 Promise；勿在音频回调里 invoke） */
+    asrRealtimeSendAudio: (sessionId: string, pcmBase64: string) => void;
+    asrRealtimeStop: (sessionId: string) => Promise<{ ok: boolean; text: string; message?: string }>;
+    asrRealtimeCancel: (sessionId?: string) => Promise<{ ok: boolean }>;
+    onAsrRealtimeEvent: (
+      callback: (event: {
+        type: 'started' | 'partial' | 'final' | 'finished' | 'error';
+        sessionId: string;
+        text?: string;
+        message?: string;
+        code?: string;
+      }) => void,
+    ) => () => void;
+    /** 语音→文本：云端 fun-asr；契约 { text } */
     transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) => Promise<{ text: string }>;
+    /** MV 歌词时间线：云端 fun-asr；契约 { text, segments } */
     transcribeSpeechSegmentsFromAudioUrl: (
       projectId: string | undefined,
       audioUrl: string,
@@ -514,16 +535,63 @@ interface Window {
       width?: number;
       height?: number;
     }>;
+    chromaKeyVideo: (
+      projectId: string | undefined,
+      videoUrl: string,
+      options: { colorHex: string; similarity?: number; blend?: number },
+    ) => Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+      hasAlpha?: boolean;
+    }>;
+    /** 智能抠像（VIAPI 一键人像 → WebM alpha） */
+    smartPortraitMatting: (
+      projectId: string | undefined,
+      videoUrl: string,
+    ) => Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+      hasAlpha?: boolean;
+    }>;
+    onSmartPortraitMattingProgress?: (
+      callback: (p: { phase: string; percent: number; message: string }) => void,
+    ) => () => void;
     getMediaDuration: (url: string, projectId?: string) => Promise<number>;
     exportTimelineVideo: (
       projectId: string | undefined,
-      videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
+      videoClips: Array<{
+        type: string;
+        src: string;
+        duration: number;
+        startTime: number;
+        trimStart?: number;
+        trimEnd?: number;
+        name?: string;
+        layout?: { x: number; y: number; w: number; h: number };
+        crop?: { left: number; top: number; right: number; bottom: number };
+      }>,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
       options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
     ) => Promise<{ success: boolean; videoPath?: string; hasAudio?: boolean; error?: string }>;
     exportTimelineVideoToProject: (
       projectId: string | undefined,
-      videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
+      videoClips: Array<{
+        type: string;
+        src: string;
+        duration: number;
+        startTime: number;
+        trimStart?: number;
+        trimEnd?: number;
+        name?: string;
+        layout?: { x: number; y: number; w: number; h: number };
+        crop?: { left: number; top: number; right: number; bottom: number };
+      }>,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
       options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
     ) => Promise<{
@@ -616,6 +684,14 @@ interface Window {
     /** 列举北京桶 WX/ 最新图片公开 URL */
     getWeChatGroupQrUrl: (force?: boolean) => Promise<
       { ok: true; url: string; objectKey: string } | { ok: false; error: string }
+    >;
+    /** 列举北京桶教学视频目录 mp4 公开 URL（按文件名序号排序） */
+    listTutorialVideos: (force?: boolean) => Promise<
+      | {
+          ok: true;
+          items: Array<{ objectKey: string; title: string; url: string; sortIndex: number }>;
+        }
+      | { ok: false; error: string }
     >;
     checkForUpdates: () => Promise<{ updateAvailable: boolean; currentVersion: string; latestVersion: string | null; packageBytes?: number; error?: string | null }>;
     downloadAndInstallUpdate: () => Promise<{ success: boolean; error?: string }>;

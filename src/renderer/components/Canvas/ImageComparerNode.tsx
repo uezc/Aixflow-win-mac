@@ -176,7 +176,7 @@ type WipeStageProps = {
   style?: React.CSSProperties;
 };
 
-/** 共用 wipe 舞台：B 在底、A 用 clip-path 盖住左侧 */
+/** 共用 wipe 舞台：B 在底、A 用宽度裁切；缩放时图片与分割线同层变换以保持接缝对齐 */
 const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
   imageAUrl,
   imageBUrl,
@@ -196,8 +196,10 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
   const hasAny = !!(imageAUrl || imageBUrl);
   const hasBoth = !!(imageAUrl && imageBUrl);
   const pct = Math.round(split * 1000) / 10;
-  const clipA = `inset(0 ${100 - pct}% 0 0)`;
   const isFs = variant === 'fullscreen';
+  const safeZoom = Math.max(zoom, 0.01);
+  // A 裁切条宽度为 pct%；内部图按整舞台比例拉伸，使左侧露出部分对齐原图左侧
+  const aInnerWidthPct = `${100 / Math.max(split, 0.02)}%`;
 
   const updateFromClientX = useCallback(
     (clientX: number) => {
@@ -205,9 +207,11 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
       if (!el) return;
       const rect = el.getBoundingClientRect();
       if (rect.width <= 0) return;
-      onSplitChange(clampSplit((clientX - rect.left) / rect.width));
+      // 内容以中心 scale(zoom)；把屏幕 X 逆变换回未缩放局部坐标再算 split
+      const localX = (clientX - rect.left - rect.width / 2) / safeZoom + rect.width / 2;
+      onSplitChange(clampSplit(localX / rect.width));
     },
-    [onSplitChange],
+    [onSplitChange, safeZoom],
   );
 
   useEffect(() => {
@@ -237,7 +241,6 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
   };
 
   const placeholderCls = isDarkMode ? 'text-white/55' : 'text-gray-500';
-  // 深色透明棋盘格（接近 PS/参考截图的灰格）
   const checkerDark =
     'linear-gradient(45deg, #323238 25%, transparent 25%), linear-gradient(-45deg, #323238 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #323238 75%), linear-gradient(-45deg, transparent 75%, #323238 75%)';
   const checkerLight =
@@ -247,17 +250,20 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
   return (
     <div
       ref={stageRef}
-      className={`relative overflow-hidden select-none ${
-        variant === 'inline' ? 'nodrag nopan nowheel' : ''
+      className={`relative isolate overflow-hidden select-none ${
+        variant === 'inline' ? 'nodrag nopan nowheel h-full w-full' : ''
       } ${className}`}
       style={{
         zIndex: 1,
+        width: variant === 'inline' ? '100%' : style?.width,
+        height: variant === 'inline' ? '100%' : style?.height,
+        minWidth: variant === 'inline' ? '100%' : undefined,
+        minHeight: variant === 'inline' ? '100%' : undefined,
         backgroundColor: isDarkMode ? '#1c1c20' : '#ececef',
         backgroundImage: isDarkMode ? checkerDark : checkerLight,
         backgroundSize: '16px 16px',
         backgroundPosition: '0 0, 0 8px, 8px -8px, -8px 0',
         cursor: hasAny ? 'ew-resize' : 'default',
-        // 空态不拦左侧把手命中；有图时仍需拖分割线
         pointerEvents: hasAny ? 'auto' : 'none',
         ...style,
       }}
@@ -280,84 +286,91 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
         </div>
       ) : (
         <>
+          {/* 图片 + 分割线同层 scale：接缝与白线始终重合；角标留在视口坐标 */}
           <div
-            className="absolute inset-0 flex items-center justify-center"
-            style={zoom !== 1 ? { transform: `scale(${zoom})`, transformOrigin: 'center center' } : undefined}
+            className="absolute inset-0"
+            style={
+              safeZoom !== 1
+                ? { transform: `scale(${safeZoom})`, transformOrigin: 'center center' }
+                : undefined
+            }
           >
-            <div className="relative h-full w-full">
-              {imageBUrl ? (
-                <img
-                  src={imageBUrl}
-                  alt=""
-                  draggable={false}
-                  className={`pointer-events-none absolute inset-0 z-[1] h-full w-full select-none ${imgFit}`}
-                />
-              ) : (
-                <div
-                  className={`absolute inset-0 z-[1] flex items-center justify-center ${isFs ? 'text-base' : 'text-xs'} ${placeholderCls}`}
-                >
-                  {t.connectBHint}
-                </div>
-              )}
-
-              {imageAUrl ? (
-                <img
-                  src={imageAUrl}
-                  alt=""
-                  draggable={false}
-                  className={`pointer-events-none absolute inset-0 z-[2] h-full w-full select-none ${imgFit}`}
-                  style={{ clipPath: clipA }}
-                />
-              ) : (
-                <div
-                  className={`pointer-events-none absolute inset-0 z-[2] flex items-center justify-center overflow-hidden ${
-                    isFs ? 'text-base' : 'text-xs'
-                  } ${placeholderCls}`}
-                  style={{ clipPath: clipA }}
-                >
-                  <span className="px-3 text-center">{t.connectAHint}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* 竖向 wipe 分割：白线 + 中间黑圆拖动手柄 */}
-          <div
-            className="pointer-events-none absolute top-0 bottom-0 z-10"
-            style={{ left: `${pct}%`, transform: 'translateX(-50%)' }}
-          >
-            <div className="h-full w-px bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)]" />
-            <div
-              className={`absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black text-white shadow-lg ring-1 ring-white/20 ${
-                isFs ? 'h-10 w-10' : 'h-8 w-8'
-              }`}
-              aria-hidden
-            >
-              <svg
-                viewBox="0 0 24 24"
-                className={isFs ? 'h-4 w-4' : 'h-3.5 w-3.5'}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.25"
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            {imageBUrl ? (
+              <img
+                src={imageBUrl}
+                alt=""
+                draggable={false}
+                className={`pointer-events-none absolute inset-0 z-[1] h-full w-full select-none ${imgFit}`}
+              />
+            ) : (
+              <div
+                className={`absolute inset-0 z-[1] flex items-center justify-center ${isFs ? 'text-base' : 'text-xs'} ${placeholderCls}`}
               >
-                <path d="M8 9l-3 3 3 3" />
-                <path d="M16 9l3 3-3 3" />
-              </svg>
+                {t.connectBHint}
+              </div>
+            )}
+
+            {imageAUrl ? (
+              <div
+                className="pointer-events-none absolute inset-y-0 left-0 z-[2] overflow-hidden"
+                style={{ width: `${pct}%` }}
+              >
+                <div className="relative h-full" style={{ width: aInnerWidthPct }}>
+                  <img
+                    src={imageAUrl}
+                    alt=""
+                    draggable={false}
+                    className={`pointer-events-none absolute inset-0 h-full w-full select-none ${imgFit}`}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div
+                className={`pointer-events-none absolute inset-y-0 left-0 z-[2] flex items-center justify-center overflow-hidden ${
+                  isFs ? 'text-base' : 'text-xs'
+                } ${placeholderCls}`}
+                style={{ width: `${pct}%` }}
+              >
+                <span className="px-3 text-center">{t.connectAHint}</span>
+              </div>
+            )}
+
+            <div
+              className="pointer-events-none absolute top-0 bottom-0 z-10"
+              style={{ left: `${pct}%`, transform: 'translateX(-50%)' }}
+            >
+              <div className="h-full w-px bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.35)]" />
+              <div
+                className={`absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black text-white shadow-lg ring-1 ring-white/20 ${
+                  isFs ? 'h-10 w-10' : 'h-8 w-8'
+                }`}
+                aria-hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  className={isFs ? 'h-4 w-4' : 'h-3.5 w-3.5'}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.25"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M8 9l-3 3 3 3" />
+                  <path d="M16 9l3 3-3 3" />
+                </svg>
+              </div>
             </div>
           </div>
 
-          {/* A / B 浅灰方角标签 */}
           <span
-            className={`pointer-events-none absolute left-2 top-2 z-10 rounded-sm bg-white/75 px-1.5 py-0.5 font-semibold tracking-wide text-zinc-800 ${
+            className={`pointer-events-none absolute left-2 top-2 z-20 rounded-sm bg-white/75 px-1.5 py-0.5 font-semibold tracking-wide text-zinc-800 ${
               isFs ? 'text-xs' : 'text-[10px]'
             }`}
           >
             {t.slotA}
           </span>
           <span
-            className={`pointer-events-none absolute right-2 top-2 z-10 rounded-sm bg-white/75 px-1.5 py-0.5 font-semibold tracking-wide text-zinc-800 ${
+            className={`pointer-events-none absolute right-2 top-2 z-20 rounded-sm bg-white/75 px-1.5 py-0.5 font-semibold tracking-wide text-zinc-800 ${
               isFs ? 'text-xs' : 'text-[10px]'
             }`}
           >
@@ -366,7 +379,7 @@ const ImageComparerWipeStage: React.FC<WipeStageProps> = ({
 
           {aspectMismatch && hasBoth ? (
             <span
-              className={`pointer-events-none absolute bottom-2 left-1/2 z-10 max-w-[90%] -translate-x-1/2 truncate rounded px-2 py-0.5 text-center ${
+              className={`pointer-events-none absolute bottom-2 left-1/2 z-20 max-w-[90%] -translate-x-1/2 truncate rounded px-2 py-0.5 text-center ${
                 isFs ? 'text-[11px]' : 'text-[9px]'
               } ${isDarkMode ? 'bg-amber-500/20 text-amber-100/90' : 'bg-amber-100 text-amber-900/80'}`}
             >
@@ -681,9 +694,9 @@ const ImageComparerNode: React.FC<ImageComparerNodeProps> = ({
   return (
     <>
       <div
-        className={`custom-node-container group relative overflow-visible rounded-2xl ${
+        className={`custom-node-container group relative box-border overflow-visible rounded-2xl ${
           hasAnyPreview
-            ? 'custom-node-container--transparent bg-transparent p-0 shadow-none'
+            ? 'custom-node-container--transparent bg-[#1c1c20] p-0 shadow-none'
             : isDarkMode
               ? 'nexflow-glass-panel text-white'
               : 'apple-panel-light text-gray-900'
@@ -733,6 +746,7 @@ const ImageComparerNode: React.FC<ImageComparerNodeProps> = ({
           </button>
         )}
 
+        {/* 文档流铺满（非仅 absolute），保证窗口模式有确定宽高可画 wipe */}
         <ImageComparerWipeStage
           imageAUrl={imageAUrl}
           imageBUrl={imageBUrl}
@@ -743,7 +757,7 @@ const ImageComparerNode: React.FC<ImageComparerNodeProps> = ({
           aspectMismatch={aspectMismatch}
           onSplitChange={onSplitChange}
           onSplitCommit={onSplitCommit}
-          className="node-body absolute inset-0 rounded-2xl"
+          className="node-body block h-full w-full rounded-2xl"
         />
 
         {/* 左侧 A/B：与 ImageNode 同款 nexflow-plus-handle-left，走标准左磁吸 */}

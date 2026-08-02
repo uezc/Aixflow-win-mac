@@ -18,7 +18,7 @@ AIXflow 私人模型管理后台（Streamlit + 阿里云 Tablestore）
   python launch_desktop.py
   # 或仅浏览器：python -m streamlit run app.py
 
-默认桌面启动使用端口 8510（可用环境变量 NEXFLOW_ADMIN_PORT 修改）。
+默认桌面启动使用端口 9510（可用环境变量 NEXFLOW_ADMIN_PORT 修改）。
 Windows 若提示找不到 streamlit 命令，请使用「python -m streamlit」。
 
 配置优先级（访问密码、OTS AK、算力接口）:

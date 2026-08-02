@@ -1,7 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
-import { PROJECTS, type ProjectItem as ProjectItemData } from '../data/content';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getProjects } from '../data/content';
+import { useSiteLocale } from '../lib/siteLocale';
 
-function ProjectItem({ name, description, video }: ProjectItemData) {
+function ProjectItem({
+  name,
+  description,
+  video,
+}: {
+  name: string;
+  description: string;
+  video: string;
+}) {
   const ref = useRef<HTMLElement>(null);
   const [inView, setInView] = useState(false);
 
@@ -43,11 +52,20 @@ function ProjectItem({ name, description, video }: ProjectItemData) {
 }
 
 export function ProjectsSection() {
+  const { t } = useSiteLocale();
+  const projects = useMemo(() => {
+    const media = getProjects();
+    return media.map((p, i) => ({
+      ...p,
+      name: t.projects[i]?.name ?? p.name,
+      description: t.projects[i]?.description ?? p.description,
+    }));
+  }, [t.projects]);
   return (
     <section className="mx-auto max-w-[1200px] px-6 py-12">
       <div className="flex flex-col gap-16 md:gap-20">
-        {PROJECTS.map((project) => (
-          <ProjectItem key={project.name} {...project} />
+        {projects.map((project) => (
+          <ProjectItem key={project.video} {...project} />
         ))}
       </div>
     </section>

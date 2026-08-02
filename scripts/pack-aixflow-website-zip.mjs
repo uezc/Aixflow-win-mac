@@ -1,15 +1,9 @@
 #!/usr/bin/env node
 /**
- * 打包 aixflow.com.cn 官网静态资源（落地页 + 依赖 JS/CSS）。
- * 部署后「开始使用」会从 OSS 拉 latest.yml，优先下载 Aixflow-Windows-Setup-{version}.exe（在线安装，无需解压）。
+ * 打包 aixflow.com.cn 官网静态资源（落地页 + 充值公示页 + 依赖 JS/CSS）。
  *
  * 用法: node scripts/pack-aixflow-website-zip.mjs
  * 产物: release/Aixflow-Website-{version}.zip
- *
- * 服务器目录结构（与当前 nginx 一致）:
- *   {webroot}/index.html          ← dist/public/index.html
- *   {webroot}/../icon.png         ← dist/icon.png（index 里 ../icon.png）
- *   {webroot}/../assets/*         ← dist/assets/aixflowLanding-* + client + chevron
  */
 import fs from 'fs';
 import path from 'path';
@@ -30,85 +24,104 @@ function mustExist(p, hint) {
   }
 }
 
-function collectLandingAssets() {
-  const assetsDir = path.join(dist, 'assets');
-  mustExist(assetsDir, '请先执行: npm run build:renderer');
-  const files = fs.readdirSync(assetsDir);
-  const landingJs = files.filter((f) => /^aixflowLanding-.*\.js$/i.test(f));
-  const landingCss = files.filter((f) => /^aixflowLanding-.*\.css$/i.test(f));
-  const clientJs = files.filter((f) => /^client-.*\.js$/i.test(f));
-  const chevronJs = files.filter((f) => /^chevron-right-.*\.js$/i.test(f));
-  const brandPng = files.filter((f) => /^aixflow-brand-logo-.*\.png$/i.test(f));
-  if (landingJs.length !== 1 || landingCss.length !== 1) {
-    console.error('[pack-website] 未找到唯一的 aixflowLanding js/css，请先 npm run build:renderer');
-    process.exit(1);
-  }
-  return {
-    landingJs: landingJs[0],
-    landingCss: landingCss[0],
-    clientJs: clientJs[0],
-    chevronJs: chevronJs[0],
-    brandPng: brandPng[0],
-  };
+/** 从 HTML 抽取 ../assets/ 或 /assets/ 或 ./assets/ 引用的文件名 */
+function assetNamesFromHtml(html) {
+  const names = new Set();
+  const re = /(?:src|href)=["'](?:\.\.\/assets\/|\/assets\/|\.\/assets\/)([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html))) names.add(m[1]);
+  return names;
+}
+
+function ensureHtmlRelPaths(html) {
+  // 若构建已是 ../assets，保持；若是 /assets 或 ./assets，改成 ../assets
+  return html
+    .replace(/(href|src)="\/assets\//g, '$1="../assets/')
+    .replace(/(href|src)="\.\/assets\//g, '$1="../assets/')
+    .replace(/(href|src)="\/icon\.png"/g, '$1="../icon.png"')
+    .replace(/(href|src)="\.\/icon\.png"/g, '$1="../icon.png"');
 }
 
 function main() {
   const landingIndex = path.join(dist, 'public', 'index.html');
+  const rechargeIndex = path.join(dist, 'public', 'recharge.html');
   mustExist(landingIndex, '请先执行: npm run build:renderer');
+  mustExist(rechargeIndex, '请先执行: npm run build:renderer（需生成 public/recharge.html）');
   mustExist(path.join(dist, 'icon.png'));
-  const a = collectLandingAssets();
+
+  const landingHtml = fs.readFileSync(landingIndex, 'utf8');
+  const rechargeHtml = fs.readFileSync(rechargeIndex, 'utf8');
+  const assetNames = new Set([
+    ...assetNamesFromHtml(landingHtml),
+    ...assetNamesFromHtml(rechargeHtml),
+  ]);
+
+  // 品牌图可能被 JS 动态引用，尽量带上
+  const assetsDir = path.join(dist, 'assets');
+  for (const f of fs.readdirSync(assetsDir)) {
+    if (/^aixflow-brand-logo-.*\.png$/i.test(f)) assetNames.add(f);
+  }
+
+  if (![...assetNames].some((n) => /^aixflowLanding-.*\.js$/i.test(n))) {
+    console.error('[pack-website] HTML 未引用 aixflowLanding-*.js');
+    process.exit(1);
+  }
+  if (![...assetNames].some((n) => /^aixflowRecharge-.*\.js$/i.test(n))) {
+    console.error('[pack-website] HTML 未引用 aixflowRecharge-*.js');
+    process.exit(1);
+  }
 
   const zipPath = path.join(root, 'release', `Aixflow-Website-${version}.zip`);
   fs.mkdirSync(path.dirname(zipPath), { recursive: true });
-
   const zip = new AdmZip();
-  zip.addFile('site/index.html', fs.readFileSync(landingIndex));
+  zip.addFile('site/index.html', Buffer.from(ensureHtmlRelPaths(landingHtml), 'utf8'));
+  zip.addFile('site/recharge.html', Buffer.from(ensureHtmlRelPaths(rechargeHtml), 'utf8'));
   zip.addFile('site/icon.png', fs.readFileSync(path.join(dist, 'icon.png')));
-  zip.addFile(`site/assets/${a.landingJs}`, fs.readFileSync(path.join(dist, 'assets', a.landingJs)));
-  zip.addFile(`site/assets/${a.landingCss}`, fs.readFileSync(path.join(dist, 'assets', a.landingCss)));
-  zip.addFile(`site/assets/${a.clientJs}`, fs.readFileSync(path.join(dist, 'assets', a.clientJs)));
-  zip.addFile(`site/assets/${a.chevronJs}`, fs.readFileSync(path.join(dist, 'assets', a.chevronJs)));
-  if (a.brandPng) {
-    zip.addFile(`site/assets/${a.brandPng}`, fs.readFileSync(path.join(dist, 'assets', a.brandPng)));
+
+  for (const name of assetNames) {
+    const p = path.join(assetsDir, name);
+    mustExist(p, `HTML 引用了缺失资源: ${name}`);
+    zip.addFile(`site/assets/${name}`, fs.readFileSync(p));
   }
 
   const readme = `Aixflow 官网静态包 v${version}
 
 解压后目录:
   site/index.html
+  site/recharge.html   ← 元宝充值套餐公示（支付宝合规）
   site/icon.png
   site/assets/
 
-部署到 aixflow.com.cn（与现有 nginx 一致，index 使用 ../assets 与 ../icon.png）:
+部署（国内站 nginx，路径保持 ../assets）：
+  sudo cp site/index.html /var/www/aixflow/public/index.html
+  sudo cp site/recharge.html /var/www/aixflow/public/recharge.html
+  sudo cp site/icon.png /var/www/aixflow/icon.png
+  sudo cp -r site/assets/* /var/www/aixflow/assets/
 
-  方式 A — 站点根即 site/ 的上一级（推荐，与线上一致）:
-    将 site/index.html  →  /var/www/aixflow/public/index.html  （或你当前的 web 根 index.html）
-    将 site/icon.png    →  /var/www/aixflow/icon.png
-    将 site/assets/*    →  /var/www/aixflow/assets/
+海外站 aixflow.ai（当前多在 Cloudflare，需换成与 .com.cn 同一套 Vite 站）：
+  1) Cloudflare Pages：以 site/ 为根上传；HTML 内 ../assets 需先改为 ./assets（脚本：upload-website-static-to-hk-oss.mjs）
+  2) 或 CF 源站指到与 .com.cn 相同的 Nginx，并清 CF 缓存
+  3) 预览（香港 OSS）: node scripts/upload-website-static-to-hk-oss.mjs
 
-  方式 B — 整包覆盖（备份后）:
-    cd /var/www/aixflow && unzip -o Aixflow-Website-${version}.zip
-    cp site/index.html public/index.html   # 若 nginx root 是 public/
-    cp site/icon.png ./
-    cp -r site/assets/* assets/
+同一静态包可部署到国内站与海外站（运行时按域名选北京/香港下载与视频）：
+  https://aixflow.com.cn/
+  https://aixflow.ai/
 
 验证:
-  1. 浏览器打开 https://aixflow.com.cn/ 强制刷新 Ctrl+F5
-  2. 首屏按钮应先显示「准备下载…」再变为「开始使用」
-  3. 点击应下载 Aixflow-Windows-Setup-${version}.exe（约 1MB 在线安装器，无需解压；安装时会自动下载完整包）
+  https://aixflow.com.cn/
+  https://aixflow.com.cn/recharge.html
+  https://aixflow.ai/
 
-OSS 安装包须已 upload:release（含 latest.yml + stub exe + .nsis.7z）；离线 zip 仅作备用，官网不会优先使用。
+支付宝合规建议提交: https://aixflow.com.cn/recharge.html
+
+官网视频需双桶同名对象（北京 ↔ 香港）:
+  node scripts/sync-website-media-bj-hk.mjs
 `;
   zip.addFile('DEPLOY.txt', Buffer.from(readme, 'utf8'));
   zip.writeZip(zipPath);
 
-  const jsText = fs.readFileSync(path.join(dist, 'assets', a.landingJs), 'utf8');
-  const hasDownload =
-    jsText.includes('latest.yml') &&
-    jsText.includes('method:"HEAD"') &&
-    jsText.includes('Aixflow-Windows-Offline');
   console.log(`[pack-website] 已生成 ${zipPath}`);
-  console.log(`[pack-website] landing js: ${a.landingJs} | 含 OSS 下载逻辑: ${hasDownload ? '是' : '否'}`);
+  console.log(`[pack-website] 资源 ${assetNames.size} 个: ${[...assetNames].sort().join(', ')}`);
 }
 
 main();

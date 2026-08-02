@@ -422,8 +422,52 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('extract-audio-from-video', projectId, videoUrl),
   separateVocalsFromAudio: (projectId: string | undefined, audioUrl: string, mode: 'vocals' | 'accompaniment') =>
     ipcRenderer.invoke('separate-vocals-from-audio', projectId, audioUrl, mode),
+  /** 取消进行中的人声分离 / Whisper 转写子进程 */
+  cancelAudioTranscribeJobs: () =>
+    ipcRenderer.invoke('cancel-audio-transcribe-jobs') as Promise<{ success: boolean; killed: number }>,
+  /** 阿里云百炼实时听写（主进程 WebSocket；渲染只收发 PCM/文本） */
+  asrRealtimeStart: () =>
+    ipcRenderer.invoke('asr-realtime-start') as Promise<
+      { ok: true; sessionId: string } | { ok: false; message: string; code?: string }
+    >,
+  /** 单向发送 PCM；勿用 invoke（音频路径高频调用会拖垮 / 崩渲染进程） */
+  asrRealtimeSendAudio: (sessionId: string, pcmBase64: string) => {
+    ipcRenderer.send('asr-realtime-send-audio', sessionId, pcmBase64);
+  },
+  asrRealtimeStop: (sessionId: string) =>
+    ipcRenderer.invoke('asr-realtime-stop', sessionId) as Promise<{
+      ok: boolean;
+      text: string;
+      message?: string;
+    }>,
+  asrRealtimeCancel: (sessionId?: string) =>
+    ipcRenderer.invoke('asr-realtime-cancel', sessionId) as Promise<{ ok: boolean }>,
+  onAsrRealtimeEvent: (
+    callback: (event: {
+      type: 'started' | 'partial' | 'final' | 'finished' | 'error';
+      sessionId: string;
+      text?: string;
+      message?: string;
+      code?: string;
+    }) => void,
+  ) => {
+    const handler = (
+      _: unknown,
+      data: {
+        type: 'started' | 'partial' | 'final' | 'finished' | 'error';
+        sessionId: string;
+        text?: string;
+        message?: string;
+        code?: string;
+      },
+    ) => callback(data);
+    ipcRenderer.on('asr-realtime-event', handler);
+    return () => ipcRenderer.removeListener('asr-realtime-event', handler);
+  },
+  /** 语音→文本：云端 fun-asr（经 FC）；契约 { text }，不再走本地 Whisper */
   transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) =>
     ipcRenderer.invoke('transcribe-speech-from-audio-url', projectId, audioUrl, language) as Promise<{ text: string }>,
+  /** MV 歌词时间线：云端 fun-asr（经 FC）；契约 { text, segments } */
   transcribeSpeechSegmentsFromAudioUrl: (
     projectId: string | undefined,
     audioUrl: string,
@@ -486,18 +530,104 @@ contextBridge.exposeInMainWorld('electronAPI', {
       width?: number;
       height?: number;
     }>,
+  chromaKeyVideo: (
+    projectId: string | undefined,
+    videoUrl: string,
+    options: { colorHex: string; similarity?: number; blend?: number },
+  ) =>
+    ipcRenderer.invoke('chroma-key-video', projectId, videoUrl, options) as Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+      hasAlpha?: boolean;
+    }>,
+  /** 智能抠像：阿里云 VIAPI 一键人像 → 透明 WebM（无鼠标点选） */
+  smartPortraitMatting: (projectId: string | undefined, videoUrl: string) =>
+    ipcRenderer.invoke('smart-portrait-matting', projectId, videoUrl) as Promise<{
+      originalUrl: string;
+      posterUrl?: string;
+      ghostBase64?: string;
+      width?: number;
+      height?: number;
+      hasAlpha?: boolean;
+    }>,
+  onSmartPortraitMattingProgress: (
+    callback: (p: { phase: string; percent: number; message: string }) => void,
+  ) => {
+    const handler = (_: unknown, p: { phase: string; percent: number; message: string }) => callback(p);
+    ipcRenderer.on('smart-portrait-matting-progress', handler);
+    return () => ipcRenderer.removeListener('smart-portrait-matting-progress', handler);
+  },
   getMediaDuration: (url: string, projectId?: string) => ipcRenderer.invoke('get-media-duration', url, projectId) as Promise<number>,
   exportTimelineVideo: (
     projectId: string | undefined,
-    videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
-    audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
-    ) => ipcRenderer.invoke('export-timeline-video', projectId, videoClips, audioTracks, options),
+    videoClips: Array<{
+      type: string;
+      src: string;
+      duration: number;
+      startTime: number;
+      trimStart?: number;
+      trimEnd?: number;
+      lockTrim?: boolean;
+      name?: string;
+      layout?: { x: number; y: number; w: number; h: number };
+      crop?: { left: number; top: number; right: number; bottom: number };
+    }>,
+    audioTracks: Array<
+      Array<{
+        type: string;
+        src: string;
+        duration: number;
+        startTime: number;
+        trimStart?: number;
+        trimEnd?: number;
+        lockTrim?: boolean;
+      }>
+    >,
+    options?: {
+      videoTrackVolume?: number;
+      videoTrackMuted?: boolean;
+      audioTrackVolume?: number[];
+      audioTrackMuted?: boolean[];
+      outputWidth?: number;
+      outputHeight?: number;
+    },
+  ) => ipcRenderer.invoke('export-timeline-video', projectId, videoClips, audioTracks, options),
   exportTimelineVideoToProject: (
     projectId: string | undefined,
-    videoClips: Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number; name?: string }>,
-    audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
+    videoClips: Array<{
+      type: string;
+      src: string;
+      duration: number;
+      startTime: number;
+      trimStart?: number;
+      trimEnd?: number;
+      lockTrim?: boolean;
+      name?: string;
+      layout?: { x: number; y: number; w: number; h: number };
+      crop?: { left: number; top: number; right: number; bottom: number };
+    }>,
+    audioTracks: Array<
+      Array<{
+        type: string;
+        src: string;
+        duration: number;
+        startTime: number;
+        trimStart?: number;
+        trimEnd?: number;
+        lockTrim?: boolean;
+      }>
+    >,
+    options?: {
+      videoTrackVolume?: number;
+      videoTrackMuted?: boolean;
+      audioTrackVolume?: number[];
+      audioTrackMuted?: boolean[];
+      outputWidth?: number;
+      outputHeight?: number;
+    },
   ) => ipcRenderer.invoke('export-timeline-video-to-project', projectId, videoClips, audioTracks, options),
 
   setSharpQueuePaused: (paused: boolean) =>
@@ -623,6 +753,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWeChatGroupQrUrl: (force?: boolean) =>
     ipcRenderer.invoke('wechat-group:get-qr-url', force) as Promise<
       { ok: true; url: string; objectKey: string } | { ok: false; error: string }
+    >,
+  /** 顶栏教学视频：列举北京桶 `软件内教学视频/` mp4 公开 URL */
+  listTutorialVideos: (force?: boolean) =>
+    ipcRenderer.invoke('tutorial-videos:list', force) as Promise<
+      | {
+          ok: true;
+          items: Array<{ objectKey: string; title: string; url: string; sortIndex: number }>;
+        }
+      | { ok: false; error: string }
     >,
   checkForUpdates: () =>
     ipcRenderer.invoke('app:check-for-updates') as Promise<{

@@ -77,7 +77,7 @@ export default function WeChatGroupEntry({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#07C160]/35 bg-[#07C160]/10 px-2.5 py-1 text-xs text-white/85 transition-colors hover:bg-[#07C160]/18 hover:text-white"
+        className="inline-flex h-[26px] shrink-0 items-center gap-1.5 rounded-full border border-[#07C160]/35 bg-[#07C160]/10 px-2.5 py-0 text-xs leading-none text-white/85 transition-colors hover:bg-[#07C160]/18 hover:text-white"
         aria-label={label}
       >
         <WeChatIcon className="h-3.5 w-3.5 text-[#07C160]" />

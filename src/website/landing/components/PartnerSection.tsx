@@ -1,11 +1,13 @@
 import { useCallback, useRef } from 'react';
 import { LOGO_URL } from '../data/content';
 import { animClass, useInViewAnimation } from '../hooks/useInViewAnimation';
+import { useSiteLocale } from '../lib/siteLocale';
 import { SocialLinks } from './SocialLinks';
 
 type Trail = { id: number; x: number; y: number; src: string; rotation: number };
 
 export function PartnerSection() {
+  const { t } = useSiteLocale();
   const { ref, inView } = useInViewAnimation();
   const containerRef = useRef<HTMLDivElement>(null);
   const lastSpawnRef = useRef(0);
@@ -72,10 +74,10 @@ export function PartnerSection() {
         <div ref={layerRef} className="pointer-events-none absolute inset-0" />
         <div className="relative z-10 flex flex-col items-center px-6 text-center">
           <h2 className="font-serif text-[40px] leading-none text-[#0D212C] md:text-[56px] lg:text-[64px]">
-            联系我们
+            {t.contactTitle}
           </h2>
           <p className="mt-4 max-w-md text-sm leading-relaxed text-[#051A24]/70 md:text-base">
-            教程、更新与交流，欢迎通过以下方式找到我们。
+            {t.contactSubtitle}
           </p>
           <SocialLinks theme="light" className="mt-10 justify-center" />
         </div>

@@ -13,6 +13,8 @@ export type PhotoCollageStrings = {
   canvasHeight: string;
   apply: string;
   importFromNodesTitle: string;
+  /** 超级连线超出图层上限时提示；{n}=忽略张数 {max}=上限 */
+  superConnectOverflow: string;
   layerUp: string;
   layerDown: string;
   layerFront: string;
@@ -73,7 +75,8 @@ const zh: PhotoCollageStrings = {
   canvasWidth: '画布宽度',
   canvasHeight: '画布高度',
   apply: '应用',
-  importFromNodesTitle: '从图片、角色节点连线导入',
+  importFromNodesTitle: '连接图片模块导入（可超级连线批量导入）',
+  superConnectOverflow: '拼图最多 {max} 层，已忽略多余的 {n} 张图',
   layerUp: '上移一层',
   layerDown: '下移一层',
   layerFront: '置顶',
@@ -101,7 +104,7 @@ const zh: PhotoCollageStrings = {
   noTemplateHint: '当前宽高不在常用比例模板中，请点选上方面板中一项比例，或使用「自定义」输入。',
   layers: '图层',
   layerLabel: '图层',
-  noLayers: '暂无图层，请在画布上从图片节点连线到拼图节点导入',
+  noLayers: '暂无图层：请连接图片节点，或框选多张图后用绿色超级连线批量导入',
   reset: '复位',
   direction: '方向',
   resetLayerTitle: '复位旋转与镜像',
@@ -134,7 +137,8 @@ const en: PhotoCollageStrings = {
   canvasWidth: 'Canvas width',
   canvasHeight: 'Canvas height',
   apply: 'Apply',
-  importFromNodesTitle: 'Connect from image or character nodes to import',
+  importFromNodesTitle: 'Connect image nodes to import (batch via super-connect)',
+  superConnectOverflow: 'Collage holds up to {max} layers; skipped {n} extra image(s)',
   layerUp: 'Move up',
   layerDown: 'Move down',
   layerFront: 'Bring to front',
@@ -162,7 +166,7 @@ const en: PhotoCollageStrings = {
   noTemplateHint: 'Current size is not a preset — pick a ratio above or use Custom.',
   layers: 'Layers',
   layerLabel: 'Layer',
-  noLayers: 'No layers yet — connect image nodes to this collage node on the canvas',
+  noLayers: 'No layers yet — connect image nodes, or multi-select and use the green super-connect',
   reset: 'Reset',
   direction: 'Rotate',
   resetLayerTitle: 'Reset rotation and flip',

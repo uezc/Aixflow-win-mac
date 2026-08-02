@@ -36,7 +36,7 @@ export const IMAGE_MODEL_CNY = {
     '2k': 0.08,
     '4k': 0.08,
   },
-  /** 全能图片 G-2：图生图 /rhart-image-g-2；文生图 /rhart-image-g-2-official（海外站） */
+  /** 全能图片 G-2.0（OpenAPI /rhart-image-g-2/{text,image}-to-image，海外站；计费 id 同为 rhart-image-g-2，不按文/图拆 SKU） */
   'rhart-image-g-2': {
     default: 0.05,
     '2k': 0.08,
@@ -62,7 +62,12 @@ export const IMAGE_MODEL_CNY = {
     hd: 0.81,
   },
   'seedream-v4.5': 0.2,
-  'seedream-v5': 0.2,
+  /** Seedream v5（国内 OpenAPI /seedream-v5-lite 文生/图生，.cn；计费 id seedream-v5；resolution 2k|3k） */
+  'seedream-v5': {
+    default: 0.2,
+    '2k': 0.2,
+    '3k': 0.2,
+  },
   /** Z-image 文生图（RunningHub AI App 2059599553522921474）；后台主键 z-image-720p / z-image-1080p */
   'z-image': {
     default: 0.2,
@@ -110,6 +115,16 @@ export const REVERSE_CAPTION_CNY = {
 
 /** 音频（CNY/次）；与节点 data.model、FC billingModelId 一致 */
 export const AUDIO_MODEL_CNY = {
+  /**
+   * 阿里云 VIAPI 视频人像分割（billingModelId=viapi-segment-video-body）。
+   * 表内为「元/分钟」零售价；按输出时长秒级折算：
+   *   billableSeconds = max(1, ceil(秒))；
+   *   costYuanbao = max(1, ceil(unitCostPerMinute * billableSeconds / 60))。
+   * nx_model_config.base_price 语义为「元/分钟」，应填 2（勿再按 30 秒档填 1）。
+   */
+  'viapi-segment-video-body': 2.0,
+  /** 百炼 fun-asr 异步录音文件识别（按次；0.5 元 × yuanbao_rate10 ≈ 5 元宝） */
+  'fun-asr': 0.5,
   'rhart-song': 0.5,
   /** RunningHub 标准模型 SUNO v5.5（billingModelId 与节点 data.model 一致） */
   'rhart-song-v5.5': 0.5,
@@ -307,7 +322,7 @@ export const VIDEO_RHART_V31_FAST_CNY = {
   '4k': 0.5,
 };
 
-/** rhart-v3.1-pro / pro-se */
+/** rhart-v3.1-pro / pro-se（按分辨率档）；官方未给单独海外价时与文生 pro 同档占位，720p=0.8 / 1080p=1.0 / 4k=1.4 元宝 */
 export const VIDEO_RHART_V31_PRO_CNY = {
   '720p': 0.8,
   '1080p': 1,
@@ -390,6 +405,8 @@ export const VIDEO_FLAT_CNY = {
   '2049450731266121729': 0.05,
   /** 视频深度转换 RunningHub AI App */
   '2082392424818757633': 0.15,
+  /** 视频去字幕/水印 RunningHub AI App */
+  '2082682378039943169': 0.15,
 };
 
 /** Veo 3.1 Pro 官方图生：秒 × 是否生成音频 */

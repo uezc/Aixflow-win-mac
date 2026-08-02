@@ -1,12 +1,20 @@
 import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Handle, Position, NodeProps, Node, Edge, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
-import { Loader2, Scissors, Upload, Video, Download, Play, Pause, X, Check, Maximize2, Volume2, Layers2, Subtitles, Crop, Sparkles } from 'lucide-react';
+import { Handle, Position, NodeProps, Node, Edge, addEdge, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
+import { Loader2, Scissors, Upload, Video, Download, Play, Pause, X, Check, Maximize2, Volume2, VolumeX, Layers2, Subtitles, Crop, Sparkles, Camera, Droplet, UserRound } from 'lucide-react';
 import SmartVideoEditModal, { type SmartVideoEditSettings } from './SmartVideoEditModal';
 import { type SmartEditReviewSegment } from './SmartVideoEditReviewBar';
 import VideoTrimFilmstripBar from './VideoTrimFilmstripBar';
 import VideoCropOverlay, { type VideoCropOverlayHandle } from './VideoCropModal';
+import {
+  VideoChromaKeyMainPreview,
+  VideoChromaKeyPickOverlay,
+  VideoChromaKeySidePanel,
+  CHROMA_CHECKERBOARD_BG,
+  suggestKeyParamsForColor,
+  type ChromaKeyParams,
+} from './VideoChromaKeyPanel';
 import type { NormalizedCropRect } from '../../utils/imageCropUtils';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
@@ -31,6 +39,7 @@ import {
   NODE_SIZE_TRANSITION,
   snapToVideoPanelAspectRatio,
 } from '../../utils/nodeSizeFromAspectRatio';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import {
   registerVideoNodePlaybackReader,
   unregisterVideoNodePlaybackReader,
@@ -38,6 +47,9 @@ import {
 import { enqueueImageLoad, calcViewportPriority, isImageLoadedInSession, markImageLoadedInSession } from '../../utils/imageLoadPriorityQueue';
 import { useGlobalInteraction, useGlobalInteractionSelector, setHoveredVideoNodeId, setActiveVideoNodeId, scheduleClearActiveVideoNodeId } from '../../utils/globalInteractionStore';
 import { useVideoInputPanelAnchor } from '../../contexts/VideoInputPanelContext';
+import { useHeyGemInlinePanelApi } from '../../contexts/HeyGemInlinePanelContext';
+import VideoInputPanel from './VideoInputPanel';
+import { DOUBAO_SEED_AUDIO_MODEL_ID } from '../../utils/doubaoSeedAudioModel';
 import { FAR_PLACEHOLDER_HYSTERESIS, LOD_HYSTERESIS, MAX_DECODERS } from '../../config/renderPerfConstants';
 import { VIEWPORT_UNMOUNT_DELAY_MS, VIEWPORT_REDUNDANT_PADDING, LOD_HYSTERESIS_LARGE } from '../../config/videoVisualConstants';
 import { TAPNOW_INTERACTION_SUSPEND } from '../../config/perfPolicy';
@@ -53,18 +65,24 @@ import {
   refundHintForLocale,
   messageContainsRefundHint,
   isLocalOnlineVideoImportError,
+  failedGenerationDetailWithRefund,
 } from '../../utils/userErrorMessageCn';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { dispatchCanvasPickNode, isCanvasPickDigitalHumanVideoTarget } from '../../utils/canvasPickStore';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
-import { getVideoDepthConvertDisplayPrice, getVideoSubtitleWatermarkDisplayPrice } from '../../utils/cloudModelPricing';
+import {
+  getViapiSegmentVideoBodyDisplayPrice,
+  getVideoDepthConvertDisplayPrice,
+  getVideoSubtitleWatermarkDisplayPrice,
+} from '../../utils/cloudModelPricing';
 import { assetLibBtnPrimary, assetLibBtnSecondary, nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import {
   VIDEO_FRAME_SPLIT_INTERVALS,
   VideoFrameSplitIntervalSec,
   buildVideoFrameTimestamps,
   dataUrlToArrayBuffer,
+  extractVideoFrameAtTime,
   extractVideoFramesAtTimes,
   probeVideoDuration,
   probeVideoPixelSize,
@@ -88,6 +106,11 @@ const LOW_RES_TRANSITION = 'opacity 220ms cubic-bezier(0.22, 1, 0.36, 1), filter
 /** 与主进程 `videoScraper.ts` 中 `YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER` 保持一致 */
 const YOUTUBE_SCRAPE_PROXY_GUIDE_MARKER = '[[NX:SHOW_PROXY_SETTING_UI]]';
 const MAX_VIDEO_FRAME_SPLIT_COUNT = 100;
+
+/** HeyGem 数字人：双栏配置直接放在节点主框内（宽对齐原底栏 840） */
+export const HEYGEM_SHELL_W = scaleModulePx(560);
+export const HEYGEM_SHELL_H = scaleModulePx(280);
+export const HEYGEM_SHELL_H_BUSY = scaleModulePx(280);
 
 /** 导出到画布右侧时的间距（flow 坐标） */
 const CANVAS_EXPORT_GAP = 72;
@@ -687,10 +710,20 @@ interface VideoNodeData {
   mediaDurationSec?: number;
   /** 从上游视频模块连线解析的参考视频 URL（与 Workspace videoInputPanelData 一致） */
   referenceVideoUrl?: string;
+  /** HeyGem：驱动音频 URL */
+  inputAudioUrl?: string;
+  /** HeyGem：台词（TTS） */
+  heyGemScript?: string;
+  /** HeyGem：配音模型 */
+  heyGemTtsModel?: string;
+  /** HeyGem：克隆参考音 */
+  heyGemCloneAudioUrl?: string;
   /** 为 true 时 loadedmetadata 不自动改外框（如剪辑导出到画布） */
   preserveExportLayout?: boolean;
   /** 裁剪/智能剪辑导出成片：与源模块同尺度，不走紧凑图模块布局 */
   exportedMediaClip?: boolean;
+  /** 带透明通道（色度抠像 WebM VP9+alpha）；节点需棋盘格底展示透明 */
+  hasAlpha?: boolean;
 }
 
 interface VideoNodeProps extends NodeProps<VideoNodeData> {
@@ -716,6 +749,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     id,
     data,
     selected,
+    type: nodeType,
     projectId,
     isDarkMode = true,
     performanceMode = false,
@@ -730,7 +764,6 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     zIndex: _zIndex,
     width: _width,
     height: _height,
-    type: _type,
     targetPosition: _targetPosition,
     sourcePosition: _sourcePosition,
     position: _position,
@@ -744,12 +777,29 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const useCompactLayout = !!data?.preserveExportLayout && !data?.exportedMediaClip;
   /** 资产库拖入的参考成片：默认静帧 poster，仅悬停时挂载解码/播放 */
   const isLibraryReferenceVideo = useCompactLayout;
-  const layoutMinW = useCompactLayout ? IMAGE_NODE_MIN_W : VIDEO_NODE_MIN_W;
-  const layoutMinH = useCompactLayout ? IMAGE_NODE_MIN_H : VIDEO_NODE_MIN_H;
+  const isHeyGemNode = nodeType === 'heyGem';
+  const layoutMinW = isHeyGemNode
+    ? scaleModulePx(480)
+    : useCompactLayout
+      ? IMAGE_NODE_MIN_W
+      : VIDEO_NODE_MIN_W;
+  const layoutMinH = isHeyGemNode
+    ? scaleModulePx(220)
+    : useCompactLayout
+      ? IMAGE_NODE_MIN_H
+      : VIDEO_NODE_MIN_H;
   const layoutMaxW = useCompactLayout ? IMAGE_NODE_MAX_W : VIDEO_NODE_MAX_W;
   const layoutMaxH = useCompactLayout ? IMAGE_NODE_MAX_H : VIDEO_NODE_MAX_H;
-  const layoutDefaultW = useCompactLayout ? IMAGE_NODE_MIN_W : VIDEO_NODE_DEFAULT_W;
-  const layoutDefaultH = useCompactLayout ? IMAGE_NODE_MIN_H : VIDEO_NODE_DEFAULT_H;
+  const layoutDefaultW = isHeyGemNode
+    ? HEYGEM_SHELL_W
+    : useCompactLayout
+      ? IMAGE_NODE_MIN_W
+      : VIDEO_NODE_DEFAULT_W;
+  const layoutDefaultH = isHeyGemNode
+    ? HEYGEM_SHELL_H
+    : useCompactLayout
+      ? IMAGE_NODE_MIN_H
+      : VIDEO_NODE_DEFAULT_H;
   const clampW = useCallback(
     (v: number) => Math.max(layoutMinW, Math.min(layoutMaxW, v)),
     [layoutMinW, layoutMaxW],
@@ -809,6 +859,11 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [isHovered, setIsHovered] = useState(false);
   const [isVideoAreaHovered, setIsVideoAreaHovered] = useState(false);
   const [isPreviewPlaying, setIsPreviewPlaying] = useState(false);
+  /** 播放条/空格主动暂停：阻止悬停立刻续播，便于选中暂停时稳定显示相机 */
+  const [userPinnedPaused, setUserPinnedPaused] = useState(false);
+  /** 方案 B+：指针在右下角相机命中区（含右缘外伸热区）时短暂抑制悬停自动播 */
+  const [captureHoverSuppressPlay, setCaptureHoverSuppressPlay] = useState(false);
+  const captureHitRef = useRef<HTMLDivElement | null>(null);
   const [isVideoVisible, setIsVideoVisible] = useState(false);
   const [videoStatus, setVideoStatus] = useState<'loading' | 'running' | 'finished'>('loading');
   const [fallbackPosterDataUrl, setFallbackPosterDataUrl] = useState('');
@@ -818,6 +873,19 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [progress, setProgress] = useState(data?.progress || 0);
   const [errorMessage, setErrorMessage] = useState(data?.errorMessage || '');
   const [showTrimModal, setShowTrimModal] = useState(false);
+  /**
+   * 打开裁剪/智能剪辑/色度时底栏会立刻卸载，同一次 pointerup 常落到画布空白，
+   * 触发 pane 退出事件把会话关掉（表现为闪一下就退出）。短时忽略退出。
+   */
+  const sessionOpenGuardUntilRef = useRef(0);
+  const armSessionOpenGuard = useCallback(() => {
+    sessionOpenGuardUntilRef.current = Date.now() + 600;
+  }, []);
+  const isSessionOpenGuarded = useCallback(() => Date.now() < sessionOpenGuardUntilRef.current, []);
+  /** 裁剪放大/还原时关闭宽高 CSS 过渡，避免 Handle 锚点量在动画中途 */
+  const [suppressSizeTransition, setSuppressSizeTransition] = useState(false);
+  /** 视频裁剪会话中临时放大模块；结束后还原 */
+  const trimSizeBackupRef = useRef<{ w: number; h: number } | null>(null);
   const [trimStartSec, setTrimStartSec] = useState('');
   const [trimEndSec, setTrimEndSec] = useState('');
   const [trimming, setTrimming] = useState(false);
@@ -838,6 +906,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [showCropModal, setShowCropModal] = useState(false);
   const [cropping, setCropping] = useState(false);
   const cropOverlayRef = useRef<VideoCropOverlayHandle>(null);
+  const [showChromaKeyModal, setShowChromaKeyModal] = useState(false);
+  const [chromaKeying, setChromaKeying] = useState(false);
+  const [chromaColorHex, setChromaColorHex] = useState('#00FF00');
+  const [chromaSimilarity, setChromaSimilarity] = useState(0.15);
+  const [chromaBlend, setChromaBlend] = useState(0.05);
+  const [chromaPicking, setChromaPicking] = useState(false);
+  const [smartMatting, setSmartMatting] = useState(false);
   const [showBilibiliModal, setShowBilibiliModal] = useState(false);
   const [bilibiliUrlDraft, setBilibiliUrlDraft] = useState('');
   const [bilibiliFetching, setBilibiliFetching] = useState(false);
@@ -850,7 +925,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     () => typeof window !== 'undefined' && typeof window.electronAPI?.createVideoFromBilibiliPage === 'function',
     [],
   );
-  const { getEdges, getNodes, screenToFlowPosition } = useReactFlow();
+  const { getEdges, getNodes, setEdges, setNodes, getZoom, screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const { cloudMap } = useNxModelPricing();
   const videoDepthConvertDisplayYuanbao = useMemo(() => getVideoDepthConvertDisplayPrice(cloudMap, 1), [cloudMap]);
@@ -862,7 +937,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [isVideoSubtitleWatermarkLoading, setIsVideoSubtitleWatermarkLoading] = useState(false);
   const [videoDepthConvertPriceHover, setVideoDepthConvertPriceHover] = useState(false);
   const [videoSubtitleWatermarkPriceHover, setVideoSubtitleWatermarkPriceHover] = useState(false);
+  const [smartMattingPriceHover, setSmartMattingPriceHover] = useState(false);
   const [isSplitFramesBusy, setIsSplitFramesBusy] = useState(false);
+  const [isCaptureFrameBusy, setIsCaptureFrameBusy] = useState(false);
+  const isCaptureFrameBusyRef = useRef(false);
   const hasIncomingReferenceVideo = !!((data?.referenceVideoUrl || '') as string).trim();
   /** 订阅边变化：有来自 video / wanAnimate 的入边即显示顶部深度/去字幕水印（不要求 data 已写入 referenceVideoUrl） */
   const hasIncomingVideoModuleEdge = useStore(
@@ -907,7 +985,26 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [externalPlaybackHeld, setExternalPlaybackHeld] = useState(false);
   const [uiCurrentTime, setUiCurrentTime] = useState(0);
   const [uiDuration, setUiDuration] = useState(0);
+  /** 智能抠像按秒计费：优先播放器时长 / 节点已存时长 */
+  const smartMattingDurationSec = useMemo(() => {
+    const fromUi = Number(uiDuration) || 0;
+    if (fromUi > 0) return fromUi;
+    const fromData = Number(data?.mediaDurationSec) || 0;
+    if (fromData > 0) return fromData;
+    const fromRef = Number(videoDurationRef.current) || 0;
+    return fromRef > 0 ? fromRef : 0;
+  }, [uiDuration, data?.mediaDurationSec]);
+  const videoSmartMattingDisplayYuanbao = useMemo(() => {
+    if (!(smartMattingDurationSec > 0)) return null;
+    return getViapiSegmentVideoBodyDisplayPrice(cloudMap, smartMattingDurationSec);
+  }, [cloudMap, smartMattingDurationSec]);
+  const smartMattingPriceHoverText =
+    videoSmartMattingDisplayYuanbao != null
+      ? vt.videoSmartMattingPriceLabel(String(videoSmartMattingDisplayYuanbao))
+      : vt.videoSmartMattingPriceFallback;
   const [uiVolume, setUiVolume] = useState(1);
+  /** 模块左上角声音开关：默认静音，避免多视频同时出声 */
+  const [userMuted, setUserMuted] = useState(true);
   const [playerControlsHost, setPlayerControlsHost] = useState<HTMLElement | null>(null);
   const handlePreviewPlaybackTime = useCallback(
     (timeSec: number, durationSec?: number, immediate?: boolean) => {
@@ -964,7 +1061,17 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const posterImage = data?.videoAsset?.poster || '';
   const ghostImage = data?.videoAsset?.ghost || '';
   const posterSrc = useMemo(() => (posterImage ? normalizeVideoUrlForNode(posterImage) : ''), [posterImage]);
-  const effectivePosterSrc = posterSrc || fallbackPosterDataUrl;
+  /** 色度抠像 WebM：显式标记，或文件名回退识别 */
+  const hasAlphaVideo =
+    data?.hasAlpha === true ||
+    /video-chromakey-/i.test(String(outputVideo || data?.outputVideo || ''));
+  // 旧版透明成片封面是黑底 JPEG，会盖住棋盘格；仅接受 PNG（含 alpha）或非透明片封面
+  const alphaSafePosterSrc = useMemo(() => {
+    if (!posterSrc) return '';
+    if (hasAlphaVideo && /\.jpe?g(?:$|[?#])/i.test(posterSrc)) return '';
+    return posterSrc;
+  }, [posterSrc, hasAlphaVideo]);
+  const effectivePosterSrc = alphaSafePosterSrc || (hasAlphaVideo ? '' : fallbackPosterDataUrl);
   const hasPoster = !!effectivePosterSrc;
   const emergencyFreezeUntil = emergencyVideoFreezeUntilMap[id] || 0;
   const emergencyUnloadActive = emergencyFreezeUntil > Date.now();
@@ -1077,9 +1184,22 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const isInteractionVisualLock = isVisualInteractionLocked;
   const showSelectedChrome = selected || dragging;
   const showNodeChrome = showSelectedChrome || isPreviewPlaying;
-  const playbackActive = isVideoAreaHovered || (externalPlaybackHeld && showNodeChrome);
-  /** 仅由「指针是否在视频内容区」或外挂播放条控制暂停 */
+  /** 裁剪/智能剪辑：禁用悬停自动播；开声只改音量，须点播放条才播 */
+  const trimUiBlocksHoverPlay = showTrimModal || smartEditReviewOpen || showChromaKeyModal;
+  const playbackActive =
+    !userPinnedPaused &&
+    !captureHoverSuppressPlay &&
+    ((externalPlaybackHeld && showNodeChrome) ||
+      (!trimUiBlocksHoverPlay && isVideoAreaHovered));
+  /** 仅由「指针是否在视频内容区」或外挂播放条控制暂停；userPinnedPaused / 相机命中抑制时强制暂停 */
   const isPaused = !playbackActive;
+
+  const isPointerInCaptureHitZone = useCallback((clientX: number, clientY: number) => {
+    const el = captureHitRef.current;
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+  }, []);
 
   // 稳定的视频展示 URL，避免因 data 引用变化导致 src 抖动、视频重载闪动
   const videoDisplayUrl = useMemo(() => {
@@ -1536,15 +1656,101 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     setIsVideoVisible(false);
   }, [shouldMountVideoTag, effectiveDecodePermission, videoDisplayUrl]);
 
+  /** HeyGem：主框即双栏配置面板尺寸（旧小壳 / 历史尺寸自动抬到默认）；失败改弹窗，不再因 errorMessage 拉高 */
   useEffect(() => {
-    if (typeof data?.width === 'number' && data.width > 0 && typeof data?.height === 'number' && data.height > 0) {
-      const nextW = clampW(data.width);
-      const nextH = clampH(data.height);
-      if (size.w !== nextW || size.h !== nextH) {
-        setSize({ w: nextW, h: nextH });
-        if (nodeRef.current) {
-          nodeRef.current.style.width = `${nextW}px`;
-          nodeRef.current.style.height = `${nextH}px`;
+    if (!isHeyGemNode) return;
+    const busy = (Number(data?.progress) || 0) > 0;
+    const targetH = busy ? HEYGEM_SHELL_H_BUSY : HEYGEM_SHELL_H;
+    setSize((prev) =>
+      prev.w === HEYGEM_SHELL_W && prev.h === targetH
+        ? prev
+        : { w: HEYGEM_SHELL_W, h: targetH },
+    );
+    const dw = Number(data?.width);
+    const dh = Number(data?.height);
+    if (
+      !onDataChange ||
+      (Number.isFinite(dw) &&
+        Number.isFinite(dh) &&
+        Math.abs(dw - HEYGEM_SHELL_W) <= 8 &&
+        Math.abs(dh - targetH) <= 8)
+    ) {
+      return;
+    }
+    onDataChange(id, { width: HEYGEM_SHELL_W, height: targetH });
+  }, [isHeyGemNode, id, onDataChange, data?.width, data?.height, data?.progress]);
+
+  /** HeyGem：生成失败等用 DarkAlert 弹窗，并清除 errorMessage，避免透明双栏下透出内联「生成失败」 */
+  const heyGemLastAlertedErrorRef = useRef('');
+  const heyGemErrorHydratedRef = useRef(false);
+  useEffect(() => {
+    if ((Number(progress) || 0) > 0) {
+      heyGemLastAlertedErrorRef.current = '';
+    }
+  }, [progress]);
+  useEffect(() => {
+    if (!isHeyGemNode) return;
+    const raw = String(data?.errorMessage ?? errorMessage ?? '').trim();
+    if (!raw) {
+      heyGemErrorHydratedRef.current = true;
+      return;
+    }
+    // 首次挂载：静默清掉历史内联错误，避免打开工程立刻弹窗
+    if (!heyGemErrorHydratedRef.current) {
+      heyGemErrorHydratedRef.current = true;
+      heyGemLastAlertedErrorRef.current = raw;
+      onDataChange?.(id, { errorMessage: undefined, progress: 0, progressMessage: '' });
+      return;
+    }
+    if (raw === heyGemLastAlertedErrorRef.current) {
+      if ((data?.errorMessage || '').trim()) {
+        onDataChange?.(id, { errorMessage: undefined });
+      }
+      return;
+    }
+    heyGemLastAlertedErrorRef.current = raw;
+    const facing = userFacingErrorMessage(raw, locale);
+    const isQuota =
+      facing.includes('元宝不足') ||
+      raw.includes('余额不足') ||
+      raw.includes('quota is not enough') ||
+      raw.includes('remain quota');
+    const alertText = isQuota
+      ? locale === 'en'
+        ? 'Insufficient balance\n\nYour account balance is not enough for this operation. Please top up in Settings and try again.'
+        : '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。'
+      : `${wc.genFailedTitle}\n\n${failedGenerationDetailWithRefund(facing, locale)}`;
+    showAlert(alertText);
+    onDataChange?.(id, { errorMessage: undefined, progress: 0, progressMessage: '' });
+  }, [
+    isHeyGemNode,
+    data?.errorMessage,
+    errorMessage,
+    id,
+    locale,
+    onDataChange,
+    showAlert,
+    wc.genFailedTitle,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isHeyGemNode &&
+      typeof data?.width === 'number' &&
+      data.width > 0 &&
+      typeof data?.height === 'number' &&
+      data.height > 0
+    ) {
+      // 裁剪放大会话中勿被旧 data 改回原尺寸（HeyGem 尺寸由上方折叠逻辑托管）
+      if (!trimSizeBackupRef.current) {
+        const nextW = clampW(data.width);
+        const nextH = clampH(data.height);
+        if (size.w !== nextW || size.h !== nextH) {
+          setSize({ w: nextW, h: nextH });
+          if (nodeRef.current) {
+            nodeRef.current.style.width = `${nextW}px`;
+            nodeRef.current.style.height = `${nextH}px`;
+          }
         }
       }
     }
@@ -1582,7 +1788,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     if (data?.errorMessage !== undefined) {
       setErrorMessage(data.errorMessage || '');
     }
-  }, [data?.width, data?.height, data?.outputVideo, data?.title, data?.progress, data?.progressMessage, data?.errorMessage, size.w, size.h]);
+  }, [isHeyGemNode, data?.width, data?.height, data?.outputVideo, data?.title, data?.progress, data?.progressMessage, data?.errorMessage, size.w, size.h, clampW, clampH]);
 
   const handleTitleDoubleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1597,6 +1803,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       videoDurationRef.current = duration;
       onDataChange?.(id, { mediaDurationSec: duration });
     }
+    // 裁剪/智能剪辑放大会话中禁止按元数据改外框，避免胶片条随节点宽忽长忽短
+    if (trimSizeBackupRef.current) return;
     // 库拖入等 compact 外框：按成片像素 + Image 尺度重算，使外框贴合视频比例
     if (data?.preserveExportLayout) {
       const adapted = computeNodeSizeFromMedia(
@@ -1650,12 +1858,171 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     }
   }, [computeAdaptiveVideoSize, size.w, size.h, id, onDataChange, data?.preserveExportLayout, data?.width, data?.height, data?.aspectRatio, data?.videoAsset]);
 
+  /** 尺寸/胶片条显隐后强制重测 Handle，避免边仍按旧外框锚点悬空 */
+  const scheduleRefreshNodeInternals = useCallback(
+    (nodeIds: string | string[]) => {
+      const ids = (Array.isArray(nodeIds) ? nodeIds : [nodeIds]).filter(Boolean);
+      if (!ids.length) return;
+      const refresh = () => {
+        for (const nid of ids) updateNodeInternals(nid);
+      };
+      refresh();
+      requestAnimationFrame(() => {
+        refresh();
+        requestAnimationFrame(refresh);
+      });
+      // 与 NODE_SIZE_TRANSITION(0.32s) / 底栏卸载对齐，过渡结束后再刷一次
+      window.setTimeout(refresh, 100);
+      window.setTimeout(refresh, 360);
+    },
+    [updateNodeInternals],
+  );
+
+  /** 裁剪会话：临时改模块外框（对齐 ImageNode 裁剪放大） */
+  const applyTrimNodeBox = useCallback(
+    (nextW: number, nextH: number) => {
+      const w = Math.round(Number(nextW));
+      const h = Math.round(Number(nextH));
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
+        console.warn('[VideoNode] applyTrimNodeBox skipped: invalid size', nextW, nextH);
+        return;
+      }
+      const styleDims = nodeStyleDimensions(w, h);
+      // 先同步 RF store width/height，再改本地 size / DOM，避免边按旧 measured 尺寸算锚点
+      flushSync(() => {
+        setNodes((nds) =>
+          nds.map((node) =>
+            node.id === id
+              ? {
+                  ...node,
+                  width: w,
+                  height: h,
+                  style: {
+                    ...(node.style as object),
+                    ...styleDims,
+                    width: w,
+                    height: h,
+                  },
+                  data: {
+                    ...node.data,
+                    width: w,
+                    height: h,
+                  },
+                }
+              : node,
+          ),
+        );
+      });
+      setSize({ w, h });
+      if (nodeRef.current) {
+        nodeRef.current.style.width = `${w}px`;
+        nodeRef.current.style.height = `${h}px`;
+        nodeRef.current.style.minWidth = `${w}px`;
+        nodeRef.current.style.minHeight = `${h}px`;
+        const rfNode = nodeRef.current.closest('.react-flow__node') as HTMLElement | null;
+        if (rfNode) {
+          rfNode.style.width = `${w}px`;
+          rfNode.style.height = `${h}px`;
+          rfNode.style.minWidth = `${w}px`;
+          rfNode.style.minHeight = `${h}px`;
+        }
+      }
+      onDataChange?.(id, { width: w, height: h });
+      scheduleRefreshNodeInternals(id);
+    },
+    [id, setNodes, onDataChange, scheduleRefreshNodeInternals],
+  );
+
+  /** 打开裁剪时默认约 2 倍，且不超过视口 */
+  const computeTrimEnlargeSize = useCallback(
+    (baseW: number, baseH: number, zoom: number) => {
+      const z = Math.max(zoom, 0.2);
+      const maxFlowW = (window.innerWidth * 0.9) / z;
+      const maxFlowH = (window.innerHeight * 0.72) / z;
+      let w = clampW(Math.round(baseW * 2));
+      let h = clampH(Math.round(baseH * 2));
+      if (w > maxFlowW || h > maxFlowH) {
+        const scale = Math.min(maxFlowW / Math.max(w, 1), maxFlowH / Math.max(h, 1), 1);
+        w = clampW(Math.round(w * scale));
+        h = clampH(Math.round(h * scale));
+      }
+      // 视口极小时至少不低于原尺寸
+      if (w < baseW || h < baseH) {
+        w = clampW(baseW);
+        h = clampH(baseH);
+      }
+      return { w, h };
+    },
+    [clampW, clampH],
+  );
+
+  const restoreTrimNodeSize = useCallback(() => {
+    const backup = trimSizeBackupRef.current;
+    trimSizeBackupRef.current = null;
+    if (!backup) return;
+    setSuppressSizeTransition(true);
+    applyTrimNodeBox(backup.w, backup.h);
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+  }, [applyTrimNodeBox]);
+
+  const beginTrimEnlarge = useCallback(() => {
+    if (!trimSizeBackupRef.current) {
+      trimSizeBackupRef.current = { w: size.w, h: size.h };
+    }
+    const base = trimSizeBackupRef.current;
+    const z = getZoom?.() ?? 1;
+    const large = computeTrimEnlargeSize(base.w, base.h, z);
+    setSuppressSizeTransition(true);
+    applyTrimNodeBox(large.w, large.h);
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+    /** 放大写入 RF 后平滑居中本模块（胶片条 / 智能剪辑；与一键归位同级） */
+    const focusTrimModule = () => {
+      window.dispatchEvent(
+        new CustomEvent('nexflow-canvas-focus-nodes', {
+          detail: {
+            nodes: [{ id, width: large.w, height: large.h }],
+            duration: 700,
+            padding: 0.18,
+          },
+        }),
+      );
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.setTimeout(focusTrimModule, 100);
+      });
+    });
+    window.setTimeout(focusTrimModule, 280);
+  }, [size.w, size.h, getZoom, computeTrimEnlargeSize, applyTrimNodeBox, id]);
+
+  const endTrimSession = useCallback(() => {
+    setShowTrimModal(false);
+    restoreTrimNodeSize();
+    // 胶片条卸载 + 尺寸还原后双帧/延迟重测，避免连线悬空
+    scheduleRefreshNodeInternals(id);
+  }, [restoreTrimNodeSize, scheduleRefreshNodeInternals, id]);
+
+  useEffect(() => {
+    return () => {
+      // 卸载时还原裁剪放大，避免留下异常尺寸
+      if (trimSizeBackupRef.current) {
+        const backup = trimSizeBackupRef.current;
+        trimSizeBackupRef.current = null;
+        onDataChange?.(id, { width: backup.w, height: backup.h });
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const handleTrimClick = useCallback(() => {
+    armSessionOpenGuard();
     setTrimError(null);
     setSmartEditReviewOpen(false);
     setSmartEditing(false);
     setSmartEditAnalyzing(false);
     setSmartEditExporting(false);
+    setShowChromaKeyModal(false);
+    setChromaPicking(false);
     const dur = videoDurationRef.current;
     const start = 0;
     const defaultLen = 3;
@@ -1665,9 +2032,21 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         : defaultLen;
     setTrimStartSec(String(start));
     setTrimEndSec(String(Math.round(end * 100) / 100));
+    // 进入裁剪/剪辑：主模块默认静音 + 暂停（禁用悬停续播，仅播放按钮可播）
+    setUserMuted(true);
+    setExternalPlaybackHeld(false);
+    setUserPinnedPaused(false);
+    try {
+      videoPreviewRef.current?.setVolume(0);
+      videoPreviewRef.current?.pause();
+    } catch {
+      /* ignore */
+    }
+    setIsPreviewPlaying(false);
     setIsVideoAreaHovered(true);
+    beginTrimEnlarge();
     setShowTrimModal(true);
-  }, []);
+  }, [armSessionOpenGuard, beginTrimEnlarge]);
 
   const handleTrimConfirm = useCallback(async (overrideStart?: number, overrideEnd?: number) => {
     const start = overrideStart ?? parseFloat(trimStartSec);
@@ -1695,18 +2074,24 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     setTrimError(null);
     setTrimming(true);
 
+    const layoutSize = trimSizeBackupRef.current ?? { w: size.w, h: size.h };
+    endTrimSession();
+
     const source = getNodes().find((n) => n.id === id);
     const { baseX, baseY, srcW, srcH } = resolveExportRightAnchor({
       source,
       fallbackX: xPos,
       fallbackY: yPos,
-      fallbackW: size.w,
-      fallbackH: size.h,
+      fallbackW: layoutSize.w,
+      fallbackH: layoutSize.h,
       domEl: nodeRef.current,
       screenToFlowPosition,
     });
-    const nodeW = Math.max(IMAGE_NODE_MIN_W, Math.min(srcW || size.w, 420));
-    const nodeH = Math.max(IMAGE_NODE_MIN_H, Math.round(nodeW * ((srcH || size.h) / Math.max(srcW || size.w, 1))));
+    const nodeW = Math.max(IMAGE_NODE_MIN_W, Math.min(srcW || layoutSize.w, 420));
+    const nodeH = Math.max(
+      IMAGE_NODE_MIN_H,
+      Math.round(nodeW * ((srcH || layoutSize.h) / Math.max(srcW || layoutSize.w, 1))),
+    );
     const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newNode: Node = {
       id: newNodeId,
@@ -1737,7 +2122,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       targetHandle: 'input',
     };
     onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
-    setShowTrimModal(false);
+    scheduleRefreshNodeInternals([id, newNodeId]);
 
     try {
       const res = await window.electronAPI.trimVideo(projectId || undefined, videoUrl, start, end);
@@ -1788,6 +2173,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     screenToFlowPosition,
     locale,
     showAlert,
+    endTrimSession,
+    scheduleRefreshNodeInternals,
   ]);
 
   const handleSplitVideoFrames = useCallback(
@@ -2024,6 +2411,221 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     ],
   );
 
+  const handleCaptureCurrentFrame = useCallback(async () => {
+    if (
+      isCaptureFrameBusyRef.current ||
+      isSplitFramesBusy ||
+      trimming ||
+      cropping ||
+      isVideoDepthConvertLoading ||
+      isVideoSubtitleWatermarkLoading
+    ) {
+      return;
+    }
+
+    const displayUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+    if (!displayUrl) {
+      showAlert(vt.videoFrameSplitNeedVideo);
+      return;
+    }
+    if (!window.electronAPI?.createImageLocalResourceFromBuffer) {
+      showAlert(vt.videoCaptureFrameNotSupported);
+      return;
+    }
+    if (!onAddFrameSplitNodes) {
+      showAlert(vt.videoCaptureFrameFailed);
+      return;
+    }
+
+    isCaptureFrameBusyRef.current = true;
+    setIsCaptureFrameBusy(true);
+    try {
+      const liveTime = videoPreviewRef.current?.getCurrentTimeSec?.();
+      const timeSec =
+        typeof liveTime === 'number' && Number.isFinite(liveTime)
+          ? liveTime
+          : typeof lastPlaybackMediaTimeRef.current === 'number' && Number.isFinite(lastPlaybackMediaTimeRef.current)
+            ? lastPlaybackMediaTimeRef.current
+            : uiCurrentTime;
+
+      let dataUrl = '';
+      let pixelW: number | undefined;
+      let pixelH: number | undefined;
+
+      videoPreviewRef.current?.captureCurrentFrame?.(displayUrl, (_url, captured) => {
+        dataUrl = captured;
+      });
+
+      if (!dataUrl) {
+        let captureUrl = normalizeVideoUrlForNode(displayUrl);
+        if (/^https?:\/\//i.test(captureUrl) && window.electronAPI?.createVideoLocalResourceFromUrl) {
+          const local = await window.electronAPI.createVideoLocalResourceFromUrl(
+            projectId ?? undefined,
+            captureUrl,
+          );
+          captureUrl = normalizeVideoUrlForNode(local.originalUrl || captureUrl);
+        }
+        const extracted = await extractVideoFrameAtTime(captureUrl, timeSec);
+        if (!extracted.success || !extracted.imageUrl) {
+          throw new Error(extracted.error || vt.videoCaptureFrameFailed);
+        }
+        dataUrl = extracted.imageUrl;
+        pixelW = extracted.width;
+        pixelH = extracted.height;
+      }
+
+      const isJpeg = /^data:image\/jpe?g/i.test(dataUrl);
+      const ext = isJpeg ? 'jpg' : 'png';
+      const buffer = dataUrlToArrayBuffer(dataUrl);
+      const ts = Date.now();
+      const result = await window.electronAPI.createImageLocalResourceFromBuffer(
+        projectId ?? undefined,
+        `video-capture-${ts}.${ext}`,
+        buffer,
+      );
+
+      const width = result.width ?? pixelW ?? IMAGE_NODE_MIN_W;
+      const height = result.height ?? pixelH ?? IMAGE_NODE_MIN_H;
+      const adapted = computeNodeSizeFromMedia(
+        width,
+        height,
+        IMAGE_NODE_MIN_W,
+        IMAGE_NODE_MIN_H,
+        IMAGE_NODE_MAX_W,
+        IMAGE_NODE_MAX_H,
+      );
+      const aspectLabel = aspectRatioLabelFromPixelSize(width, height);
+      const source = getNodes().find((n) => n.id === id);
+      const { baseX, baseY } = resolveExportRightAnchor({
+        source,
+        fallbackX: xPos,
+        fallbackY: yPos,
+        fallbackW: size.w,
+        fallbackH: size.h,
+        domEl: nodeRef.current,
+        screenToFlowPosition,
+      });
+
+      /** 连续截图：右侧一排 3 张平铺，满行换下一行，避免重叠 */
+      const CAPTURE_COLS = 3;
+      const CELL_GAP_X = 28;
+      const CELL_GAP_Y = 40;
+      const allNodes = getNodes();
+      const priorCaptureTargets = getEdges()
+        .filter((e) => e.source === id && e.target && e.target !== id)
+        .map((e) => allNodes.find((n) => n.id === e.target))
+        .filter((n): n is Node => !!n && n.type === 'image' && n.position.x >= baseX - 8);
+      let tileW = adapted.w;
+      let tileH = adapted.h;
+      for (const n of priorCaptureTargets) {
+        const nw =
+          Number(n.data?.width) ||
+          Number((n.style as { width?: number } | undefined)?.width) ||
+          IMAGE_NODE_MIN_W;
+        const nh =
+          Number(n.data?.height) ||
+          Number((n.style as { height?: number } | undefined)?.height) ||
+          IMAGE_NODE_MIN_H;
+        if (nw > tileW) tileW = nw;
+        if (nh > tileH) tileH = nh;
+      }
+      const slotIndex = priorCaptureTargets.length;
+      const col = slotIndex % CAPTURE_COLS;
+      const row = Math.floor(slotIndex / CAPTURE_COLS);
+      const placeX = baseX + col * (tileW + CELL_GAP_X);
+      const placeY = baseY + row * (tileH + CELL_GAP_Y);
+
+      const newNodeId = `image-${ts}-${Math.random().toString(36).slice(2, 6)}`;
+      const out = formatSplitFrameImagePath(result.previewUrl);
+      const orig = formatSplitFrameImagePath(result.originalUrl);
+      const label = vt.videoCaptureFrameNodeLabel(timeSec);
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'image',
+        position: { x: placeX, y: placeY },
+        selected: true,
+        data: {
+          label,
+          title: label,
+          width: adapted.w,
+          height: adapted.h,
+          isUserResized: true,
+          preserveExportLayout: true,
+          resolution: '1k',
+          aspectRatio: aspectLabel,
+          model: 'banana-2.0',
+          seedreamWidth: width,
+          seedreamHeight: height,
+          outputImage: out,
+          outputImages: [out],
+          originalImageUrl: orig,
+          tinyThumbUrl: result.tinyUrl || '',
+          localPath: result.originalPath,
+          imageAsset: {
+            preview: out,
+            original: orig,
+            tiny: result.tinyUrl || '',
+            avgColorHex: result.avgColorHex,
+            width,
+            height,
+          },
+          progress: 0,
+          errorMessage: undefined,
+        },
+        style: {
+          ...nodeStyleDimensions(adapted.w, adapted.h),
+          minWidth: `${IMAGE_NODE_MIN_W}px`,
+          minHeight: `${IMAGE_NODE_MIN_H}px`,
+        },
+      };
+
+      onAddFrameSplitNodes([newNode]);
+      setEdges((eds) =>
+        addEdge(
+          {
+            id: `e-${id}-${newNodeId}`,
+            source: id,
+            target: newNodeId,
+            sourceHandle: 'output',
+            targetHandle: 'image-input',
+          },
+          eds,
+        ),
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : vt.videoCaptureFrameFailed;
+      console.error('[VideoNode] 截取当前画面失败:', err);
+      showAlert(`${vt.videoCaptureFrameFailed}\n\n${msg}`);
+    } finally {
+      isCaptureFrameBusyRef.current = false;
+      setIsCaptureFrameBusy(false);
+    }
+  }, [
+    isSplitFramesBusy,
+    trimming,
+    cropping,
+    isVideoDepthConvertLoading,
+    isVideoSubtitleWatermarkLoading,
+    videoDisplayUrl,
+    outputVideo,
+    data?.outputVideo,
+    data?.originalVideoUrl,
+    showAlert,
+    vt,
+    onAddFrameSplitNodes,
+    projectId,
+    uiCurrentTime,
+    getNodes,
+    getEdges,
+    id,
+    xPos,
+    yPos,
+    size.w,
+    size.h,
+    screenToFlowPosition,
+    setEdges,
+  ]);
+
   const clearSmartEditProgressTimer = useCallback(() => {
     if (smartEditProgressTimerRef.current) {
       clearInterval(smartEditProgressTimerRef.current);
@@ -2044,8 +2646,65 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     setSmartEditActiveIndex(0);
     setSmartEditing(false);
     setSmartEditSettings(null);
+    restoreTrimNodeSize();
+    scheduleRefreshNodeInternals(id);
     onDataChange?.(id, { progress: 0, progressMessage: '', errorMessage: undefined });
-  }, [clearSmartEditProgressTimer, id, onDataChange]);
+  }, [clearSmartEditProgressTimer, id, onDataChange, restoreTrimNodeSize, scheduleRefreshNodeInternals]);
+
+  /** 点空白画布退出裁剪/智能剪辑/色度抠像（与 X 取消同效，不确认导出） */
+  useEffect(() => {
+    const onPaneExit = () => {
+      if (isSessionOpenGuarded()) return;
+      if (trimming || smartEditExporting || chromaKeying) return;
+      if (smartEditReviewOpen) {
+        resetSmartEditReview();
+        return;
+      }
+      if (showTrimModal) endTrimSession();
+      if (showChromaKeyModal) {
+        setChromaPicking(false);
+        setShowChromaKeyModal(false);
+      }
+    };
+    window.addEventListener('nexflow-exit-video-trim-sessions', onPaneExit);
+    return () => window.removeEventListener('nexflow-exit-video-trim-sessions', onPaneExit);
+  }, [
+    isSessionOpenGuarded,
+    trimming,
+    smartEditExporting,
+    chromaKeying,
+    smartEditReviewOpen,
+    showTrimModal,
+    showChromaKeyModal,
+    endTrimSession,
+    resetSmartEditReview,
+  ]);
+
+  useEffect(() => {
+    if (selected) return;
+    if (isSessionOpenGuarded()) return;
+    if (trimming || smartEditExporting || chromaKeying) return;
+    if (smartEditReviewOpen) {
+      resetSmartEditReview();
+      return;
+    }
+    if (showTrimModal) endTrimSession();
+    if (showChromaKeyModal) {
+      setChromaPicking(false);
+      setShowChromaKeyModal(false);
+    }
+  }, [
+    selected,
+    isSessionOpenGuarded,
+    trimming,
+    smartEditExporting,
+    chromaKeying,
+    smartEditReviewOpen,
+    showTrimModal,
+    showChromaKeyModal,
+    endTrimSession,
+    resetSmartEditReview,
+  ]);
 
   useEffect(() => () => clearSmartEditProgressTimer(), [clearSmartEditProgressTimer]);
 
@@ -2078,6 +2737,22 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       setSmartEditSettings(settings);
       setShowSmartEditModal(false);
       setShowTrimModal(false);
+      setShowChromaKeyModal(false);
+      setChromaPicking(false);
+      armSessionOpenGuard();
+      // 进入智能剪辑：主模块默认静音 + 暂停（禁用悬停续播）
+      setUserMuted(true);
+      setExternalPlaybackHeld(false);
+      setUserPinnedPaused(false);
+      try {
+        videoPreviewRef.current?.setVolume(0);
+        videoPreviewRef.current?.pause();
+      } catch {
+        /* ignore */
+      }
+      setIsPreviewPlaying(false);
+      setIsVideoAreaHovered(true);
+      beginTrimEnlarge();
       setSmartEditReviewOpen(true);
       setSmartEditAnalyzing(true);
       setSmartEditing(true);
@@ -2233,6 +2908,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       yPos,
       onAddFrameSplitNodes,
       resetSmartEditReview,
+      beginTrimEnlarge,
+      armSessionOpenGuard,
     ],
   );
 
@@ -2261,9 +2938,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     try {
       const GAP = 48;
       const CELL = 12;
+      const layoutSize = trimSizeBackupRef.current ?? { w: size.w, h: size.h };
       const source = getNodes().find((n) => n.id === id);
-      const srcW = Number(source?.data?.width) || size.w;
-      const srcH = Number(source?.data?.height) || size.h;
+      const srcW = layoutSize.w;
+      const srcH = layoutSize.h;
       const nodeW = Math.max(IMAGE_NODE_MIN_W, Math.min(srcW, 420));
       const nodeH = Math.max(IMAGE_NODE_MIN_H, Math.round(nodeW * (srcH / Math.max(srcW, 1))));
       const baseX = (source?.position.x ?? xPos) + srcW + GAP;
@@ -2314,6 +2992,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       if (onAddVideoClipNodes) onAddVideoClipNodes({ nodes: newNodes, edges: newEdges });
       else console.warn('[VideoNode] onAddVideoClipNodes 未注入');
       resetSmartEditReview();
+      scheduleRefreshNodeInternals([id, ...newNodes.map((n) => n.id)]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : locale === 'en' ? 'Export failed' : '导出失败';
       console.error('[VideoNode] smart export failed:', err);
@@ -2342,6 +3021,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     projectId,
     onAddVideoClipNodes,
     resetSmartEditReview,
+    scheduleRefreshNodeInternals,
   ]);
 
   const handleSmartEditStart = useCallback(
@@ -2361,6 +3041,361 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     [runSmartEditAnalyze, handleSplitVideoFrames],
   );
 
+  const handleChromaKeyClick = useCallback(() => {
+    const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+    if (!videoUrl) {
+      showAlert(vt.videoChromaKeyNeedVideo);
+      return;
+    }
+    if (!window.electronAPI?.chromaKeyVideo) {
+      showAlert(vt.videoChromaKeyNotSupported);
+      return;
+    }
+    if (showTrimModal) endTrimSession();
+    if (smartEditReviewOpen) resetSmartEditReview();
+    setShowCropModal(false);
+    armSessionOpenGuard();
+    setChromaPicking(false);
+    // 按当前键色重算推荐相似度，避免沿用过宽的旧默认（如 0.28）误抠主体
+    const sug = suggestKeyParamsForColor(chromaColorHex);
+    setChromaSimilarity(sug.similarity);
+    setChromaBlend(sug.blend);
+    setShowChromaKeyModal(true);
+    videoPreviewRef.current?.pause();
+    videoPreviewRef.current?.setVolume(0);
+  }, [
+    videoDisplayUrl,
+    outputVideo,
+    data?.outputVideo,
+    data?.originalVideoUrl,
+    showAlert,
+    vt,
+    showTrimModal,
+    endTrimSession,
+    smartEditReviewOpen,
+    resetSmartEditReview,
+    armSessionOpenGuard,
+    chromaColorHex,
+  ]);
+
+  const handleSmartMattingClick = useCallback(async () => {
+    const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+    if (!videoUrl) {
+      showAlert(vt.videoSmartMattingNeedVideo);
+      return;
+    }
+    if (!window.electronAPI?.smartPortraitMatting) {
+      showAlert(vt.videoSmartMattingNotSupported);
+      return;
+    }
+    if (
+      smartMatting ||
+      chromaKeying ||
+      cropping ||
+      trimming ||
+      isVideoSubtitleWatermarkLoading ||
+      isVideoDepthConvertLoading ||
+      bilibiliFetching ||
+      isSplitFramesBusy ||
+      smartEditing
+    ) {
+      return;
+    }
+    if (!onAddVideoClipNodes || !onDataChange) {
+      showAlert(vt.videoSmartMattingFailed);
+      return;
+    }
+
+    if (showTrimModal) endTrimSession();
+    if (smartEditReviewOpen) resetSmartEditReview();
+    setShowCropModal(false);
+    setShowChromaKeyModal(false);
+    setSmartMatting(true);
+    scheduleRefreshNodeInternals(id);
+
+    const source = getNodes().find((n) => n.id === id);
+    const { baseX, baseY } = resolveExportRightAnchor({
+      source,
+      fallbackX: xPos,
+      fallbackY: yPos,
+      fallbackW: size.w,
+      fallbackH: size.h,
+      domEl: nodeRef.current,
+      screenToFlowPosition,
+    });
+    const placeholderW = Math.max(size.w, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
+    const placeholderH = Math.max(size.h, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
+    const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newNode: Node = {
+      id: newNodeId,
+      type: 'video',
+      position: { x: baseX, y: baseY },
+      selected: true,
+      data: {
+        label: vt.videoSmartMattingNodeLabel,
+        title: vt.videoSmartMattingNodeLabel,
+        width: placeholderW,
+        height: placeholderH,
+        aspectRatio: data?.aspectRatio,
+        outputVideo: undefined,
+        originalVideoUrl: undefined,
+        exportedMediaClip: true,
+        isUserResized: true,
+        preserveExportLayout: true,
+        progress: 8,
+        progressMessage: vt.videoSmartMattingRunning,
+        errorMessage: undefined,
+      },
+      style: nodeStyleDimensions(placeholderW, placeholderH),
+    };
+    const edge: Edge = {
+      id: `e-${id}-${newNodeId}`,
+      source: id,
+      target: newNodeId,
+      sourceHandle: 'output',
+      targetHandle: 'input',
+    };
+    onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+    scheduleRefreshNodeInternals([id, newNodeId]);
+
+    const unsub =
+      typeof window.electronAPI.onSmartPortraitMattingProgress === 'function'
+        ? window.electronAPI.onSmartPortraitMattingProgress((p) => {
+            const pct = Math.max(8, Math.min(96, Number(p.percent) || 0));
+            onDataChange(newNodeId, {
+              progress: pct,
+              progressMessage: p.message || vt.videoSmartMattingRunning,
+            });
+          })
+        : undefined;
+
+    try {
+      const res = await window.electronAPI.smartPortraitMatting(projectId || undefined, videoUrl);
+      if (!res?.originalUrl) throw new Error(vt.videoSmartMattingFailed);
+      const adapted = computeAdaptiveVideoSize(res.width, res.height);
+      const aspectRatio =
+        res.width && res.height
+          ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(res.width, res.height))
+          : data?.aspectRatio;
+      onDataChange(newNodeId, {
+        outputVideo: res.originalUrl,
+        originalVideoUrl: undefined,
+        hasAlpha: res.hasAlpha !== false,
+        videoAsset: {
+          poster: res.posterUrl,
+          ghost: res.ghostBase64,
+          width: res.width,
+          height: res.height,
+        },
+        width: adapted.w,
+        height: adapted.h,
+        ...(aspectRatio ? { aspectRatio } : {}),
+        progress: 100,
+        progressMessage: '',
+        errorMessage: undefined,
+      });
+      window.setTimeout(() => {
+        onDataChange(newNodeId, { progress: 0, progressMessage: '' });
+      }, 420);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : vt.videoSmartMattingFailed;
+      console.error('[VideoNode] smart matting failed:', err);
+      showAlert(`${vt.videoSmartMattingFailed}\n\n${msg}`);
+      onDataChange(newNodeId, { errorMessage: msg, progress: 0, progressMessage: '' });
+    } finally {
+      try {
+        unsub?.();
+      } catch {
+        // ignore
+      }
+      setSmartMatting(false);
+    }
+  }, [
+    videoDisplayUrl,
+    outputVideo,
+    data?.outputVideo,
+    data?.originalVideoUrl,
+    data?.aspectRatio,
+    smartMatting,
+    chromaKeying,
+    cropping,
+    trimming,
+    isVideoSubtitleWatermarkLoading,
+    isVideoDepthConvertLoading,
+    bilibiliFetching,
+    isSplitFramesBusy,
+    smartEditing,
+    onAddVideoClipNodes,
+    onDataChange,
+    showAlert,
+    vt,
+    id,
+    scheduleRefreshNodeInternals,
+    getNodes,
+    xPos,
+    yPos,
+    size.w,
+    size.h,
+    screenToFlowPosition,
+    projectId,
+    computeAdaptiveVideoSize,
+    showTrimModal,
+    endTrimSession,
+    smartEditReviewOpen,
+    resetSmartEditReview,
+  ]);
+
+  const handleChromaKeyConfirm = useCallback(
+    async (params: ChromaKeyParams) => {
+      const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+      if (!videoUrl) {
+        showAlert(vt.videoChromaKeyNeedVideo);
+        return;
+      }
+      if (!window.electronAPI?.chromaKeyVideo) {
+        showAlert(vt.videoChromaKeyNotSupported);
+        return;
+      }
+      if (
+        chromaKeying ||
+        smartMatting ||
+        cropping ||
+        trimming ||
+        isVideoSubtitleWatermarkLoading ||
+        isVideoDepthConvertLoading ||
+        bilibiliFetching ||
+        isSplitFramesBusy ||
+        smartEditing
+      ) {
+        return;
+      }
+      if (!onAddVideoClipNodes || !onDataChange) {
+        showAlert(vt.videoChromaKeyFailed);
+        return;
+      }
+
+      setShowChromaKeyModal(false);
+      setChromaKeying(true);
+      scheduleRefreshNodeInternals(id);
+
+      const source = getNodes().find((n) => n.id === id);
+      const { baseX, baseY } = resolveExportRightAnchor({
+        source,
+        fallbackX: xPos,
+        fallbackY: yPos,
+        fallbackW: size.w,
+        fallbackH: size.h,
+        domEl: nodeRef.current,
+        screenToFlowPosition,
+      });
+      const placeholderW = Math.max(size.w, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
+      const placeholderH = Math.max(size.h, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
+      const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'video',
+        position: { x: baseX, y: baseY },
+        selected: true,
+        data: {
+          label: vt.videoChromaKeyNodeLabel,
+          title: vt.videoChromaKeyNodeLabel,
+          width: placeholderW,
+          height: placeholderH,
+          aspectRatio: data?.aspectRatio,
+          outputVideo: undefined,
+          originalVideoUrl: undefined,
+          exportedMediaClip: true,
+          isUserResized: true,
+          preserveExportLayout: true,
+          progress: 8,
+          progressMessage: vt.videoChromaKeyConfirming,
+          errorMessage: undefined,
+        },
+        style: nodeStyleDimensions(placeholderW, placeholderH),
+      };
+      const edge: Edge = {
+        id: `e-${id}-${newNodeId}`,
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+      };
+      onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+      scheduleRefreshNodeInternals([id, newNodeId]);
+
+      try {
+        const res = await window.electronAPI.chromaKeyVideo(projectId || undefined, videoUrl, {
+          colorHex: params.colorHex,
+          similarity: params.similarity,
+          blend: params.blend,
+        });
+        if (!res?.originalUrl) throw new Error(vt.videoChromaKeyFailed);
+        const adapted = computeAdaptiveVideoSize(res.width, res.height);
+        const aspectRatio =
+          res.width && res.height
+            ? snapToVideoPanelAspectRatio(aspectRatioLabelFromPixelSize(res.width, res.height))
+            : data?.aspectRatio;
+        onDataChange(newNodeId, {
+          outputVideo: res.originalUrl,
+          originalVideoUrl: undefined,
+          hasAlpha: res.hasAlpha !== false,
+          videoAsset: {
+            poster: res.posterUrl,
+            ghost: res.ghostBase64,
+            width: res.width,
+            height: res.height,
+          },
+          width: adapted.w,
+          height: adapted.h,
+          ...(aspectRatio ? { aspectRatio } : {}),
+          progress: 100,
+          progressMessage: '',
+          errorMessage: undefined,
+        });
+        window.setTimeout(() => {
+          onDataChange(newNodeId, { progress: 0, progressMessage: '' });
+        }, 420);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : vt.videoChromaKeyFailed;
+        console.error('[VideoNode] chroma key failed:', err);
+        showAlert(`${vt.videoChromaKeyFailed}\n\n${msg}`);
+        onDataChange(newNodeId, { errorMessage: msg, progress: 0, progressMessage: '' });
+      } finally {
+        setChromaKeying(false);
+      }
+    },
+    [
+      videoDisplayUrl,
+      outputVideo,
+      data?.outputVideo,
+      data?.originalVideoUrl,
+      data?.aspectRatio,
+      chromaKeying,
+      smartMatting,
+      cropping,
+      trimming,
+      isVideoSubtitleWatermarkLoading,
+      isVideoDepthConvertLoading,
+      bilibiliFetching,
+      isSplitFramesBusy,
+      smartEditing,
+      onAddVideoClipNodes,
+      onDataChange,
+      showAlert,
+      vt,
+      id,
+      scheduleRefreshNodeInternals,
+      getNodes,
+      xPos,
+      yPos,
+      size.w,
+      size.h,
+      screenToFlowPosition,
+      projectId,
+      computeAdaptiveVideoSize,
+    ],
+  );
+
   const handleCropClick = useCallback(() => {
     const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
     if (!videoUrl) {
@@ -2371,8 +3406,38 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       showAlert(vt.videoSpatialCropNotSupported);
       return;
     }
+    setShowChromaKeyModal(false);
     setShowCropModal(true);
-  }, [videoDisplayUrl, outputVideo, data?.outputVideo, data?.originalVideoUrl, showAlert, vt]);
+    /** 画面裁剪打开时与一键归位同级居中（fitBounds + 显式尺寸） */
+    const focusW = size.w;
+    const focusH = size.h;
+    const CROP_FOCUS_MS = 320;
+    const focusCropModule = () => {
+      window.dispatchEvent(
+        new CustomEvent('nexflow-canvas-focus-nodes', {
+          detail: {
+            nodes: [{ id, width: focusW, height: focusH }],
+            duration: CROP_FOCUS_MS,
+            padding: 0.14,
+          },
+        }),
+      );
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(focusCropModule);
+    });
+    window.setTimeout(focusCropModule, 64);
+  }, [
+    videoDisplayUrl,
+    outputVideo,
+    data?.outputVideo,
+    data?.originalVideoUrl,
+    showAlert,
+    vt,
+    size.w,
+    size.h,
+    id,
+  ]);
 
   const handleCropConfirm = useCallback(
     async (rect: NormalizedCropRect, sourceWidth: number, sourceHeight: number) => {
@@ -2403,6 +3468,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
       setShowCropModal(false);
       setCropping(true);
+      scheduleRefreshNodeInternals(id);
 
       const source = getNodes().find((n) => n.id === id);
       const { baseX, baseY } = resolveExportRightAnchor({
@@ -2447,6 +3513,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         targetHandle: 'input',
       };
       onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+      scheduleRefreshNodeInternals([id, newNodeId]);
 
       try {
         const res = await window.electronAPI.cropVideo(
@@ -2516,6 +3583,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       screenToFlowPosition,
       locale,
       onAddVideoClipNodes,
+      scheduleRefreshNodeInternals,
     ],
   );
 
@@ -2741,9 +3809,30 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
   /** 尺寸或占位/成片布局切换后，刷新 React Flow Handle 测量，修正入边锚点 */
   useEffect(() => {
-    const raf = requestAnimationFrame(() => updateNodeInternals(id));
-    return () => cancelAnimationFrame(raf);
+    const raf = requestAnimationFrame(() => {
+      updateNodeInternals(id);
+      requestAnimationFrame(() => updateNodeInternals(id));
+    });
+    // 尺寸 CSS 过渡约 0.32s：结束后再刷一次，避免锚点停在过渡中途
+    const t = window.setTimeout(() => updateNodeInternals(id), 360);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(t);
+    };
   }, [id, size.w, size.h, hasRenderableVideo, updateNodeInternals]);
+
+  /** 退出裁剪/智能剪辑/画面裁剪 UI 后强制重测（胶片条、底栏显隐也会改 Handle 相对位置） */
+  const wasInClipSessionRef = useRef(false);
+  useEffect(() => {
+    const inSession = showTrimModal || smartEditReviewOpen || showCropModal || showChromaKeyModal;
+    if (inSession) {
+      wasInClipSessionRef.current = true;
+      return;
+    }
+    if (!wasInClipSessionRef.current) return;
+    wasInClipSessionRef.current = false;
+    scheduleRefreshNodeInternals(id);
+  }, [showTrimModal, smartEditReviewOpen, showCropModal, showChromaKeyModal, id, scheduleRefreshNodeInternals]);
 
   const showVideoDecodeLayer =
     shouldRenderVideo && !isInteracting && shouldMountVideoTag && effectiveDecodePermission;
@@ -2757,7 +3846,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   }, [showVideoDecodeLayer, videoDisplayUrl]);
 
   const posterFillContent = useMemo(() => {
-    const lastFrame = localLastFrame || (videoDisplayUrl ? getVideoLastFrame(videoDisplayUrl) : undefined);
+    // 透明成片：勿用 canvas→JPEG 静帧（透明会压成黑底剪影），优先用带 alpha 的 PNG poster
+    const lastFrame = hasAlphaVideo
+      ? undefined
+      : localLastFrame || (videoDisplayUrl ? getVideoLastFrame(videoDisplayUrl) : undefined);
     const imgSrc = lastFrame || effectivePosterSrc;
     if (hasPoster || lastFrame) {
       return (
@@ -2774,7 +3866,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         />
       );
     }
-    if (ghostImage) {
+    if (ghostImage && !hasAlphaVideo) {
       return (
         <div
           className="w-full h-full"
@@ -2788,6 +3880,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           }}
         />
       );
+    }
+    if (hasAlphaVideo) {
+      // 棋盘格已由下层铺好，此处无需再铺实色底
+      return <div className="w-full h-full" aria-hidden />;
     }
     return (
       <div
@@ -2810,6 +3906,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     ghostImage,
     isDarkMode,
     isInteractionVisualLock,
+    hasAlphaVideo,
   ]);
 
   const handleDecodedFrame = useCallback(() => {
@@ -2826,11 +3923,15 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
   const handleExternalTogglePlay = useCallback(() => {
     if (isPreviewPlaying) {
+      // 主动暂停并钉住：阻止悬停立刻续播，选中暂停时相机才能稳定显示
       pendingKeyboardPlayRef.current = false;
       videoPreviewRef.current?.pause();
       setExternalPlaybackHeld(false);
+      setUserPinnedPaused(true);
+      setIsPreviewPlaying(false);
       return;
     }
+    setUserPinnedPaused(false);
     setExternalPlaybackHeld(true);
     setIsVideoAreaHovered(true);
     setHoveredVideoNodeId(id);
@@ -2847,29 +3948,78 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     }
     pendingKeyboardPlayRef.current = false;
     pv.warmupDecode?.();
-    pv.setVolume(uiVolume > 0 ? uiVolume : 1);
+    pv.setVolume(userMuted ? 0 : uiVolume > 0 ? uiVolume : 1);
     pv.play();
-  }, [id, isPreviewPlaying, uiVolume, videoDisplayUrl]);
+  }, [id, isPreviewPlaying, uiVolume, userMuted, videoDisplayUrl]);
+
+  useEffect(() => {
+    if (!selected) setUserPinnedPaused(false);
+  }, [selected]);
+
+  const handleToggleUserMute = useCallback(
+    (e?: React.MouseEvent) => {
+      e?.stopPropagation();
+      e?.preventDefault();
+      setUserMuted((prev) => {
+        const next = !prev;
+        const pv = videoPreviewRef.current;
+        if (pv) {
+          if (next) pv.setVolume(0);
+          else pv.setVolume(uiVolume > 0 ? uiVolume : 1);
+        }
+        return next;
+      });
+    },
+    [uiVolume],
+  );
 
   const handleExternalVolumeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const next = parseFloat(e.target.value);
     if (!Number.isFinite(next)) return;
     setUiVolume(next);
+    setUserMuted(next <= 0);
     videoPreviewRef.current?.setVolume(next);
   }, []);
 
   const showExternalPlayerControls =
     showDetailedUi && showNodeChrome && !!outputVideo && !!videoDisplayUrl && shouldRenderVideo;
-  const showFloatingTopActions = showDetailedUi && showNodeChrome && !progress;
+  /** 顶栏（下载/上传等）：选中/播放中，或悬停画面时保留；HeyGem 配置锚点不显示 */
+  const showFloatingTopActions =
+    !isHeyGemNode &&
+    showDetailedUi &&
+    !progress &&
+    (showNodeChrome || (!!outputVideo && !!videoDisplayUrl && isVideoAreaHovered));
+  /**
+   * 相机截图显示（最终规则）：
+   * - 播放中：不显示（不论是否选中）
+   * - 暂停中：显示，叠在视频画面右下角（不依赖选中）
+   * - 无视频画面：不显示
+   */
+  const showCaptureFrameButton =
+    showDetailedUi &&
+    !progress &&
+    hasRenderableVideo &&
+    !!videoDisplayUrl &&
+    !isPreviewPlaying &&
+    !showCropModal &&
+    !showChromaKeyModal &&
+    !showTrimModal;
+
+  useEffect(() => {
+    if (!showCaptureFrameButton) setCaptureHoverSuppressPlay(false);
+  }, [showCaptureFrameButton]);
   const showBottomActionRow =
     showNodeChrome &&
+    !isHeyGemNode &&
     (canUseBilibiliGrab || !!outputVideo) &&
     !showCropModal &&
+    !showChromaKeyModal &&
     !smartEditReviewOpen &&
     !showTrimModal;
   // 镜头拉远：随画布缩小；拉近：反缩放，避免操作栏撑满屏幕
   const zoomInv = Math.min(1, 1 / Math.max(zoom || 1, 0.01));
   const videoPromptAnchor = useVideoInputPanelAnchor();
+  const heyGemInlineApi = useHeyGemInlinePanelApi();
   const showVideoPromptPanel =
     !!videoPromptAnchor &&
     videoPromptAnchor.nodeId === id &&
@@ -2878,14 +4028,19 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     !showBilibiliModal &&
     !showSmartEditModal &&
     !showCropModal &&
+    !showChromaKeyModal &&
     !smartEditReviewOpen;
+  /** HeyGem：双栏配置始终嵌进主框（不依赖 selected）；其它视频模型仍挂节点下方 */
+  const showHeyGemInlinePanel = isHeyGemNode && !!heyGemInlineApi;
+  const showVideoBelowPromptPanel = showVideoPromptPanel && !isHeyGemNode;
+  /** 竖屏节点偏窄时底栏会横向溢出节点宽；面板须落在播放条+彩色按钮整行之下，避免遮挡 */
   const videoPromptTop =
     showExternalPlayerControls && showBottomActionRow
-      ? 'calc(100% + 84px)'
+      ? 'calc(100% + 108px)'
       : showExternalPlayerControls
         ? 'calc(100% + 48px)'
         : showBottomActionRow
-          ? 'calc(100% + 40px)'
+          ? 'calc(100% + 48px)'
           : 'calc(100% + 8px)';
 
   const spaceKeyboardActive =
@@ -2897,6 +4052,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     !showBilibiliModal &&
     !showSmartEditModal &&
     !showCropModal &&
+    !showChromaKeyModal &&
     !smartEditReviewOpen &&
     !(progress > 0);
 
@@ -2941,7 +4097,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       setDecodedFrameReady(true);
     }
     pv.warmupDecode?.();
-    pv.setVolume(uiVolume > 0 ? uiVolume : 1);
+    pv.setVolume(userMuted ? 0 : uiVolume > 0 ? uiVolume : 1);
     pv.play();
   }, [
     externalPlaybackHeld,
@@ -2951,6 +4107,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     shouldRenderVideo,
     videoDisplayUrl,
     uiVolume,
+    userMuted,
   ]);
 
   useEffect(() => {
@@ -2966,6 +4123,44 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     isDarkMode
       ? `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/15 hover:bg-white/25 text-white transition-colors ${extra}`
       : `nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/90 hover:bg-white text-gray-800 border border-gray-200/80 shadow-sm transition-colors ${extra}`;
+
+  const captureFrameBusy =
+    isCaptureFrameBusy ||
+    cropping ||
+    trimming ||
+    smartEditing ||
+    isSplitFramesBusy ||
+    isVideoGenerating ||
+    isVideoDepthConvertLoading ||
+    isVideoSubtitleWatermarkLoading;
+
+  const captureFrameButtonEl = showCaptureFrameButton ? (
+    <button
+      type="button"
+      disabled={captureFrameBusy}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+      }}
+      onMouseDown={(e) => {
+        e.stopPropagation();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (captureFrameBusy) return;
+        void handleCaptureCurrentFrame();
+      }}
+      className={`nexflow-video-capture-btn ${floatTopPillBtn(captureFrameBusy ? 'opacity-50 cursor-not-allowed' : '')}`}
+      title={vt.videoCaptureFrameTitle}
+      aria-label={vt.videoCaptureFrameTitle}
+    >
+      {isCaptureFrameBusy ? (
+        <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+      ) : (
+        <Camera className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+      )}
+    </button>
+  ) : null;
 
   const videoPlaybackControlsBar = (
     <VideoPlaybackControlsBar
@@ -3009,15 +4204,17 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         isolation: 'isolate',
         transform: 'translateZ(0)',
         willChange: data?._isResizing ? 'transform, width, height' : 'transform',
-        transition: data?._isResizing || dragging
+        transition: data?._isResizing || dragging || suppressSizeTransition
           ? 'none'
           : `${NODE_SIZE_TRANSITION}, box-shadow 0.2s, border-color 0.2s`,
       }}
       className={`custom-node-container nexflow-video-node group relative rounded-2xl overflow-visible ${
         hasRenderableVideo
           ? 'p-0 bg-transparent shadow-none custom-node-container--transparent'
-          : `${isDarkMode ? 'p-4 nexflow-glass-panel' : 'p-4 apple-panel-light'}`
-      } ${showSelectedChrome && !isPreviewPlaying && isDarkMode && !data?._isResizing ? 'ring-2 ring-green-400/80' : ''} ${showSelectedChrome && !isPreviewPlaying && !isDarkMode && !data?._isResizing ? 'ring-2 ring-green-500' : ''} ${data?._isResizing ? '!shadow-none !ring-0' : ''} transition-all duration-200`}
+          : isHeyGemNode
+            ? `${isDarkMode ? 'p-0 nexflow-glass-panel' : 'p-0 apple-panel-light'}`
+            : `${isDarkMode ? 'p-4 nexflow-glass-panel' : 'p-4 apple-panel-light'}`
+      } ${showSelectedChrome && !isPreviewPlaying && isDarkMode && !data?._isResizing ? 'ring-2 ring-green-400/80' : ''} ${showSelectedChrome && !isPreviewPlaying && !isDarkMode && !data?._isResizing ? 'ring-2 ring-green-500' : ''} ${data?._isResizing ? '!shadow-none !ring-0' : ''} ${suppressSizeTransition ? '' : 'transition-all duration-200'}`}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClickCapture={() => {
@@ -3033,12 +4230,14 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         dispatchCanvasPickNode(id);
       }}
     >
-      {/* 统一输入点：自动识别 Image（图生视频）、Audio（口型同步）、Video（参考视频） */}
-      <Handle type="target" position={Position.Left} id="input" style={{ top: '50%' }} className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} title="输入图片/音频/参考视频" />
+      {/* HeyGem 数字人：参考视频/驱动音频在面板内设置，隐藏左侧入边把手；其它视频模型保持统一 input */}
+      {nodeType !== 'heyGem' ? (
+        <Handle type="target" position={Position.Left} id="input" style={{ top: '50%' }} className={`nexflow-plus-handle nexflow-plus-handle-left ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} title="输入图片/音频/参考视频" />
+      ) : null}
       <Handle type="source" position={Position.Right} id="output" className={`nexflow-plus-handle nexflow-plus-handle-right ${showPlaceholder ? 'opacity-0 pointer-events-none' : ''}`} />
-      <div className="node-wrapper absolute inset-0 rounded-2xl" style={{ contain: 'layout' }}>
+      <div className="node-wrapper absolute inset-0 overflow-visible rounded-2xl" style={{ contain: 'layout' }}>
       <div
-        className={`absolute inset-0 rounded-2xl ${
+        className={`absolute inset-0 overflow-visible rounded-2xl ${
           isPreviewPlaying && !data?._isResizing ? 'nexflow-media-playing-glow' : ''
         }`}
       >
@@ -3056,10 +4255,18 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
       {/* 视频内容显示区域：运行中由进度条遮罩覆盖，再显示视频/错误/占位；悬停预览（静音），移开停止 */}
       <div
-        className={`custom-scrollbar w-full h-full flex items-center justify-center overflow-auto relative ${
-          hasRenderableVideo ? 'p-0' : 'p-2'
+        className={`nexflow-video-media-area custom-scrollbar relative flex h-full w-full items-center justify-center ${
+          hasRenderableVideo ? 'overflow-visible p-0' : 'overflow-auto p-2'
         }`}
-        onMouseEnter={() => {
+        onMouseEnter={(e) => {
+          // 从外侧直接移入右下角相机命中区时，父级 mouseEnter 早于按钮；先抑制悬停自动播
+          const under = document.elementFromPoint(e.clientX, e.clientY);
+          if (
+            under?.closest?.('[data-video-capture-hit="1"]') ||
+            isPointerInCaptureHitZone(e.clientX, e.clientY)
+          ) {
+            setCaptureHoverSuppressPlay(true);
+          }
           setIsVideoAreaHovered(true);
           setHoveredVideoNodeId(id);
           setActiveVideoNodeId(id);
@@ -3073,6 +4280,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         }}
         onMouseLeave={() => {
           if (dragging) return;
+          setCaptureHoverSuppressPlay(false);
           const keepPlaying = externalPlaybackHeld && isPreviewPlaying;
           try {
             const pv = videoPreviewRef.current;
@@ -3107,20 +4315,55 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         }}
       >
         {outputVideo ? (
-          <div className="relative w-full h-full" style={{ willChange: 'transform', contain: 'content', transform: 'translateZ(0)' }}>
+          <div
+            className="nexflow-video-media-stage relative h-full w-full overflow-visible"
+            style={{ willChange: 'transform', contain: 'layout', transform: 'translateZ(0)' }}
+          >
+            {hasAlphaVideo ? (
+              <div
+                className="pointer-events-none absolute inset-0 z-0 rounded-2xl overflow-hidden"
+                style={CHROMA_CHECKERBOARD_BG}
+                aria-hidden
+              />
+            ) : null}
+            {hasRenderableVideo && !showCropModal && !showChromaKeyModal ? (
+              <button
+                type="button"
+                className="nexflow-video-mute-btn nodrag nopan pointer-events-auto absolute left-2 top-2 z-[40] flex h-8 w-8 items-center justify-center rounded-full bg-black/45 text-white shadow-md backdrop-blur-[2px] transition-colors hover:bg-black/60"
+                title={userMuted ? (locale === 'en' ? 'Unmute' : '开启声音') : locale === 'en' ? 'Mute' : '静音'}
+                aria-label={userMuted ? (locale === 'en' ? 'Unmute' : '开启声音') : locale === 'en' ? 'Mute' : '静音'}
+                aria-pressed={!userMuted}
+                onClick={handleToggleUserMute}
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                {userMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </button>
+            ) : null}
             {/* Texture Layer：始终渲染 img，不受 shouldRenderVideo 限制，永久挂载 */}
             <div
-              className="poster-layer z-0 absolute inset-0 rounded-2xl overflow-hidden"
+              className="poster-layer absolute inset-0 rounded-2xl overflow-hidden"
               style={{
+                zIndex: 1,
                 transform: 'translateZ(0)',
-                visibility: hidePosterDuringActivePlayback ? 'hidden' : 'visible',
+                // 色度预览时隐藏原片/海报，透明键控只透棋盘格，避免绿幕鬼影
+                visibility:
+                  showChromaKeyModal || hidePosterDuringActivePlayback ? 'hidden' : 'visible',
               }}
-              aria-hidden={hidePosterDuringActivePlayback ? true : undefined}
+              aria-hidden={showChromaKeyModal || hidePosterDuringActivePlayback ? true : undefined}
             >
               {posterFillContent}
             </div>
             {/* Video Layer：仅 shouldRenderVideo 且 !isInteracting 时挂载 video，缩放/拖拽中不渲染避免闪烁 */}
-            <div className="video-layer z-10 absolute inset-0 rounded-2xl overflow-hidden" style={{ transform: 'translateZ(0)' }}>
+            <div
+              className="video-layer z-10 absolute inset-0 rounded-2xl overflow-hidden"
+              style={{
+                transform: 'translateZ(0)',
+                // 色度模式：视觉隐藏但仍解码播放（勿用 display:none，供 drawImage / 吸色）
+                opacity: showChromaKeyModal ? 0 : undefined,
+              }}
+              aria-hidden={showChromaKeyModal ? true : undefined}
+            >
               {shouldRenderVideo && !isInteracting && (() => {
                 const showVideo = shouldMountVideoTag && effectiveDecodePermission;
                 return showVideo ? (
@@ -3158,7 +4401,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                         style={{ borderRadius: 16 }}
                         preload={playbackActive ? 'auto' : isLibraryReferenceVideo ? 'none' : 'metadata'}
                         playsInline
-                        muted={!playbackActive}
+                        muted={userMuted || !playbackActive}
                         loop
                         controls={false}
                         fixFullscreenForTransformedParent
@@ -3206,19 +4449,66 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 {posterFillContent}
               </div>
             ) : null}
+            {/* 相机截图：锚定本视频模块右侧/右下角（热区可略伸出右缘；高 z-index + 抑制悬停自动播） */}
+            {showCaptureFrameButton ? (
+              <div
+                ref={captureHitRef}
+                data-video-capture-hit="1"
+                className="nexflow-video-capture-hit nodrag nopan pointer-events-auto"
+                onMouseEnter={() => setCaptureHoverSuppressPlay(true)}
+                onMouseLeave={() => setCaptureHoverSuppressPlay(false)}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+                onWheel={(e) => e.stopPropagation()}
+              >
+                {captureFrameButtonEl}
+              </div>
+            ) : null}
             {showCropModal ? (
               <VideoCropOverlay
+                key={`video-crop-${size.w}x${size.h}`}
                 ref={cropOverlayRef}
                 videoUrl={videoDisplayUrl || outputVideo || data?.originalVideoUrl || ''}
                 isDarkMode={isDarkMode}
                 hint={vt.videoSpatialCropHint}
                 busy={cropping}
+                layoutRevision={`${size.w}x${size.h}`}
                 onConfirm={(rect, sw, sh) => void handleCropConfirm(rect, sw, sh)}
                 onCancel={() => !cropping && setShowCropModal(false)}
               />
             ) : null}
+            {showChromaKeyModal ? (
+              <>
+                <VideoChromaKeyMainPreview
+                  getVideoElement={() => videoPreviewRef.current?.getVideoElement?.() ?? null}
+                  active={showChromaKeyModal}
+                  colorHex={chromaColorHex}
+                  similarity={chromaSimilarity}
+                  blend={chromaBlend}
+                />
+                <VideoChromaKeyPickOverlay
+                  getVideoElement={() => videoPreviewRef.current?.getVideoElement?.() ?? null}
+                  active={chromaPicking}
+                  busy={chromaKeying}
+                  onPickColor={(hex) => {
+                    const sug = suggestKeyParamsForColor(hex);
+                    setChromaColorHex(hex);
+                    setChromaSimilarity(sug.similarity);
+                    setChromaBlend(sug.blend);
+                    setChromaPicking(false);
+                  }}
+                />
+              </>
+            ) : null}
           </div>
-        ) : errorMessage ? (
+        ) : errorMessage && !isHeyGemNode ? (
           <div className="flex flex-col items-center justify-center gap-3 p-4">
             <div className={`text-2xl ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
               ⚠️
@@ -3236,13 +4526,81 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               </p>
             ) : null}
           </div>
-        ) : (
+        ) : isHeyGemNode ? null : (
           <p className={isDarkMode ? 'text-white/60' : 'text-gray-500'}>
             {wc.waitingForVideo}
           </p>
         )}
       </div>
       </>
+      {/* HeyGem：双栏配置始终填入主框（不依赖 selected；z 低于进度遮罩） */}
+      {showHeyGemInlinePanel && heyGemInlineApi ? (
+        <div
+          className="video-heygem-inline-panel nodrag nopan absolute inset-0 z-[5] overflow-auto rounded-2xl"
+          style={{ pointerEvents: 'auto' }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <VideoInputPanel
+            nodeId={id}
+            isDarkMode={isDarkMode}
+            prompt={String(data?.prompt || '')}
+            aspectRatio={(data?.aspectRatio as '16:9' | '9:16') || '16:9'}
+            model="hey-gem"
+            hd={false}
+            duration="10"
+            projectId={heyGemInlineApi.projectId || projectId}
+            referenceVideoUrl={String(data?.referenceVideoUrl || '')}
+            inputAudioUrl={String(data?.inputAudioUrl || '')}
+            heyGemStandalone
+            embedInNode
+            heyGemScript={String(data?.heyGemScript || '')}
+            heyGemTtsModel={String(data?.heyGemTtsModel || DOUBAO_SEED_AUDIO_MODEL_ID)}
+            heyGemCloneAudioUrl={String(data?.heyGemCloneAudioUrl || '')}
+            progress={Number(data?.progress) || 0}
+            progressMessage={String(data?.progressMessage || '')}
+            onPromptChange={(value) => onDataChange?.(id, { prompt: value })}
+            onAspectRatioChange={() => {}}
+            onModelChange={() => {}}
+            onHdChange={() => {}}
+            onDurationChange={() => {}}
+            onReferenceVideoUrlChange={(url) =>
+              onDataChange?.(id, { referenceVideoUrl: String(url || '').trim() || undefined })
+            }
+            onInputAudioUrlChange={(url) =>
+              onDataChange?.(id, { inputAudioUrl: String(url || '').trim() || undefined })
+            }
+            onHeyGemScriptChange={(value) => onDataChange?.(id, { heyGemScript: value })}
+            onHeyGemTtsModelChange={(value) => onDataChange?.(id, { heyGemTtsModel: value })}
+            onHeyGemCloneAudioUrlChange={(url) =>
+              onDataChange?.(id, { heyGemCloneAudioUrl: String(url || '').trim() || undefined })
+            }
+            onPickReferenceVideoFromCanvas={() => heyGemInlineApi.onPickReferenceVideoFromCanvas()}
+            onProgressChange={(nextProgress) =>
+              onDataChange?.(id, {
+                progress: nextProgress,
+                ...(nextProgress > 0 ? { errorMessage: undefined } : {}),
+              })
+            }
+            onProgressMessageChange={(message) =>
+              onDataChange?.(id, { progressMessage: message })
+            }
+            onOutputVideoChange={(url, originalUrl, localAsset) => {
+              if (!url) return;
+              heyGemInlineApi.onOutputVideoReady(
+                id,
+                url,
+                originalUrl,
+                localAsset,
+                String(data?.prompt || ''),
+              );
+            }}
+            onErrorTask={(message) => heyGemInlineApi.onErrorTask?.(id, message)}
+          />
+        </div>
+      ) : null}
       </div>
       </div>
 
@@ -4023,15 +5381,19 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           {hasRenderableVideo && videoDisplayUrl ? (
             <button
               type="button"
-              disabled={cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating}
+              disabled={
+                cropping || trimming || chromaKeying || smartMatting || smartEditing || isSplitFramesBusy || isVideoGenerating
+              }
               onClick={(e) => {
                 e.stopPropagation();
                 e.preventDefault();
-                if (cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating) return;
+                if (cropping || trimming || chromaKeying || smartMatting || smartEditing || isSplitFramesBusy || isVideoGenerating) {
+                  return;
+                }
                 handleCropClick();
               }}
               className={floatTopPillBtn(
-                cropping || trimming || smartEditing || isSplitFramesBusy || isVideoGenerating
+                cropping || trimming || chromaKeying || smartMatting || smartEditing || isSplitFramesBusy || isVideoGenerating
                   ? 'opacity-50 cursor-not-allowed'
                   : '',
               )}
@@ -4045,7 +5407,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               )}
             </button>
           ) : null}
-          {hasRenderableVideo && videoDisplayUrl ? (
+          {hasRenderableVideo && videoDisplayUrl && !showTrimModal && !smartEditReviewOpen ? (
             <button
               type="button"
               onClick={(e) => {
@@ -4077,7 +5439,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       {/* 导入在线视频（B 站 / YouTube，本机 yt-dlp）+ 拆帧 + 裁剪：选中或播放中显示在模块下方 */}
       {showBottomActionRow ? (
         <div
-          className={`nodrag nopan absolute top-full left-0 right-0 flex justify-center items-center gap-2 z-10 px-1 ${
+          className={`nodrag nopan node-floating-toolbar absolute top-full left-1/2 z-[70] flex w-max max-w-none -translate-x-1/2 flex-nowrap items-center justify-center gap-2 overflow-visible px-1 ${
             showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
           }`}
           style={{ pointerEvents: 'all' }}
@@ -4096,7 +5458,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 setBilibiliUrlDraft('');
                 setShowBilibiliModal(true);
               }}
-              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+              className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
                 bilibiliFetching || trimming || isVideoGenerating
                   ? 'bg-violet-500/70 cursor-not-allowed opacity-80'
                   : 'bg-violet-600 hover:bg-violet-500'
@@ -4111,15 +5473,27 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
             <>
               <button
                 type="button"
-                disabled={trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen}
+                disabled={
+                  trimming || isSplitFramesBusy || cropping || chromaKeying || smartMatting || smartEditing || smartEditReviewOpen
+                }
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  if (trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen) return;
+                  if (
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    smartEditing ||
+                    smartEditReviewOpen
+                  ) {
+                    return;
+                  }
                   handleTrimClick();
                 }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                  trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen
+                className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                  trimming || isSplitFramesBusy || cropping || chromaKeying || smartMatting || smartEditing || smartEditReviewOpen
                     ? 'bg-green-500/70 cursor-not-allowed opacity-80'
                     : 'bg-green-500 hover:bg-green-600'
                 }`}
@@ -4134,15 +5508,42 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               </button>
               <button
                 type="button"
-                disabled={trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating}
+                disabled={
+                  trimming ||
+                  isSplitFramesBusy ||
+                  cropping ||
+                  chromaKeying ||
+                  smartMatting ||
+                  smartEditing ||
+                  smartEditReviewOpen ||
+                  isVideoGenerating
+                }
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
-                  if (trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating) return;
+                  if (
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                  ) {
+                    return;
+                  }
                   setShowSmartEditModal(true);
                 }}
-                className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
-                  trimming || isSplitFramesBusy || cropping || smartEditing || smartEditReviewOpen || isVideoGenerating
+                className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                  trimming ||
+                  isSplitFramesBusy ||
+                  cropping ||
+                  chromaKeying ||
+                  smartMatting ||
+                  smartEditing ||
+                  smartEditReviewOpen ||
+                  isVideoGenerating
                     ? 'bg-violet-500/70 cursor-not-allowed opacity-80'
                     : 'bg-violet-600 hover:bg-violet-500'
                 }`}
@@ -4155,6 +5556,125 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 )}
                 {locale === 'en' ? 'Smart Edit' : '智能剪辑'}
               </button>
+              <button
+                type="button"
+                disabled={
+                  trimming ||
+                  isSplitFramesBusy ||
+                  cropping ||
+                  chromaKeying ||
+                  smartMatting ||
+                  smartEditing ||
+                  smartEditReviewOpen ||
+                  isVideoGenerating
+                }
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  if (
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                  ) {
+                    return;
+                  }
+                  handleChromaKeyClick();
+                }}
+                className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                  trimming ||
+                  isSplitFramesBusy ||
+                  cropping ||
+                  chromaKeying ||
+                  smartMatting ||
+                  smartEditing ||
+                  smartEditReviewOpen ||
+                  isVideoGenerating
+                    ? 'bg-cyan-600/70 cursor-not-allowed opacity-80'
+                    : 'bg-cyan-600 hover:bg-cyan-500'
+                }`}
+                title={vt.videoChromaKeyTitle}
+              >
+                {chromaKeying ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Droplet className="w-3.5 h-3.5" />
+                )}
+                {vt.videoChromaKeyButton}
+              </button>
+              <div
+                className="relative inline-flex flex-col items-center"
+                onMouseEnter={() => setSmartMattingPriceHover(true)}
+                onMouseLeave={() => setSmartMattingPriceHover(false)}
+              >
+                <button
+                  type="button"
+                  disabled={
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (
+                      trimming ||
+                      isSplitFramesBusy ||
+                      cropping ||
+                      chromaKeying ||
+                      smartMatting ||
+                      smartEditing ||
+                      smartEditReviewOpen ||
+                      isVideoGenerating
+                    ) {
+                      return;
+                    }
+                    void handleSmartMattingClick();
+                  }}
+                  className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                      ? 'bg-teal-600/70 cursor-not-allowed opacity-80'
+                      : 'bg-teal-600 hover:bg-teal-500'
+                  }`}
+                  title={`${vt.videoSmartMattingTitle} · ${smartMattingPriceHoverText}`}
+                  aria-label={vt.videoSmartMattingButton}
+                >
+                  {smartMatting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <UserRound className="w-3.5 h-3.5" />
+                  )}
+                  {vt.videoSmartMattingButton}
+                </button>
+                <span
+                  className={`absolute left-1/2 top-full z-20 mt-1 w-max max-w-[240px] -translate-x-1/2 text-center text-xs font-medium px-2 py-1 rounded shadow-md transition-all duration-200 ease-out ${
+                    isDarkMode ? 'text-yellow-200 bg-yellow-900/90 ring-1 ring-yellow-500/35' : 'text-yellow-800 bg-yellow-100 ring-1 ring-yellow-300/60'
+                  } ${
+                    smartMattingPriceHover
+                      ? 'pointer-events-none translate-y-0 opacity-100'
+                      : 'pointer-events-none translate-y-2 opacity-0'
+                  }`}
+                  title={vt.videoSmartMattingPriceTitle}
+                >
+                  {smartMattingPriceHoverText}
+                </span>
+              </div>
             </>
           ) : null}
         </div>
@@ -4186,8 +5706,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         />
       ) : null}
 
-      {/* 对齐 Image/Audio：操作台贴主模块下方，随节点平移/缩放 */}
-      {showVideoPromptPanel && videoPromptAnchor ? (
+      {/* 对齐 Image/Audio：操作台贴主模块下方（非 HeyGem）；HeyGem 已嵌主框 */}
+      {showVideoBelowPromptPanel && videoPromptAnchor ? (
         <div
           className="video-text-prompt-panel nodrag nopan absolute z-[60]"
           style={{
@@ -4231,6 +5751,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 e.stopPropagation();
                 if (cropping) return;
                 setShowCropModal(false);
+                scheduleRefreshNodeInternals(id);
               }}
               className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
                 isDarkMode
@@ -4261,12 +5782,65 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         </div>
       ) : null}
 
+      {showChromaKeyModal ? (
+        <div
+          className="nodrag nopan pointer-events-auto absolute left-full top-0 z-[70] ml-2"
+          style={{
+            transform: `scale(${zoomInv})`,
+            transformOrigin: 'top left',
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <VideoChromaKeySidePanel
+            isDarkMode={isDarkMode}
+            busy={chromaKeying}
+            colorHex={chromaColorHex}
+            similarity={chromaSimilarity}
+            blend={chromaBlend}
+            picking={chromaPicking}
+            strings={{
+              title: vt.videoChromaKeyTitle,
+              greenPreset: vt.videoChromaKeyGreen,
+              pickColor: vt.videoChromaKeyPick,
+              similarity: vt.videoChromaKeySimilarity,
+              blend: vt.videoChromaKeyBlend,
+              confirm: chromaKeying ? vt.videoChromaKeyConfirming : vt.videoChromaKeyConfirm,
+              cancel: vt.videoChromaKeyCancel,
+            }}
+            onColorHexChange={setChromaColorHex}
+            onSimilarityChange={setChromaSimilarity}
+            onBlendChange={setChromaBlend}
+            onPickingChange={setChromaPicking}
+            onConfirm={() => {
+              const params: ChromaKeyParams = {
+                colorHex: chromaColorHex,
+                similarity: chromaSimilarity,
+                blend: chromaBlend,
+              };
+              void handleChromaKeyConfirm(params);
+            }}
+            onCancel={() => {
+              if (chromaKeying) return;
+              setChromaPicking(false);
+              setShowChromaKeyModal(false);
+              scheduleRefreshNodeInternals(id);
+            }}
+          />
+        </div>
+      ) : null}
+
       {smartEditReviewOpen || showTrimModal ? (
         <div
-          className={`nodrag nopan pointer-events-auto absolute left-0 right-0 top-full z-30 px-1 ${
+          className={`nodrag nopan pointer-events-auto absolute left-1/2 top-full z-30 box-border -translate-x-1/2 px-1 ${
             showExternalPlayerControls ? 'mt-[calc(2.85rem+3mm)]' : 'mt-1.5'
           }`}
-          style={{ width: Math.max(size.w, 320) }}
+          style={{
+            width: Math.max(size.w, 320),
+            minWidth: Math.max(size.w, 320),
+            maxWidth: Math.max(size.w, 320),
+          }}
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
@@ -4275,6 +5849,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
             isDarkMode={isDarkMode}
             initialTrimStart={parseFloat(trimStartSec) || 0}
             initialTrimEnd={parseFloat(trimEndSec) || 0}
+            knownDuration={uiDuration || Number(data?.mediaDurationSec) || 0}
             trimming={trimming}
             trimError={trimError}
             smartReview={
@@ -4320,7 +5895,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               setTrimEndSec(String(end));
               void handleTrimConfirm(start, end);
             }}
-            onCancel={() => !trimming && !smartEditReviewOpen && setShowTrimModal(false)}
+            onCancel={() => !trimming && !smartEditReviewOpen && endTrimSession()}
           />
         </div>
       ) : null}
@@ -4354,6 +5929,7 @@ export const VideoNode = memo(VideoNodeComponent, (prevProps, nextProps) => {
     prevProps.data?.errorMessage === nextProps.data?.errorMessage &&
     prevProps.data?.videoAsset?.poster === nextProps.data?.videoAsset?.poster &&
     prevProps.data?.videoAsset?.ghost === nextProps.data?.videoAsset?.ghost &&
+    prevProps.data?.hasAlpha === nextProps.data?.hasAlpha &&
     prevProps.data?._isResizing === nextProps.data?._isResizing
   );
 });

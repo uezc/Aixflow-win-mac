@@ -1,16 +1,17 @@
 // @ts-nocheck
 import React, { useCallback, useRef, useEffect, useState, useMemo } from 'react';
-import { Play, ChevronUp, ChevronDown, Mic, Loader2, Video, Check, Image as ImageIcon } from 'lucide-react';
+import { ArrowUp, ChevronUp, ChevronDown, Mic, Loader2, Video, Check, Image as ImageIcon, X, AudioLines, Volume2, VolumeX, Plus } from 'lucide-react';
+import { assetLibBtnPrimary } from '../../utils/assetLibraryChrome';
 import { useAI } from '../../hooks/useAI';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
-import {
-  useReferenceMicRecording,
-} from '../../hooks/useReferenceMicRecording';
-import { confirmOptionalEngineDownload } from '../../utils/confirmOptionalEngineDownload';
+import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
+import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
+import { micLevelCssVars } from '../../utils/micInputLevel';
+import VoiceMicGlyph from './VoiceMicGlyph';
 import { AiGenerateDisclaimerTip } from '../legal/AiGenerateDisclaimerTip';
 import { RefImageHoverThumb } from './RefImageHoverThumb';
 import { AtMentionMenu } from './AtMentionMenu';
@@ -19,6 +20,28 @@ import { usePromptAtMention } from '../../hooks/usePromptAtMention';
 import { resolveRefPillToOrderedIndex } from '../../utils/promptRefPill';
 import { isModelNotPricedError } from '../../utils/priceCalc';
 import { getVideoDisplayPrice } from '../../utils/cloudModelPricing';
+import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
+import {
+  DOUBAO_SEED_AUDIO_MODEL_ID,
+  DOUBAO_SEED_AUDIO_LABEL,
+  isDoubaoSeedAudioModel,
+} from '../../utils/doubaoSeedAudioModel';
+import {
+  beginDigitalHumanLibraryPick,
+  openAssetLibrary,
+} from '../../utils/assetLibraryOpenStore';
+
+/** 本机路径 → local-resource://（与数字人库上传一致） */
+function pathToLocalResourceUrl(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
+  return `local-resource://${normalized}`;
+}
+
+const HEYGEM_TTS_MODELS = [
+  { value: DOUBAO_SEED_AUDIO_MODEL_ID, label: DOUBAO_SEED_AUDIO_LABEL },
+  { value: 'index-tts2', label: 'Index-TTS 2.0' },
+] as const;
+const HEYGEM_SCRIPT_MAX = 1000;
 import {
   GROK3_STABLE_DURATION_SEC_OPTIONS,
   RHART_VIDEO_X_DURATION_SEC_OPTIONS,
@@ -194,6 +217,23 @@ interface VideoInputPanelProps {
   wanAnimateStandalone?: boolean;
   /** 独立 HeyGem 数字人模块：固定 hey-gem，参考视频 + 驱动音频 */
   heyGemStandalone?: boolean;
+  /** 配置 UI 嵌进节点主框时去掉外层玻璃边框，避免与节点壳叠框 */
+  embedInNode?: boolean;
+  /** HeyGem：模块内写入参考视频（不依赖左侧连线） */
+  onReferenceVideoUrlChange?: (url: string) => void;
+  /** HeyGem：模块内写入驱动音频 */
+  onInputAudioUrlChange?: (url: string) => void;
+  /** HeyGem：从画布点选参考视频 */
+  onPickReferenceVideoFromCanvas?: () => Promise<string | null>;
+  /** HeyGem：台词（TTS） */
+  heyGemScript?: string;
+  onHeyGemScriptChange?: (value: string) => void;
+  /** HeyGem：配音模型（语音克隆） */
+  heyGemTtsModel?: string;
+  onHeyGemTtsModelChange?: (value: string) => void;
+  /** HeyGem：克隆参考音（可选；Index-TTS 优先） */
+  heyGemCloneAudioUrl?: string;
+  onHeyGemCloneAudioUrlChange?: (value: string) => void;
 }
 
 const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
@@ -220,6 +260,16 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   progressMessage = '',
   wanAnimateStandalone = false,
   heyGemStandalone = false,
+  embedInNode = false,
+  onReferenceVideoUrlChange,
+  onInputAudioUrlChange,
+  onPickReferenceVideoFromCanvas,
+  heyGemScript = '',
+  onHeyGemScriptChange,
+  heyGemTtsModel = DOUBAO_SEED_AUDIO_MODEL_ID,
+  onHeyGemTtsModelChange,
+  heyGemCloneAudioUrl = '',
+  onHeyGemCloneAudioUrlChange,
   guidanceScale = 0.5,
   sound = 'false',
   shotType = 'single',
@@ -290,11 +340,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   onDurationGeminiOmniChange,
 }) => {
   const { locale } = useAppLocale();
-  const { showAlert, showConfirm } = useDarkAlert();
+  const { showAlert } = useDarkAlert();
   const vt = useMemo(() => videoInputPanelT(locale), [locale]);
   const refMicAt = useMemo(() => audioInputPanelT(locale), [locale]);
   const wc = useMemo(() => workspaceChromeT(locale), [locale]);
-  const [micVoiceBusy, setMicVoiceBusy] = useState(false);
   const promptInputRef = useRef<PromptRichInputHandle>(null);
   const dragImageIndexRef = useRef<number | null>(null);
   /** LTX2.3 高动态：'background' 或分镜 index */
@@ -315,11 +364,38 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const { cloudMap } = useNxModelPricing();
   // 本地 prompt + 防抖：修复输入法（IME）问题，避免每次按键触发父组件重渲染打断中文输入
   const [localPrompt, setLocalPrompt] = useState(prompt);
+  const localPromptRef = useRef(localPrompt);
+  localPromptRef.current = localPrompt;
   const lastSentPromptRef = useRef(prompt);
   const promptDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNodeIdRef = useRef(nodeId);
   const promptInputFocusedRef = useRef(false);
   const [promptComposing, setPromptComposing] = useState(false);
+
+  /** HeyGem 一体化：台词 / TTS / 数字人库选择 */
+  const [localHeyGemScript, setLocalHeyGemScript] = useState(heyGemScript || '');
+  const localHeyGemScriptRef = useRef(localHeyGemScript);
+  const heyGemScriptFocusedRef = useRef(false);
+  const heyGemPreviewVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [heyGemPreviewMuted, setHeyGemPreviewMuted] = useState(true);
+  const [heyGemTtsBusy, setHeyGemTtsBusy] = useState(false);
+  const heyGemTtsWaiterRef = useRef<{
+    resolve: (url: string) => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+
+  useEffect(() => {
+    localHeyGemScriptRef.current = localHeyGemScript;
+  }, [localHeyGemScript]);
+
+  useEffect(() => {
+    if (heyGemScriptFocusedRef.current) return;
+    setLocalHeyGemScript(heyGemScript || '');
+  }, [heyGemScript, nodeId]);
+
+  useEffect(() => {
+    setHeyGemPreviewMuted(true);
+  }, [referenceVideoUrl, nodeId]);
 
   useEffect(() => {
     const nodeIdChanged = prevNodeIdRef.current !== nodeId;
@@ -490,146 +566,183 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     [localPrompt, onPromptChange, vt, orderedInputImages, locale],
   );
 
-  const mergeVoiceIntoPrompt = useCallback(
-    (text: string) => {
-      const t = text.trim();
-      if (!t) return;
-      const prev = localPrompt.trim();
-      const next = prev ? `${prev}\n${t}` : t;
-      promptInputRef.current?.setPlainText(next);
-      setLocalPrompt(next);
-      lastSentPromptRef.current = next;
-      onPromptChange(next);
-      promptInputRef.current?.focus();
-    },
-    [localPrompt, onPromptChange],
-  );
-
-  const runMicTranscribeOnUrl = useCallback(
-    async (localResourceUrl: string) => {
-      if (!window.electronAPI?.transcribeSpeechFromAudioUrl) {
-        showAlert(locale === 'en' ? 'Transcription is not available in this build.' : '当前环境不支持语音转写');
-        setMicVoiceBusy(false);
-        return;
-      }
-      const downloadOk = await confirmOptionalEngineDownload('whisper', showConfirm, locale);
-      if (!downloadOk) {
-        setMicVoiceBusy(false);
-        return;
-      }
-      setMicVoiceBusy(true);
-      try {
-        const { text: out } = await window.electronAPI.transcribeSpeechFromAudioUrl(
-          projectId || undefined,
-          localResourceUrl,
-          locale === 'zh' ? 'zh' : locale === 'en' ? 'en' : undefined,
-        );
-        const recognized = (out || '').trim();
-        if (!recognized) {
-          showAlert(locale === 'en' ? 'No speech recognized.' : '未识别到文字，请重试。');
-          return;
-        }
-        mergeVoiceIntoPrompt(recognized);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        showAlert(msg || (locale === 'en' ? 'Transcription failed.' : '语音识别失败'));
-      } finally {
-        setMicVoiceBusy(false);
-      }
-    },
-    [locale, mergeVoiceIntoPrompt, projectId, showAlert, showConfirm],
-  );
-
   const {
-    isRecording: isMicVoiceRecording,
-    startReferenceRecording: startMicVoiceRecording,
-    stopReferenceRecording: stopMicVoiceRecording,
-  } = useReferenceMicRecording({
-    projectId,
-    onSaved: (url) => {
-      void runMicTranscribeOnUrl(url);
+    status: dictationStatus,
+    isActive: isDictationActive,
+    inputLevel: dictationInputLevel,
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+  } = useCloudRealtimeDictation({
+    getBaseText: () => {
+      const prev = (promptInputRef.current?.getPlainText() ?? localPromptRef.current ?? '').trimEnd();
+      return prev ? `${prev}\n` : '';
     },
-    onRecordingFailed: () => {
-      setMicVoiceBusy(false);
+    onLiveText: (full) => {
+      promptInputRef.current?.setPlainText(full);
+      setLocalPrompt(full);
+      lastSentPromptRef.current = full;
+      onPromptChange(full);
     },
-    showAlert,
-    strings: {
-      micPermissionDenied: refMicAt.micPermissionDenied,
-      micSaveFailed: refMicAt.micSaveFailed,
-      recordTooShort: refMicAt.recordTooShort,
-      recordModalTitle: wc.textVoiceModalTitle,
-      recordModalSubtitle: wc.textVoiceModalSubtitle,
-      recordModalStop: refMicAt.recordModalStop,
+    onError: (message) => {
+      showAlert(message);
     },
-    isDarkMode,
+    onMicDenied: () => {
+      showAlert(refMicAt.micPermissionDenied);
+    },
   });
 
-  const handleStopMicVoiceRecording = useCallback(() => {
-    setMicVoiceBusy(true);
-    stopMicVoiceRecording();
-  }, [stopMicVoiceRecording]);
+  const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
+  const micVoiceStopping = dictationStatus === 'stopping';
+  const micInputLocked = isDictationActive || micVoiceBusy;
 
-  const handlePromptVoiceInput = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      if (micVoiceBusy) return;
-      if (isMicVoiceRecording) {
-        handleStopMicVoiceRecording();
-        return;
-      }
-      void startMicVoiceRecording();
-    },
-    [isMicVoiceRecording, micVoiceBusy, startMicVoiceRecording, handleStopMicVoiceRecording],
-  );
+  const { pointerHandlers: promptMicPointerHandlers } = useDictationPushToTalk({
+    start: startRealtimeDictation,
+    stop: stopRealtimeDictation,
+    cancel: cancelRealtimeDictation,
+    status: dictationStatus,
+    disabled: micVoiceStopping,
+  });
 
   useEffect(() => {
-    const open = isMicVoiceRecording || micVoiceBusy;
+    const open = isDictationActive;
     (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
     return () => {
       (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
     };
-  }, [isMicVoiceRecording, micVoiceBusy]);
+  }, [isDictationActive]);
 
   const promptVoiceMicButton = (
     <button
       type="button"
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={handlePromptVoiceInput}
-      disabled={micVoiceBusy}
-      className={`nexflow-voice-mic-btn nodrag nopan ml-auto relative flex h-7 w-7 shrink-0 items-center justify-center rounded border transition-colors ${
-        micVoiceBusy
+      {...promptMicPointerHandlers}
+      disabled={micVoiceStopping}
+      style={
+        dictationStatus === 'listening' || dictationStatus === 'connecting'
+          ? micLevelCssVars(dictationInputLevel)
+          : undefined
+      }
+      className={`nexflow-voice-mic-btn nodrag nopan relative flex h-7 w-7 shrink-0 items-center justify-center rounded border select-none ${
+        dictationStatus === 'connecting'
+          ? 'connecting'
+          : dictationStatus === 'listening'
+            ? 'listening'
+            : ''
+      } ${
+        micVoiceStopping
           ? isDarkMode
-            ? 'cursor-wait border-violet-400/50 bg-violet-500/20 text-violet-200'
-            : 'cursor-wait border-violet-400/60 bg-violet-100 text-violet-700'
-          : isMicVoiceRecording
-            ? 'border-orange-400/70 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40'
-            : isDarkMode
-              ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-              : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
+            ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+            : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
+          : isDarkMode
+            ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+            : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
       }`}
       title={
         micVoiceBusy
           ? vt.voiceTranscribing
-          : isMicVoiceRecording
+          : isDictationActive
             ? wc.textVoiceInputStopButton
             : wc.textVoiceInputTitle
       }
       aria-label={
         micVoiceBusy
           ? vt.voiceTranscribing
-          : isMicVoiceRecording
+          : isDictationActive
             ? wc.textVoiceInputStopButton
             : wc.textVoiceInputTitle
       }
     >
-      {micVoiceBusy || isMicVoiceRecording ? (
-        <Loader2
-          className={`relative h-3.5 w-3.5 animate-spin ${isMicVoiceRecording && !micVoiceBusy ? 'text-orange-200' : ''}`}
-          strokeWidth={2.25}
-        />
-      ) : (
-        <Mic className="relative h-3.5 w-3.5" strokeWidth={2.25} />
-      )}
+      <VoiceMicGlyph
+        busy={micVoiceBusy}
+        active={dictationStatus === 'listening'}
+        level={dictationInputLevel}
+      />
+    </button>
+  );
+
+  /** HeyGem 台词框：云端实时听写（PTT） */
+  const {
+    status: heyGemDictationStatus,
+    isActive: isHeyGemDictationActive,
+    inputLevel: heyGemDictationInputLevel,
+    start: startHeyGemRealtimeDictation,
+    stop: stopHeyGemRealtimeDictation,
+    cancel: cancelHeyGemRealtimeDictation,
+  } = useCloudRealtimeDictation({
+    getBaseText: () => {
+      const prev = (localHeyGemScriptRef.current || '').trimEnd();
+      return prev ? `${prev}\n` : '';
+    },
+    onLiveText: (full) => {
+      const clipped = String(full || '').slice(0, HEYGEM_SCRIPT_MAX);
+      setLocalHeyGemScript(clipped);
+      onHeyGemScriptChange?.(clipped);
+    },
+    onError: (message) => {
+      showAlert(message);
+    },
+    onMicDenied: () => {
+      showAlert(refMicAt.micPermissionDenied);
+    },
+  });
+
+  const heyGemMicVoiceBusy =
+    heyGemDictationStatus === 'connecting' || heyGemDictationStatus === 'stopping';
+  const heyGemMicVoiceStopping = heyGemDictationStatus === 'stopping';
+
+  const { pointerHandlers: heyGemScriptMicPointerHandlers } = useDictationPushToTalk({
+    start: startHeyGemRealtimeDictation,
+    stop: stopHeyGemRealtimeDictation,
+    cancel: cancelHeyGemRealtimeDictation,
+    status: heyGemDictationStatus,
+    disabled: heyGemMicVoiceStopping,
+  });
+
+  const heyGemScriptVoiceMicButton = (
+    <button
+      type="button"
+      {...heyGemScriptMicPointerHandlers}
+      disabled={heyGemMicVoiceStopping}
+      style={
+        heyGemDictationStatus === 'listening' || heyGemDictationStatus === 'connecting'
+          ? micLevelCssVars(heyGemDictationInputLevel)
+          : undefined
+      }
+      className={`nexflow-voice-mic-btn nodrag nopan relative flex h-7 w-7 shrink-0 items-center justify-center rounded border select-none ${
+        heyGemDictationStatus === 'connecting'
+          ? 'connecting'
+          : heyGemDictationStatus === 'listening'
+            ? 'listening'
+            : ''
+      } ${
+        heyGemMicVoiceStopping
+          ? isDarkMode
+            ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+            : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
+          : isDarkMode
+            ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+            : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
+      }`}
+      title={
+        heyGemMicVoiceBusy
+          ? vt.voiceTranscribing
+          : isHeyGemDictationActive
+            ? wc.textVoiceInputStopButton
+            : wc.textVoiceInputTitle
+      }
+      aria-label={
+        heyGemMicVoiceBusy
+          ? vt.voiceTranscribing
+          : isHeyGemDictationActive
+            ? wc.textVoiceInputStopButton
+            : wc.textVoiceInputTitle
+      }
+    >
+      <VoiceMicGlyph
+        busy={heyGemMicVoiceBusy}
+        active={heyGemDictationStatus === 'listening'}
+        level={heyGemDictationInputLevel}
+      />
     </button>
   );
 
@@ -670,6 +783,181 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const effectiveVideoModel = (
     heyGemStandalone ? 'hey-gem' : wanAnimateStandalone ? 'wan-animate' : model
   ) as VideoInputPanelProps['model'];
+
+  const heyGemRefVideoReady = !!(referenceVideoUrl || '').trim();
+  const heyGemDriveAudioReady = !!(inputAudioUrl || '').trim();
+  const heyGemEffectiveTtsModel =
+    (heyGemTtsModel || DOUBAO_SEED_AUDIO_MODEL_ID).trim() || DOUBAO_SEED_AUDIO_MODEL_ID;
+
+  const applyHeyGemReferenceVideo = useCallback(
+    (url: string) => {
+      onReferenceVideoUrlChange?.(String(url || '').trim());
+    },
+    [onReferenceVideoUrlChange],
+  );
+
+  const handleHeyGemUploadVideo = useCallback(async () => {
+    if (!window.electronAPI?.showOpenVideoDialog) {
+      showAlert(vt.heyGemNeedRefVideo);
+      return;
+    }
+    const res = await window.electronAPI.showOpenVideoDialog();
+    if (!res.success || !res.filePath) return;
+    applyHeyGemReferenceVideo(pathToLocalResourceUrl(res.filePath));
+  }, [applyHeyGemReferenceVideo, showAlert, vt.heyGemNeedRefVideo]);
+
+  const handleHeyGemPickFromCanvas = useCallback(async () => {
+    if (!onPickReferenceVideoFromCanvas) return;
+    const url = await onPickReferenceVideoFromCanvas();
+    if (url) applyHeyGemReferenceVideo(url);
+  }, [applyHeyGemReferenceVideo, onPickReferenceVideoFromCanvas]);
+
+  const handleHeyGemOpenLibrary = useCallback(async () => {
+    openAssetLibrary('digitalHuman');
+    const picked = await beginDigitalHumanLibraryPick();
+    if (!picked?.videoUrl) return;
+    applyHeyGemReferenceVideo(picked.videoUrl);
+    if (picked.audioUrl) onInputAudioUrlChange?.(picked.audioUrl);
+  }, [applyHeyGemReferenceVideo, onInputAudioUrlChange]);
+
+  const handleHeyGemUploadDriveAudio = useCallback(async () => {
+    if (!window.electronAPI?.showOpenAudioDialog) return;
+    const res = await window.electronAPI.showOpenAudioDialog();
+    if (!res.success || !res.filePath) return;
+    onInputAudioUrlChange?.(pathToLocalResourceUrl(res.filePath));
+  }, [onInputAudioUrlChange]);
+
+  const { execute: executeHeyGemTts } = useAI({
+    nodeId: `${nodeId}__heygem_tts`,
+    modelId: 'audio',
+    onComplete: (result) => {
+      setHeyGemTtsBusy(false);
+      let audioUrl = (result?.audioUrl || result?.url || '').trim();
+      const localPath = (result?.localPath || '').trim();
+      if (localPath && !audioUrl.startsWith('http')) {
+        audioUrl = pathToLocalResourceUrl(localPath);
+      } else if (localPath && !audioUrl) {
+        audioUrl = pathToLocalResourceUrl(localPath);
+      }
+      if (!audioUrl) {
+        heyGemTtsWaiterRef.current?.reject(new Error(vt.heyGemDubFailed));
+        heyGemTtsWaiterRef.current = null;
+        showAlert(vt.heyGemDubFailed);
+        return;
+      }
+      onInputAudioUrlChange?.(audioUrl);
+      heyGemTtsWaiterRef.current?.resolve(audioUrl);
+      heyGemTtsWaiterRef.current = null;
+    },
+    onError: (error) => {
+      setHeyGemTtsBusy(false);
+      const msg = error || vt.heyGemDubFailed;
+      heyGemTtsWaiterRef.current?.reject(new Error(msg));
+      heyGemTtsWaiterRef.current = null;
+      showAlert(msg);
+    },
+  });
+
+  const runHeyGemTts = useCallback(async (): Promise<string> => {
+    const script = localHeyGemScript.trim();
+    if (!script) {
+      showAlert(vt.heyGemNeedScript);
+      throw new Error(vt.heyGemNeedScript);
+    }
+    if (!heyGemRefVideoReady && !String(heyGemCloneAudioUrl || '').trim()) {
+      // Index-TTS 必须有参考音；无视频也无克隆音时无法配音
+      if (heyGemEffectiveTtsModel === 'index-tts2') {
+        showAlert(vt.heyGemNeedCloneAudio);
+        throw new Error(vt.heyGemNeedCloneAudio);
+      }
+    }
+    onHeyGemScriptChange?.(script);
+    setHeyGemTtsBusy(true);
+    try {
+      let refUrl = String(heyGemCloneAudioUrl || '').trim();
+      if (!refUrl && heyGemRefVideoReady && window.electronAPI?.extractAudioFromVideo) {
+        try {
+          const extracted = await window.electronAPI.extractAudioFromVideo(
+            projectId || undefined,
+            String(referenceVideoUrl || '').trim(),
+          );
+          refUrl = String(extracted?.audioUrl || '').trim();
+          if (refUrl) onHeyGemCloneAudioUrlChange?.(refUrl);
+        } catch (e) {
+          console.warn('[VideoInputPanel] HeyGem 从参考视频抽音失败', e);
+        }
+      }
+      if (heyGemEffectiveTtsModel === 'index-tts2' && !refUrl) {
+        setHeyGemTtsBusy(false);
+        showAlert(vt.heyGemNeedCloneAudio);
+        throw new Error(vt.heyGemNeedCloneAudio);
+      }
+      const requestParams: Record<string, unknown> = {
+        model: heyGemEffectiveTtsModel,
+        text: script,
+        enable_base64_output: false,
+        english_normalization: false,
+      };
+      if (refUrl) {
+        let normalized = refUrl;
+        if (normalized.startsWith('local-resource://') || normalized.startsWith('file://')) {
+          normalized = normalized
+            .replace(/%5C/gi, '/')
+            .replace(/^local-resource:\/\/+/, 'local-resource://')
+            .replace(/^file:\/\/+/, 'file://');
+        }
+        requestParams.referenceAudioUrl = normalized;
+      }
+      if (isDoubaoSeedAudioModel(heyGemEffectiveTtsModel)) {
+        requestParams.model = DOUBAO_SEED_AUDIO_MODEL_ID;
+        requestParams.speechRate = 0;
+        requestParams.loudnessRate = 0;
+        requestParams.pitch = 0;
+        requestParams.doubaoFormat = 'mp3';
+        requestParams.doubaoSampleRate = '24000';
+      }
+      if (projectId) requestParams.projectId = projectId;
+
+      return await new Promise<string>((resolve, reject) => {
+        heyGemTtsWaiterRef.current = { resolve, reject };
+        void executeHeyGemTts(requestParams).catch((e) => {
+          setHeyGemTtsBusy(false);
+          const err = e instanceof Error ? e : new Error(String(e));
+          heyGemTtsWaiterRef.current?.reject(err);
+          heyGemTtsWaiterRef.current = null;
+          showAlert(err.message || vt.heyGemDubFailed);
+        });
+      });
+    } catch (e) {
+      setHeyGemTtsBusy(false);
+      console.error('[VideoInputPanel] HeyGem 一键配音失败', e);
+      // 校验失败 / onError 已弹窗，此处只保证 Promise 失败并重置 busy
+      throw e instanceof Error ? e : new Error(vt.heyGemDubFailed);
+    }
+  }, [
+    localHeyGemScript,
+    heyGemRefVideoReady,
+    heyGemCloneAudioUrl,
+    heyGemEffectiveTtsModel,
+    onHeyGemScriptChange,
+    onHeyGemCloneAudioUrlChange,
+    referenceVideoUrl,
+    projectId,
+    executeHeyGemTts,
+    showAlert,
+    vt.heyGemNeedScript,
+    vt.heyGemNeedCloneAudio,
+    vt.heyGemDubFailed,
+  ]);
+
+  const handleHeyGemOneClickDub = useCallback(async () => {
+    try {
+      await runHeyGemTts();
+    } catch {
+      /* alerts already shown */
+    }
+  }, [runHeyGemTts]);
+
   const isSeedanceFastModel = model === 'seedance-2.0-fast';
   const isSeedanceMiniModel = model === 'seedance-2.0-mini';
   const isSeedanceModel = isSeedanceFastModel || isSeedanceMiniModel;
@@ -691,11 +979,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     mentionCandidates,
     onMentionKeyDown,
     onMentionInputCheck,
+    onMentionCompositionChange,
   } = usePromptAtMention({
     nodeId,
     value: localPrompt,
     richEditorRef: promptInputRef,
-    enabled: !micVoiceBusy,
+    enabled: !micInputLocked,
     composing: promptComposing,
     orderedInputImages,
     locale,
@@ -754,20 +1043,23 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   };
 
   const renderPromptRichField = (opts: { className: string; placeholder: string }) => (
-    <>
+    <div className={`relative min-w-0 ${opts.className}`}>
       <PromptRichInput
         ref={promptInputRef}
         value={localPrompt}
         candidates={mentionCandidates}
-        readOnly={micVoiceBusy}
-        disabled={micVoiceBusy}
+        readOnly={micInputLocked}
+        disabled={micInputLocked}
         isDarkMode={isDarkMode}
         placeholder={opts.placeholder}
         onFocus={() => {
-          if (micVoiceBusy) return;
+          if (micInputLocked) return;
           promptInputFocusedRef.current = true;
         }}
-        onCompositionChange={setPromptComposing}
+        onCompositionChange={(next) => {
+          onMentionCompositionChange(next);
+          setPromptComposing(next);
+        }}
         onBlur={() => {
           promptInputFocusedRef.current = false;
           if (promptDebounceRef.current) {
@@ -782,9 +1074,13 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           }
         }}
         onKeyDown={onMentionKeyDown}
+        onSubmit={() => {
+          if (micInputLocked || isRunDisabled) return;
+          void handleExecute();
+        }}
         onInputCheck={onMentionInputCheck}
         onChange={(v) => {
-          if (micVoiceBusy) return;
+          if (micInputLocked) return;
           setLocalPrompt(v);
           if (promptDebounceRef.current) clearTimeout(promptDebounceRef.current);
           promptDebounceRef.current = setTimeout(() => {
@@ -796,12 +1092,15 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         onRefPillHover={(match) => {
           setHoveredRefFromPillIndex(resolveRefPillToOrderedIndex(match, latestOrderedImagesRef.current));
         }}
-        className={`w-full resize-none bg-transparent px-0 py-1 custom-scrollbar ${opts.className} ${
-          micVoiceBusy ? 'opacity-45 cursor-not-allowed' : ''
+        className={`w-full h-full resize-none bg-transparent px-0 py-1 pr-9 pt-8 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden ${
+          micInputLocked ? 'opacity-45 cursor-not-allowed' : ''
         }`}
       />
+      <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+        {promptVoiceMicButton}
+      </div>
       <AtMentionMenu {...mentionMenuProps} />
-    </>
+    </div>
   );
 
   /** LTX2.3 高动态已下架 1920，旧节点数据归一为 1280 */
@@ -1454,7 +1753,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       // 处理 ERROR 状态：停止进度条并显示错误
       if (packet.status === 'ERROR') {
         const errorMessage = payload.error || '视频生成失败';
-        if ((payload as { balanceInsufficient?: boolean }).balanceInsufficient === true) {
+        // HeyGem：由 VideoNode 统一 DarkAlert，避免与内联 errorMessage 弹窗重复
+        if (
+          !isHeyGemModel &&
+          (payload as { balanceInsufficient?: boolean }).balanceInsufficient === true
+        ) {
           showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
         }
         console.error('[VideoInputPanel] 视频生成错误:', errorMessage);
@@ -1686,12 +1989,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       
       console.error('视频生成失败:', errorMessage, '原始错误对象:', error);
       
-      // 检测余额不足错误
+      // 检测余额不足错误（HeyGem 由 VideoNode 统一弹窗）
       const isQuotaError = errorMessage.includes('quota is not enough') || 
                           errorMessage.includes('remain quota') ||
                           errorMessage.includes('余额不足');
       
-      if (isQuotaError) {
+      if (isQuotaError && !isHeyGemModel) {
         showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
       }
       
@@ -1783,6 +2086,24 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     }
 
     try {
+      // HeyGem：校验 + 有台词时先一键 TTS，再用驱动音频生成
+      let heyGemDriveAudio = (inputAudioUrl || '').trim();
+      if (isHeyGemModel) {
+        if (!(referenceVideoUrl || '').trim()) {
+          showAlert(vt.heyGemNeedRefVideo);
+          onProgressChange?.(0);
+          return;
+        }
+        if (!heyGemDriveAudio && !localHeyGemScript.trim()) {
+          showAlert(vt.heyGemNeedScriptOrAudio);
+          onProgressChange?.(0);
+          return;
+        }
+        if (localHeyGemScript.trim()) {
+          heyGemDriveAudio = await runHeyGemTts();
+        }
+      }
+
       // 前端只负责"传地址"，不做任何处理
       // 本地图片路径（local-resource:// 或 file://）直接发送给后端
       // 由后端的 VideoProvider.ts 接收到地址后，触发 uploadImageToOSS 方法进行转运
@@ -1858,7 +2179,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
       if (isHeyGemModel) {
         payload.referenceVideoUrl = (referenceVideoUrl || '').trim();
-        payload.inputAudioUrl = (inputAudioUrl || '').trim();
+        payload.inputAudioUrl = heyGemDriveAudio;
+        if (localHeyGemScript.trim()) {
+          onHeyGemScriptChange?.(localHeyGemScript.trim());
+        }
       }
 
       if (isSeedanceModel) {
@@ -1982,7 +2306,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         onErrorTask(error.message || '视频生成失败，请检查提示词或稍后重试');
       }
     }
-  }, [flushPromptSync, progress, aiStatus, localPrompt, model, effectiveVideoModel, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isHeyGemModel, isSeedanceModel, isSeedanceMiniModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, isLtx23HdrMultiModel, isLtx23MsrAv, isLtx23MsrStoryboardUi, hdrBackground, storyboardImages, inputAudioUrl, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, durationLtx23HdrMulti, resolutionLtx23HdrMulti, isRhartV31FastModel, isRhartV31FastSEModel, isRhartV31ProSEModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, onProgressChange, onProgressMessageChange]);
+  }, [flushPromptSync, progress, aiStatus, localPrompt, model, effectiveVideoModel, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isHeyGemModel, isSeedanceModel, isSeedanceMiniModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, isLtx23HdrMultiModel, isLtx23MsrAv, isLtx23MsrStoryboardUi, hdrBackground, storyboardImages, inputAudioUrl, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, durationLtx23HdrMulti, resolutionLtx23HdrMulti, isRhartV31FastModel, isRhartV31FastSEModel, isRhartV31ProSEModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, vt.heyGemNeedRefVideo, vt.heyGemNeedScriptOrAudio, onProgressChange, onProgressMessageChange, runHeyGemTts, localHeyGemScript, onHeyGemScriptChange]);
 
   // 清理超时定时器
   useEffect(() => {
@@ -2008,12 +2332,14 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     (isWanAnimateModel &&
       (!(referenceVideoUrl || '').trim() || orderedInputImages.length === 0)) ||
     (isHeyGemModel &&
-      (!(referenceVideoUrl || '').trim() || !(inputAudioUrl || '').trim())) ||
+      (!(referenceVideoUrl || '').trim() ||
+        (!(inputAudioUrl || '').trim() && !localHeyGemScript.trim()))) ||
+    (isHeyGemModel && heyGemTtsBusy) ||
     (isLtx23LipsyncModel && (!inputImages || inputImages.length === 0)) ||
     (isLtx23LipsyncModel && !(inputAudioUrl || '').trim()) ||
     (isLtx23MsrAv && !(inputAudioUrl || '').trim());
 
-  const isRunBusy = isGenerating || isAiBusy;
+  const isRunBusy = isGenerating || isAiBusy || (isHeyGemModel && heyGemTtsBusy);
 
   // 调试日志：确认每个模块的状态是独立的
   useEffect(() => {
@@ -2021,25 +2347,825 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   }, [nodeId, aiStatus, isRunDisabled]);
 
   return (
-    <div className="relative flex w-full flex-col nodrag nopan">
-      {/* 无框贴水：弱边框 + 轻玻璃，与 LLM/图像底栏同系，不单独「框」在画布上 */}
+    <div className={`relative flex w-full flex-col nodrag nopan ${embedInNode ? 'h-full' : ''}`}>
+      {/* 无框贴水：弱边框 + 轻玻璃；嵌进节点主框时去外框，由节点壳承担 */}
       <div
         className={[
-          'relative flex flex-col overflow-hidden rounded-[18px] transition-colors',
-          isDarkMode
-            ? 'border border-white/[0.08] bg-[rgba(22,22,26,0.55)] shadow-[0_8px_28px_rgba(0,0,0,0.22)] backdrop-blur-xl'
-            : 'border border-black/[0.06] bg-white/70 shadow-[0_8px_24px_rgba(0,0,0,0.06)] backdrop-blur-xl',
-          'px-3.5 pt-2.5 pb-2',
+          'relative flex flex-col transition-colors',
+          embedInNode
+            ? 'h-full min-h-0 overflow-auto rounded-2xl border-0 bg-transparent shadow-none'
+            : [
+                'overflow-hidden rounded-[18px] border',
+                isDarkMode
+                  ? 'nexflow-glass-panel border-white/[0.14] shadow-[0_8px_28px_rgba(0,0,0,0.28)]'
+                  : 'apple-panel-light border-black/[0.08] shadow-[0_8px_28px_rgba(0,0,0,0.06)]',
+              ].join(' '),
+          isHeyGemModel ? 'px-3 pt-2 pb-2' : 'px-3.5 pt-2.5 pb-2',
         ].join(' ')}
       >
-      {/* 顶部控制栏 */}
-      <div
-        className={`flex items-center justify-between px-0 py-1 flex-shrink-0 gap-2 ${
-          isDarkMode ? 'border-b border-white/[0.06] pb-2 mb-2' : 'border-b border-black/[0.05] pb-2 mb-2'
-        }`}
-      >
-        {/* 左侧：参数 */}
-        <div className="flex items-center gap-2 flex-1 min-w-0">
+      {/* 输入区：HeyGem 一体化 / WanAnimate 槽位 / 其余模式见下方 */}
+      <div className="pt-1 pb-0 flex-1 min-h-0 flex flex-col">
+        {isHeyGemModel ? (
+          <div className="flex flex-col gap-3 flex-1 min-h-0 nodrag nopan">
+            <div
+              className={`grid gap-2 flex-1 min-h-0 ${
+                embedInNode ? 'grid-cols-2 h-full divide-x divide-white/[0.06]' : 'grid-cols-1 sm:grid-cols-2'
+              }`}
+            >
+              {/* ① 参考视频 */}
+              <div
+                className={`rounded-2xl p-3 flex flex-col gap-2 min-h-0 h-full w-full border-0 ${
+                  isDarkMode ? 'bg-transparent' : 'bg-transparent'
+                }`}
+              >
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-[12px] font-semibold text-white shrink-0">
+                    1
+                  </span>
+                  <span className={`text-sm font-medium ${isDarkMode ? 'text-white/90' : 'text-gray-900'}`}>
+                    {vt.heyGemStepRefVideo}
+                  </span>
+                </div>
+                <p className={`text-[11px] leading-snug shrink-0 ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
+                  {vt.heyGemStepRefVideoHint}
+                </p>
+                {heyGemRefVideoReady ? (
+                  <div
+                    className={`relative w-full flex-1 min-h-0 rounded-xl overflow-hidden flex items-center justify-center ${
+                      isDarkMode ? 'bg-black/40' : 'bg-black/5'
+                    }`}
+                    onMouseEnter={() => {
+                      const v = heyGemPreviewVideoRef.current;
+                      if (!v) return;
+                      v.loop = true;
+                      void v.play().catch(() => undefined);
+                    }}
+                    onMouseLeave={() => {
+                      const v = heyGemPreviewVideoRef.current;
+                      if (!v) return;
+                      v.pause();
+                      try {
+                        v.currentTime = 0;
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                  >
+                    <video
+                      ref={heyGemPreviewVideoRef}
+                      src={toElectronVideoElementSrc(String(referenceVideoUrl)) || String(referenceVideoUrl)}
+                      className="max-h-full max-w-full w-full h-full object-contain rounded-xl"
+                      muted={heyGemPreviewMuted}
+                      playsInline
+                      preload="metadata"
+                    />
+                    <button
+                      type="button"
+                      className="nodrag nopan absolute top-2 left-2 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white/90 ring-1 ring-white/20 hover:bg-black/85"
+                      title={heyGemPreviewMuted ? (locale === 'en' ? 'Unmute' : '开声') : locale === 'en' ? 'Mute' : '静音'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setHeyGemPreviewMuted((m) => !m);
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      {heyGemPreviewMuted ? (
+                        <VolumeX className="h-3.5 w-3.5" />
+                      ) : (
+                        <Volume2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="nodrag nopan absolute top-2 right-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80"
+                      title={vt.heyGemClearVideo}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        applyHeyGemReferenceVideo('');
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-1 min-h-0 flex-wrap items-center justify-center content-center gap-1.5">
+                    {(
+                      [
+                        {
+                          key: 'upload',
+                          label: vt.heyGemClickUploadRefVideo,
+                          onClick: () => void handleHeyGemUploadVideo(),
+                          disabled: false,
+                        },
+                        {
+                          key: 'library',
+                          label: vt.heyGemPickFromLibrary,
+                          onClick: () => void handleHeyGemOpenLibrary(),
+                          disabled: false,
+                        },
+                        {
+                          key: 'canvas',
+                          label: vt.heyGemPickFromCanvas,
+                          onClick: () => void handleHeyGemPickFromCanvas(),
+                          disabled: !onPickReferenceVideoFromCanvas,
+                        },
+                      ] as const
+                    ).map(({ key, label, onClick, disabled }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={onClick}
+                        disabled={disabled}
+                        title={key === 'upload' ? vt.heyGemUploadFormatsHint : label}
+                        className={`text-xs flex items-center gap-1.5 shrink-0 disabled:opacity-40 disabled:pointer-events-none ${assetLibBtnPrimary(
+                          isDarkMode,
+                          '!py-0.5 !px-2',
+                          'control',
+                        )}`}
+                      >
+                        <span
+                          className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-dashed ${
+                            isDarkMode ? 'border-white/35 text-white/90' : 'border-white/55 text-white'
+                          }`}
+                        >
+                          <Plus className="w-3 h-3" strokeWidth={2.5} />
+                        </span>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ② 台词与声音 */}
+              <div
+                className={`rounded-2xl p-3 flex flex-col gap-2 min-h-0 border-0 ${
+                  isDarkMode ? 'bg-transparent' : 'bg-transparent'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-[12px] font-semibold text-white shrink-0">
+                    2
+                  </span>
+                  <span className={`text-sm font-medium ${isDarkMode ? 'text-white/90' : 'text-gray-900'}`}>
+                    {vt.heyGemStepScriptVoice}
+                  </span>
+                </div>
+                <label className={`text-[11px] font-medium ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+                  {vt.heyGemScriptLabel}
+                </label>
+                <div className="relative flex-1 min-h-[120px]">
+                  <textarea
+                    value={localHeyGemScript}
+                    maxLength={HEYGEM_SCRIPT_MAX}
+                    onFocus={() => {
+                      heyGemScriptFocusedRef.current = true;
+                    }}
+                    onBlur={() => {
+                      heyGemScriptFocusedRef.current = false;
+                      onHeyGemScriptChange?.(localHeyGemScript);
+                    }}
+                    onChange={(e) => setLocalHeyGemScript(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' || e.shiftKey) return;
+                      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                      if (isRunDisabled) return;
+                      e.preventDefault();
+                      void handleExecute();
+                    }}
+                    placeholder={vt.heyGemScriptPlaceholder}
+                    className={`absolute inset-0 w-full h-full resize-none rounded-xl px-3 py-2.5 pr-10 pb-7 text-xs outline-none ${
+                      isDarkMode
+                        ? 'bg-black/40 text-white border-0 placeholder:text-white/30'
+                        : 'bg-white text-gray-900 border-0 placeholder:text-gray-400'
+                    }`}
+                  />
+                  <div className="absolute top-1.5 right-1.5 z-10 pointer-events-auto">
+                    {heyGemScriptVoiceMicButton}
+                  </div>
+                  <span
+                    className={`pointer-events-none absolute bottom-2 right-3 text-[10px] tabular-nums ${
+                      isDarkMode ? 'text-white/35' : 'text-gray-400'
+                    }`}
+                  >
+                    {vt.heyGemScriptCharCount(localHeyGemScript.length, HEYGEM_SCRIPT_MAX)}
+                  </span>
+                </div>
+                <label className={`text-[11px] font-medium ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+                  {vt.heyGemVoiceModelLabel}
+                </label>
+                <div className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 bg-black border-0">
+                  <AudioLines className="h-4 w-4 text-emerald-500 shrink-0" />
+                  <select
+                    value={heyGemEffectiveTtsModel}
+                    onChange={(e) => onHeyGemTtsModelChange?.(e.target.value)}
+                    className="flex-1 min-w-0 bg-black text-white text-xs outline-none"
+                    style={{ colorScheme: 'dark' }}
+                  >
+                    {HEYGEM_TTS_MODELS.map((m) => (
+                      <option key={m.value} value={m.value} style={{ backgroundColor: '#000', color: '#fff' }}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
+                  {vt.heyGemTtsModelHint}
+                </p>
+                {/* 底栏：上传驱动音频 + 元宝/数字人/运行（参考音默认从参考视频抽音） */}
+                <div className="mt-auto flex flex-wrap items-center justify-between gap-x-3 gap-y-2 pt-1">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleHeyGemUploadDriveAudio()}
+                      className={`text-[11px] underline-offset-2 hover:underline ${
+                        isDarkMode ? 'text-white/45 hover:text-white/70' : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >
+                      {vt.heyGemUploadDriveAudio}
+                      {heyGemDriveAudioReady ? ` · ${vt.heyGemSlotConnected}` : ''}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0 ml-auto">
+                    {videoPriceLabel.ok ? (
+                      <span
+                        className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+                          isDarkMode
+                            ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                            : 'text-amber-700 bg-amber-50 border-amber-200'
+                        }`}
+                        title={vt.priceTooltip}
+                      >
+                        {videoPriceLabel.value}
+                        {locale === 'en' ? ' ' : ''}
+                        {vt.creditsSuffix}
+                      </span>
+                    ) : (
+                      <span
+                        className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+                          isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+                        }`}
+                        title={vt.noPricingTableTitle}
+                      >
+                        {vt.noPricingYet}
+                      </span>
+                    )}
+                    <span
+                      className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 border ${
+                        isDarkMode
+                          ? 'text-emerald-200/90 bg-emerald-500/20 border-emerald-400/30'
+                          : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                      }`}
+                      title={modeLabel}
+                    >
+                      {modeLabel}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleExecute()}
+                      disabled={isRunDisabled}
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+                        isRunDisabled
+                          ? isDarkMode
+                            ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                            : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                          : isRunBusy
+                            ? isDarkMode
+                              ? 'bg-white/70 text-black cursor-not-allowed'
+                              : 'bg-gray-700 text-white cursor-not-allowed'
+                            : isDarkMode
+                              ? 'bg-white text-black hover:bg-white/90'
+                              : 'bg-gray-900 text-white hover:bg-gray-800'
+                      }`}
+                      title={heyGemTtsBusy ? vt.heyGemDubbing : isRunBusy ? vt.heyGemGenerating : modeLabel}
+                      aria-label={modeLabel}
+                    >
+                      {isRunBusy ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : isWanAnimateModel ? (
+          <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
+            {[
+              {
+                key: 'video',
+                label: vt.heyGemSlotVideoLabel,
+                connected: !!(referenceVideoUrl || '').trim(),
+                Icon: Video,
+              },
+              {
+                key: 'refImage',
+                label: vt.wanAnimateSlotRefImageLabel,
+                connected: orderedInputImages.length > 0,
+                Icon: ImageIcon,
+              },
+            ].map(({ key, label, connected, Icon }) => (
+              <div
+                key={key}
+                className={`flex flex-col items-center justify-center gap-1.5 min-h-[96px] rounded-xl border transition-colors ${
+                  connected
+                    ? isDarkMode
+                      ? 'border-emerald-500/45 bg-emerald-500/10'
+                      : 'border-emerald-400/70 bg-emerald-50/90'
+                    : isDarkMode
+                      ? 'border-white/12 bg-black/30'
+                      : 'border-gray-300/80 bg-gray-50/90'
+                }`}
+              >
+                <div
+                  className={`flex h-9 w-9 items-center justify-center rounded-full ${
+                    connected
+                      ? isDarkMode
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-emerald-100 text-emerald-600'
+                      : isDarkMode
+                        ? 'bg-white/5 text-white/30'
+                        : 'bg-gray-200/80 text-gray-400'
+                  }`}
+                >
+                  <Icon className="h-4 w-4" strokeWidth={2} />
+                </div>
+                <span
+                  className={`text-xs font-medium ${
+                    isDarkMode ? 'text-white/85' : 'text-gray-800'
+                  }`}
+                >
+                  {label}
+                </span>
+                <span
+                  className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
+                    connected
+                      ? isDarkMode
+                        ? 'text-emerald-400'
+                        : 'text-emerald-600'
+                      : isDarkMode
+                        ? 'text-white/40'
+                        : 'text-gray-400'
+                  }`}
+                >
+                  {connected ? (
+                    <>
+                      <Check className="h-3 w-3" strokeWidth={2.5} />
+                      {vt.heyGemSlotConnected}
+                    </>
+                  ) : (
+                    vt.heyGemSlotPending
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : isLtx23MsrStoryboardUi ? (
+          <div className="grid grid-cols-[minmax(0,1fr)_240px] gap-x-3 gap-y-1">
+            <div className="h-[30px] flex items-center gap-2 min-w-0">
+              <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
+                {vt.promptVideoDesc}
+              </label>
+              {isLtx23MsrAv && (
+                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
+                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
+                </span>
+              )}
+            </div>
+            <div className={`h-[30px] flex items-center justify-between gap-1 min-w-0 text-xs font-medium ${
+              isDarkMode ? 'text-white/80' : 'text-gray-900'
+            }`}>
+              <span>背景 / 分镜</span>
+              <span
+                className={`text-[9px] font-semibold shrink-0 ${
+                  hdrRequiredSlotStatus.allRequiredOk
+                    ? isDarkMode
+                      ? 'text-emerald-400'
+                      : 'text-emerald-600'
+                    : isDarkMode
+                      ? 'text-rose-400'
+                      : 'text-rose-600'
+                }`}
+              >
+                {hdrRequiredSlotStatus.allRequiredOk
+                  ? '✓ 必填已齐'
+                  : `还差 ${hdrRequiredSlotStatus.missing.join('、')}`}
+              </span>
+            </div>
+            <div className="min-w-0">
+              {renderPromptRichField({
+                className: 'h-[112px]',
+                placeholder: vt.placeholderVideoPrompt,
+              })}
+            </div>
+            <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden flex flex-col nodrag nopan ${
+              isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
+            }`}>
+              <div className={`text-[9px] mb-1 shrink-0 leading-snug ${
+                isDarkMode ? 'text-white/45' : 'text-gray-500'
+              }`}>
+                带
+                <span className={`font-semibold ${isDarkMode ? 'text-rose-400/90' : 'text-rose-600'}`}>必填</span>
+                的槽位须上传；分镜3、4 选填；拖动互换；选中后按 Delete 断开连线
+              </div>
+              <div className="grid grid-cols-5 gap-0.5 items-start w-full shrink-0 nodrag nopan">
+                {/* 背景槽：9:16 竖版，下方留白 */}
+                <div
+                  className={`min-h-0 rounded transition-colors nodrag nopan ${
+                    dragOverBackground ? 'ring-1 ring-green-400/80' : ''
+                  }`}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (hdrDragSourceRef.current != null && hdrDragSourceRef.current !== 'background') {
+                      setDragOverBackground(true);
+                    }
+                  }}
+                  onDragLeave={() => setDragOverBackground(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleHdrDropOnBackground();
+                    finalizeThumbDrag(e);
+                  }}
+                >
+                  {hdrBackground ? (
+                    <button
+                      type="button"
+                      draggable
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onDragStart={(e) => handleHdrDragStart('background', e)}
+                      onDragEnd={(e) => finalizeThumbDrag(e)}
+                      className={`group relative w-full aspect-[9/16] rounded overflow-hidden border cursor-grab active:cursor-grabbing nodrag nopan ${
+                        isDraggingThumb && hdrDragSourceRef.current === 'background'
+                          ? 'border-dashed border-white/40 opacity-50'
+                          : selectedHdrSlotIndex === 0
+                            ? 'border-violet-400 ring-2 ring-violet-400/80'
+                            : 'border-amber-500/60 hover:border-amber-400'
+                      }`}
+                      title="背景：拖动互换；单击选中后 Delete 断开连线；双击移回分镜"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (thumbDragDidReorderRef.current) {
+                          thumbDragDidReorderRef.current = false;
+                          return;
+                        }
+                        setSelectedHdrSlotIndex(0);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        demoteBackgroundToStoryboard();
+                        setSelectedHdrSlotIndex(null);
+                      }}
+                    >
+                      <img src={hdrBackground} alt="背景" className="w-full h-full object-contain bg-black/20" draggable={false} />
+                      <div className={`absolute left-0.5 top-0.5 text-[7px] px-0.5 py-0 rounded font-semibold leading-tight ${
+                        isDarkMode ? 'bg-amber-500/80 text-amber-950' : 'bg-amber-200 text-amber-900'
+                      }`}>
+                        背景
+                      </div>
+                      <div className={`absolute right-0.5 top-0.5 text-[6px] px-0.5 rounded font-bold leading-tight ${
+                        isDarkMode ? 'bg-emerald-500/80 text-emerald-950' : 'bg-emerald-200 text-emerald-900'
+                      }`}>
+                        ✓
+                      </div>
+                    </button>
+                  ) : (
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      title="必填：请连线或拖入背景图"
+                      className={`w-full aspect-[9/16] rounded border border-dashed flex flex-col items-center justify-center gap-0.5 text-center px-0.5 ${
+                        dragOverBackground
+                          ? 'border-green-400 ring-2 ring-green-400/90 text-green-300'
+                          : isDarkMode
+                            ? 'border-rose-500/55 bg-rose-950/30 text-rose-200/90'
+                            : 'border-rose-400/80 bg-rose-50 text-rose-800'
+                      }`}
+                    >
+                      <span className={`text-[7px] font-bold leading-none ${
+                        isDarkMode ? 'text-rose-400' : 'text-rose-600'
+                      }`}>
+                        必填
+                      </span>
+                      <span className="font-semibold text-[8px] leading-tight">背景</span>
+                    </div>
+                  )}
+                </div>
+                {storyboardSlots.map((url, index) => {
+                  const trimmed = String(url || '').trim();
+                  const isRequiredSlot = index < LTX23_HDR_MIN_STORYBOARD;
+                  const isDragSource = isDraggingThumb && hdrDragSourceRef.current === index;
+                  const isDropTarget =
+                    isDraggingThumb &&
+                    dragOverIndex === index &&
+                    hdrDragSourceRef.current !== index &&
+                    (hdrDragSourceRef.current === 'background' || hdrDragSourceRef.current !== index);
+                  const isSelected = selectedHdrSlotIndex === index + 1;
+                  if (!trimmed) {
+                    return (
+                      <div
+                        key={`slot-empty-${index}`}
+                        role="button"
+                        tabIndex={0}
+                        title={
+                          isRequiredSlot
+                            ? `必填：请连线或拖入分镜 ${index + 1}`
+                            : `选填：分镜 ${index + 1}`
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedHdrSlotIndex(index + 1);
+                        }}
+                        onDragOver={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (hdrDragSourceRef.current == null) return;
+                          setDragOverIndex(index);
+                        }}
+                        onDragLeave={() => setDragOverIndex((prev) => (prev === index ? null : prev))}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleHdrDropOnStoryboard(index);
+                          finalizeThumbDrag(e);
+                        }}
+                        className={`w-full aspect-[9/16] rounded border border-dashed flex flex-col items-center justify-center gap-0.5 text-[8px] nodrag nopan ${
+                          isDropTarget
+                            ? 'border-green-400 ring-2 ring-green-400/90 text-green-300'
+                            : isSelected
+                              ? 'border-violet-400 ring-2 ring-violet-400/70'
+                              : isRequiredSlot
+                              ? isDarkMode
+                                ? 'border-rose-500/55 bg-rose-950/25 text-rose-200/85'
+                                : 'border-rose-400/75 bg-rose-50 text-rose-800'
+                              : isDarkMode
+                                ? 'border-white/15 text-white/28'
+                                : 'border-gray-300/80 text-gray-400'
+                        }`}
+                      >
+                        {isRequiredSlot ? (
+                          <>
+                            <span className={`text-[7px] font-bold leading-none ${
+                              isDarkMode ? 'text-rose-400' : 'text-rose-600'
+                            }`}>
+                              必填
+                            </span>
+                            <span className="font-semibold leading-tight">分镜{index + 1}</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="text-[7px] leading-none opacity-60">选填</span>
+                            <span>{index + 1}</span>
+                          </>
+                        )}
+                      </div>
+                    );
+                  }
+                  return (
+                    <button
+                      key={`slot-${index}`}
+                      type="button"
+                      draggable
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onDragStart={(e) => handleHdrDragStart(index, e)}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (hdrDragSourceRef.current == null) return;
+                        if (hdrDragSourceRef.current !== 'background' && hdrDragSourceRef.current === index) return;
+                        setDragOverIndex(index);
+                      }}
+                      onDragLeave={() => setDragOverIndex((prev) => (prev === index ? null : prev))}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleHdrDropOnStoryboard(index);
+                        finalizeThumbDrag(e);
+                      }}
+                      onDragEnd={(e) => finalizeThumbDrag(e)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (thumbDragDidReorderRef.current) {
+                          thumbDragDidReorderRef.current = false;
+                          return;
+                        }
+                        setSelectedHdrSlotIndex(index + 1);
+                      }}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        assignHdrBackground(trimmed);
+                        setSelectedHdrSlotIndex(0);
+                      }}
+                      className={`group relative w-full aspect-[9/16] rounded overflow-hidden border cursor-grab active:cursor-grabbing nodrag nopan ${
+                        isDropTarget
+                          ? 'border-green-400 ring-2 ring-green-400/90'
+                          : isSelected
+                            ? 'border-violet-400 ring-2 ring-violet-400/80'
+                          : isDragSource
+                            ? 'border-white/30 border-dashed opacity-40'
+                            : isRequiredSlot
+                              ? isDarkMode
+                                ? 'border-sky-500/50 hover:border-sky-400'
+                                : 'border-sky-400/70 hover:border-sky-500'
+                              : 'border-white/20 hover:border-green-500'
+                      }`}
+                      style={{
+                        boxShadow: isDropTarget || isSelected ? '0 0 0 1px rgba(167,139,250,0.45)' : undefined,
+                        zIndex: isDragSource || isDropTarget || isSelected ? 10 : 1,
+                      }}
+                      title={`分镜 ${index + 1}${isRequiredSlot ? '（必填）' : '（选填）'}：拖动互换；单击选中后 Delete 断开；双击设为背景`}
+                    >
+                      <img src={trimmed} alt={`分镜${index + 1}`} className="w-full h-full object-contain bg-black/20" draggable={false} />
+                      <div className={`absolute left-0.5 top-0.5 text-[7px] px-0.5 py-0 rounded font-semibold leading-tight ${
+                        isRequiredSlot
+                          ? isDarkMode
+                            ? 'bg-sky-500/85 text-sky-950'
+                            : 'bg-sky-200 text-sky-900'
+                          : isDarkMode
+                            ? 'bg-black/60 text-white/70'
+                            : 'bg-black/50 text-white/90'
+                      }`}>
+                        {isRequiredSlot ? `分镜${index + 1}` : index + 1}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (isImageToVideoMode || isLtx23LipsyncModel) && orderedInputImages.length > 0 ? (
+          <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-x-3 gap-y-1">
+            <div className="h-[30px] flex items-center gap-2 min-w-0">
+              <label
+                className={`text-xs font-medium shrink-0 ${
+                  isDarkMode ? 'text-white/80' : 'text-gray-900'
+                }`}
+              >
+                {isLtx23LipsyncModel ? vt.promptAction : vt.promptVideoDesc}
+              </label>
+              {isLtx23LipsyncModel && (
+                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
+                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
+                </span>
+              )}
+              {isSeedanceMiniModel && (
+                <span
+                  className={`text-xs shrink-0 ${
+                    inputAudioUrl
+                      ? isDarkMode
+                        ? 'text-green-400'
+                        : 'text-green-600'
+                      : isDarkMode
+                        ? 'text-white/45'
+                        : 'text-gray-500'
+                  }`}
+                >
+                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
+                </span>
+              )}
+            </div>
+            <div className={`h-[30px] flex items-center text-xs font-medium ${
+              isDarkMode ? 'text-white/80' : 'text-gray-900'
+            }`}>
+              {vt.refImageColumn}
+            </div>
+            <div className="min-w-0">
+              {renderSeedanceMentionThumbs()}
+              {renderPromptRichField({
+                className:
+                  isSeedanceModel && seedanceMentionIndices.length > 0 ? 'h-[88px]' : 'h-[112px]',
+                placeholder: isLtx23LipsyncModel ? vt.defaultLipsyncAction : vt.placeholderVideoPrompt,
+              })}
+            </div>
+            <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden ${
+              isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
+            }`}>
+              <div
+                className={`grid gap-1.5 h-full overflow-y-auto custom-scrollbar pr-0.5 ${
+                  orderedInputImages.length === 1
+                    ? 'grid-cols-1 grid-rows-1'
+                    : orderedInputImages.length === 2
+                      ? 'grid-cols-2 grid-rows-1'
+                      : 'grid-cols-3 content-start'
+                }`}
+              >
+                {orderedInputImages.map((url, index) => {
+                  const isDragSource = isDraggingThumb && dragImageIndexRef.current === index;
+                  const isDropTarget = isDraggingThumb && dragOverIndex === index && dragImageIndexRef.current !== index;
+                  const isPillHoverMatch = hoveredRefFromPillIndex === index;
+                  return (
+                  <button
+                    key={`${url}-${index}`}
+                    type="button"
+                    draggable
+                    onDragStart={(e) => handleThumbDragStart(index, e)}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (dragImageIndexRef.current == null || dragImageIndexRef.current === index) return;
+                      setDragOverIndex(index);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      handleThumbDrop(index);
+                      finalizeThumbDrag(e);
+                    }}
+                    onDragEnd={(e) => finalizeThumbDrag(e)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isDraggingThumb || thumbDragDidReorderRef.current) {
+                        thumbDragDidReorderRef.current = false;
+                        return;
+                      }
+                      appendRefImageMentionToPrompt(index + 1);
+                    }}
+                    className={`relative w-full overflow-visible ${
+                      orderedInputImages.length <= 2 ? 'h-full' : 'aspect-square'
+                    } rounded-md border transition-all cursor-grab active:cursor-grabbing ${
+                      isDropTarget
+                        ? 'border-green-400 ring-2 ring-green-400/90'
+                        : isDragSource
+                          ? 'border-white/30 border-dashed opacity-40'
+                          : 'border-white/20 hover:border-green-500'
+                    }`}
+                    style={{
+                      boxShadow: isDropTarget ? '0 0 0 1px rgba(74,222,128,0.45)' : undefined,
+                      zIndex: isDragSource || isDropTarget || isPillHoverMatch ? 10 : 1,
+                    }}
+                  >
+                    <RefImageHoverThumb
+                      url={url}
+                      alt={vt.refImageThumbAlt(index + 1)}
+                      title={
+                        isSeedanceModel
+                          ? vt.seedanceRefImageThumbTitle(index + 1)
+                          : vt.refImageThumbTitle(index + 1)
+                      }
+                      indexLabel={index + 1}
+                      objectFit="contain"
+                      className="h-full w-full overflow-visible rounded-md"
+                      previewDisabled={isDraggingThumb}
+                      emphasize={isPillHoverMatch}
+                      onRemove={() => {
+                        const removed = String(url || '').trim();
+                        const next = latestOrderedImagesRef.current.filter((_, i) => i !== index);
+                        latestOrderedImagesRef.current = next;
+                        setOrderedInputImages(next);
+                        onDisconnectHdrSlotImage?.(removed);
+                        onInputImagesOrderChange?.(next);
+                      }}
+                    />
+                  </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="mb-1 h-[30px] flex-shrink-0 flex items-center gap-2 min-w-0">
+              <label
+                className={`text-xs font-medium shrink-0 ${
+                  isDarkMode ? 'text-white/80' : 'text-gray-900'
+                }`}
+              >
+                {vt.promptVideoDesc}
+              </label>
+              {isSeedanceMiniModel && (
+                <span
+                  className={`text-xs shrink-0 ${
+                    inputAudioUrl
+                      ? isDarkMode
+                        ? 'text-green-400'
+                        : 'text-green-600'
+                      : isDarkMode
+                        ? 'text-white/45'
+                        : 'text-gray-500'
+                  }`}
+                >
+                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
+                </span>
+              )}
+            </div>
+            <div className="min-w-0">
+              {renderPromptRichField({
+                className: 'h-[112px]',
+                placeholder: vt.placeholderVideoPrompt,
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+{!isHeyGemModel && (
+      <>
+      {/* 底部工具条：与 ImageInputPanel 同构 */}
+      <div className="mt-1 flex items-center gap-1.5 flex-shrink-0 min-w-0">
+        {/* 左侧：参数（模型 / 比例 / 时长 / 分辨率等） */}
+        <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <span
             className={`text-xs ${
               isDarkMode ? 'text-white/70' : 'text-gray-700'
@@ -3012,606 +4138,77 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
 
         </div>
 
-        {/* 右侧：运行按钮（图生视频时显示最多 N 张，以及价格） */}
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <div className="flex flex-col items-end gap-1">
-            {isImageToVideoMode && imageCount > 0 && (
-              <span
-                className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                  isDarkMode ? 'text-white/80 bg-purple-500/20' : 'text-gray-700 bg-purple-100'
-                }`}
-                title={vt.refImagesTitle(imageCount, maxRefImagesVideo)}
-              >
-                {vt.refImagesBadge(imageCount, maxRefImagesVideo)}
-              </span>
-            )}
-            {videoPriceLabel.ok ? (
-              <span
-                className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                  isDarkMode ? 'text-yellow-200 bg-yellow-500/25' : 'text-yellow-700 bg-yellow-100'
-                }`}
-                title={vt.priceTooltip}
-              >
-                {videoPriceLabel.value}
-                {locale === 'en' ? ' ' : ''}
-                {vt.creditsSuffix}
-              </span>
-            ) : (
-              <span
-                className={`w-24 text-center text-xs font-medium px-2 py-1 rounded ${
-                  isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
-                }`}
-                title={vt.noPricingTableTitle}
-              >
-                {vt.noPricingYet}
-              </span>
-            )}
-          </div>
-
-          <button
-            onClick={handleExecute}
-            disabled={isRunDisabled}
-            className={`px-3 py-1 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all duration-200 ${
-              isRunDisabled
-                ? 'bg-gray-500/50 text-white/50 cursor-not-allowed'
-                : isRunBusy
-                  ? isImageToVideoMode
-                    ? 'bg-purple-500/70 text-white/80 cursor-not-allowed'
-                    : 'bg-blue-500/70 text-white/80 cursor-not-allowed'
-                  : isImageToVideoMode
-                    ? 'bg-purple-500 text-white hover:bg-purple-600 shadow-md shadow-purple-500/30'
-                    : 'bg-blue-500 text-white hover:bg-blue-600 shadow-md shadow-blue-500/30'
+        <div className="flex-1" />
+        {isImageToVideoMode && imageCount > 0 && (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+              isDarkMode ? 'text-white/50 bg-white/10' : 'text-gray-500 bg-gray-100'
             }`}
-            title={modeLabel}
+            title={vt.refImagesTitle(imageCount, maxRefImagesVideo)}
           >
-            {isRunBusy ? (
-              <>
-                <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                {modeLabel}
-              </>
-            ) : (
-              <>
-                <Play className="w-3 h-3" />
-                {modeLabel}
-              </>
-            )}
-          </button>
-        </div>
+            {vt.refImagesBadge(imageCount, maxRefImagesVideo)}
+          </span>
+        )}
+        {videoPriceLabel.ok ? (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+              isDarkMode
+                ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                : 'text-amber-700 bg-amber-50 border-amber-200'
+            }`}
+            title={vt.priceTooltip}
+          >
+            {videoPriceLabel.value}
+            {locale === 'en' ? ' ' : ''}
+            {vt.creditsSuffix}
+          </span>
+        ) : (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+              isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+            }`}
+            title={vt.noPricingTableTitle}
+          >
+            {vt.noPricingYet}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={handleExecute}
+          disabled={isRunDisabled}
+          className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+            isRunDisabled
+              ? isDarkMode
+                ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+              : isRunBusy
+                ? isImageToVideoMode
+                  ? 'bg-purple-500/70 text-white cursor-not-allowed'
+                  : isDarkMode
+                    ? 'bg-white/70 text-black cursor-not-allowed'
+                    : 'bg-gray-700 text-white cursor-not-allowed'
+                : isImageToVideoMode
+                  ? 'bg-purple-500 text-white hover:bg-purple-600'
+                  : isDarkMode
+                    ? 'bg-white text-black hover:bg-white/90'
+                    : 'bg-gray-900 text-white hover:bg-gray-800'
+          }`}
+          title={modeLabel}
+          aria-label={modeLabel}
+        >
+          {isRunBusy ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
+          )}
+        </button>
+      </div>
+      </>
+      )}
       </div>
       <AiGenerateDisclaimerTip isDarkMode={isDarkMode} />
-
-      {/* 输入区：WanAnimate 无需提示词；其余模式见下方 */}
-      <div className="pt-1 pb-0 flex-1 min-h-0 flex flex-col">
-        {(isHeyGemModel || isWanAnimateModel) ? (
-          <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
-            {(isHeyGemModel
-              ? [
-                  {
-                    key: 'video',
-                    label: vt.heyGemSlotVideoLabel,
-                    connected: !!(referenceVideoUrl || '').trim(),
-                    Icon: Video,
-                  },
-                  {
-                    key: 'audio',
-                    label: vt.heyGemSlotAudioLabel,
-                    connected: !!(inputAudioUrl || '').trim(),
-                    Icon: Mic,
-                  },
-                ]
-              : [
-                  {
-                    key: 'video',
-                    label: vt.heyGemSlotVideoLabel,
-                    connected: !!(referenceVideoUrl || '').trim(),
-                    Icon: Video,
-                  },
-                  {
-                    key: 'refImage',
-                    label: vt.wanAnimateSlotRefImageLabel,
-                    connected: orderedInputImages.length > 0,
-                    Icon: ImageIcon,
-                  },
-                ]
-            ).map(({ key, label, connected, Icon }) => (
-              <div
-                key={key}
-                className={`flex flex-col items-center justify-center gap-1.5 min-h-[96px] rounded-xl border transition-colors ${
-                  connected
-                    ? isDarkMode
-                      ? 'border-emerald-500/45 bg-emerald-500/10'
-                      : 'border-emerald-400/70 bg-emerald-50/90'
-                    : isDarkMode
-                      ? 'border-white/12 bg-black/30'
-                      : 'border-gray-300/80 bg-gray-50/90'
-                }`}
-              >
-                <div
-                  className={`flex h-9 w-9 items-center justify-center rounded-full ${
-                    connected
-                      ? isDarkMode
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-emerald-100 text-emerald-600'
-                      : isDarkMode
-                        ? 'bg-white/5 text-white/30'
-                        : 'bg-gray-200/80 text-gray-400'
-                  }`}
-                >
-                  <Icon className="h-4 w-4" strokeWidth={2} />
-                </div>
-                <span
-                  className={`text-xs font-medium ${
-                    isDarkMode ? 'text-white/85' : 'text-gray-800'
-                  }`}
-                >
-                  {label}
-                </span>
-                <span
-                  className={`inline-flex items-center gap-0.5 text-[10px] font-medium ${
-                    connected
-                      ? isDarkMode
-                        ? 'text-emerald-400'
-                        : 'text-emerald-600'
-                      : isDarkMode
-                        ? 'text-white/40'
-                        : 'text-gray-400'
-                  }`}
-                >
-                  {connected ? (
-                    <>
-                      <Check className="h-3 w-3" strokeWidth={2.5} />
-                      {vt.heyGemSlotConnected}
-                    </>
-                  ) : (
-                    vt.heyGemSlotPending
-                  )}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : isLtx23MsrStoryboardUi ? (
-          <div className="grid grid-cols-[minmax(0,1fr)_240px] gap-x-3 gap-y-1">
-            <div className="h-[30px] flex items-center gap-2 min-w-0">
-              <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
-                {vt.promptVideoDesc}
-              </label>
-              {isLtx23MsrAv && (
-                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
-                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
-                </span>
-              )}
-              {promptVoiceMicButton}
-            </div>
-            <div className={`h-[30px] flex items-center justify-between gap-1 min-w-0 text-xs font-medium ${
-              isDarkMode ? 'text-white/80' : 'text-gray-900'
-            }`}>
-              <span>背景 / 分镜</span>
-              <span
-                className={`text-[9px] font-semibold shrink-0 ${
-                  hdrRequiredSlotStatus.allRequiredOk
-                    ? isDarkMode
-                      ? 'text-emerald-400'
-                      : 'text-emerald-600'
-                    : isDarkMode
-                      ? 'text-rose-400'
-                      : 'text-rose-600'
-                }`}
-              >
-                {hdrRequiredSlotStatus.allRequiredOk
-                  ? '✓ 必填已齐'
-                  : `还差 ${hdrRequiredSlotStatus.missing.join('、')}`}
-              </span>
-            </div>
-            <div className="min-w-0">
-              {renderPromptRichField({
-                className: 'h-[112px]',
-                placeholder: vt.placeholderVideoPrompt,
-              })}
-            </div>
-            <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden flex flex-col nodrag nopan ${
-              isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
-            }`}>
-              <div className={`text-[9px] mb-1 shrink-0 leading-snug ${
-                isDarkMode ? 'text-white/45' : 'text-gray-500'
-              }`}>
-                带
-                <span className={`font-semibold ${isDarkMode ? 'text-rose-400/90' : 'text-rose-600'}`}>必填</span>
-                的槽位须上传；分镜3、4 选填；拖动互换；选中后按 Delete 断开连线
-              </div>
-              <div className="grid grid-cols-5 gap-0.5 items-start w-full shrink-0 nodrag nopan">
-                {/* 背景槽：9:16 竖版，下方留白 */}
-                <div
-                  className={`min-h-0 rounded transition-colors nodrag nopan ${
-                    dragOverBackground ? 'ring-1 ring-green-400/80' : ''
-                  }`}
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (hdrDragSourceRef.current != null && hdrDragSourceRef.current !== 'background') {
-                      setDragOverBackground(true);
-                    }
-                  }}
-                  onDragLeave={() => setDragOverBackground(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    handleHdrDropOnBackground();
-                    finalizeThumbDrag(e);
-                  }}
-                >
-                  {hdrBackground ? (
-                    <button
-                      type="button"
-                      draggable
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onDragStart={(e) => handleHdrDragStart('background', e)}
-                      onDragEnd={(e) => finalizeThumbDrag(e)}
-                      className={`group relative w-full aspect-[9/16] rounded overflow-hidden border cursor-grab active:cursor-grabbing nodrag nopan ${
-                        isDraggingThumb && hdrDragSourceRef.current === 'background'
-                          ? 'border-dashed border-white/40 opacity-50'
-                          : selectedHdrSlotIndex === 0
-                            ? 'border-violet-400 ring-2 ring-violet-400/80'
-                            : 'border-amber-500/60 hover:border-amber-400'
-                      }`}
-                      title="背景：拖动互换；单击选中后 Delete 断开连线；双击移回分镜"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (thumbDragDidReorderRef.current) {
-                          thumbDragDidReorderRef.current = false;
-                          return;
-                        }
-                        setSelectedHdrSlotIndex(0);
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        demoteBackgroundToStoryboard();
-                        setSelectedHdrSlotIndex(null);
-                      }}
-                    >
-                      <img src={hdrBackground} alt="背景" className="w-full h-full object-contain bg-black/20" draggable={false} />
-                      <div className={`absolute left-0.5 top-0.5 text-[7px] px-0.5 py-0 rounded font-semibold leading-tight ${
-                        isDarkMode ? 'bg-amber-500/80 text-amber-950' : 'bg-amber-200 text-amber-900'
-                      }`}>
-                        背景
-                      </div>
-                      <div className={`absolute right-0.5 top-0.5 text-[6px] px-0.5 rounded font-bold leading-tight ${
-                        isDarkMode ? 'bg-emerald-500/80 text-emerald-950' : 'bg-emerald-200 text-emerald-900'
-                      }`}>
-                        ✓
-                      </div>
-                    </button>
-                  ) : (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      title="必填：请连线或拖入背景图"
-                      className={`w-full aspect-[9/16] rounded border border-dashed flex flex-col items-center justify-center gap-0.5 text-center px-0.5 ${
-                        dragOverBackground
-                          ? 'border-green-400 ring-2 ring-green-400/90 text-green-300'
-                          : isDarkMode
-                            ? 'border-rose-500/55 bg-rose-950/30 text-rose-200/90'
-                            : 'border-rose-400/80 bg-rose-50 text-rose-800'
-                      }`}
-                    >
-                      <span className={`text-[7px] font-bold leading-none ${
-                        isDarkMode ? 'text-rose-400' : 'text-rose-600'
-                      }`}>
-                        必填
-                      </span>
-                      <span className="font-semibold text-[8px] leading-tight">背景</span>
-                    </div>
-                  )}
-                </div>
-                {storyboardSlots.map((url, index) => {
-                  const trimmed = String(url || '').trim();
-                  const isRequiredSlot = index < LTX23_HDR_MIN_STORYBOARD;
-                  const isDragSource = isDraggingThumb && hdrDragSourceRef.current === index;
-                  const isDropTarget =
-                    isDraggingThumb &&
-                    dragOverIndex === index &&
-                    hdrDragSourceRef.current !== index &&
-                    (hdrDragSourceRef.current === 'background' || hdrDragSourceRef.current !== index);
-                  const isSelected = selectedHdrSlotIndex === index + 1;
-                  if (!trimmed) {
-                    return (
-                      <div
-                        key={`slot-empty-${index}`}
-                        role="button"
-                        tabIndex={0}
-                        title={
-                          isRequiredSlot
-                            ? `必填：请连线或拖入分镜 ${index + 1}`
-                            : `选填：分镜 ${index + 1}`
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedHdrSlotIndex(index + 1);
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (hdrDragSourceRef.current == null) return;
-                          setDragOverIndex(index);
-                        }}
-                        onDragLeave={() => setDragOverIndex((prev) => (prev === index ? null : prev))}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleHdrDropOnStoryboard(index);
-                          finalizeThumbDrag(e);
-                        }}
-                        className={`w-full aspect-[9/16] rounded border border-dashed flex flex-col items-center justify-center gap-0.5 text-[8px] nodrag nopan ${
-                          isDropTarget
-                            ? 'border-green-400 ring-2 ring-green-400/90 text-green-300'
-                            : isSelected
-                              ? 'border-violet-400 ring-2 ring-violet-400/70'
-                              : isRequiredSlot
-                              ? isDarkMode
-                                ? 'border-rose-500/55 bg-rose-950/25 text-rose-200/85'
-                                : 'border-rose-400/75 bg-rose-50 text-rose-800'
-                              : isDarkMode
-                                ? 'border-white/15 text-white/28'
-                                : 'border-gray-300/80 text-gray-400'
-                        }`}
-                      >
-                        {isRequiredSlot ? (
-                          <>
-                            <span className={`text-[7px] font-bold leading-none ${
-                              isDarkMode ? 'text-rose-400' : 'text-rose-600'
-                            }`}>
-                              必填
-                            </span>
-                            <span className="font-semibold leading-tight">分镜{index + 1}</span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-[7px] leading-none opacity-60">选填</span>
-                            <span>{index + 1}</span>
-                          </>
-                        )}
-                      </div>
-                    );
-                  }
-                  return (
-                    <button
-                      key={`slot-${index}`}
-                      type="button"
-                      draggable
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onDragStart={(e) => handleHdrDragStart(index, e)}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (hdrDragSourceRef.current == null) return;
-                        if (hdrDragSourceRef.current !== 'background' && hdrDragSourceRef.current === index) return;
-                        setDragOverIndex(index);
-                      }}
-                      onDragLeave={() => setDragOverIndex((prev) => (prev === index ? null : prev))}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleHdrDropOnStoryboard(index);
-                        finalizeThumbDrag(e);
-                      }}
-                      onDragEnd={(e) => finalizeThumbDrag(e)}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (thumbDragDidReorderRef.current) {
-                          thumbDragDidReorderRef.current = false;
-                          return;
-                        }
-                        setSelectedHdrSlotIndex(index + 1);
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
-                        assignHdrBackground(trimmed);
-                        setSelectedHdrSlotIndex(0);
-                      }}
-                      className={`group relative w-full aspect-[9/16] rounded overflow-hidden border cursor-grab active:cursor-grabbing nodrag nopan ${
-                        isDropTarget
-                          ? 'border-green-400 ring-2 ring-green-400/90'
-                          : isSelected
-                            ? 'border-violet-400 ring-2 ring-violet-400/80'
-                          : isDragSource
-                            ? 'border-white/30 border-dashed opacity-40'
-                            : isRequiredSlot
-                              ? isDarkMode
-                                ? 'border-sky-500/50 hover:border-sky-400'
-                                : 'border-sky-400/70 hover:border-sky-500'
-                              : 'border-white/20 hover:border-green-500'
-                      }`}
-                      style={{
-                        boxShadow: isDropTarget || isSelected ? '0 0 0 1px rgba(167,139,250,0.45)' : undefined,
-                        zIndex: isDragSource || isDropTarget || isSelected ? 10 : 1,
-                      }}
-                      title={`分镜 ${index + 1}${isRequiredSlot ? '（必填）' : '（选填）'}：拖动互换；单击选中后 Delete 断开；双击设为背景`}
-                    >
-                      <img src={trimmed} alt={`分镜${index + 1}`} className="w-full h-full object-contain bg-black/20" draggable={false} />
-                      <div className={`absolute left-0.5 top-0.5 text-[7px] px-0.5 py-0 rounded font-semibold leading-tight ${
-                        isRequiredSlot
-                          ? isDarkMode
-                            ? 'bg-sky-500/85 text-sky-950'
-                            : 'bg-sky-200 text-sky-900'
-                          : isDarkMode
-                            ? 'bg-black/60 text-white/70'
-                            : 'bg-black/50 text-white/90'
-                      }`}>
-                        {isRequiredSlot ? `分镜${index + 1}` : index + 1}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        ) : (isImageToVideoMode || isLtx23LipsyncModel) && orderedInputImages.length > 0 ? (
-          <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-x-3 gap-y-1">
-            <div className="h-[30px] flex items-center gap-2 min-w-0">
-              <label
-                className={`text-xs font-medium shrink-0 ${
-                  isDarkMode ? 'text-white/80' : 'text-gray-900'
-                }`}
-              >
-                {isLtx23LipsyncModel ? vt.promptAction : vt.promptVideoDesc}
-              </label>
-              {isLtx23LipsyncModel && (
-                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
-                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
-                </span>
-              )}
-              {isSeedanceMiniModel && (
-                <span
-                  className={`text-xs shrink-0 ${
-                    inputAudioUrl
-                      ? isDarkMode
-                        ? 'text-green-400'
-                        : 'text-green-600'
-                      : isDarkMode
-                        ? 'text-white/45'
-                        : 'text-gray-500'
-                  }`}
-                >
-                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
-                </span>
-              )}
-              {promptVoiceMicButton}
-            </div>
-            <div className={`h-[30px] flex items-center text-xs font-medium ${
-              isDarkMode ? 'text-white/80' : 'text-gray-900'
-            }`}>
-              {vt.refImageColumn}
-            </div>
-            <div className="min-w-0">
-              {renderSeedanceMentionThumbs()}
-              {renderPromptRichField({
-                className:
-                  isSeedanceModel && seedanceMentionIndices.length > 0 ? 'h-[88px]' : 'h-[112px]',
-                placeholder: isLtx23LipsyncModel ? vt.defaultLipsyncAction : vt.placeholderVideoPrompt,
-              })}
-            </div>
-            <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden ${
-              isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
-            }`}>
-              <div
-                className={`grid gap-1.5 h-full overflow-y-auto custom-scrollbar pr-0.5 ${
-                  orderedInputImages.length === 1
-                    ? 'grid-cols-1 grid-rows-1'
-                    : orderedInputImages.length === 2
-                      ? 'grid-cols-2 grid-rows-1'
-                      : 'grid-cols-3 content-start'
-                }`}
-              >
-                {orderedInputImages.map((url, index) => {
-                  const isDragSource = isDraggingThumb && dragImageIndexRef.current === index;
-                  const isDropTarget = isDraggingThumb && dragOverIndex === index && dragImageIndexRef.current !== index;
-                  const isPillHoverMatch = hoveredRefFromPillIndex === index;
-                  return (
-                  <button
-                    key={`${url}-${index}`}
-                    type="button"
-                    draggable
-                    onDragStart={(e) => handleThumbDragStart(index, e)}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      if (dragImageIndexRef.current == null || dragImageIndexRef.current === index) return;
-                      setDragOverIndex(index);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      handleThumbDrop(index);
-                      finalizeThumbDrag(e);
-                    }}
-                    onDragEnd={(e) => finalizeThumbDrag(e)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (isDraggingThumb || thumbDragDidReorderRef.current) {
-                        thumbDragDidReorderRef.current = false;
-                        return;
-                      }
-                      appendRefImageMentionToPrompt(index + 1);
-                    }}
-                    className={`relative w-full overflow-visible ${
-                      orderedInputImages.length <= 2 ? 'h-full' : 'aspect-square'
-                    } rounded-md border transition-all cursor-grab active:cursor-grabbing ${
-                      isDropTarget
-                        ? 'border-green-400 ring-2 ring-green-400/90'
-                        : isDragSource
-                          ? 'border-white/30 border-dashed opacity-40'
-                          : 'border-white/20 hover:border-green-500'
-                    }`}
-                    style={{
-                      boxShadow: isDropTarget ? '0 0 0 1px rgba(74,222,128,0.45)' : undefined,
-                      zIndex: isDragSource || isDropTarget || isPillHoverMatch ? 10 : 1,
-                    }}
-                  >
-                    <RefImageHoverThumb
-                      url={url}
-                      alt={vt.refImageThumbAlt(index + 1)}
-                      title={
-                        isSeedanceModel
-                          ? vt.seedanceRefImageThumbTitle(index + 1)
-                          : vt.refImageThumbTitle(index + 1)
-                      }
-                      indexLabel={index + 1}
-                      objectFit="contain"
-                      className="h-full w-full overflow-visible rounded-md"
-                      previewDisabled={isDraggingThumb}
-                      emphasize={isPillHoverMatch}
-                      onRemove={() => {
-                        const removed = String(url || '').trim();
-                        const next = latestOrderedImagesRef.current.filter((_, i) => i !== index);
-                        latestOrderedImagesRef.current = next;
-                        setOrderedInputImages(next);
-                        onDisconnectHdrSlotImage?.(removed);
-                        onInputImagesOrderChange?.(next);
-                      }}
-                    />
-                  </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="mb-1 h-[30px] flex-shrink-0 flex items-center gap-2 min-w-0">
-              <label
-                className={`text-xs font-medium shrink-0 ${
-                  isDarkMode ? 'text-white/80' : 'text-gray-900'
-                }`}
-              >
-                {vt.promptVideoDesc}
-              </label>
-              {isSeedanceMiniModel && (
-                <span
-                  className={`text-xs shrink-0 ${
-                    inputAudioUrl
-                      ? isDarkMode
-                        ? 'text-green-400'
-                        : 'text-green-600'
-                      : isDarkMode
-                        ? 'text-white/45'
-                        : 'text-gray-500'
-                  }`}
-                >
-                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
-                </span>
-              )}
-              {promptVoiceMicButton}
-            </div>
-            <div className="min-w-0">
-              {renderPromptRichField({
-                className: 'h-[112px]',
-                placeholder: vt.placeholderVideoPrompt,
-              })}
-            </div>
-          </>
-        )}
-      </div>
-      </div>
     </div>
   );
 };
 
 export default VideoInputPanel;
-

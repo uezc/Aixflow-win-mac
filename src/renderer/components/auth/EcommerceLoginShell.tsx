@@ -2,7 +2,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { loginPageT, type LoginPageLocale } from '../../i18n/loginPageI18n';
 import LoginHeroTitle from './LoginMarketingPanel';
-import LoginSilkVideoBackground from './LoginSilkVideoBackground';
+import LoginParticleOrbOverlay from './LoginParticleOrbOverlay';
 
 /** 与主进程默认窗口一致，全屏时整页等比放大此画布 */
 export const LOGIN_SHELL_DESIGN_WIDTH = 1200;
@@ -18,6 +18,8 @@ export interface EcommerceLoginShellProps {
   cardTitle?: string;
   cardSubtitle?: string;
   wideCard?: boolean;
+  /** 仅未登录页需要粒子球；已登录账户页关掉，避免 WebGL 占槽导致画布卡顿 */
+  enableParticleOrb?: boolean;
 }
 
 function useLoginShellScale() {
@@ -48,6 +50,7 @@ const EcommerceLoginShell: React.FC<EcommerceLoginShellProps> = ({
   cardTitle,
   cardSubtitle,
   wideCard = false,
+  enableParticleOrb = true,
 }) => {
   const t = loginPageT(locale);
   const loginPanelRef = useRef<HTMLDivElement>(null);
@@ -63,14 +66,15 @@ const EcommerceLoginShell: React.FC<EcommerceLoginShellProps> = ({
         e.preventDefault();
       }}
     >
-      {/* 背景视频铺满视口，object-cover 保持比例；UI 画布单独等比缩放 */}
+      {/* 粒子球 + 暗角；不再铺登录背景视频 */}
       <div className="pointer-events-none fixed inset-0 z-0">
-        <LoginSilkVideoBackground />
+        {enableParticleOrb ? <LoginParticleOrbOverlay /> : null}
         <div
           className="absolute inset-0"
           style={{
-            background:
-              'linear-gradient(105deg, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.45) 42%, rgba(0,0,0,0.55) 100%)',
+            background: enableParticleOrb
+              ? 'linear-gradient(105deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.28) 42%, rgba(0,0,0,0.45) 100%)'
+              : 'radial-gradient(ellipse at 30% 40%, rgba(40,40,55,0.9) 0%, rgba(0,0,0,1) 70%)',
           }}
           aria-hidden
         />
@@ -113,17 +117,14 @@ const EcommerceLoginShell: React.FC<EcommerceLoginShellProps> = ({
               <div
                 ref={loginPanelRef}
                 id="nexflow-login-panel"
-                className={`flex h-full max-h-[620px] w-full flex-col select-text ${
+                className={`w-full max-h-[min(620px,100%)] overflow-y-auto custom-scrollbar-dark select-text ${
                   wideCard ? 'max-w-[440px]' : 'max-w-[380px]'
                 }`}
               >
-                <div className="nexflow-glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/[0.12] backdrop-blur-xl">
-                  <div
-                    className={`flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar-dark ${
-                      wideCard ? 'p-5 sm:p-6' : 'p-5 sm:p-6'
-                    }`}
-                  >
-                    <div className="mb-4 shrink-0 text-left">
+                {/* 高度贴合内容；勿用 h-full/flex-1，否则底部会留空并视觉上偏顶 */}
+                <div className="nexflow-glass-panel w-full overflow-hidden rounded-2xl border border-white/[0.12] backdrop-blur-xl">
+                  <div className="p-5 sm:p-6">
+                    <div className="mb-4 text-left">
                       <h2 className="text-xl font-semibold tracking-tight text-white">
                         {cardTitle ?? t.welcomeBack}
                       </h2>
@@ -140,7 +141,7 @@ const EcommerceLoginShell: React.FC<EcommerceLoginShellProps> = ({
                     )}
                   </div>
                   {loginFooter ? (
-                    <div className="shrink-0 border-t border-white/10 px-5 py-3 sm:px-6">{loginFooter}</div>
+                    <div className="border-t border-white/10 px-5 py-3 sm:px-6">{loginFooter}</div>
                   ) : null}
                 </div>
               </div>

@@ -12,6 +12,7 @@ import {
 import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import { GRID_MAP_MAX_SIDE } from './GridMapNode';
 import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../../constants/rvcTrainLayout';
+import { HEYGEM_SHELL_W, HEYGEM_SHELL_H } from './VideoNode';
 
 export interface EdgeCanvasLayerHandle {
   redraw: (activeNodeId?: string | null) => void;
@@ -52,7 +53,7 @@ const TEXTSPLIT_RIGHT_OFFSET = 8;
 const NODE_DEFAULT_FLOW_SIZE: Record<string, { w: number; h: number }> = {
   video: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
   wanAnimate: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
-  heyGem: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
+  heyGem: { w: HEYGEM_SHELL_W, h: HEYGEM_SHELL_H },
   image: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
   text: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
   llm: { w: scaleModulePx(280), h: scaleModulePx(160) },

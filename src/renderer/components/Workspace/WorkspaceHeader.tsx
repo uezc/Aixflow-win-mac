@@ -6,6 +6,7 @@ import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { APP_LOCALE_OPTIONS, appLocaleNativeLabel, type AppLocale } from '../../i18n/settingsI18n';
 import { workspaceChromeT, type WorkspaceChromeStrings } from '../../i18n/workspaceI18n';
 import MediaOssRouteToggle from '../MediaOssRouteToggle';
+import TutorialVideosEntry from './TutorialVideosEntry';
 import {
   getTechCursorShape,
   setTechCursorShape,
@@ -638,6 +639,11 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
       {/* 右侧：设置 + 明暗切换（暗黑模式下设置紧挨切换按钮左侧）+ API 状态指示灯 */}
       <div className="flex items-center gap-[20px]">
         <div className="flex items-center gap-2">
+          <TutorialVideosEntry
+            strings={wc}
+            isDarkMode={isDarkMode}
+            buttonClassName={hdrTextBtn(isDarkMode, 'sensing', 'nodrag nopan')}
+          />
           <button
             type="button"
             onClick={(e) => {

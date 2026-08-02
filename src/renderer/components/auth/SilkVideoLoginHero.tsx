@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React from 'react';
-import LoginSilkVideoBackground from './LoginSilkVideoBackground';
+import LoginParticleOrbOverlay from './LoginParticleOrbOverlay';
 
 export interface SilkVideoLoginHeroProps {
   brandLabel: string;
@@ -29,7 +29,7 @@ const SilkVideoLoginHero: React.FC<SilkVideoLoginHeroProps> = ({
     >
       <div className="relative w-full overflow-hidden" style={{ height: viewportHeight }}>
         <div className="absolute inset-0 z-0">
-          <LoginSilkVideoBackground />
+          <LoginParticleOrbOverlay />
         </div>
 
         {/* Readability overlay */}

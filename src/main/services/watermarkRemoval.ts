@@ -1,5 +1,5 @@
 /**
- * @deprecated 直连 RunningHub 已弃用；去水印/视频深度转换经 FC 扣元宝，见 runningHubAiAppFc.ts
+ * @deprecated 直连 RunningHub 已弃用；去水印/视频深度转换/去字幕经 FC 扣元宝，见 runningHubAiAppFc.ts
  */
 export type { WatermarkRemovalResult, WatermarkRemovalError } from './runningHubAiAppFc.js';
 export type {
@@ -7,6 +7,8 @@ export type {
   VideoWatermarkRemovalFcErr,
   VideoDepthConvertFcOk,
   VideoDepthConvertFcErr,
+  VideoSubtitleWatermarkFcOk,
+  VideoSubtitleWatermarkFcErr,
 } from './runningHubAiAppFc.js';
 export {
   runWatermarkRemovalViaFc,
@@ -15,4 +17,6 @@ export {
   VIDEO_WATERMARK_REMOVAL_AI_APP_ID,
   runVideoDepthConvertViaFc,
   VIDEO_DEPTH_CONVERT_AI_APP_ID,
+  runVideoSubtitleWatermarkRemovalViaFc,
+  VIDEO_SUBTITLE_WATERMARK_AI_APP_ID,
 } from './runningHubAiAppFc.js';

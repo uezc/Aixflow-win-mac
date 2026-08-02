@@ -12,6 +12,9 @@ export type VideoInputPanelStrings = {
   durationLabel: string;
   durationChooseTitle: string;
   durationFixed8s: string;
+  /** 全能视频V3.1-pro 首尾帧（海外） */
+  modelRhartV31ProSe: string;
+  modelRhartV31ProSeTitle: string;
   resolutionLabel: string;
   shotLabel: string;
   shotTitle: string;
@@ -60,6 +63,40 @@ export type VideoInputPanelStrings = {
   heyGemSlotAudioLabel: string;
   heyGemSlotConnected: string;
   heyGemSlotPending: string;
+  /** HeyGem 一体化：模块内上传 / 画布选 / 台词配音 */
+  heyGemUploadVideo: string;
+  heyGemPickFromCanvas: string;
+  heyGemPickFromLibrary: string;
+  heyGemClearVideo: string;
+  heyGemScriptLabel: string;
+  heyGemScriptPlaceholder: string;
+  heyGemTtsModelLabel: string;
+  heyGemOneClickDub: string;
+  heyGemDubbing: string;
+  heyGemCloneAudioLabel: string;
+  heyGemCloneAudioUpload: string;
+  heyGemCloneAudioClear: string;
+  heyGemCloneAudioHint: string;
+  heyGemUploadDriveAudio: string;
+  heyGemLibraryEmpty: string;
+  heyGemLibraryPickTitle: string;
+  heyGemNeedRefVideo: string;
+  heyGemNeedScript: string;
+  heyGemNeedCloneAudio: string;
+  heyGemDubSuccess: string;
+  heyGemDubFailed: string;
+  /** 设计稿：① 参考视频 / ② 台词与声音 / 生成按钮 */
+  heyGemStepRefVideo: string;
+  heyGemStepRefVideoHint: string;
+  heyGemClickUploadRefVideo: string;
+  heyGemUploadFormatsHint: string;
+  heyGemStepScriptVoice: string;
+  heyGemScriptCharCount: (cur: number, max: number) => string;
+  heyGemVoiceModelLabel: string;
+  heyGemTtsModelHint: string;
+  heyGemGenerateButton: string;
+  heyGemGenerating: string;
+  heyGemNeedScriptOrAudio: string;
   placeholderVideoPrompt: string;
   voiceTranscribing: string;
   defaultLipsyncAction: string;
@@ -135,6 +172,13 @@ export type VideoInputPanelStrings = {
   videoDepthConvertFailed: string;
   videoDepthConvertPriceTitle: string;
   videoDepthConvertProgress: (credits: string) => string;
+  /** 视频去字幕/水印（顶栏图标；结果落到右侧新模块） */
+  videoSubtitleWatermarkTitle: string;
+  videoSubtitleWatermarkNotSupported: string;
+  videoSubtitleWatermarkNeedVideo: string;
+  videoSubtitleWatermarkFailed: string;
+  videoSubtitleWatermarkPriceTitle: string;
+  videoSubtitleWatermarkProgress: (credits: string) => string;
   /** 画布节点内视频：原生全屏在 transform 下失效，用自定义入口 */
   previewVideoFullscreen: string;
   previewVideoExitFullscreen: string;
@@ -165,6 +209,34 @@ export type VideoInputPanelStrings = {
   videoSpatialCropNeedVideo: string;
   videoSpatialCropNotSupported: string;
   videoSpatialCropFailed: string;
+  /** 色度抠像（绿幕） */
+  videoChromaKeyButton: string;
+  videoChromaKeyTitle: string;
+  videoChromaKeyGreen: string;
+  videoChromaKeyPick: string;
+  videoChromaKeySimilarity: string;
+  videoChromaKeyBlend: string;
+  videoChromaKeyConfirm: string;
+  videoChromaKeyConfirming: string;
+  videoChromaKeyCancel: string;
+  videoChromaKeyNeedVideo: string;
+  videoChromaKeyNotSupported: string;
+  videoChromaKeyFailed: string;
+  videoChromaKeyNodeLabel: string;
+  /** 智能抠像（阿里云一键人像，无鼠标点选） */
+  videoSmartMattingButton: string;
+  videoSmartMattingTitle: string;
+  videoSmartMattingHint: string;
+  videoSmartMattingRunning: string;
+  videoSmartMattingNeedVideo: string;
+  videoSmartMattingNotSupported: string;
+  videoSmartMattingFailed: string;
+  videoSmartMattingNodeLabel: string;
+  /** 悬停价：有时长时「约 N 元宝（按秒计费）」 */
+  videoSmartMattingPriceLabel: (credits: string) => string;
+  /** 悬停价：时长未知时的兜底文案 */
+  videoSmartMattingPriceFallback: string;
+  videoSmartMattingPriceTitle: string;
 };
 
 const zh: VideoInputPanelStrings = {
@@ -179,6 +251,9 @@ const zh: VideoInputPanelStrings = {
   durationLabel: '时长:',
   durationChooseTitle: '选择视频时长',
   durationFixed8s: '8s',
+  modelRhartV31ProSe: '全能视频V3.1-pro-首尾帧生视频',
+  modelRhartV31ProSeTitle:
+    '首尾帧；海外站；首帧必填、尾帧可选；时长仅 8s；比例 16:9/9:16；分辨率 720p/1080p/4k',
   resolutionLabel: '分辨率:',
   shotLabel: '镜头:',
   shotTitle: '单镜头 / 多镜头',
@@ -215,18 +290,50 @@ const zh: VideoInputPanelStrings = {
   wanAnimateVideoNeedConnect: '⚠ 请连接参考视频节点',
   wanAnimateImageNeedConnect: '⚠ 请连接 1 张角色参考图',
   wanAnimateSlotRefImageLabel: '角色参考图',
-  heyGemInputLabel: 'HeyGem 数字人',
-  heyGemNoPromptHint: '连接参考视频与驱动音频即可生成，无需填写提示词（Plus 48G 显存）。',
-  heyGemVideoConnected: '✓ 已连接参考视频',
-  heyGemVideoNeedConnect: '⚠ 请连接参考视频节点',
-  heyGemAudioConnected: '✓ 已连接驱动音频',
-  heyGemAudioNeedConnect: '⚠ 请连接音频节点',
+  heyGemInputLabel: '数字人',
+  heyGemNoPromptHint: '在模块内设置参考视频与驱动音频即可生成，无需填写提示词（Plus 48G 显存）。',
+  heyGemVideoConnected: '✓ 已设置参考视频',
+  heyGemVideoNeedConnect: '⚠ 请上传或选择参考视频',
+  heyGemAudioConnected: '✓ 已设置驱动音频',
+  heyGemAudioNeedConnect: '⚠ 请一键配音或上传驱动音频',
   heyGemSlotVideoLabel: '参考视频',
   heyGemSlotAudioLabel: '驱动音频',
-  heyGemSlotConnected: '已接入',
-  heyGemSlotPending: '待接入',
+  heyGemSlotConnected: '已就绪',
+  heyGemSlotPending: '待设置',
+  heyGemUploadVideo: '本机上传',
+  heyGemPickFromCanvas: '画布选择',
+  heyGemPickFromLibrary: '数字人库',
+  heyGemClearVideo: '清除视频',
+  heyGemScriptLabel: '台词',
+  heyGemScriptPlaceholder: '请输入或粘贴您想要数字人说的台词...',
+  heyGemTtsModelLabel: '配音模型',
+  heyGemOneClickDub: '一键配音',
+  heyGemDubbing: '配音中…',
+  heyGemCloneAudioLabel: '克隆参考音',
+  heyGemCloneAudioUpload: '上传参考音',
+  heyGemCloneAudioClear: '清除',
+  heyGemCloneAudioHint: 'Index-TTS 需参考音；默认从参考视频自动抽音',
+  heyGemUploadDriveAudio: '上传驱动音频',
+  heyGemLibraryEmpty: '数字人库暂无条目',
+  heyGemLibraryPickTitle: '从数字人库选择参考视频',
+  heyGemNeedRefVideo: '请先设置参考视频',
+  heyGemNeedScript: '请先填写台词',
+  heyGemNeedCloneAudio: '语音克隆需要参考音：请确保参考视频含人声，生成时将自动从视频抽音',
+  heyGemDubSuccess: '配音完成，已写入驱动音频',
+  heyGemDubFailed: '配音失败',
+  heyGemStepRefVideo: '参考视频',
+  heyGemStepRefVideoHint: '上传参考视频，数字人将基于视频形象生成',
+  heyGemClickUploadRefVideo: '电脑上传',
+  heyGemUploadFormatsHint: '支持 MP4、MOV 格式，大小不超过 500MB',
+  heyGemStepScriptVoice: '台词与声音',
+  heyGemScriptCharCount: (cur, max) => `${cur} / ${max}`,
+  heyGemVoiceModelLabel: '声音模型',
+  heyGemTtsModelHint: '高质量语音合成模型，支持多种语言和音色',
+  heyGemGenerateButton: '生成数字人视频',
+  heyGemGenerating: '生成中…',
+  heyGemNeedScriptOrAudio: '请填写台词（将自动配音）或上传驱动音频',
   placeholderVideoPrompt:
-    '请输入视频提示词，例如：一只小狗在草地上奔跑，镜头缓慢移动，电影级灯光...',
+    '请输入视频提示词，例如：一只小狗在草地上奔跑…（Enter 发送 · Shift+Enter 换行）',
   voiceTranscribing: '正在将语音转为文字…',
   defaultLipsyncAction:
     '人物正面朝向镜头讲话/演唱，嘴巴清晰可见，可有少量手势，禁止转身背对镜头',
@@ -242,15 +349,15 @@ const zh: VideoInputPanelStrings = {
   modeTextToVideo: '文生视频',
   initializing: '正在初始化...',
   generatingVideo: '正在生成视频...',
-  // 对口型内部档位仍为 720/1280/1920，展示为真实成片观感档
-  resStandard: '480p',
-  resHD: '720p',
-  resUHD: '1080p',
+  // 对口型与 LTX 图生同档：720/1280/1920，展示为 720p/1280/1920
+  resStandard: '720p',
+  resHD: '1280',
+  resUHD: '1920',
   resStandard720p: '720p',
   resHD1280: '1280',
   resUHD1920: '1920',
   secSuffix: (n) => `${n}s`,
-  titleLtxLipsyncResolution: 'LTX2.3 对口型分辨率（展示为真实成片观感）',
+  titleLtxLipsyncResolution: 'LTX2.3 对口型分辨率',
   titleLtxI2vDuration: 'LTX2.3 图生视频时长',
   titleLtxI2vResolution: 'LTX2.3 图生视频分辨率',
   titleLtxT2vDuration: 'LTX2.3 文生视频时长',
@@ -298,6 +405,12 @@ const zh: VideoInputPanelStrings = {
   videoDepthConvertFailed: '视频深度转换失败',
   videoDepthConvertPriceTitle: '单次预估元宝以 nx_model_config 中 RunningHub 应用 ID 2082392424818757633 为准',
   videoDepthConvertProgress: (c) => `视频深度转换中…（约 ${c} 元宝）`,
+  videoSubtitleWatermarkTitle: '视频去字幕/水印',
+  videoSubtitleWatermarkNotSupported: '当前环境不支持视频去字幕/水印',
+  videoSubtitleWatermarkNeedVideo: '请先连接视频模块或本模块已有视频后再试',
+  videoSubtitleWatermarkFailed: '视频去字幕/水印失败',
+  videoSubtitleWatermarkPriceTitle: '单次预估元宝以 nx_model_config 中 RunningHub 应用 ID 2082682378039943169 为准',
+  videoSubtitleWatermarkProgress: (c) => `视频去字幕/水印中…（约 ${c} 元宝）`,
   previewVideoFullscreen: '全屏观看',
   previewVideoExitFullscreen: '退出全屏',
   videoFrameSplitButton: '视频拆帧',
@@ -326,6 +439,31 @@ const zh: VideoInputPanelStrings = {
   videoSpatialCropNeedVideo: '请先上传或生成视频后再裁剪画面',
   videoSpatialCropNotSupported: '当前环境不支持画面裁剪',
   videoSpatialCropFailed: '画面裁剪失败',
+  videoChromaKeyButton: '色度抠像',
+  videoChromaKeyTitle: '色度抠像',
+  videoChromaKeyGreen: '绿幕',
+  videoChromaKeyPick: '吸色',
+  videoChromaKeySimilarity: '相似度',
+  videoChromaKeyBlend: '边缘',
+  videoChromaKeyConfirm: '确认抠像',
+  videoChromaKeyConfirming: '色度抠像中…',
+  videoChromaKeyCancel: '取消',
+  videoChromaKeyNeedVideo: '请先上传或生成视频后再色度抠像',
+  videoChromaKeyNotSupported: '当前环境不支持色度抠像，请重启应用',
+  videoChromaKeyFailed: '色度抠像失败',
+  videoChromaKeyNodeLabel: '色度抠像',
+  videoSmartMattingButton: '智能抠像',
+  videoSmartMattingTitle: '智能抠像（人像自动，无需点选；按秒计费）',
+  videoSmartMattingHint: '自动识别人像并生成透明背景视频，无需鼠标点选；按时长秒级计费',
+  videoSmartMattingRunning: '智能抠像中…',
+  videoSmartMattingNeedVideo: '请先上传或生成视频后再智能抠像',
+  videoSmartMattingNotSupported: '当前环境不支持智能抠像，请重启应用',
+  videoSmartMattingFailed: '智能抠像失败',
+  videoSmartMattingNodeLabel: '智能抠像',
+  videoSmartMattingPriceLabel: (c) => `约 ${c} 元宝（按秒计费）`,
+  videoSmartMattingPriceFallback: '价格按视频时长计算',
+  videoSmartMattingPriceTitle:
+    '预估元宝按秒计费：优先 nx_model_config「viapi-segment-video-body」（元/分钟），否则本地 20 元宝/分钟',
 };
 
 const en: VideoInputPanelStrings = {
@@ -340,6 +478,9 @@ const en: VideoInputPanelStrings = {
   durationLabel: 'Duration:',
   durationChooseTitle: 'Video duration',
   durationFixed8s: '8s',
+  modelRhartV31ProSe: 'All-in-One Video V3.1-pro (Start–End)',
+  modelRhartV31ProSeTitle:
+    'Start–end frames; overseas; first frame required, last optional; 8s only; 16:9/9:16; 720p/1080p/4k',
   resolutionLabel: 'Resolution:',
   shotLabel: 'Shots:',
   shotTitle: 'Single / multi shot',
@@ -375,18 +516,50 @@ const en: VideoInputPanelStrings = {
   wanAnimateVideoNeedConnect: '⚠ Connect a reference video node',
   wanAnimateImageNeedConnect: '⚠ Connect 1 character reference image',
   wanAnimateSlotRefImageLabel: 'Character reference',
-  heyGemInputLabel: 'HeyGem digital human',
-  heyGemNoPromptHint: 'Connect reference video and driving audio — no prompt required (Plus 48G VRAM).',
-  heyGemVideoConnected: '✓ Reference video connected',
-  heyGemVideoNeedConnect: '⚠ Connect a reference video node',
-  heyGemAudioConnected: '✓ Driving audio connected',
-  heyGemAudioNeedConnect: '⚠ Connect an audio node',
+  heyGemInputLabel: 'HeyGem',
+  heyGemNoPromptHint: 'Set reference video and driving audio in this module — no prompt required (Plus 48G VRAM).',
+  heyGemVideoConnected: '✓ Reference video ready',
+  heyGemVideoNeedConnect: '⚠ Upload or pick a reference video',
+  heyGemAudioConnected: '✓ Driving audio ready',
+  heyGemAudioNeedConnect: '⚠ Dub from script or upload driving audio',
   heyGemSlotVideoLabel: 'Reference video',
   heyGemSlotAudioLabel: 'Driving audio',
-  heyGemSlotConnected: 'Connected',
-  heyGemSlotPending: 'Not connected',
+  heyGemSlotConnected: 'Ready',
+  heyGemSlotPending: 'Not set',
+  heyGemUploadVideo: 'Upload',
+  heyGemPickFromCanvas: 'From canvas',
+  heyGemPickFromLibrary: 'Library',
+  heyGemClearVideo: 'Clear video',
+  heyGemScriptLabel: 'Script',
+  heyGemScriptPlaceholder: 'Enter the lines for the digital human…',
+  heyGemTtsModelLabel: 'TTS model',
+  heyGemOneClickDub: 'One-click dub',
+  heyGemDubbing: 'Dubbing…',
+  heyGemCloneAudioLabel: 'Clone voice',
+  heyGemCloneAudioUpload: 'Upload ref audio',
+  heyGemCloneAudioClear: 'Clear',
+  heyGemCloneAudioHint: 'Index-TTS needs a voice sample; audio is extracted from the reference video by default',
+  heyGemUploadDriveAudio: 'Upload driving audio',
+  heyGemLibraryEmpty: 'No digital humans in library',
+  heyGemLibraryPickTitle: 'Pick reference video from library',
+  heyGemNeedRefVideo: 'Set a reference video first',
+  heyGemNeedScript: 'Enter a script first',
+  heyGemNeedCloneAudio: 'Voice clone needs a sample: use a reference video with speech so audio can be extracted',
+  heyGemDubSuccess: 'Dubbing done — written to driving audio',
+  heyGemDubFailed: 'Dubbing failed',
+  heyGemStepRefVideo: 'Reference video',
+  heyGemStepRefVideoHint: 'Upload a reference video; the digital human is based on its appearance',
+  heyGemClickUploadRefVideo: 'Upload from computer',
+  heyGemUploadFormatsHint: 'MP4, MOV supported, max 500MB',
+  heyGemStepScriptVoice: 'Script & voice',
+  heyGemScriptCharCount: (cur, max) => `${cur} / ${max}`,
+  heyGemVoiceModelLabel: 'Voice model',
+  heyGemTtsModelHint: 'High-quality TTS with multi-language and voice styles',
+  heyGemGenerateButton: 'Generate digital human video',
+  heyGemGenerating: 'Generating…',
+  heyGemNeedScriptOrAudio: 'Enter a script (auto-dub) or upload driving audio',
   placeholderVideoPrompt:
-    'Describe the video, e.g. A puppy running on grass, slow camera move, cinematic lighting...',
+    'Describe the video, e.g. A puppy running on grass… (Enter to send · Shift+Enter for newline)',
   voiceTranscribing: 'Converting speech to text…',
   defaultLipsyncAction:
     'Person facing the camera speaking/singing with mouth clearly visible; light gestures ok; no turning away',
@@ -402,15 +575,15 @@ const en: VideoInputPanelStrings = {
   modeTextToVideo: 'Text to video',
   initializing: 'Initializing…',
   generatingVideo: 'Generating video…',
-  // Lipsync internal tiers stay 720/1280/1920; labels show effective look
-  resStandard: '480p',
-  resHD: '720p',
-  resUHD: '1080p',
+  // Lipsync uses same API tiers as LTX i2v: 720/1280/1920, shown as 720p/1280/1920
+  resStandard: '720p',
+  resHD: '1280',
+  resUHD: '1920',
   resStandard720p: '720p',
   resHD1280: '1280',
   resUHD1920: '1920',
   secSuffix: (n) => `${n}s`,
-  titleLtxLipsyncResolution: 'LTX2.3 lip-sync resolution (effective look)',
+  titleLtxLipsyncResolution: 'LTX2.3 lip-sync resolution',
   titleLtxI2vDuration: 'LTX2.3 image-to-video duration',
   titleLtxI2vResolution: 'LTX2.3 image-to-video resolution',
   titleLtxT2vDuration: 'LTX2.3 text-to-video duration',
@@ -457,6 +630,12 @@ const en: VideoInputPanelStrings = {
   videoDepthConvertFailed: 'Video depth conversion failed',
   videoDepthConvertPriceTitle: 'Estimated credits per run: nx_model_config row for app ID 2082392424818757633',
   videoDepthConvertProgress: (c) => `Converting video depth… (~${c} credits)`,
+  videoSubtitleWatermarkTitle: 'Remove subtitles / watermark',
+  videoSubtitleWatermarkNotSupported: 'Subtitle/watermark removal is not available in this build',
+  videoSubtitleWatermarkNeedVideo: 'Connect a video module or add a video here first',
+  videoSubtitleWatermarkFailed: 'Subtitle/watermark removal failed',
+  videoSubtitleWatermarkPriceTitle: 'Estimated credits per run: nx_model_config row for app ID 2082682378039943169',
+  videoSubtitleWatermarkProgress: (c) => `Removing subtitles/watermark… (~${c} credits)`,
   previewVideoFullscreen: 'Fullscreen',
   previewVideoExitFullscreen: 'Exit fullscreen',
   videoFrameSplitButton: 'Extract frames',
@@ -486,6 +665,31 @@ const en: VideoInputPanelStrings = {
   videoSpatialCropNeedVideo: 'Add or generate a video before cropping',
   videoSpatialCropNotSupported: 'Frame crop is not available in this build',
   videoSpatialCropFailed: 'Frame crop failed',
+  videoChromaKeyButton: 'Chroma key',
+  videoChromaKeyTitle: 'Chroma key',
+  videoChromaKeyGreen: 'Green',
+  videoChromaKeyPick: 'Eyedropper',
+  videoChromaKeySimilarity: 'Similarity',
+  videoChromaKeyBlend: 'Edge',
+  videoChromaKeyConfirm: 'Apply key',
+  videoChromaKeyConfirming: 'Keying…',
+  videoChromaKeyCancel: 'Cancel',
+  videoChromaKeyNeedVideo: 'Add or generate a video before chroma key',
+  videoChromaKeyNotSupported: 'Chroma key is not available in this build — please restart the app',
+  videoChromaKeyFailed: 'Chroma key failed',
+  videoChromaKeyNodeLabel: 'Chroma key',
+  videoSmartMattingButton: 'AI matting',
+  videoSmartMattingTitle: 'AI portrait matting (automatic, no click; billed per second)',
+  videoSmartMattingHint: 'Auto-detect people and export a transparent video — no click selection; billed by duration in seconds',
+  videoSmartMattingRunning: 'AI matting…',
+  videoSmartMattingNeedVideo: 'Add or generate a video before AI matting',
+  videoSmartMattingNotSupported: 'AI matting is not available in this build — please restart the app',
+  videoSmartMattingFailed: 'AI matting failed',
+  videoSmartMattingNodeLabel: 'AI matting',
+  videoSmartMattingPriceLabel: (c) => `About ${c} credits (billed per second)`,
+  videoSmartMattingPriceFallback: 'Price is based on video duration',
+  videoSmartMattingPriceTitle:
+    'Estimated credits billed per second: prefer nx_model_config「viapi-segment-video-body」(CNY/min), else local 20 credits/min',
 };
 
 export function videoInputPanelT(locale: AppLocale): VideoInputPanelStrings {

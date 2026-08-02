@@ -1,12 +1,23 @@
+import { mediaObjectUrl, remapMediaUrlToSite } from '../lib/siteRegion';
+
 export const LOGO_URL = '/aixflow-landing-logo.png';
 
-/** 16:9 展示短片，后续可在数组末尾追加 OSS 链接 */
-export const MARQUEE_VIDEOS = [
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/A.mp4',
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/B.mp4',
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/C.mp4',
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/D.mp4',
-];
+/** 官网展示视频对象键（北京/香港桶同名各存一份，用 mediaObjectUrl 按站点取） */
+export const MARQUEE_VIDEO_KEYS = ['A.mp4', 'B.mp4', 'C.mp4', 'D.mp4'] as const;
+export const FEATURE_VIDEO_KEYS = ['AA.mp4', 'BB.mp4'] as const;
+export const PROJECT_EXTRA_VIDEO_KEY = 'CC.mp4';
+export const PAY_GUIDE_VIDEO_KEY = '支付方法.mp4';
+
+/** @deprecated 请用 getMarqueeVideos()；保留字段仅为兼容静态引用排查 */
+export const MARQUEE_VIDEOS = MARQUEE_VIDEO_KEYS.map((k) => mediaObjectUrl(k, 'cn'));
+
+export function getMarqueeVideos(): string[] {
+  return MARQUEE_VIDEO_KEYS.map((k) => mediaObjectUrl(k));
+}
+
+export function getFeatureVideos(): string[] {
+  return FEATURE_VIDEO_KEYS.map((k) => mediaObjectUrl(k));
+}
 
 export const BOOK_URL = 'https://halaskastudio.com/./book';
 
@@ -105,35 +116,77 @@ export const SCENARIO_CARDS: ScenarioCard[] = [
 export type ProjectItem = {
   name: string;
   description: string;
-  video: string;
+  videoKey: string;
 };
 
-/** 案例演示区：暂用 A–D 占位，后续可换录屏链接 */
-export const PROJECTS: ProjectItem[] = [
+/** 官网公开「元宝充值套餐」说明（支付宝电脑网站支付合规公示，与客户端充值档位一致） */
+export const RECHARGE_PAGE = {
+  eyebrow: '商品与价格公示',
+  title: 'Aixflow 元宝充值套餐',
+  summary:
+    '元宝是 Aixflow 桌面端内用于调用 AI 生成与处理能力的虚拟点数。下列为当前对外销售的固定充值商品档位与标价（人民币），与软件内一致。',
+  /** 套餐卡片下方：客户端内支付宝充值操作演示 */
+  payGuideTitle: '支付方法演示',
+  payGuideVideoKey: PAY_GUIDE_VIDEO_KEY,
+  howTitle: '如何购买',
+  howSteps: [
+    '在本站下载并安装 Aixflow Windows 客户端',
+    '打开软件并登录账号',
+    '进入「设置」→ 选择充值套餐 → 使用支付宝完成付款',
+    '支付成功后元宝将自动充入当前登录账户',
+  ],
+  serviceTitle: '服务说明',
+  serviceText:
+    '充值商品为虚拟数字商品「元宝」。到账后可用于本软件内 AI 文生图/视频、对话、音频等按次计费功能；元宝永久有效，不设有效期。本页仅作商品与价格公示，不在网页端直接收款；实际支付在官方桌面客户端内通过支付宝完成。',
+  refundTitle: '退换与售后',
+  refundText:
+    '虚拟商品一经充值到账，除因系统故障导致未到账或重复扣款等情况外，原则上不支持无理由退款。如遇支付异常、未到账或对账单有疑问，请通过本页客服渠道联系我们核查处理。',
+};
+
+export function getPayGuideVideoUrl(): string {
+  return mediaObjectUrl(RECHARGE_PAGE.payGuideVideoKey);
+}
+
+/** 案例演示区 */
+export const PROJECT_DEFS: ProjectItem[] = [
   {
     name: '无限画布',
     description: '拖拽节点，串联 LLM、图片、视频、音频。',
-    video: MARQUEE_VIDEOS[0],
+    videoKey: MARQUEE_VIDEO_KEYS[0],
   },
   {
     name: '内容批量生产',
     description: '从文案到主图、短视频，同一流程反复迭代。',
-    video: 'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/CC.mp4',
+    videoKey: PROJECT_EXTRA_VIDEO_KEY,
   },
   {
     name: '多模态成片',
     description: '配音、口型、角色与工作流复用。',
-    video: MARQUEE_VIDEOS[2],
+    videoKey: MARQUEE_VIDEO_KEYS[2],
   },
   {
     name: '自动化生产链',
     description: '一键批量运行，从单点工具到完整生产线。',
-    video: MARQUEE_VIDEOS[3],
+    videoKey: MARQUEE_VIDEO_KEYS[3],
   },
 ];
 
-/** 评价区固定展示视频，播完自动切下一支，可在数组末尾追加 */
-export const FEATURE_VIDEOS = [
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/AA.mp4',
-  'https://nexflow-temp-images-bj.oss-cn-beijing.aliyuncs.com/BB.mp4',
-];
+export function getProjects(): Array<{ name: string; description: string; video: string }> {
+  return PROJECT_DEFS.map((p) => ({
+    name: p.name,
+    description: p.description,
+    video: mediaObjectUrl(p.videoKey),
+  }));
+}
+
+/** @deprecated 用 getProjects() */
+export const PROJECTS = PROJECT_DEFS.map((p) => ({
+  name: p.name,
+  description: p.description,
+  video: mediaObjectUrl(p.videoKey, 'cn'),
+}));
+
+/** @deprecated 用 getFeatureVideos() */
+export const FEATURE_VIDEOS = FEATURE_VIDEO_KEYS.map((k) => mediaObjectUrl(k, 'cn'));
+
+export { remapMediaUrlToSite, mediaObjectUrl };

@@ -19,6 +19,10 @@ export interface PhotoCollageAspectRatioDropdownProps {
   /** 下拉面板展开方向，拼图工具栏默认向下 */
   placement?: 'up' | 'down';
   className?: string;
+  /** 仅选比例（隐藏画布尺寸区与触发器上的像素尺寸） */
+  ratioOnly?: boolean;
+  /** 仅展示这些比例 id（如宫格：16-9 / 9-16 / 4-3 / 3-4 / 1-1） */
+  allowedAspectIds?: string[];
 }
 
 export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDropdownProps> = ({
@@ -28,16 +32,48 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
   onApplySize,
   placement = 'down',
   className = '',
+  ratioOnly = false,
+  allowedAspectIds,
 }) => {
   const { locale } = useAppLocale();
   const ct = photoCollageT(locale);
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [selectedAspectId, setSelectedAspectId] = useState(() => findCollageAspectGroupId(cw, ch));
+  const aspectGroups = useMemo(() => {
+    if (!allowedAspectIds?.length) return COLLAGE_ASPECT_GROUPS;
+    const byId = new Map(COLLAGE_ASPECT_GROUPS.map((g) => [g.id, g]));
+    const filtered = allowedAspectIds
+      .map((id) => byId.get(id))
+      .filter(Boolean) as CollageAspectGroup[];
+    return filtered.length > 0 ? filtered : COLLAGE_ASPECT_GROUPS;
+  }, [allowedAspectIds]);
+
+  const resolveAspectId = useCallback(
+    (w: number, h: number) => {
+      const id = findCollageAspectGroupId(w, h);
+      if (!allowedAspectIds?.length) return id;
+      if (aspectGroups.some((g) => g.id === id)) return id;
+      // 不在白名单时，就近映射到允许的比例
+      const r = w / Math.max(h, 1);
+      let bestId = aspectGroups[0]?.id || id;
+      let bestDiff = Infinity;
+      for (const g of aspectGroups) {
+        const d = Math.abs(r - g.rw / Math.max(g.rh, 1));
+        if (d < bestDiff) {
+          bestDiff = d;
+          bestId = g.id;
+        }
+      }
+      return bestId;
+    },
+    [allowedAspectIds, aspectGroups],
+  );
+
+  const [selectedAspectId, setSelectedAspectId] = useState(() => resolveAspectId(cw, ch));
 
   useEffect(() => {
-    setSelectedAspectId(findCollageAspectGroupId(cw, ch));
-  }, [cw, ch]);
+    setSelectedAspectId(resolveAspectId(cw, ch));
+  }, [cw, ch, resolveAspectId]);
 
   useEffect(() => {
     if (!open) return;
@@ -50,8 +86,10 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
 
   const selectedGroup = useMemo(() => {
     if (selectedAspectId === '__custom__') return null;
-    return COLLAGE_ASPECT_GROUPS.find((g) => g.id === selectedAspectId) ?? null;
-  }, [selectedAspectId]);
+    return aspectGroups.find((g) => g.id === selectedAspectId)
+      ?? COLLAGE_ASPECT_GROUPS.find((g) => g.id === selectedAspectId)
+      ?? null;
+  }, [aspectGroups, selectedAspectId]);
 
   const triggerLabel = useMemo(() => {
     if (selectedGroup) return selectedGroup.label;
@@ -73,16 +111,17 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
     const h = parseInt(customHText.trim(), 10);
     if (!Number.isFinite(w) || !Number.isFinite(h)) return;
     onApplySize(w, h);
-    setSelectedAspectId(findCollageAspectGroupId(w, h));
-  }, [customWText, customHText, onApplySize]);
+    setSelectedAspectId(resolveAspectId(w, h));
+  }, [customWText, customHText, onApplySize, resolveAspectId]);
 
   const onPickAspect = useCallback(
     (g: CollageAspectGroup) => {
       setSelectedAspectId(g.id);
       const [w, h] = resolveCollage1080pDefaultSize(g);
       onApplySize(w, h);
+      if (ratioOnly) setOpen(false);
     },
-    [onApplySize],
+    [onApplySize, ratioOnly],
   );
 
   const onPickCanvasSize = useCallback(
@@ -122,21 +161,29 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
         <span className={isDarkMode ? 'text-white/55' : 'text-gray-500'}>{ct.ratioLabel}</span>
         {selectedGroup ? <RatioGlyph w={selectedGroup.rw} h={selectedGroup.rh} /> : null}
         <span>{triggerLabel}</span>
-        <span className={`text-[10px] ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
-          {cw}×{ch}
-        </span>
+        {!ratioOnly ? (
+          <span className={`text-[10px] ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
+            {cw}×{ch}
+          </span>
+        ) : null}
         <ChevronDown className={`w-3 h-3 shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open ? (
         <div
-          className={`nodrag nopan absolute ${panelPos} z-[80] w-[15.5rem] rounded-xl border p-2 ${panelSkin}`}
+          className={`nodrag nopan absolute ${panelPos} z-[80] rounded-xl border p-2 ${
+            aspectGroups.length <= 5 ? 'w-36' : 'w-[15.5rem]'
+          } ${panelSkin}`}
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
-          <div className="grid grid-cols-3 gap-1.5">
-            {COLLAGE_ASPECT_GROUPS.map((g) => {
+          <div
+            className={`grid gap-1.5 ${
+              aspectGroups.length <= 5 ? 'grid-cols-1' : 'grid-cols-3'
+            }`}
+          >
+            {aspectGroups.map((g) => {
               const active = selectedAspectId === g.id;
               return (
                 <button
@@ -146,7 +193,9 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
                     e.stopPropagation();
                     onPickAspect(g);
                   }}
-                  className={`flex flex-col items-center justify-center gap-1 rounded-lg border px-1 py-2 transition-colors ${
+                  className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors ${
+                    aspectGroups.length <= 5 ? 'justify-start' : 'flex-col justify-center gap-1 px-1'
+                  } ${
                     active
                       ? 'border-violet-500/60 bg-violet-500/15 ring-1 ring-violet-400/30'
                       : isDarkMode
@@ -167,6 +216,7 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
             })}
           </div>
 
+          {!ratioOnly ? (
           <div
             className={`mt-2 rounded-lg border px-2 py-2 ${
               isDarkMode ? 'border-white/[0.08] bg-black/25' : 'border-gray-200 bg-gray-50'
@@ -256,6 +306,7 @@ export const PhotoCollageAspectRatioDropdown: React.FC<PhotoCollageAspectRatioDr
               </div>
             )}
           </div>
+          ) : null}
         </div>
       ) : null}
     </div>

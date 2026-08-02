@@ -1,4 +1,5 @@
 ; Aixflow 安装器暗黑主题（与官网 #051A24 一致；须在 MUI2 之前由 electron-builder include）
+; nsis-web 下载进度：见 build/webPackage.nsh + build/x86-unicode/INetC.dll（electron:build 会 patch）
 !ifndef MUI_BGCOLOR
   !define MUI_BGCOLOR 051A24
 !endif

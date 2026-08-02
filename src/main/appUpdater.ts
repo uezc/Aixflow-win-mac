@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
 import { BrowserWindow, ipcMain, app } from 'electron';
 /** electron-updater 为 CJS；打包后主进程为 ESM 时不能用 `import { autoUpdater }`，须默认导入再解构 */
 import electronUpdater from 'electron-updater';
@@ -7,12 +8,78 @@ import { getUpdaterFeedUrlForRegion, type ReleaseFeedRegion } from './config/oss
 import { prepareAndExitForUpdate } from './updateQuitHelper.js';
 import { requestRendererPrepareForUpdate } from './updatePrepareIpc.js';
 
+const require = createRequire(import.meta.url);
+
+type CancellationTokenCtor = new () => { cancel: () => void; cancelled: boolean };
+
+/**
+ * builder-util-runtime 应在 dependencies 中；打包后若顶层缺失，
+ * 回退到 electron-updater 自带的嵌套副本，避免主进程启动即崩溃。
+ */
+function loadCancellationToken(): CancellationTokenCtor {
+  const tried: string[] = [];
+  const tryLoad = (id: string): CancellationTokenCtor | null => {
+    tried.push(id);
+    try {
+      const mod = require(id) as { CancellationToken?: CancellationTokenCtor };
+      if (typeof mod?.CancellationToken === 'function') return mod.CancellationToken;
+    } catch {
+      /* try next */
+    }
+    return null;
+  };
+
+  const fromTop = tryLoad('builder-util-runtime');
+  if (fromTop) return fromTop;
+
+  try {
+    const updaterEntry = require.resolve('electron-updater');
+    const nested = path.join(
+      path.dirname(updaterEntry),
+      'node_modules',
+      'builder-util-runtime',
+    );
+    const fromNested = tryLoad(nested);
+    if (fromNested) return fromNested;
+  } catch {
+    /* ignore */
+  }
+
+  // 部分打包布局：electron-updater/node_modules 与入口同级的上一级
+  try {
+    const updaterPkg = require.resolve('electron-updater/package.json');
+    const nested = path.join(
+      path.dirname(updaterPkg),
+      'node_modules',
+      'builder-util-runtime',
+    );
+    const fromNested = tryLoad(nested);
+    if (fromNested) return fromNested;
+  } catch {
+    /* ignore */
+  }
+
+  console.error(
+    '[autoUpdater] Cannot load CancellationToken from builder-util-runtime. Tried:',
+    tried.join(', '),
+  );
+  // 惰性失败：不在模块加载期 throw，下载时再报错
+  return class MissingCancellationToken {
+    cancelled = false;
+    cancel() {
+      this.cancelled = true;
+    }
+  };
+}
+
+const CancellationToken = loadCancellationToken();
+
 const { autoUpdater } = electronUpdater;
 
 /** electron-updater 内部 API，类型定义未导出，运行时可用 */
 type UpdaterInternals = {
   getOrCreateDownloadHelper?: () => Promise<{ cacheDirForPendingUpdate: string }>;
-  updateInfoAndProvider?: { info?: { version?: string } };
+  updateInfoAndProvider?: { info?: { version?: string; path?: string } };
 };
 
 function getUpdaterInternals(): UpdaterInternals {
@@ -67,6 +134,11 @@ let packagePollTimer: ReturnType<typeof setInterval> | null = null;
 let lastPollTransferred = 0;
 let lastPollAt = 0;
 let pollBytesPerSecond = 0;
+let lastPendingDir: string | null = null;
+let downloadCancellationToken: { cancel: () => void; cancelled: boolean } | null = null;
+let downloadPaused = false;
+let downloadCancelled = false;
+let downloadInFlight = false;
 
 /** stub exe 通常 < 32MB；主包 .nsis.7z 为 GB 级 */
 const NSIS_WEB_STUB_MAX_BYTES = 32 * 1024 * 1024;
@@ -83,11 +155,16 @@ function sendToRenderer(channel: string, payload?: unknown) {
   else w.webContents.send(channel, payload);
 }
 
+function safeNumber(n: unknown, fallback = 0): number {
+  const v = typeof n === 'number' ? n : Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+
 function readPackageBytes(info: unknown): number {
   if (!info || typeof info !== 'object') return 0;
   const packages = (info as { packages?: Record<string, { size?: number }> }).packages;
   if (!packages) return 0;
-  return Number(packages.x64?.size ?? packages['x64']?.size ?? 0) || 0;
+  return safeNumber(packages.x64?.size ?? packages['x64']?.size, 0);
 }
 
 function stopPackagePoll() {
@@ -102,7 +179,10 @@ async function resolvePendingDir(): Promise<string | null> {
     const au = getUpdaterInternals();
     if (typeof au.getOrCreateDownloadHelper === 'function') {
       const helper = await au.getOrCreateDownloadHelper();
-      if (helper?.cacheDirForPendingUpdate) return helper.cacheDirForPendingUpdate;
+      if (helper?.cacheDirForPendingUpdate) {
+        lastPendingDir = helper.cacheDirForPendingUpdate;
+        return helper.cacheDirForPendingUpdate;
+      }
     }
   } catch {
     /* ignore */
@@ -110,9 +190,14 @@ async function resolvePendingDir(): Promise<string | null> {
   const localAppData = process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local');
   for (const dirName of [`${app.getName()}-updater`, 'nexflow-updater', 'Aixflow-updater']) {
     const pending = path.join(localAppData, dirName, 'pending');
-    if (fs.existsSync(pending)) return pending;
+    if (fs.existsSync(pending)) {
+      lastPendingDir = pending;
+      return pending;
+    }
   }
-  return path.join(localAppData, `${app.getName()}-updater`, 'pending');
+  const fallback = path.join(localAppData, `${app.getName()}-updater`, 'pending');
+  lastPendingDir = fallback;
+  return fallback;
 }
 
 function statFileSize(filePath: string): number {
@@ -123,14 +208,21 @@ function statFileSize(filePath: string): number {
   }
 }
 
+/**
+ * 读取主包已下载字节。
+ * electron-updater 全量下载直接写 package-{ver}.7z；差分/临时可能为 temp-*.7z —— 两者都要计入，否则进度条会卡在 stub 完成后的近 0%。
+ */
 function readLargestPackageBytes(pendingDir: string, version: string | null): number {
   const candidates: string[] = [];
   if (version) {
     candidates.push(path.join(pendingDir, `package-${version}.7z`));
+    candidates.push(path.join(pendingDir, `temp-package-${version}.7z`));
   }
   try {
     for (const name of fs.readdirSync(pendingDir)) {
-      if (name.endsWith('.7z') && !name.startsWith('temp-')) {
+      if (!/\.7z$/i.test(name)) continue;
+      // 包含 temp-*：主包下载过程中体积增长主要发生在这些文件上
+      if (/^package-/i.test(name) || /^temp-.*\.7z$/i.test(name) || name.includes('.nsis.7z') || name.endsWith('.7z')) {
         candidates.push(path.join(pendingDir, name));
       }
     }
@@ -140,38 +232,62 @@ function readLargestPackageBytes(pendingDir: string, version: string | null): nu
   return candidates.reduce((max, p) => Math.max(max, statFileSize(p)), 0);
 }
 
+function resolveInstallerFileName(): string {
+  const version = pendingUpdateVersion || getUpdaterInternals().updateInfoAndProvider?.info?.version || 'latest';
+  const infoPath = getUpdaterInternals().updateInfoAndProvider?.info?.path;
+  if (infoPath && /\.exe$/i.test(infoPath)) return path.basename(infoPath);
+  return `Aixflow-Windows-Setup-${version}.exe`;
+}
+
 function buildProgressPayload(
   stubDone: number,
   stubTotal: number,
   packageDone: number,
   packageTotal: number,
   bytesPerSecond: number,
-  phase: 'stub' | 'main-package' | 'full',
+  phase: 'stub' | 'main-package' | 'full' | 'paused',
 ) {
-  const combinedTotal = stubTotal + packageTotal;
+  const safeStubTotal = Math.max(0, safeNumber(stubTotal));
+  const safePackageTotal = Math.max(0, safeNumber(packageTotal));
+  const combinedTotal = safeStubTotal + safePackageTotal;
   if (combinedTotal <= 0) return null;
-  const safeStubDone = Math.min(Math.max(stubDone, 0), stubTotal);
-  const safePackageDone = Math.min(Math.max(packageDone, 0), packageTotal);
-  const combinedTransferred = safeStubDone + safePackageDone;
-  const stubPercent = stubTotal > 0 ? Math.min(100, (safeStubDone / stubTotal) * 100) : 100;
-  const packagePercent = packageTotal > 0 ? Math.min(100, (safePackageDone / packageTotal) * 100) : 0;
+
+  const safeStubDone = Math.min(Math.max(safeNumber(stubDone), 0), safeStubTotal || Number.POSITIVE_INFINITY);
+  const safePackageDone = Math.min(Math.max(safeNumber(packageDone), 0), safePackageTotal || Number.POSITIVE_INFINITY);
+  const clampedStubDone = safeStubTotal > 0 ? Math.min(safeStubDone, safeStubTotal) : 0;
+  const clampedPackageDone = safePackageTotal > 0 ? Math.min(safePackageDone, safePackageTotal) : safePackageDone;
+  const combinedTransferred = clampedStubDone + clampedPackageDone;
+  const speed = Math.max(0, safeNumber(bytesPerSecond));
+  const remaining = Math.max(0, combinedTotal - combinedTransferred);
+  const etaSeconds = speed > 0 ? remaining / speed : null;
+
+  const stubPercent = safeStubTotal > 0 ? Math.min(100, (clampedStubDone / safeStubTotal) * 100) : 100;
+  const packagePercent =
+    safePackageTotal > 0 ? Math.min(100, (clampedPackageDone / safePackageTotal) * 100) : 0;
+  const percent = Math.min(100, (combinedTransferred / combinedTotal) * 100);
+
   return {
     phase,
-    percent: Math.min(100, (combinedTransferred / combinedTotal) * 100),
-    stubPercent,
-    packagePercent,
+    percent: safeNumber(percent),
+    stubPercent: safeNumber(stubPercent),
+    packagePercent: safeNumber(packagePercent),
     transferred: combinedTransferred,
     total: combinedTotal,
-    bytesPerSecond,
-    packageBytes: packageTotal,
-    stubBytes: stubTotal,
+    bytesPerSecond: speed,
+    etaSeconds: etaSeconds == null ? null : safeNumber(etaSeconds),
+    packageBytes: safePackageTotal,
+    stubBytes: safeStubTotal,
+    fileName: resolveInstallerFileName(),
+    savePath: lastPendingDir || '',
+    paused: phase === 'paused' || downloadPaused,
   };
 }
 
 function emitCombinedProgress(packageBytesDownloaded: number, bytesPerSecond?: number) {
+  if (downloadCancelled) return;
   const stubTotal = stubBytesTotal;
   const packageTotal = pendingPackageBytes;
-  const stubDone = Math.min(stubBytesTransferred, stubTotal);
+  const stubDone = Math.min(stubBytesTransferred, stubTotal > 0 ? stubTotal : stubBytesTransferred);
   const inMainPhase = packageBytesDownloaded > 0 || (stubTotal > 0 && stubDone >= stubTotal);
   const payload = buildProgressPayload(
     stubDone,
@@ -179,26 +295,35 @@ function emitCombinedProgress(packageBytesDownloaded: number, bytesPerSecond?: n
     packageBytesDownloaded,
     packageTotal,
     bytesPerSecond ?? pollBytesPerSecond,
-    inMainPhase ? 'main-package' : 'stub',
+    downloadPaused ? 'paused' : inMainPhase ? 'main-package' : 'stub',
   );
   if (payload) sendToRenderer('app:update-download-progress', payload);
 }
 
 function startPackagePoll() {
-  if (packagePollTimer || pendingPackageBytes <= 0) return;
-  lastPollTransferred = stubBytesTransferred;
+  if (packagePollTimer) return;
+  if (pendingPackageBytes <= 0) return;
+
+  lastPollTransferred = Math.min(stubBytesTransferred, stubBytesTotal || stubBytesTransferred);
   lastPollAt = Date.now();
-  pollBytesPerSecond = 0;
+  if (pollBytesPerSecond <= 0) pollBytesPerSecond = 0;
 
   packagePollTimer = setInterval(() => {
+    if (downloadPaused || downloadCancelled) return;
     void (async () => {
       const pendingDir = await resolvePendingDir();
       if (!pendingDir) return;
       const packageBytesDownloaded = readLargestPackageBytes(pendingDir, pendingUpdateVersion);
-      const combinedTransferred = Math.min(stubBytesTransferred, stubBytesTotal) + packageBytesDownloaded;
+      const combinedTransferred =
+        Math.min(stubBytesTransferred, stubBytesTotal > 0 ? stubBytesTotal : stubBytesTransferred) +
+        packageBytesDownloaded;
       const now = Date.now();
-      if (now > lastPollAt && combinedTransferred >= lastPollTransferred) {
-        pollBytesPerSecond = ((combinedTransferred - lastPollTransferred) / (now - lastPollAt)) * 1000;
+      const dt = now - lastPollAt;
+      if (dt >= 200 && combinedTransferred >= lastPollTransferred) {
+        const delta = combinedTransferred - lastPollTransferred;
+        // 指数平滑，避免 ETA 跳动
+        const instant = (delta / dt) * 1000;
+        pollBytesPerSecond = pollBytesPerSecond > 0 ? pollBytesPerSecond * 0.7 + instant * 0.3 : instant;
         lastPollTransferred = combinedTransferred;
         lastPollAt = now;
       }
@@ -210,6 +335,18 @@ function startPackagePoll() {
 function syncPendingVersionFromUpdater() {
   const version = getUpdaterInternals().updateInfoAndProvider?.info?.version;
   if (version) pendingUpdateVersion = version;
+}
+
+function resetDownloadRuntimeState() {
+  stopPackagePoll();
+  stubBytesTotal = 0;
+  stubBytesTransferred = 0;
+  pollBytesPerSecond = 0;
+  lastPollTransferred = 0;
+  lastPollAt = 0;
+  downloadPaused = false;
+  downloadCancelled = false;
+  downloadCancellationToken = null;
 }
 
 function ensureUpdaterFeedAndListeners() {
@@ -228,41 +365,70 @@ function ensureUpdaterFeedAndListeners() {
   applyUpdaterFeed(activeReleaseFeedRegion);
 
   autoUpdater.on('download-progress', (info) => {
+    if (downloadPaused || downloadCancelled) return;
+
+    const total = safeNumber(info.total);
+    const transferred = safeNumber(info.transferred);
+    const bps = safeNumber(info.bytesPerSecond);
+    const pct = safeNumber(info.percent);
+
     const stubPhase =
-      pendingPackageBytes > info.total && info.total > 0 && info.total < NSIS_WEB_STUB_MAX_BYTES;
+      pendingPackageBytes > total && total > 0 && total < NSIS_WEB_STUB_MAX_BYTES;
 
     if (stubPhase) {
-      stubBytesTotal = info.total;
-      stubBytesTransferred = info.transferred;
+      stubBytesTotal = total;
+      stubBytesTransferred = transferred;
       const payload = buildProgressPayload(
-        info.transferred,
-        info.total,
+        transferred,
+        total,
         0,
         pendingPackageBytes,
-        info.bytesPerSecond,
+        bps,
         'stub',
       );
       if (payload) sendToRenderer('app:update-download-progress', payload);
 
-      if (info.percent >= 99) {
-        stubBytesTransferred = info.total;
+      if (pct >= 99 || (total > 0 && transferred >= total)) {
+        stubBytesTransferred = total;
         startPackagePoll();
       }
       return;
     }
 
-    const fullPayload = buildProgressPayload(0, 0, info.transferred, info.total, info.bytesPerSecond, 'full');
+    // 主包（或非 web-installer 整包）：electron-updater 对全量 .7z 往往不带 onProgress，
+    // 若偶发有事件且 total 接近主包体积，则按 stub 已完成 + 主包进度合并。
+    if (pendingPackageBytes > 0 && total >= NSIS_WEB_STUB_MAX_BYTES) {
+      if (stubBytesTotal <= 0) stubBytesTotal = 0;
+      stubBytesTransferred = stubBytesTotal > 0 ? stubBytesTotal : stubBytesTransferred;
+      const payload = buildProgressPayload(
+        stubBytesTransferred,
+        stubBytesTotal,
+        transferred,
+        Math.max(total, pendingPackageBytes),
+        bps,
+        'main-package',
+      );
+      if (payload) sendToRenderer('app:update-download-progress', payload);
+      startPackagePoll();
+      return;
+    }
+
+    const fullPayload = buildProgressPayload(0, 0, transferred, total, bps, 'full');
     if (fullPayload) {
       sendToRenderer('app:update-download-progress', fullPayload);
     } else {
       sendToRenderer('app:update-download-progress', {
         phase: 'full' as const,
-        percent: info.percent,
-        stubPercent: info.percent,
-        packagePercent: info.percent,
-        transferred: info.transferred,
-        total: info.total,
-        bytesPerSecond: info.bytesPerSecond,
+        percent: pct,
+        stubPercent: pct,
+        packagePercent: pct,
+        transferred,
+        total,
+        bytesPerSecond: bps,
+        etaSeconds: bps > 0 && total > transferred ? (total - transferred) / bps : null,
+        fileName: resolveInstallerFileName(),
+        savePath: lastPendingDir || '',
+        paused: false,
       });
     }
   });
@@ -273,6 +439,7 @@ function ensureUpdaterFeedAndListeners() {
   });
   autoUpdater.on('update-downloaded', () => {
     stopPackagePoll();
+    downloadInFlight = false;
     if (pendingPackageBytes > 0 && stubBytesTotal > 0) {
       emitCombinedProgress(pendingPackageBytes, pollBytesPerSecond);
     }
@@ -281,7 +448,16 @@ function ensureUpdaterFeedAndListeners() {
   });
   autoUpdater.on('error', (err) => {
     stopPackagePoll();
+    downloadInFlight = false;
+    if (downloadCancelled) {
+      downloadCancelled = false;
+      return;
+    }
+    if (downloadPaused) {
+      return;
+    }
     const msg = err instanceof Error ? err.message : String(err);
+    if (/cancell?ed/i.test(msg)) return;
     console.error('[autoUpdater]', err);
     sendToRenderer('app:update-error', { message: msg });
   });
@@ -300,6 +476,55 @@ async function scheduleUpdateInstallAfterAppQuit(): Promise<void> {
     console.error('[autoUpdater] scheduleUpdateInstallAfterAppQuit:', e);
     const msg = e instanceof Error ? e.message : String(e);
     sendToRenderer('app:update-error', { message: msg });
+  }
+}
+
+async function beginDownloadUpdate(): Promise<{ success: true } | { success: false; error: string }> {
+  if (downloadInFlight && !downloadPaused) {
+    return { success: true };
+  }
+  try {
+    ensureUpdaterFeedAndListeners();
+    syncPendingVersionFromUpdater();
+    void resolvePendingDir();
+
+    if (!downloadPaused) {
+      stubBytesTotal = 0;
+      stubBytesTransferred = 0;
+      pollBytesPerSecond = 0;
+      lastPollTransferred = 0;
+      lastPollAt = 0;
+    }
+    downloadPaused = false;
+    downloadCancelled = false;
+    stopPackagePoll();
+
+    // 关键因修复：原先 `pendingPackageBytes <= 0` 才 poll，导致已知主包体积时反而从不轮询；
+    // 而 nsis-web 全量主包下载不带 onProgress，进度条会卡死在引导程序结束后的近 0%。
+    if (pendingPackageBytes > 0) startPackagePoll();
+
+    downloadCancellationToken = new CancellationToken();
+    downloadInFlight = true;
+    await withReleaseFeedFallback(() =>
+      autoUpdater.downloadUpdate(downloadCancellationToken as never),
+    );
+    return { success: true };
+  } catch (e: unknown) {
+    downloadInFlight = false;
+    stopPackagePoll();
+    if (downloadCancelled) {
+      return { success: false, error: 'cancelled' };
+    }
+    if (downloadPaused) {
+      return { success: true };
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/cancell?ed/i.test(msg)) {
+      return { success: false, error: 'cancelled' };
+    }
+    console.warn('[autoUpdater] downloadUpdate:', msg);
+    sendToRenderer('app:update-error', { message: msg });
+    return { success: false, error: msg };
   }
 }
 
@@ -360,23 +585,53 @@ export function registerAppUpdaterIpc() {
     if (process.platform !== 'win32' && process.platform !== 'darwin') {
       return { success: false as const, error: '当前平台暂不支持应用内更新' };
     }
-    try {
-      ensureUpdaterFeedAndListeners();
-      syncPendingVersionFromUpdater();
-      stubBytesTotal = 0;
-      stubBytesTransferred = 0;
-      pollBytesPerSecond = 0;
-      stopPackagePoll();
-      if (pendingPackageBytes <= 0) startPackagePoll();
+    resetDownloadRuntimeState();
+    return beginDownloadUpdate();
+  });
 
-      await withReleaseFeedFallback(() => autoUpdater.downloadUpdate());
-      return { success: true as const };
-    } catch (e: unknown) {
-      stopPackagePoll();
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn('[autoUpdater] downloadUpdate:', msg);
-      sendToRenderer('app:update-error', { message: msg });
-      return { success: false as const, error: msg };
+  ipcMain.handle('app:pause-update-download', async () => {
+    if (!downloadInFlight || downloadPaused) return { success: true as const, paused: true };
+    downloadPaused = true;
+    try {
+      downloadCancellationToken?.cancel();
+    } catch {
+      /* ignore */
     }
+    stopPackagePoll();
+    const pendingDir = await resolvePendingDir();
+    const packageDone = pendingDir ? readLargestPackageBytes(pendingDir, pendingUpdateVersion) : 0;
+    const payload = buildProgressPayload(
+      stubBytesTransferred,
+      stubBytesTotal,
+      packageDone,
+      pendingPackageBytes,
+      0,
+      'paused',
+    );
+    if (payload) sendToRenderer('app:update-download-progress', payload);
+    sendToRenderer('app:update-download-paused', { paused: true });
+    return { success: true as const, paused: true };
+  });
+
+  ipcMain.handle('app:resume-update-download', async () => {
+    if (!downloadPaused) return { success: true as const, paused: false };
+    downloadPaused = false;
+    sendToRenderer('app:update-download-paused', { paused: false });
+    return beginDownloadUpdate();
+  });
+
+  ipcMain.handle('app:cancel-update-download', async () => {
+    downloadCancelled = true;
+    downloadPaused = false;
+    downloadInFlight = false;
+    try {
+      downloadCancellationToken?.cancel();
+    } catch {
+      /* ignore */
+    }
+    stopPackagePoll();
+    resetDownloadRuntimeState();
+    sendToRenderer('app:update-download-cancelled');
+    return { success: true as const };
   });
 }

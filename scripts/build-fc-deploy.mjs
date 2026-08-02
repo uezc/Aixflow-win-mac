@@ -68,13 +68,21 @@ console.log('[build-fc-deploy] Verified:', check);
 
 if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
-console.log('[build-fc-deploy] Zip -> aixflow-final.zip');
-const cmd = `Compress-Archive -Path "${distFinal}\\*" -DestinationPath "${zipPath}" -Force`;
-const r = spawnSync('powershell', ['-NoProfile', '-Command', cmd], {
-  cwd: root,
+// 必须用 tar 打 zip：PowerShell Compress-Archive 会写入反斜杠路径（lib\xxx.mjs），
+// 阿里云 Linux FC 解压后无法形成 lib/ 目录，导致 ERR_MODULE_NOT_FOUND。
+const tmpDir = path.join(root, '.tmp');
+fs.mkdirSync(tmpDir, { recursive: true });
+console.log('[build-fc-deploy] Zip -> aixflow-final.zip (tar, forward-slash paths)');
+const r = spawnSync('tar', ['-a', '-cf', zipPath, '.'], {
+  cwd: distFinal,
   stdio: 'inherit',
-  shell: true,
+  shell: process.platform === 'win32',
+  env: { ...process.env, TEMP: tmpDir, TMP: tmpDir },
 });
-if (r.status !== 0) process.exit(r.status ?? 1);
+if (r.status !== 0) {
+  console.error('[build-fc-deploy] tar 失败 exit', r.status);
+  process.exit(r.status ?? 1);
+}
 
-console.log('[build-fc-deploy] Done:', zipPath);
+const mb = (fs.statSync(zipPath).size / 1024 / 1024).toFixed(2);
+console.log('[build-fc-deploy] Done:', zipPath, `(${mb} MB)`);

@@ -1,5 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Handle, Position, NodeProps, useViewport } from 'reactflow';
+import { Handle, Position, NodeProps } from 'reactflow';
+import { useFrozenFlowZoom } from '../../hooks/useFrozenFlowViewport';
 import { Video } from 'lucide-react';
 import { ReferenceAudioWaveStrip } from './ReferenceAudioWaveStrip';
 import {
@@ -15,12 +16,13 @@ import {
   setActiveDigitalHumanVideoNodeId,
   useGlobalInteractionSelector,
 } from '../../utils/globalInteractionStore';
+import { scaleModulePx } from '../../utils/moduleDisplayScale';
 
-const DEFAULT_CARD_W = 380;
+const DEFAULT_CARD_W = scaleModulePx(380);
 const PORTRAIT_VIDEO_ASPECT = 9 / 16;
-const MIN_CARD_W = 280;
+const MIN_CARD_W = scaleModulePx(280);
 const CHROME_V = 36;
-const AUDIO_BLOCK_H = 132;
+const AUDIO_BLOCK_H = scaleModulePx(132);
 const INNER_PAD = 16;
 
 export interface DigitalHumanNodeData {
@@ -59,7 +61,7 @@ const DigitalHumanNodeComponent: React.FC<DigitalHumanNodeProps> = ({
   onDataChange,
   dragging,
 }) => {
-  const { zoom } = useViewport();
+  const zoom = useFrozenFlowZoom(1);
   const activeDigitalHumanVideoNodeId = useGlobalInteractionSelector((s) => s.activeDigitalHumanVideoNodeId);
   const isActiveVideoPlayback = activeDigitalHumanVideoNodeId === id;
   const nodeRef = useRef<HTMLDivElement>(null);

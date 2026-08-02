@@ -3,6 +3,7 @@ import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVer
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { contextMenuLabelForType } from '../../i18n/contextMenuI18n';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../../config/sora2UiPolicy';
+import { HIDE_DIRECTOR_STAGE_UI } from '../../config/directorUiPolicy';
 
 interface ContextMenuProps {
   x: number;
@@ -31,9 +32,11 @@ const baseMenuItems = [
   { type: 'audio', icon: Volume2 },
 ];
 
-const visibleBaseMenuItems = HIDE_SORA2_AND_SORA_CHARACTER_UI
-  ? baseMenuItems.filter((item) => item.type !== 'character')
-  : baseMenuItems;
+const visibleBaseMenuItems = baseMenuItems.filter((item) => {
+  if (HIDE_SORA2_AND_SORA_CHARACTER_UI && item.type === 'character') return false;
+  if (HIDE_DIRECTOR_STAGE_UI && item.type === 'director') return false;
+  return true;
+});
 
 const videoToAudioItems = [{ type: 'audio-extract-from-video', icon: Volume2 }];
 

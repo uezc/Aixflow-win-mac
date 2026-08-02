@@ -4,6 +4,17 @@
  * 供 FC nx_model_config 视频扣费 quantity 与客户端预估对齐。
  */
 
+import {
+  VIDEO_FLAT_CNY,
+  normalizeGrok3DurationSec,
+  normalizeRhartVideoXDurationSec,
+  normalizeGrok3StableDurationSec,
+  normalizeLtx23DurationSec,
+} from './cost_table.mjs';
+
+/** VIDEO_FLAT 裸 model_id：按次打包价，查表 Quantity=1（与客户端 cloudModelPricing 一致） */
+const VIDEO_FLAT_PACK_PRICE_MODEL_IDS = new Set(Object.keys(VIDEO_FLAT_CNY));
+
 function lc(s) {
   return String(s || '').trim().toLowerCase();
 }
@@ -22,6 +33,7 @@ function joinKey(...parts) {
 const IMAGE_REVERSE_KEYS = {
   'gpt-4o': 'gpt-4o-image-reverse',
   'joy-caption-two': 'joy-caption-two-image-reverse',
+  'openai/gpt-5.6-terra': 'openai/gpt-5.6-terra-image-reverse',
 };
 
 function klingO1CapabilitySuffix(model) {
@@ -95,6 +107,17 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('wan', '2-6', 'flash', resSeg, durSeg, audioSeg);
   }
 
+  if (m === 'wan-animate') {
+    const resRaw = String(inp.resolutionWanAnimate ?? '').trim().toLowerCase();
+    const resSeg =
+      resRaw === '1080p' || resRaw === '1080' || resRaw === '1920x1080' || resRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    const clipRaw = String(inp.wanAnimateClipSec ?? '8').trim();
+    const sec = clipRaw === '5' || clipRaw === '10' || clipRaw === '15' ? clipRaw : '8';
+    return joinKey('wan', 'animate', resSeg, `${sec}s`);
+  }
+
   if (m === 'kling-v2.6-pro') {
     let durNum;
     if (inp.duration === '10') durNum = 10;
@@ -115,11 +138,26 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('kling', 'o1', variant || undefined, durSeg);
   }
 
-  if (m === 'rhart-video-g') {
-    const dg = String(inp.durationRhartVideoG || '').toLowerCase();
-    const durNum = dg === '10s' || dg === '10' ? 10 : dg === '6s' || dg === '6' ? 6 : undefined;
-    const durSeg = durNum != null && durNum !== 6 ? `${durNum}s` : undefined;
-    return joinKey('grok', durSeg);
+  if (m === 'grok-3-stable') {
+    const durNum = normalizeGrok3StableDurationSec(inp.durationGrok3, 10);
+    return joinKey('grok-3-stable', '720p', `${durNum}s`);
+  }
+
+  if (m === 'rhart-video-x') {
+    const durNum = normalizeRhartVideoXDurationSec(input.durationGrok3, 10);
+    return joinKey('rhart-video-x', '720p', `${durNum}s`);
+  }
+
+  if (m === 'grok-3' || m === 'rhart-video-g') {
+    const resSeg = '720p';
+    let durNum;
+    if (m === 'rhart-video-g') {
+      const dg = String(inp.durationRhartVideoG || '').toLowerCase();
+      durNum = dg === '10s' || dg === '10' ? 10 : 6;
+    } else {
+      durNum = normalizeGrok3DurationSec(inp.durationGrok3, 10);
+    }
+    return joinKey('grok-3', resSeg, `${durNum}s`);
   }
 
   const vv = veoVariantFromRhart(m);
@@ -160,9 +198,8 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
         ? String(inp.resolutionLtx23I2v).trim()
         : '';
     const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
-    const d = parseInt(String(inp.durationLtx23I2v ?? ''), 10);
-    const durNum = Number.isFinite(d) && d > 0 ? d : undefined;
-    const dur = durNum != null ? `${durNum}s` : '';
+    const durNum = normalizeLtx23DurationSec(inp.durationLtx23I2v, 10);
+    const dur = `${durNum}s`;
     return joinKey('ltx', '2-3', 'i2v', res, dur);
   }
 
@@ -172,10 +209,43 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
         ? String(inp.resolutionLtx23T2v).trim()
         : '';
     const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
-    const d = parseInt(String(inp.durationLtx23T2v ?? ''), 10);
-    const durNum = Number.isFinite(d) && d > 0 ? d : undefined;
-    const dur = durNum != null ? `${durNum}s` : '';
+    const durNum = normalizeLtx23DurationSec(inp.durationLtx23T2v, 10);
+    const dur = `${durNum}s`;
     return joinKey('ltx', '2-3', res, dur);
+  }
+
+  if (m === 'ltx-2.3-hdr-multi') {
+    const resRaw =
+      inp.resolutionLtx23HdrMulti != null && String(inp.resolutionLtx23HdrMulti).trim() !== ''
+        ? String(inp.resolutionLtx23HdrMulti).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const durNum = normalizeLtx23DurationSec(inp.durationLtx23HdrMulti, 15);
+    const dur = `${durNum}s`;
+    return joinKey('ltx', '2-3', 'hdr-multi', res, dur);
+  }
+
+  if (m === 'ltx-2.3-msr-av') {
+    const resRaw =
+      inp.resolutionLtx23HdrMulti != null && String(inp.resolutionLtx23HdrMulti).trim() !== ''
+        ? String(inp.resolutionLtx23HdrMulti).trim()
+        : '';
+    const res = ['720', '1280', '1920'].includes(resRaw) ? lc(resRaw) : '';
+    const durNum = normalizeLtx23DurationSec(inp.durationLtx23HdrMulti, 10);
+    const dur = `${durNum}s`;
+    return joinKey('ltx', '2-3', 'msr-av', res, dur);
+  }
+
+  if (m === 'rh-video-start-end') {
+    const resRaw =
+      inp.resolutionRhartV31 != null && String(inp.resolutionRhartV31).trim() !== ''
+        ? lc(String(inp.resolutionRhartV31))
+        : '';
+    const res = resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    const d = parseInt(String(inp.duration ?? ''), 10);
+    const durNum = Number.isFinite(d) && d > 0 ? Math.max(5, Math.min(15, d)) : 5;
+    const dur = durNum >= 15 ? '15s' : durNum >= 10 ? '10s' : '5s';
+    return joinKey('ltx', '2-3', 'start-end', res, dur);
   }
 
   return lc(model);
@@ -196,13 +266,16 @@ export function getVideoBillingQuantity(baseModel, input) {
 
 /**
  * 与 src/renderer/utils/cloudModelPricing.getVideoQuantityForCloudKey 一致。
+ * SKU 以 -{N}s 结尾或 VIDEO_FLAT 裸 id → Quantity=1；否则按 uiSeconds（按秒基价）。
  */
 export function getVideoQuantityForCloudKey(cloudKey, uiSeconds) {
-  const m = String(cloudKey || '').match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
+  const key = String(cloudKey || '').trim();
+  const m = key.match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
   if (m) {
     const n = parseInt(m[1], 10);
     if (Number.isFinite(n) && n > 0) return 1;
   }
+  if (VIDEO_FLAT_PACK_PRICE_MODEL_IDS.has(key)) return 1;
   return Math.max(1, uiSeconds);
 }
 

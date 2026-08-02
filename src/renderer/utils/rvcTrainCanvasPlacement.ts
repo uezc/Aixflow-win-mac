@@ -4,7 +4,7 @@ import { rvcVoiceAvatarUrl, rvcVoiceDisplayName, rvcVoiceModelPackageUrl, rvcVoi
 import { RVC_VOICE_TRAIN_MODEL_ID } from './audioRvcTrainModel';
 import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH, RVC_TRAIN_NAME_FONT_DEFAULT_PX } from '../constants/rvcTrainLayout';
 
-const RVC_TRAIN_TECHNICAL_TITLES = new Set(['rvctrain', 'rvc 训练', 'rvc 音色训练']);
+const RVC_TRAIN_TECHNICAL_TITLES = new Set(['rvctrain', 'rvc 训练', 'rvc 音色训练', '音色训练']);
 
 /** 画布节点 / 面板用的昵称（排除内部 title 标识） */
 export function resolveRvcTrainNickname(data?: { rvcTrainModelName?: string; title?: string } | null): string {
@@ -30,7 +30,7 @@ export function buildEmptyRvcTrainNode(flowPosition: { x: number; y: number }, n
     type: 'rvcTrain',
     position: centeredPosition(flowPosition),
     data: {
-      label: 'RVC 训练',
+      label: '音色训练',
       title: '',
       model: RVC_VOICE_TRAIN_MODEL_ID,
       width: RVC_TRAIN_WIDTH,

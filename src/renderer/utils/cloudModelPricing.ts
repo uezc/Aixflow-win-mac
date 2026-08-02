@@ -37,15 +37,36 @@ export function displayCnyFromCloudRow(row: NxModelConfigRow | undefined): numbe
 }
 
 /**
+ * VIDEO_FLAT_CNY 等「按次」计价的裸 model_id：表行 base 已是整次价，Quantity 必须为 1。
+ * 否则在仅有裸 id、无复合 SKU 行时，会把 uiSeconds（如 LTX 10s）误乘进扣费。
+ */
+const VIDEO_FLAT_PACK_PRICE_MODEL_IDS = new Set([
+  'sora-2',
+  'sora-2-pro',
+  'ltx-2.3-lipsync',
+  'ltx-2.3-i2v',
+  'ltx-2.3-t2v',
+  'ltx-2.3-hdr-multi',
+  'ltx-2.3-msr-av',
+  '2049450731266121729',
+  '2082392424818757633',
+  '2082437486235709441',
+  '2082682378039943169',
+]);
+
+/**
  * 视频：若命中的 cloud key 以 -{N}s 结尾（整条 SKU），认为 base_price 已是该档打包价 → Quantity=1；
- * 否则（仅模型 id）认为 base_price 按「每计费单位」× 前端秒数 → Quantity=UI 秒数。
+ * 若为 VIDEO_FLAT 裸 model_id，同样 Quantity=1；
+ * 否则（按秒基价的裸 id）Quantity=UI 秒数。
  */
 export function getVideoQuantityForCloudKey(cloudKey: string, uiSeconds: number): number {
-  const m = String(cloudKey || '').match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
+  const key = String(cloudKey || '').trim();
+  const m = key.match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
   if (m) {
     const n = parseInt(m[1], 10);
     if (Number.isFinite(n) && n > 0) return 1;
   }
+  if (VIDEO_FLAT_PACK_PRICE_MODEL_IDS.has(key)) return 1;
   return Math.max(1, uiSeconds);
 }
 
@@ -91,6 +112,7 @@ function effectiveImageResolutionForFallback(model: string, resolution: string |
   const r = String(resolution ?? '').trim();
   if (r) return r;
   if (m === 'banana-2.0' || m === 'nano-banana' || m === 'rhart-image-g-2' || m === 'rhart-image-g') return '1k';
+  if (m === 'seedream-v5') return '2k';
   if (m === 'youchuan-text-to-image-v81') return '1k';
   if (m === 'z-image' || m === 'lens' || m === 'flux2-klein') return '1080p';
   return undefined;
@@ -203,9 +225,16 @@ export const LLM_CHAT_MODEL_IDS = [
 /** RunningHub 视频分析应用 ID（与 VideoAnalysisProvider、sync_to_tablestore 一致） */
 const VIDEO_ANALYSIS_APP_ID = '2033537159944212482';
 
+/** 导演 / LLM 面板对话模型展示名（与扣费 model id 对应） */
+export const LLM_CHAT_MODEL_LABELS: Record<string, string> = {
+  [LLM_CHAT_DISPLAY_MODEL_ID]: '大语言模型-3.5',
+  'gpt-4o': '大语言模型-4o',
+  [LLM_CHAT_MODEL_GPT56_TERRA]: '大语言模型-5.6',
+};
+
 /**
- * 普通对话单次运行预估元宝：优先 nx_model_config 行（可指定任意聊天模型 id），
- * 否则回退本地 MODEL_YUANBAO_RATES / 种子 base 0.01 元 × 折算率。
+ * 普通对话单次运行预估元宝：优先该 model id 的 nx_model_config 行，
+ * 否则 MODEL_YUANBAO_RATES；勿把其它模型误回退成 gpt-3.5-turbo 的表价（Terra 等会显示偏低）。
  */
 export function getLlmChatDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
@@ -216,13 +245,61 @@ export function getLlmChatDisplayPrice(
   const id = String(modelId || '').trim() || LLM_CHAT_DISPLAY_MODEL_ID;
   const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
   if (y != null) return y;
+  const rate = resolveModelYuanbao(id, 0);
+  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
   if (id !== LLM_CHAT_DISPLAY_MODEL_ID) {
     const yDefault = yuanbaoCostFromCloudRow(pickRow(cloudMap, LLM_CHAT_DISPLAY_MODEL_ID), qty);
     if (yDefault != null) return yDefault;
   }
-  const rate = resolveModelYuanbao(id, 0);
-  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
   return localRetailCnyToYuanbao(0.01, qty);
+}
+
+/** 云端录音文件转写（百炼 fun-asr）nx_model_config / 回退表主键 */
+export const FILE_TRANSCRIBE_MODEL_ID = 'fun-asr';
+
+/** 阿里云 VIAPI 视频人像分割（按输出时长秒级计费） */
+export const VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID = 'viapi-segment-video-body';
+
+/**
+ * 云端文件转写单次预估元宝：优先 nx_model_config `fun-asr`，
+ * 否则 MODEL_YUANBAO_RATES（默认 5），再回退 AUDIO_MODEL_CNY 0.5 元。
+ */
+export function getFileTranscribeDisplayPrice(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  quantity = 1,
+): number {
+  const qty = Math.max(1, Number(quantity) || 1);
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, FILE_TRANSCRIBE_MODEL_ID), qty);
+  if (y != null) return y;
+  const rate = resolveModelYuanbao(FILE_TRANSCRIBE_MODEL_ID, 0);
+  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
+  return localRetailCnyToYuanbao(0.5, qty);
+}
+
+/**
+ * 智能抠像预估元宝（秒级）：billableSeconds = max(1, ceil(秒))；
+ * cost = max(1, ceil(unitCostPerMinute * billableSeconds / 60))。
+ * 优先 nx_model_config `viapi-segment-video-body`（base_price 为「元/分钟」，应填 2；× yuanbao_rate10 = 20 元宝/分钟），
+ * 否则 20 元宝/分钟，再回退零售 2.0 元/分钟。
+ */
+export function getViapiSegmentVideoBodyDisplayPrice(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  durationSec = 1,
+): number {
+  const billableSeconds = Math.max(1, Math.ceil(Math.max(0, Number(durationSec) || 0)));
+  const unitFromCloud = yuanbaoCostFromCloudRow(
+    pickRow(cloudMap, VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID),
+    1,
+  );
+  if (unitFromCloud != null) {
+    return Math.max(1, Math.ceil((unitFromCloud * billableSeconds) / 60));
+  }
+  const rate = resolveModelYuanbao(VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID, 0);
+  if (rate.yuanbao > 0) {
+    return Math.max(1, Math.ceil((rate.yuanbao * billableSeconds) / 60));
+  }
+  const unitFallback = localRetailCnyToYuanbao(2.0, 1);
+  return Math.max(1, Math.ceil((unitFallback * billableSeconds) / 60));
 }
 
 /**
@@ -269,6 +346,8 @@ export const IMAGE_UPSCALE_V3_AI_APP_ID = '2082378062234214401';
 export const VIDEO_WATERMARK_REMOVAL_AI_APP_ID = '2049450731266121729';
 /** 视频深度转换 RunningHub AI 应用 ID */
 export const VIDEO_DEPTH_CONVERT_AI_APP_ID = '2082392424818757633';
+/** 视频去字幕/水印 RunningHub AI 应用 ID */
+export const VIDEO_SUBTITLE_WATERMARK_AI_APP_ID = '2082682378039943169';
 /** 人物多角度 RunningHub AI 应用 ID（与 runningHubAiAppFc、FC billingModelId 一致） */
 export const CHARACTER_MULTI_ANGLE_AI_APP_ID = '1990056102572290049';
 /** 图片转 3D（GLB）RunningHub AI App — Hy3D 经典 */
@@ -336,6 +415,16 @@ export function getVideoDepthConvertDisplayPrice(
 ): number {
   const qty = Math.max(1, Number(quantity) || 1);
   const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, VIDEO_DEPTH_CONVERT_AI_APP_ID), qty);
+  if (y != null) return y;
+  return localRetailCnyToYuanbao(0.15, qty);
+}
+
+export function getVideoSubtitleWatermarkDisplayPrice(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  quantity = 1,
+): number {
+  const qty = Math.max(1, Number(quantity) || 1);
+  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, VIDEO_SUBTITLE_WATERMARK_AI_APP_ID), qty);
   if (y != null) return y;
   return localRetailCnyToYuanbao(0.15, qty);
 }

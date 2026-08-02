@@ -12,14 +12,14 @@ import {
   characterHasGlbForPreview,
   isImageTo3dLibraryCharacter,
   resolveImageTo3dLibraryThumbUrl,
-  resolveCharacterTextureUrlForPreview,
   resolveCharacterVoiceUrlForDrag,
 } from './characterListShared';
 import { importImageTo3dAssetsToCharacters } from '../utils/importImageTo3dAsset';
 import {
   preloadImageTo3dCharacter,
-  preloadImageTo3dCharactersIdle,
 } from '../utils/glbPreviewPreload';
+import AssetLibLazyThumb from './AssetLibLazyThumb';
+import { useIdlePoll } from '../hooks/useIdlePoll';
 import ImageTo3dLibraryHoverPreview from './ImageTo3dLibraryHoverPreview';
 import ImageTo3dInlineGlbPreview from './ImageTo3dInlineGlbPreview';
 import {
@@ -239,6 +239,8 @@ interface CharacterListProps {
   showImport3d?: boolean;
   onSelectCharacter?: (character: Character) => void;
   refreshTrigger?: number; // 外部触发刷新的计数器
+  /** 当前 Tab 可见且侧栏展开时才后台轮询 */
+  listActive?: boolean;
   /** 从画布点选音频类节点作为添加角色时的参考音；取消时 resolve null */
   requestVoicePickFromCanvas?: () => Promise<{ url: string; label: string } | null>;
   /** 从画布点选图片节点，写入「添加角色」四视图指定槽位（0–3）；取消时 resolve null */
@@ -255,6 +257,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
   showImport3d = false,
   onSelectCharacter,
   refreshTrigger,
+  listActive = true,
   requestVoicePickFromCanvas,
   requestViewSlotPickFromCanvas,
 }) => {
@@ -293,6 +296,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
   const characterListScrollRef = useRef<HTMLDivElement>(null);
   const [fourViewHover, setFourViewHover] = useState<{ character: Character; rect: DOMRect } | null>(null);
   const [imageTo3dHover, setImageTo3dHover] = useState<{ character: Character; rect: DOMRect } | null>(null);
+  const imageTo3dHoverLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 3D 模型库：编辑弹窗（备注 + 参考图头像） */
   const [showImageTo3dEditModal, setShowImageTo3dEditModal] = useState(false);
   const [edit3dCharacterId, setEdit3dCharacterId] = useState<string | null>(null);
@@ -343,11 +347,6 @@ const CharacterList: React.FC<CharacterListProps> = ({
       return name.includes(q);
     });
   }, [filteredCharacters, gallerySearch]);
-
-  useEffect(() => {
-    if (assetFilter !== 'imageTo3d') return;
-    preloadImageTo3dCharactersIdle(filteredCharacters);
-  }, [assetFilter, filteredCharacters]);
 
   const resolveCharacterThumbSrc = (character: Character): string => {
     if (isImageTo3dLibraryCharacter(character)) {
@@ -470,6 +469,10 @@ const CharacterList: React.FC<CharacterListProps> = ({
     if (!fourViewHover && !imageTo3dHover) return;
     const el = characterListScrollRef.current;
     const hide = () => {
+      if (imageTo3dHoverLeaveTimerRef.current) {
+        clearTimeout(imageTo3dHoverLeaveTimerRef.current);
+        imageTo3dHoverLeaveTimerRef.current = null;
+      }
       setFourViewHover(null);
       setImageTo3dHover(null);
     };
@@ -489,17 +492,37 @@ const CharacterList: React.FC<CharacterListProps> = ({
     return () => el?.removeEventListener('scroll', hide);
   }, [galleryHovered3dId]);
 
-  // 定期刷新（作为备用机制）
+  // 仅在侧栏可见时低频轮询；禁止 5s 全量刷新（会反复 IPC + 重渲染，素材库无法秒开）
+  useIdlePoll(listActive && !isCollapsed, loadCharacters, 60000);
+
+  // 模型库：空闲时只预热前 3 个 GLB，悬停可更快出 3D 预览（不全量预热避免卡顿）
   useEffect(() => {
-    const interval = setInterval(() => {
-      loadCharacters();
-    }, 5000); // 每5秒刷新一次（降低频率，避免过度请求）
-    
-    return () => clearInterval(interval);
-  }, [loadCharacters]);
+    if (assetFilter !== 'imageTo3d' || !listActive || isCollapsed) return;
+    const targets = filteredCharacters.filter((c) => characterHasGlbForPreview(c)).slice(0, 3);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    let idx = 0;
+    const pump = () => {
+      if (cancelled || idx >= targets.length) return;
+      preloadImageTo3dCharacter(targets[idx]);
+      idx += 1;
+      const ric = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 80));
+      ric(() => pump());
+    };
+    const ric = window.requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 120));
+    const id = ric(() => pump());
+    return () => {
+      cancelled = true;
+      if (typeof id === 'number' && window.cancelIdleCallback) window.cancelIdleCallback(id);
+    };
+  }, [assetFilter, filteredCharacters, listActive, isCollapsed]);
 
   useEffect(() => {
     return () => {
+      if (imageTo3dHoverLeaveTimerRef.current) {
+        clearTimeout(imageTo3dHoverLeaveTimerRef.current);
+        imageTo3dHoverLeaveTimerRef.current = null;
+      }
       if (previewAudioRef.current) {
         previewAudioRef.current.pause();
         previewAudioRef.current.src = '';
@@ -1355,11 +1378,13 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       <ImageTo3dInlineGlbPreview character={character} showReferencePlaceholder />
                     </div>
                   ) : thumb ? (
-                    <img
+                    <AssetLibLazyThumb
                       src={thumb}
                       alt={displayName}
-                      className="absolute inset-0 w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
-                      draggable={false}
+                      className="absolute inset-0 w-full h-full"
+                      imgClassName="absolute inset-0 w-full h-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                      maxEdge={320}
+                      placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
                     />
                   ) : (
                     <div className="absolute inset-0 flex items-center justify-center">
@@ -1409,9 +1434,17 @@ const CharacterList: React.FC<CharacterListProps> = ({
               const showFourViewHover = !is3dEntry && characterHasViewImages(character);
               const show3dHover = is3dEntry && characterHasGlbForPreview(character);
 
+              const clearImageTo3dHoverLeaveTimer = () => {
+                if (imageTo3dHoverLeaveTimerRef.current) {
+                  clearTimeout(imageTo3dHoverLeaveTimerRef.current);
+                  imageTo3dHoverLeaveTimerRef.current = null;
+                }
+              };
+
               const handleCardMouseEnter = (e: React.MouseEvent<HTMLDivElement>) => {
                 const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
                 if (show3dHover) {
+                  clearImageTo3dHoverLeaveTimer();
                   preloadImageTo3dCharacter(character);
                   setFourViewHover(null);
                   setImageTo3dHover({ character, rect });
@@ -1422,6 +1455,15 @@ const CharacterList: React.FC<CharacterListProps> = ({
               };
 
               const handleCardMouseLeave = () => {
+                if (show3dHover) {
+                  clearImageTo3dHoverLeaveTimer();
+                  // 短延迟：缩略图异步替换 DOM 时避免预览闪断
+                  imageTo3dHoverLeaveTimerRef.current = setTimeout(() => {
+                    setImageTo3dHover((cur) => (cur?.character.id === character.id ? null : cur));
+                    imageTo3dHoverLeaveTimerRef.current = null;
+                  }, 120);
+                  return;
+                }
                 setImageTo3dHover(null);
                 setFourViewHover(null);
               };
@@ -1455,46 +1497,13 @@ const CharacterList: React.FC<CharacterListProps> = ({
                   title={is3dEntry ? '3D 模型（参考图缩略图）' : '角色头像（取自四视图首图）'}
                 >
                   {resolveCharacterThumbSrc(character) ? (
-                    <img
+                    <AssetLibLazyThumb
                       src={resolveCharacterThumbSrc(character)}
                       alt={character?.nickname || character?.name || '角色'}
-                      className="w-12 h-12 rounded-full object-cover border-2 border-zinc-600"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement;
-                        const src = target.src;
-                        const texFallback = is3dEntry
-                          ? (resolveCharacterTextureUrlForPreview(character) || '').trim()
-                          : '';
-                        if (texFallback && src !== texFallback) {
-                          target.src = texFallback;
-                          return;
-                        }
-
-                        // 立即显示占位符，不再重试
-                        target.style.display = 'none';
-                        const parent = target.parentElement;
-                        if (parent) {
-                          // 显示首字母圆圈或默认图标
-                          const displayName = character?.nickname || character?.name || '?';
-                          const firstLetter = displayName.charAt(0).toUpperCase();
-                          
-                          parent.innerHTML = `<div class="w-12 h-12 rounded-full flex items-center justify-center border-2 border-zinc-600 ${
-                            isDarkMode ? 'bg-blue-500/20' : 'bg-blue-100'
-                          }"><span class="text-sm font-bold ${
-                            isDarkMode ? 'text-blue-300' : 'text-blue-700'
-                          }">${firstLetter}</span></div>`;
-                        }
-                        
-                        // 通知主进程清理无效的 avatarUrl（仅在远程 URL 失败时）
-                        if (src && !src.startsWith('local-resource://') && !src.startsWith('data:')) {
-                          console.log(`[CharacterList] 头像加载失败，通知主进程清理无效 URL:`, src);
-                          if (window.electronAPI?.clearInvalidAvatarUrl) {
-                            window.electronAPI.clearInvalidAvatarUrl(character.id, src).catch((err: any) => {
-                              console.error('[CharacterList] 清理无效头像 URL 失败:', err);
-                            });
-                          }
-                        }
-                      }}
+                      className="w-12 h-12 rounded-full overflow-hidden border-2 border-zinc-600"
+                      imgClassName="w-12 h-12 rounded-full object-cover"
+                      maxEdge={128}
+                      placeholderClassName={isDarkMode ? 'bg-zinc-800' : 'bg-gray-200'}
                     />
                   ) : (
                     <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 border-zinc-600 ${

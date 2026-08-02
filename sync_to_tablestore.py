@@ -94,12 +94,14 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     # --- Veo 官方图生：4s + 无声 ---
     "rhart-v3.1-pro-official-i2v": 4.7,
     # --- 音频 ---
+    "fun-asr": 0.5,
     "rhart-song": 0.5,
     # --- 反推 ---
     "gpt-4o": 0.002422,
     "joy-caption-two": 0.036,
     # --- LLM 对话无 CNY 细表：占位 ---
-    "gpt-3.5-turbo": 0.01,
+    "gpt-3.5-turbo": 0.1,
+    "openai/gpt-5.6-terra": 0.02,
     # --- 未在 AUDIO_MODEL_CNY：占位 ---
     "speech-2.8-hd": 0.01,
     "index-tts2": 0.01,
@@ -108,6 +110,8 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     "2022127885233950721": 0.01,
     "2082378062234214401": 0.05,
     "2082392424818757633": 0.15,
+    "2082437486235709441": 0.15,
+    "2082682378039943169": 0.15,
     "2033537159944212482": 0.01,
 }
 
@@ -248,7 +252,7 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
     },
     {
         "model_id": "rhart-v3.1-pro-se",
-        "function_name": "视频模块-Veo3.1 Pro（首尾帧）",
+        "function_name": "视频模块-全能视频V3.1-pro-首尾帧生视频",
         "current_logic": "VIDEO_RHART_V31_PRO_CNY；FC type=video",
     },
     {
@@ -282,6 +286,11 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "current_logic": "未在 AUDIO_MODEL_CNY；run/ai-app/2008113338793857025；FC type=audio",
     },
     {
+        "model_id": "fun-asr",
+        "function_name": "音频模块-云端录音文件转写（百炼 fun-asr）",
+        "current_logic": "AUDIO_MODEL_CNY['fun-asr']=0.5；POST /asr/file-transcribe 按次扣；FC type=audio",
+    },
+    {
         "model_id": "rhart-song",
         "function_name": "音频模块-SUNO v5 写歌",
         "current_logic": "AUDIO_MODEL_CNY['rhart-song']；run/ai-app/2021841072451756033；FC type=audio",
@@ -302,6 +311,11 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "current_logic": "无 CNY 细表；callFCChat 默认 model；FC type=llm 粗扣（NX_CHAT_COST 或默认 1 元宝）",
     },
     {
+        "model_id": "openai/gpt-5.6-terra",
+        "function_name": "LLM 模块-大语言模型-5.6",
+        "current_logic": "cost_table openai/gpt-5.6-terra；对话/图像反推共用；FC type=llm；API model id 不变",
+    },
+    {
         "model_id": "2021955919764000770",
         "function_name": "图片模块-抠图（RunningHub AI 应用 ID）",
         "current_logic": "IMAGE 处理；无 pricing 表项；matting.ts；先 OSS 再 POST run/ai-app",
@@ -320,6 +334,16 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "model_id": "2082392424818757633",
         "function_name": "视频模块-视频深度转换（RunningHub AI 应用 ID）",
         "current_logic": "VIDEO 处理；VIDEO_FLAT_CNY['2082392424818757633']=0.15；videoDepthConvert；先 OSS 再 POST run/ai-app/2082392424818757633（default）",
+    },
+    {
+        "model_id": "2082437486235709441",
+        "function_name": "视频模块-视频去字幕/水印（旧 RunningHub AI 应用 ID，已停用）",
+        "current_logic": "已替换为 2082682378039943169；保留行仅兼容历史账单",
+    },
+    {
+        "model_id": "2082682378039943169",
+        "function_name": "视频模块-视频去字幕/水印（RunningHub AI 应用 ID）",
+        "current_logic": "VIDEO 处理；VIDEO_FLAT_CNY['2082682378039943169']=0.15；videoSubtitleWatermarkRemoval；先 OSS 再 POST run/ai-app/2082682378039943169（node38=1080,node36=video,default）",
     },
     {
         "model_id": "2033537159944212482",

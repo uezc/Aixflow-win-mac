@@ -1714,54 +1714,87 @@ async function listGsiTxRangeForUser(userId, skLow, skHighExclusive, maxRows, di
   return collected.slice(0, maxRows);
 }
 
-/** 索引投影缺列时回 nx_transactions 主表补全 */
+/** 索引投影已够用时跳过回表 */
+function txRowNeedsHydrate(row) {
+  if (!row?.tx_id) return false;
+  const missing = (v) => v == null || v === '';
+  return (
+    missing(row.created_at) ||
+    missing(row.amount) ||
+    missing(row.type) ||
+    missing(row.balance_after) ||
+    missing(row.description)
+  );
+}
+
+/** 索引投影缺列时回 nx_transactions 主表补全（仅缺字段的行；并发拉取） */
 async function hydrateTransactionRows(collected) {
   const client = getClient();
+  const indices = [];
   for (let i = 0; i < collected.length; i++) {
-    const row = collected[i];
-    if (!row.tx_id) continue;
-    try {
-      const gr = await client.getRow({
-        tableName: TX_TABLE,
-        primaryKey: txPrimaryKey(row.tx_id),
-      });
-      if (!gr.row?.attributes?.length) continue;
-      const full = attrsToObj(gr.row.attributes);
-      collected[i] = {
-        tx_id: row.tx_id,
-        user_id: full.user_id ?? row.user_id,
-        task_id: full.task_id ?? row.task_id,
-        amount: full.amount ?? row.amount,
-        type: full.type ?? row.type,
-        provider: full.provider ?? row.provider,
-        description: full.description ?? row.description,
-        created_at: full.created_at ?? row.created_at,
-        balance_after: full.balance_after ?? row.balance_after,
-      };
-    } catch (e) {
-      console.warn('[hydrateTransactionRows]', row.tx_id, e?.message || e);
+    if (txRowNeedsHydrate(collected[i])) indices.push(i);
+  }
+  if (indices.length === 0) return;
+
+  const CONCURRENCY = 12;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < indices.length) {
+      const idx = indices[cursor++];
+      const row = collected[idx];
+      if (!row?.tx_id) continue;
+      try {
+        const gr = await client.getRow({
+          tableName: TX_TABLE,
+          primaryKey: txPrimaryKey(row.tx_id),
+        });
+        if (!gr.row?.attributes?.length) continue;
+        const full = attrsToObj(gr.row.attributes);
+        collected[idx] = {
+          tx_id: row.tx_id,
+          user_id: full.user_id ?? row.user_id,
+          task_id: full.task_id ?? row.task_id,
+          amount: full.amount ?? row.amount,
+          type: full.type ?? row.type,
+          provider: full.provider ?? row.provider,
+          description: full.description ?? row.description,
+          created_at: full.created_at ?? row.created_at,
+          balance_after: full.balance_after ?? row.balance_after,
+        };
+      } catch (e) {
+        console.warn('[hydrateTransactionRows]', row.tx_id, e?.message || e);
+      }
     }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, indices.length) }, () => worker()),
+  );
 }
 
 /** 任务记录 */
 /**
  * 列出某用户最近流水（GSI idx_user_id，无全表扫描）。
  *
- * - 充值 recharge_*、退款 refund_*、新手 welcome_* 分前缀拉全（量小），消费 idem_* 倒序抽样；
- * - 合并后**始终保留**最近若干条非消费流水，再补足消费记录，避免被大量消费挤出列表。
+ * - 按 limit 收缩各前缀扫描量；只对缺字段行并发回表，避免数百次串行 getRow。
+ * - 合并后保留少量非消费流水，再按时间取最近 limit 条。
  */
 export async function listRecentTransactionsForUser(userId, limit = 20) {
   const uid = String(userId || '');
   if (!uid) return [];
+  const lim = Math.min(50, Math.max(1, Number(limit) || 20));
 
-  const idemCap = Math.min(400, Math.max(limit * 15, 100));
+  const consumeCap = Math.min(60, Math.max(lim * 2, lim + 5));
+  const rechargeCap = Math.min(24, Math.max(8, lim));
+  const refundCap = Math.min(16, Math.max(8, Math.ceil(lim / 2)));
+  const welcomeCap = Math.min(8, 8);
+  const adjustCap = Math.min(16, Math.max(8, Math.ceil(lim / 2)));
+
   const [adjustRows, rechargeRows, refundRows, welcomeRows, idemRows] = await Promise.all([
-    listGsiTxRangeForUser(uid, 'adjust_', 'idem_', 50, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'recharge_', 'refund_', 100, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'refund_', 'welcome_', 100, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'welcome_', 'welcomf_', 20, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'idem_', 'recharge_', idemCap, TableStore.Direction.BACKWARD),
+    listGsiTxRangeForUser(uid, 'adjust_', 'idem_', adjustCap, TableStore.Direction.FORWARD),
+    listGsiTxRangeForUser(uid, 'recharge_', 'refund_', rechargeCap, TableStore.Direction.FORWARD),
+    listGsiTxRangeForUser(uid, 'refund_', 'welcome_', refundCap, TableStore.Direction.FORWARD),
+    listGsiTxRangeForUser(uid, 'welcome_', 'welcomf_', welcomeCap, TableStore.Direction.FORWARD),
+    listGsiTxRangeForUser(uid, 'idem_', 'recharge_', consumeCap, TableStore.Direction.BACKWARD),
   ]);
 
   const byId = new Map();
@@ -1774,17 +1807,16 @@ export async function listRecentTransactionsForUser(userId, limit = 20) {
 
   const nonConsume = collected.filter((r) => !isConsumeTxType(r.type));
   const consume = collected.filter((r) => isConsumeTxType(r.type));
-  const displayCap = Math.min(50, Math.max(limit + 10, limit));
 
   const out = new Map();
-  for (const row of nonConsume.slice(0, 20)) out.set(row.tx_id, row);
+  for (const row of nonConsume.slice(0, Math.min(12, lim))) out.set(row.tx_id, row);
   for (const row of consume) {
     out.set(row.tx_id, row);
-    if (out.size >= displayCap) break;
+    if (out.size >= lim) break;
   }
   for (const row of nonConsume) out.set(row.tx_id, row);
 
-  return [...out.values()].sort((a, b) => txTimeMs(b.created_at) - txTimeMs(a.created_at)).slice(0, displayCap);
+  return [...out.values()].sort((a, b) => txTimeMs(b.created_at) - txTimeMs(a.created_at)).slice(0, lim);
 }
 
 /**

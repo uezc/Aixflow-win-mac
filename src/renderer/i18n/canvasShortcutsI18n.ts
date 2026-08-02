@@ -33,6 +33,7 @@ export type CanvasShortcutsStrings = {
   panCanvas: CanvasShortcutEntryStrings;
   saveCanvas: CanvasShortcutEntryStrings;
   openSettings: CanvasShortcutEntryStrings;
+  cutNodes: CanvasShortcutEntryStrings;
   copyNodes: CanvasShortcutEntryStrings;
   regionScreenshot: CanvasShortcutEntryStrings;
   pasteNodes: CanvasShortcutEntryStrings;
@@ -75,6 +76,7 @@ const zh: CanvasShortcutsStrings = {
   panCanvas: { label: '拖动画布', hint: '中键拖动 / Space+拖动' },
   saveCanvas: { label: '保存画布', hint: '自动保存' },
   openSettings: { label: '打开设置', hint: '顶部工具栏' },
+  cutNodes: { label: '剪切节点' },
   copyNodes: { label: '复制节点' },
   regionScreenshot: { label: '区域截图' },
   pasteNodes: { label: '粘贴节点' },
@@ -117,6 +119,7 @@ const en: CanvasShortcutsStrings = {
   panCanvas: { label: 'Pan canvas', hint: 'Middle-drag / Space+drag' },
   saveCanvas: { label: 'Save canvas', hint: 'Auto-save' },
   openSettings: { label: 'Open settings', hint: 'Top toolbar' },
+  cutNodes: { label: 'Cut nodes' },
   copyNodes: { label: 'Copy nodes' },
   regionScreenshot: { label: 'Region capture' },
   pasteNodes: { label: 'Paste nodes' },

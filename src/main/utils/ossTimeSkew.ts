@@ -10,7 +10,7 @@ import {
   getBuiltInOSSConfig,
   getBuiltInOSSConfigForMedia,
   type BuiltInOssConfig,
-  type MediaOssRegion,
+  type MediaUploadOssRegion,
   OSS_TIMEOUT_MS,
 } from '../config/ossConfig.js';
 
@@ -95,8 +95,8 @@ async function createAliOssClientFromConfig(cfg: BuiltInOssConfig): Promise<OSS>
   } as ConstructorParameters<typeof OSS>[0]);
 }
 
-/** 按素材区域创建 OSS 客户端（大陆 cn 桶 / 海外 hk 桶） */
-export async function createAliOssClientForMedia(region: MediaOssRegion): Promise<OSS> {
+/** 按素材区域创建 OSS 客户端（大陆 cn / 海外 hk / 上海 sh） */
+export async function createAliOssClientForMedia(region: MediaUploadOssRegion): Promise<OSS> {
   return createAliOssClientFromConfig(getBuiltInOSSConfigForMedia(region));
 }
 

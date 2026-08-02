@@ -151,33 +151,52 @@ const Projects: React.FC<ProjectsProps> = ({ onBack, onOpenCloudAccount }) => {
     const MAX_RETRIES = 10;
     const RETRY_DELAY_MS = 300;
     const RENDER_FUSE_MS = 200;
+    /** 主进程繁忙时 IPC 可能挂起；超时后结束转圈，避免永久遮罩 */
+    const LOAD_TIMEOUT_MS = 8000;
+    let cancelled = false;
 
     const loadProjects = async (): Promise<boolean> => {
       if (!window.electronAPI) return false;
       try {
         setIsLoadingProjects(true);
-        const projectList = await window.electronAPI.getProjects();
+        const projectList = await Promise.race([
+          window.electronAPI.getProjects(),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error('getProjects timeout')), LOAD_TIMEOUT_MS);
+          }),
+        ]);
+        if (cancelled) return true;
         setProjects(Array.isArray(projectList) ? projectList : []);
         return true;
       } catch (error) {
         console.error('加载项目列表失败:', error);
-        setToastMessage('加载项目列表失败，请重试');
+        if (!cancelled) {
+          setToastMessage(
+            String(error?.message || '').includes('timeout')
+              ? (locale === 'en' ? 'Loading projects timed out. Retry or restart the app.' : '读取项目列表超时，请重试或重启软件')
+              : '加载项目列表失败，请重试',
+          );
+        }
         return false;
       } finally {
-        setIsLoadingProjects(false);
+        if (!cancelled) setIsLoadingProjects(false);
       }
     };
     const loadBasePath = async () => {
       if (!window.electronAPI?.getProjectBasePath) return;
       try {
-        const base = await window.electronAPI.getProjectBasePath();
-        setProjectBasePathState(base || '');
+        const base = await Promise.race([
+          window.electronAPI.getProjectBasePath(),
+          new Promise<string>((resolve) => setTimeout(() => resolve(''), LOAD_TIMEOUT_MS)),
+        ]);
+        if (!cancelled) setProjectBasePathState(base || '');
       } catch (_) {}
     };
 
     const tryLoad = () => {
+      if (cancelled) return;
       loadProjects().then((ok) => {
-        if (!ok && retryCount < MAX_RETRIES) {
+        if (!ok && !cancelled && retryCount < MAX_RETRIES) {
           retryCount++;
           setTimeout(tryLoad, RETRY_DELAY_MS);
         }
@@ -186,11 +205,17 @@ const Projects: React.FC<ProjectsProps> = ({ onBack, onOpenCloudAccount }) => {
 
     let intervalCleanup: (() => void) | null = null;
     const runAfterFuse = () => {
+      if (cancelled) return;
       if (window.electronAPI) {
         tryLoad();
         loadBasePath();
       } else {
         const t = setInterval(() => {
+          if (cancelled) {
+            clearInterval(t);
+            intervalCleanup = null;
+            return;
+          }
           if (window.electronAPI) {
             clearInterval(t);
             intervalCleanup = null;
@@ -208,10 +233,11 @@ const Projects: React.FC<ProjectsProps> = ({ onBack, onOpenCloudAccount }) => {
 
     const fuseTimer = setTimeout(runAfterFuse, RENDER_FUSE_MS);
     return () => {
+      cancelled = true;
       clearTimeout(fuseTimer);
       intervalCleanup?.();
     };
-  }, []);
+  }, [locale]);
 
   // 从 localStorage 加载各项目卡背景图
   useEffect(() => {

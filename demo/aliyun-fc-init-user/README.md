@@ -7,6 +7,8 @@
 - **POST /auth/change-password**：邮箱 + 验证码 + 新密码；成功后返回 `session_revoked: true`
 - **POST /run-task**：`Authorization: Bearer <access_token>` + `taskId`（body 或 `x-task-id`），扣费后转发 BLTCY
 - **POST /me**：Bearer 鉴权，返回余额
+- **POST /asr/realtime-session**：签发百炼实时 ASR 票据（需 FC 环境变量 `DASHSCOPE_API_KEY`；默认模型 `fun-asr-realtime`；`authorization` 仅供 Electron 主进程建 WebSocket）
+- **POST /asr/file-transcribe**：百炼 `fun-asr` 异步录音文件识别（同 Key；入参公网 `fileUrl` + 可选 `language`；轮询任务后返回 `{ text, segments:[{ text, startSec, endSec }] }`，供 MV 歌词时间线）
 - **init-user**：已废弃（410）
 
 ### 上传 ZIP 到 FC 之前（控制台必查，避免 412 / 启动失败）
@@ -47,9 +49,32 @@
 | NX_VIDEO_COST | 视频类 forward 扣点，默认同 NX_CHAT_COST |
 | NX_AUDIO_COST | 音频类 forward 扣点，默认同 NX_CHAT_COST |
 | NX_FORWARD_TIMEOUT_MS | 转发第三方超时（毫秒），默认 300000 |
-| RUNNINGHUB_API_BASE | RunningHub OpenAPI 根路径，默认 `https://www.runninghub.cn/openapi/v2` |
-| RUNNINGHUB_API_KEY | RunningHub Bearer（图/音/视经 FC 转发时使用，勿放在客户端） |
+| RUNNINGHUB_API_BASE | RunningHub **国内** OpenAPI 根路径，默认 `https://www.runninghub.cn/openapi/v2` |
+| RUNNINGHUB_API_KEY | RunningHub **国内** Bearer（图/音/视经 FC 转发；勿放客户端） |
+| RUNNINGHUB_API_BASE_AI | RunningHub **海外** OpenAPI 根路径，默认 `https://www.runninghub.ai/openapi/v2` |
+| RUNNINGHUB_API_KEY_AI | RunningHub **海外** Bearer（白名单模型走 `.ai`；京/港 FC 均需配置） |
+| RUNNINGHUB_LLM_API_KEY | RunningHub **LLM**（`llm.runninghub.ai`）Bearer；未设时回退 `RUNNINGHUB_API_KEY_AI` |
+| RUNNINGHUB_LLM_BASE_URL | 可选，默认 `https://llm.runninghub.ai/v1` |
+| RUNNINGHUB_OVERSEAS_PATH_PREFIXES | 可选。逗号分隔 path 前缀，**整表覆盖**默认海外白名单（Veo/banana/Grok/SUNO/Gemini Omni 等） |
 | BLTCY_API_BASE | BLTCY API 根路径，默认 `https://api.bltcy.ai`（LLM 与 `forward.provider=bltcy` 时使用） |
+| DASHSCOPE_API_KEY | 百炼 API Key（实时听写 + 录音文件识别共用；勿下发客户端） |
+| DASHSCOPE_ASR_MODEL | 可选，实时模型，默认 `fun-asr-realtime` |
+| DASHSCOPE_ASR_FILE_MODEL | 可选，文件转写模型，默认 `fun-asr`（可钉 `fun-asr-2025-11-07`） |
+| DASHSCOPE_WORKSPACE_ID | 可选，业务空间 ID（实时 WS / 文件转写 HTTP 专属域名） |
+
+> **双基址说明**：FC 按 `forward.path` 前缀分流到 `.cn` 或 `.ai`；`/query` 通过 OTS `rhreg:{taskId}` 与提交同站。北京/香港 FC 的「区域」与 RH 站点无关，两套环境变量需在京港**同步**配置。
+
+> **文件转写**：部署含 `lib/asrFileTranscribe.mjs` 后，函数**执行超时建议 ≥ 600 秒**（FC 内轮询百炼异步任务）。
+
+### 部署与冒烟（海外分流）
+
+1. 在 `demo/aliyun-fc-init-user` 执行 `npm run deploy`，将生成的 `nexflow-fc.zip` / `nexflow-fc-new.zip` 分别上传到**北京与香港** FC。
+2. 控制台确认：`RUNNINGHUB_API_KEY`、`RUNNINGHUB_API_KEY_AI` 均已配置（`BASE_AI` 可省略用默认）。
+3. 冒烟清单：
+   - **应走 `.ai`**：banana 2.0、Veo/全能 v3.1-fast、Grok 视频、SUNO、Gemini Omni — 各提交 1 次并轮询出结果；FC 日志应出现 `[RH] forward region=ai`。
+   - **应走 `.cn`**：可灵或 Seedream — 提交 1 次；日志 `region=cn`。
+   - Sora 角色/参考图上传经 FC（`rhRegion=cn`），不再直连 `www.runninghub.cn/openapi`。
+4. 401：国内失败提示检查 `RUNNINGHUB_API_KEY`；海外失败提示检查 `RUNNINGHUB_API_KEY_AI`。
 
 **Tablestore 连接（必填，与下面建表一致）**
 

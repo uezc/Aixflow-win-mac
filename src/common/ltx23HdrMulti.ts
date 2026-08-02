@@ -15,14 +15,38 @@ export const LTX23_HDR_STORYBOARD_NODES = [
   { nodeId: '84', description: 'image4' },
 ] as const;
 
-/** 固定 4 个分镜槽位，未填则为 '' */
-export function normalizeLtx23HdrStoryboardSlots(storyboard: string[]): string[] {
-  const slots = (storyboard || []).map((u) => String(u || '').trim());
+/** 固定 4 个分镜槽位，未填则为 ''；并去掉与背景或彼此重复的 URL（只保留首次出现） */
+export function normalizeLtx23HdrStoryboardSlots(
+  storyboard: string[],
+  background?: string,
+): string[] {
+  const bg = String(background || '').trim();
+  const seen = new Set<string>(bg ? [bg] : []);
   const result: string[] = [];
   for (let i = 0; i < LTX23_HDR_MAX_STORYBOARD; i++) {
-    result.push(slots[i] || '');
+    const t = String((storyboard || [])[i] || '').trim();
+    if (!t || seen.has(t)) {
+      result.push('');
+      continue;
+    }
+    seen.add(t);
+    result.push(t);
   }
   return result;
+}
+
+/** 去重并保持顺序 */
+export function uniqueUrlsPreserveOrder(urls: string[], limit = LTX23_HDR_MAX_STORYBOARD + 1): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const u of urls || []) {
+    const t = String(u || '').trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 /** 从画布连线收集的 URL 拆分为背景 + 分镜（最多 1+4）；未指定背景时首张作背景 */
@@ -30,12 +54,107 @@ export function splitLtx23HdrMultiImagesFromCollected(
   collected: string[],
   existingBackground?: string,
 ): { background: string; storyboard: string[] } {
-  const all = collected.filter(Boolean).slice(0, LTX23_HDR_MAX_STORYBOARD + 1);
+  const all = uniqueUrlsPreserveOrder(collected, LTX23_HDR_MAX_STORYBOARD + 1);
   let bg = String(existingBackground || '').trim();
   if (bg && !all.includes(bg)) bg = '';
   if (!bg && all.length >= 1) bg = all[0];
-  const storyboard = normalizeLtx23HdrStoryboardSlots(all.filter((u) => u !== bg));
+  const storyboard = normalizeLtx23HdrStoryboardSlots(
+    all.filter((u) => u !== bg),
+    bg,
+  );
   return { background: bg, storyboard };
+}
+
+/**
+ * 合并连线收集的图片到背景+分镜槽：保留用户拖拽后的槽位顺序与空槽，只增删 URL。
+ * 避免边同步按连线顺序把面板排序冲掉。
+ */
+export function mergeLtx23HdrMultiPreserveOrder(
+  currentBackground: string | undefined,
+  currentStoryboard: string[] | undefined,
+  collectedFromEdges: string[],
+): { background: string; storyboard: string[] } {
+  const collected = uniqueUrlsPreserveOrder(collectedFromEdges, LTX23_HDR_MAX_STORYBOARD + 1);
+  const collectedSet = new Set(collected);
+
+  const hadLayout =
+    !!String(currentBackground || '').trim() ||
+    (currentStoryboard || []).some((u) => !!String(u || '').trim());
+
+  if (!hadLayout) {
+    return splitLtx23HdrMultiImagesFromCollected(collected, currentBackground);
+  }
+
+  let bg = String(currentBackground || '').trim();
+  if (bg && !collectedSet.has(bg)) bg = '';
+
+  let storyboard = normalizeLtx23HdrStoryboardSlots(currentStoryboard || [], bg).map((u) => {
+    const t = String(u || '').trim();
+    if (!t) return '';
+    return collectedSet.has(t) ? t : '';
+  });
+  storyboard = normalizeLtx23HdrStoryboardSlots(storyboard, bg);
+
+  const present = new Set<string>([bg, ...storyboard].filter(Boolean));
+  for (const url of collected) {
+    if (present.has(url)) continue;
+    if (!bg) {
+      bg = url;
+      present.add(url);
+      continue;
+    }
+    const emptyIdx = storyboard.findIndex((s) => !s);
+    if (emptyIdx < 0) break;
+    storyboard[emptyIdx] = url;
+    present.add(url);
+  }
+
+  if (!bg) {
+    const firstIdx = storyboard.findIndex((s) => !!s);
+    if (firstIdx >= 0) {
+      bg = storyboard[firstIdx];
+      storyboard[firstIdx] = '';
+    }
+  }
+
+  return { background: bg, storyboard: normalizeLtx23HdrStoryboardSlots(storyboard, bg) };
+}
+
+/** 5 槽扁平视图：0=背景，1–4=分镜（保证无重复 URL） */
+export function flattenLtx23HdrSlots(background: string, storyboard: string[]): string[] {
+  const bg = String(background || '').trim();
+  return [bg, ...normalizeLtx23HdrStoryboardSlots(storyboard, bg)];
+}
+
+/** 从 5 槽扁平数组写回背景 + 分镜（自动去重） */
+export function unflattenLtx23HdrSlots(slots: string[]): { background: string; storyboard: string[] } {
+  const list = (slots || []).map((u) => String(u || '').trim());
+  while (list.length < LTX23_HDR_MAX_STORYBOARD + 1) list.push('');
+  const seen = new Set<string>();
+  const deduped = list.slice(0, LTX23_HDR_MAX_STORYBOARD + 1).map((t) => {
+    if (!t || seen.has(t)) return '';
+    seen.add(t);
+    return t;
+  });
+  const background = deduped[0] || '';
+  return {
+    background,
+    storyboard: normalizeLtx23HdrStoryboardSlots(deduped.slice(1), background),
+  };
+}
+
+/** 互换两个槽位（含背景与空槽） */
+export function swapLtx23HdrFlatSlots(slots: string[], fromIndex: number, toIndex: number): string[] {
+  const next = (slots || []).map((u) => String(u || '').trim());
+  while (next.length < LTX23_HDR_MAX_STORYBOARD + 1) next.push('');
+  const max = LTX23_HDR_MAX_STORYBOARD;
+  const a = Math.max(0, Math.min(fromIndex, max));
+  const b = Math.max(0, Math.min(toIndex, max));
+  if (a === b) return next.slice(0, max + 1);
+  const tmp = next[a];
+  next[a] = next[b];
+  next[b] = tmp;
+  return next.slice(0, max + 1);
 }
 
 /** 提交 payload：背景 + 分镜固定 4 槽位（空槽为 ''） */
@@ -43,9 +162,10 @@ export function buildLtx23HdrMultiPayload(
   background: string,
   storyboard: string[],
 ): { background: string; storyboardSlots: string[] } {
+  const bg = String(background || '').trim();
   return {
-    background: String(background || '').trim(),
-    storyboardSlots: normalizeLtx23HdrStoryboardSlots(storyboard),
+    background: bg,
+    storyboardSlots: normalizeLtx23HdrStoryboardSlots(storyboard, bg),
   };
 }
 

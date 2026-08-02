@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect, type RefObject, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { Square, Loader2 } from 'lucide-react';
+import { rmsFromByteTimeDomain, smoothMicLevel } from '../utils/micInputLevel';
 
 export function localResourceUrlFromSavedPath(savedPath: string): string {
   let p = (savedPath || '').replace(/\\/g, '/');
@@ -27,6 +28,10 @@ export interface UseReferenceMicRecordingOptions {
   showAlert: (message: string) => void;
   strings: ReferenceMicRecordingStrings;
   isDarkMode: boolean;
+  /**
+   * push-to-talk：getUserMedia 返回后若已松手，返回 true 则放弃开录并释放麦。
+   */
+  shouldAbortAfterMic?: () => boolean;
 }
 
 export function useReferenceMicRecording({
@@ -36,6 +41,7 @@ export function useReferenceMicRecording({
   showAlert,
   strings,
   isDarkMode,
+  shouldAbortAfterMic,
 }: UseReferenceMicRecordingOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -46,6 +52,11 @@ export function useReferenceMicRecording({
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const waveformRafRef = useRef<number | null>(null);
+  const levelRafRef = useRef<number | null>(null);
+  const levelSmoothRef = useRef(0);
+  const levelTimeDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const levelLastEmitRef = useRef(0);
+  const [inputLevel, setInputLevel] = useState(0);
   const recordingVisualizerActiveRef = useRef(false);
   const waveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   /** 平滑峰值，用于时域波形可视化自动增益（麦克风 raw 偏离通常很小） */
@@ -59,9 +70,15 @@ export function useReferenceMicRecording({
         cancelAnimationFrame(waveformRafRef.current);
         waveformRafRef.current = null;
       }
+      if (levelRafRef.current != null) {
+        cancelAnimationFrame(levelRafRef.current);
+        levelRafRef.current = null;
+      }
       analyserRef.current = null;
       void audioContextRef.current?.close().catch(() => {});
       audioContextRef.current = null;
+      levelSmoothRef.current = 0;
+      setInputLevel(0);
       const mr = mediaRecorderRef.current;
       if (mr && mr.state !== 'inactive') {
         try {
@@ -75,6 +92,47 @@ export function useReferenceMicRecording({
       mediaStreamRef.current = null;
     };
   }, []);
+
+  /** 电平监测：不依赖波形 canvas，PTT 小按钮也可驱动波动 */
+  useEffect(() => {
+    if (!isRecording) {
+      if (levelRafRef.current != null) {
+        cancelAnimationFrame(levelRafRef.current);
+        levelRafRef.current = null;
+      }
+      levelSmoothRef.current = 0;
+      setInputLevel(0);
+      return;
+    }
+    const tick = () => {
+      const analyser = analyserRef.current;
+      if (!analyser || !recordingVisualizerActiveRef.current) {
+        levelRafRef.current = null;
+        return;
+      }
+      const need = analyser.fftSize;
+      if (!levelTimeDataRef.current || levelTimeDataRef.current.length !== need) {
+        levelTimeDataRef.current = new Uint8Array(new ArrayBuffer(need));
+      }
+      analyser.getByteTimeDomainData(levelTimeDataRef.current);
+      const raw = rmsFromByteTimeDomain(levelTimeDataRef.current);
+      const next = smoothMicLevel(levelSmoothRef.current, raw);
+      levelSmoothRef.current = next;
+      const now = performance.now();
+      if (now - levelLastEmitRef.current >= 48) {
+        levelLastEmitRef.current = now;
+        setInputLevel(next);
+      }
+      levelRafRef.current = requestAnimationFrame(tick);
+    };
+    levelRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (levelRafRef.current != null) {
+        cancelAnimationFrame(levelRafRef.current);
+        levelRafRef.current = null;
+      }
+    };
+  }, [isRecording]);
 
   useEffect(() => {
     if (!isRecording) return;
@@ -181,6 +239,11 @@ export function useReferenceMicRecording({
     discardRecordingRef.current = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (shouldAbortAfterMic?.()) {
+        stream.getTracks().forEach((t) => t.stop());
+        onRecordingFailed?.();
+        return;
+      }
       mediaStreamRef.current = stream;
 
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -300,6 +363,15 @@ export function useReferenceMicRecording({
       mr.start(250);
       recordStartedAtRef.current = performance.now();
       setIsRecording(true);
+      if (shouldAbortAfterMic?.()) {
+        discardRecordingRef.current = true;
+        try {
+          if (typeof mr.requestData === 'function') mr.requestData();
+          mr.stop();
+        } catch {
+          /* ignore */
+        }
+      }
     } catch (e) {
       console.error('[useReferenceMicRecording] getUserMedia', e);
       recordingVisualizerActiveRef.current = false;
@@ -320,6 +392,7 @@ export function useReferenceMicRecording({
     onRecordingFailed,
     projectId,
     showAlert,
+    shouldAbortAfterMic,
     stopReferenceRecording,
     strings.micPermissionDenied,
     strings.micSaveFailed,
@@ -328,6 +401,8 @@ export function useReferenceMicRecording({
 
   return {
     isRecording,
+    /** 0–1 麦克风输入电平 */
+    inputLevel,
     waveCanvasRef,
     startReferenceRecording,
     stopReferenceRecording,
@@ -382,15 +457,15 @@ export function ReferenceMicRecordingPortal({
                 ? isDarkMode
                   ? 'bg-white/10 text-white/80'
                   : 'bg-gray-100 text-gray-600'
-                : 'bg-red-500/20 text-red-400'
+                : 'bg-green-500/20 text-green-400'
             }`}
           >
             {processing ? (
               <Loader2 className="h-5 w-5 animate-spin" strokeWidth={2.25} />
             ) : (
               <span className="relative flex h-3 w-3">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
-                <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-60" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-green-500" />
               </span>
             )}
           </div>

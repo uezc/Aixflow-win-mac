@@ -80,6 +80,20 @@ export type WorkspaceChromeStrings = {
   languageToZh: string;
   /** 语言下拉按钮无障碍说明 */
   languageMenuTitle: string;
+  /** 顶栏：教学视频（OSS 列表内嵌播放） */
+  tutorialVideos: string;
+  tutorialVideosTitle: string;
+  tutorialVideosHint: string;
+  tutorialVideosClose: string;
+  tutorialVideosLoading: string;
+  tutorialVideosEmpty: string;
+  tutorialVideosLoadFailed: string;
+  tutorialVideosRetry: string;
+  tutorialVideosEnlarge: string;
+  tutorialVideosShrink: string;
+  tutorialVideosPip: string;
+  tutorialVideosRestore: string;
+  tutorialVideosNoSelection: string;
   /** 顶栏：BUG 反馈（飞书文档） */
   bugFeedback: string;
   bugFeedbackTitle: string;
@@ -152,7 +166,7 @@ export type WorkspaceChromeStrings = {
   textVoiceModalTitle: string;
   /** 文本节点：录音弹窗说明 */
   textVoiceModalSubtitle: string;
-  /** 文本节点：Whisper 识别进行中 */
+  /** 文本节点：实时听写进行中 */
   textVoiceTranscribing: string;
   /** Text split 节点：分隔符标签 */
   textSplitSeparatorLabel: string;
@@ -229,6 +243,19 @@ const zh: WorkspaceChromeStrings = {
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: '界面语言',
+  tutorialVideos: '教学视频',
+  tutorialVideosTitle: '观看软件内教学视频',
+  tutorialVideosHint: '选择视频播放',
+  tutorialVideosClose: '关闭',
+  tutorialVideosLoading: '正在加载视频列表…',
+  tutorialVideosEmpty: '暂无教学视频，请稍后再试',
+  tutorialVideosLoadFailed: '加载失败，请检查网络后重试',
+  tutorialVideosRetry: '重试',
+  tutorialVideosEnlarge: '放大',
+  tutorialVideosShrink: '还原',
+  tutorialVideosPip: '挂起旁观',
+  tutorialVideosRestore: '恢复面板',
+  tutorialVideosNoSelection: '请从左侧选择要播放的视频',
   bugFeedback: 'BUG反馈',
   bugFeedbackTitle: '在软件内打开飞书反馈页面',
   taskList: '任务列表',
@@ -283,12 +310,12 @@ const zh: WorkspaceChromeStrings = {
   fontZoomOutTitle: '缩小字体',
   fontZoomInTitle: '放大字体',
   textVoiceInputTitle:
-    '用麦克风录音，停止后本地识别为文字并追加到正文；选「简体中文」时输出简体（与上方「转文字」共用语言）',
-  textVoiceInputButton: '语音输入',
-  textVoiceInputStopButton: '停止',
-  textVoiceModalTitle: '正在录制语音',
-  textVoiceModalSubtitle: '对着麦克风说话，结束后点击「停止并保存」将转为文字填入正文',
-  textVoiceTranscribing: '正在识别语音…',
+    '按住麦克风说话，云端实时听写到正文（边说边出字）；松开结束。长音频「转文字」走云端文件转写',
+  textVoiceInputButton: '按住说话',
+  textVoiceInputStopButton: '松开结束',
+  textVoiceModalTitle: '正在听写',
+  textVoiceModalSubtitle: '按住说话，文字会实时出现在输入框；松开结束本段听写',
+  textVoiceTranscribing: '正在听写…',
   textSplitSeparatorLabel: '分隔符',
 };
 
@@ -364,6 +391,19 @@ const en: WorkspaceChromeStrings = {
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: 'Display language',
+  tutorialVideos: 'Tutorials',
+  tutorialVideosTitle: 'Watch in-app tutorial videos',
+  tutorialVideosHint: 'Pick a video to play',
+  tutorialVideosClose: 'Close',
+  tutorialVideosLoading: 'Loading videos…',
+  tutorialVideosEmpty: 'No tutorial videos yet. Please try again later.',
+  tutorialVideosLoadFailed: 'Failed to load. Check your network and retry.',
+  tutorialVideosRetry: 'Retry',
+  tutorialVideosEnlarge: 'Enlarge',
+  tutorialVideosShrink: 'Shrink',
+  tutorialVideosPip: 'Picture-in-picture',
+  tutorialVideosRestore: 'Restore panel',
+  tutorialVideosNoSelection: 'Select a video from the list',
   bugFeedback: 'Bug report',
   bugFeedbackTitle: 'Open Feishu feedback page in-app',
   taskList: 'Tasks',
@@ -418,12 +458,12 @@ const en: WorkspaceChromeStrings = {
   fontZoomOutTitle: 'Decrease font size',
   fontZoomInTitle: 'Increase font size',
   textVoiceInputTitle:
-    'Record with the mic; after stop, local Whisper appends text. Choose “Simplified Chinese” for simplified output (same language as “Transcribe” above).',
-  textVoiceInputButton: 'Voice input',
-  textVoiceInputStopButton: 'Stop',
-  textVoiceModalTitle: 'Recording voice',
-  textVoiceModalSubtitle: 'Speak into the mic, then tap “Stop & save” to transcribe into the text.',
-  textVoiceTranscribing: 'Transcribing…',
+    'Hold the mic to dictate into the text in real time (cloud ASR). Release to finish. Long-form “Transcribe” also uses cloud file ASR.',
+  textVoiceInputButton: 'Hold to talk',
+  textVoiceInputStopButton: 'Release to finish',
+  textVoiceModalTitle: 'Dictating…',
+  textVoiceModalSubtitle: 'Hold to speak; text appears live. Release to end this dictation.',
+  textVoiceTranscribing: 'Dictating…',
   textSplitSeparatorLabel: 'Delimiter',
 };
 

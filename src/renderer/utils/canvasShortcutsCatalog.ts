@@ -62,6 +62,7 @@ function generalRows(t: ReturnType<typeof canvasShortcutsT>, m: string): CanvasS
 
 function editRows(t: ReturnType<typeof canvasShortcutsT>, m: string): CanvasShortcutRow[] {
   return [
+    { id: 'cut', label: t.cutNodes.label, keys: [m, 'X'] },
     { id: 'copy', label: t.copyNodes.label, keys: [m, 'C'] },
     { id: 'screenshot', label: t.regionScreenshot.label, keys: ['Alt', '1'] },
     { id: 'paste', label: t.pasteNodes.label, keys: [m, 'V'] },

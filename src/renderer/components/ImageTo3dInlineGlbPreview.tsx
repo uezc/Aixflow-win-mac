@@ -104,7 +104,7 @@ const ImageTo3dInlineGlbPreview: React.FC<ImageTo3dInlineGlbPreviewProps> = ({
   const shouldShowThumb = thumbUrl && embeddedInFlow;
 
   return (
-    <div className={wrapperClassName}>
+    <div className={`${wrapperClassName || 'absolute inset-0 h-full w-full'} min-h-0 min-w-0`}>
       {shouldShowThumb ? (
         <img
           src={thumbUrl}
@@ -119,7 +119,7 @@ const ImageTo3dInlineGlbPreview: React.FC<ImageTo3dInlineGlbPreviewProps> = ({
         key={viewerKey}
         url={glbUrl}
         overrideTextureUrl={textureUrl || undefined}
-        className={`${className} transition-opacity duration-200 ${
+        className={`${className || 'absolute inset-0 h-full w-full'} transition-opacity duration-200 ${
           modelReady || !thumbUrl ? 'opacity-100' : 'opacity-0'
         }`}
         showGridWhenEmpty={showGridWhenEmpty}

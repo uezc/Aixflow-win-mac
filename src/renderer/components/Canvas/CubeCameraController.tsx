@@ -20,6 +20,8 @@ interface CubeCameraControllerProps {
   inputImageUrl?: string;
   frontThumbnailUrl?: string;
   isDarkMode?: boolean;
+  /** 侧面文字：中文 / 英文 */
+  locale?: 'zh' | 'en';
 }
 
 const TARGET = new THREE.Vector3(0, 0, 0);
@@ -40,9 +42,7 @@ function disposeMaterial(material: any) {
   const mats = Array.isArray(material) ? material : [material];
   mats.forEach((m) => {
     if (!m) return;
-    Object.values(m).forEach((v: any) => {
-      if (v?.isTexture && typeof v.dispose === 'function') v.dispose();
-    });
+    // 不 dispose map 纹理：正面贴图 / 侧面标签由各自 effect 管理，避免被误释放导致空白
     if (typeof m.dispose === 'function') m.dispose();
   });
 }
@@ -119,7 +119,7 @@ function createImageFrameTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-/** 创建单面英文标签纹理：白字、小字号、底色与方框灰色一致 */
+/** 创建单面标签纹理：白字、小字号、底色与方框灰色一致 */
 function createLabelTexture(text: string, isDarkMode: boolean): THREE.CanvasTexture {
   const size = 128;
   const canvas = document.createElement('canvas');
@@ -131,7 +131,9 @@ function createLabelTexture(text: string, isDarkMode: boolean): THREE.CanvasText
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, size, size);
   ctx.fillStyle = isDarkMode ? '#ffffff' : '#334155';
-  ctx.font = 'bold 14px system-ui, sans-serif';
+  // 中文单字略大，英文短词略小
+  const isCjk = /[\u4e00-\u9fff]/.test(text);
+  ctx.font = `bold ${isCjk ? 28 : 14}px system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, size / 2, size / 2);
@@ -140,6 +142,11 @@ function createLabelTexture(text: string, isDarkMode: boolean): THREE.CanvasText
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   return tex;
+}
+
+function cubeSideLabels(): [string, string, string, string, string] {
+  // 对应 BoxGeometry: +X -X +Y -Y -Z（正面 +Z 单独贴图）
+  return ['RIGHT', 'LEFT', 'TOP', 'BOTTOM', 'BACK'];
 }
 
 function loadTextureWithMaxSize(url: string): Promise<THREE.Texture> {
@@ -168,6 +175,9 @@ function loadTextureWithMaxSize(url: string): Promise<THREE.Texture> {
         }
         if (w <= MAX_TEXTURE_DIM && h <= MAX_TEXTURE_DIM) {
           const tex = new THREE.Texture(img);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
           tex.needsUpdate = true;
           resolve(tex);
           return;
@@ -227,7 +237,6 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
   const { camera, gl, scene, invalidate } = useThree();
   const controlsRef = useRef<any>(null);
   const meshRef = useRef<THREE.Mesh>(null);
-  const frontPlaneRef = useRef<THREE.Mesh>(null);
   const edgeRef = useRef<THREE.LineSegments>(null);
   const syncingRef = useRef(false);
   const isInteractingRef = useRef(false);
@@ -250,8 +259,6 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
   const disposeCurrentRefs = useCallback(() => {
     meshRef.current?.geometry?.dispose?.();
     disposeMaterial(meshRef.current?.material);
-    frontPlaneRef.current?.geometry?.dispose?.();
-    disposeMaterial(frontPlaneRef.current?.material);
     edgeRef.current?.geometry?.dispose?.();
     disposeMaterial(edgeRef.current?.material);
   }, []);
@@ -421,53 +428,65 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
   }, [animateResetToCenter, gl]);
 
   useEffect(() => {
+    let cancelled = false;
     frontTextureRef.current?.dispose?.();
     frontTextureRef.current = null;
-    disposeCurrentRefs();
-    setMeshVersion((v) => v + 1);
+    setFrontTexture(null);
 
     const fallbackTex = createImageFrameTexture();
-    const url = (frontThumbnailUrl || inputImageUrl || '').trim();
-    if (!url) {
-      frontTextureRef.current = fallbackTex;
-      setFrontTexture(fallbackTex);
+    // 优先用完整图，缩略图仅作回退（避免 tiny 失败导致正面空白）
+    const primaryUrl = (inputImageUrl || '').trim();
+    const secondaryUrl = (frontThumbnailUrl || '').trim();
+    const urls = [primaryUrl, secondaryUrl].filter((u, i, arr) => u && arr.indexOf(u) === i);
+
+    const applyTex = (tex: THREE.Texture) => {
+      if (cancelled) {
+        if (tex !== fallbackTex) tex.dispose();
+        return;
+      }
+      if (tex !== fallbackTex) fallbackTex.dispose();
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      applyCoverUvToSquare(tex);
+      frontTextureRef.current = tex;
+      setFrontTexture(tex);
+      setMeshVersion((v) => v + 1);
       scheduleInvalidate();
+    };
+
+    if (urls.length === 0) {
+      applyTex(fallbackTex);
       return () => {
+        cancelled = true;
         fallbackTex.dispose();
         frontTextureRef.current = null;
+        setFrontTexture(null);
       };
     }
 
-    let cancelled = false;
-    loadTextureWithMaxSize(url)
-      .then((tex) => {
-        if (cancelled) {
-          tex.dispose();
-          return;
-        }
-        fallbackTex.dispose();
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        applyCoverUvToSquare(tex);
-        frontTextureRef.current = tex;
-        setFrontTexture(tex);
-        scheduleInvalidate();
-      })
-      .catch(() => {
+    (async () => {
+      for (const url of urls) {
         if (cancelled) return;
-        frontTextureRef.current = fallbackTex;
-        setFrontTexture(fallbackTex);
-        scheduleInvalidate();
-      });
+        try {
+          const tex = await loadTextureWithMaxSize(url);
+          applyTex(tex);
+          return;
+        } catch {
+          /* try next */
+        }
+      }
+      if (!cancelled) applyTex(fallbackTex);
+    })();
 
     return () => {
       cancelled = true;
       frontTextureRef.current?.dispose?.();
       frontTextureRef.current = null;
-      fallbackTex.dispose();
+      setFrontTexture(null);
     };
-  }, [disposeCurrentRefs, frontThumbnailUrl, inputImageUrl, scheduleInvalidate]);
+  }, [frontThumbnailUrl, inputImageUrl, scheduleInvalidate]);
 
   useEffect(() => {
     if (isInteractingRef.current) return;
@@ -573,11 +592,10 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
   }, [disposeCurrentRefs, gl, scene]);
 
   const sideColor = isDarkMode ? '#5f6368' : '#cbd5e1';
-  const frontColor = isDarkMode ? '#5b616b' : '#94a3b8';
   const edgeColor = isDarkMode ? '#ffffff' : '#475569';
 
   useEffect(() => {
-    const labels = ['RIGHT', 'LEFT', 'TOP', 'BOTTOM', 'BACK'];
+    const labels = cubeSideLabels();
     const tex = labels.map((l) => createLabelTexture(l, !!isDarkMode));
     setLabelTextures(tex);
     return () => tex.forEach((t) => t.dispose());
@@ -596,7 +614,11 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
               <meshBasicMaterial attach="material-1" map={labelTextures[1]} color={sideColor} />
               <meshBasicMaterial attach="material-2" map={labelTextures[2]} color={sideColor} />
               <meshBasicMaterial attach="material-3" map={labelTextures[3]} color={sideColor} />
-              <meshBasicMaterial attach="material-4" color={sideColor} />
+              <meshBasicMaterial
+                attach="material-4"
+                map={frontTexture ?? undefined}
+                color={frontTexture ? '#ffffff' : sideColor}
+              />
               <meshBasicMaterial attach="material-5" map={labelTextures[4]} color={sideColor} />
             </>
           ) : (
@@ -605,7 +627,13 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
               <meshStandardMaterial attach="material-1" map={labelTextures[1]} color={sideColor} roughness={0.84} metalness={0.08} />
               <meshStandardMaterial attach="material-2" map={labelTextures[2]} color={sideColor} roughness={0.84} metalness={0.08} />
               <meshStandardMaterial attach="material-3" map={labelTextures[3]} color={sideColor} roughness={0.84} metalness={0.08} />
-              <meshStandardMaterial attach="material-4" color={sideColor} roughness={0.84} metalness={0.08} />
+              <meshStandardMaterial
+                attach="material-4"
+                map={frontTexture ?? undefined}
+                color={frontTexture ? '#ffffff' : sideColor}
+                roughness={0.88}
+                metalness={0.04}
+              />
               <meshStandardMaterial attach="material-5" map={labelTextures[4]} color={sideColor} roughness={0.84} metalness={0.08} />
             </>
           )
@@ -614,10 +642,6 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
         ) : (
           <meshStandardMaterial color={sideColor} roughness={0.84} metalness={0.08} />
         )}
-      </mesh>
-      <mesh key={`front-${meshVersion}`} ref={frontPlaneRef} position={[0, 0, 0.565]}>
-        <planeGeometry args={[0.86, 0.86]} />
-        <meshBasicMaterial color={frontTexture ? '#ffffff' : frontColor} map={frontTexture ?? undefined} />
       </mesh>
       <lineSegments key={`edge-${meshVersion}`} ref={edgeRef}>
         <edgesGeometry args={[new THREE.BoxGeometry(1.12, 1.12, 1.12)]} />
@@ -644,7 +668,16 @@ const SceneBridge: React.FC<CubeCameraControllerProps> = ({ value, onChange, onC
   );
 };
 
-const CubeCameraController: React.FC<CubeCameraControllerProps> = ({ value, onChange, onChangeEnd, onInvalidateReady, onContextLost, inputImageUrl, frontThumbnailUrl, isDarkMode = true }) => {
+const CubeCameraController: React.FC<CubeCameraControllerProps> = ({
+  value,
+  onChange,
+  onChangeEnd,
+  onInvalidateReady,
+  onContextLost,
+  inputImageUrl,
+  frontThumbnailUrl,
+  isDarkMode = true,
+}) => {
   const cameraPos = useMemo(() => toCameraPosition(value.rotationX, value.rotationY, value.scale), [value.rotationX, value.rotationY, value.scale]);
   const invalidateRef = useRef<(() => void) | null>(null);
   const [isDragging, setIsDragging] = useState(false);
