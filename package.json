@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.7.9",
+  "version": "1.8.0",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
