@@ -178,6 +178,7 @@ import {
   yuanbaoHoverTipBelowCls,
 } from '../darkModalShell';
 import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
+import { attachAudioPreviewGain, resumeAudioPreviewContext } from '../../utils/audioPreviewGain';
 import {
   DramaCharacterLibraryPickModal,
   fillEmptyDramaAssetsFromLibraryPicks,
@@ -756,12 +757,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       target = 'analyze';
     }
 
-    // 进导演分镜：必须已确认素材（人物/场景参考图）
-    if (target === 'board' && !isDramaAssetsConfirmed(session)) {
-      showAlert('请先在素材准备生成参考图并确认素材，再进入导演分镜');
-      target = isDramaAnalyzeConfirmed(session) ? 'assets' : 'analyze';
-    }
-
     // 进成片：须已确认导演表
     if (target === 'review') {
       const gate = canEnterDramaUserPhase(session, 'final');
@@ -787,9 +782,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       showAlert('已返回剧本阶段：后续「素材 / 导演表」确认已解除，修改后请重新确认');
     }
 
-    if (target === 'assets' || target === 'board') {
-      base = ensureAppearingCharactersInBible(base);
-    }
     // 从分镜退回素材：只解除导演表确认（素材确认保留，可继续补图）
     if (
       target === 'assets' &&
@@ -800,6 +792,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       showAlert('已返回素材准备：导演表确认已解除；改完后请重新确认导演表');
     }
     let next = setDramaSessionPhase(base, target);
+    if (target === 'board' && !isDramaAssetsConfirmed(next)) {
+      next = confirmDramaAssets(next);
+    }
     if (target === 'board' || target === 'review') next = refreshDramaContinuity(next);
     if (target === 'board') next = refreshDramaPackages(next);
     patchSession(next);
@@ -2822,50 +2817,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         )}
 
         {phase === 'assets' && (
-          <div className="flex flex-col gap-3">
-            <div className={`${cardCls(isDark)} p-3 flex flex-wrap items-center justify-between gap-2`}>
-              <div className={`text-[13px] ${mutedCls(isDark)}`}>
-                本剧素材仓库（全集共用，不分集）：人物 / 场景 / 道具 / 生物。各集分析只会往这里追加名单，不会按集拆成多套仓库。之后由你增删改：右下「+」新建，点名字和「提示词」修改，图片/声音可生成或上传，卡片右上角 × 删除。删掉的人物不会再被分析自动加回来。确认后进入导演分镜。
-                {isDramaAssetsConfirmed(session) ? ' · 素材已确认' : ' · 待确认素材'}
-              </div>
-              <div className="flex items-center gap-2">
-                {isDramaAssetsConfirmed(session) ? (
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3 py-1.5 text-[12px] ${
-                      isDark ? 'bg-white/10' : 'bg-gray-100'
-                    }`}
-                    onClick={() => {
-                      patchSession(unlockDramaAssets(session));
-                      showAlert('已解除素材确认；修改后请重新确认再进导演分镜');
-                    }}
-                  >
-                    解除确认
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                    isDark ? 'bg-emerald-500/80 text-white' : 'bg-emerald-700 text-white'
-                  }`}
-                  onClick={() => {
-                    if (isDramaAssetsConfirmed(session)) {
-                      goPhase('board');
-                      return;
-                    }
-                    // 用已确认的 session 进分镜，避免闭包仍是未确认状态又弹窗
-                    let next = confirmDramaAssets(session);
-                    next = ensureAppearingCharactersInBible(next);
-                    next = setDramaSessionPhase(next, 'board');
-                    next = refreshDramaContinuity(next);
-                    next = refreshDramaPackages(next);
-                    patchSession(next);
-                  }}
-                >
-                  {isDramaAssetsConfirmed(session) ? '进入导演分镜' : '确认素材并进入分镜'}
-                </button>
-              </div>
-            </div>
           <DramaAssetLibraryPanel
             session={session}
             pipeline={pipeline}
@@ -2892,8 +2843,14 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             showAlert={showAlert}
             runChat={runChat}
             chatModel={chatModel}
+            onEnterNext={() => {
+              if (!(session.shots || []).length) {
+                showAlert('请先完成剧本分析生成分镜脚本');
+                return;
+              }
+              goPhase('board');
+            }}
           />
-          </div>
         )}
 
         {phase === 'review' && (
@@ -4185,6 +4142,7 @@ function DramaLiteVoiceBar({
   onClear: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const previewCtxRef = useRef<AudioContext | null>(null);
   const [playing, setPlaying] = useState(false);
   const hasMedia = !!String(url || '').trim();
 
@@ -4215,6 +4173,7 @@ function DramaLiteVoiceBar({
       a = new Audio();
       a.preload = 'none';
       a.addEventListener('ended', () => setPlaying(false));
+      previewCtxRef.current = attachAudioPreviewGain(a) || previewCtxRef.current;
       audioRef.current = a;
     }
     if (!a.paused) {
@@ -4224,7 +4183,14 @@ function DramaLiteVoiceBar({
     }
     if (a.getAttribute('src') !== url) a.src = url;
     setPlaying(true);
-    void a.play().catch(() => setPlaying(false));
+    void (async () => {
+      await resumeAudioPreviewContext(previewCtxRef.current);
+      try {
+        await a.play();
+      } catch {
+        setPlaying(false);
+      }
+    })();
   };
 
   return (
@@ -4869,6 +4835,7 @@ function DramaAssetLibraryPanel({
   showAlert,
   runChat,
   chatModel,
+  onEnterNext,
 }: {
   session: DramaDirectorSession;
   pipeline?: DirectorPipelineState;
@@ -4899,6 +4866,7 @@ function DramaAssetLibraryPanel({
     opts?: { max_tokens?: number; temperature?: number; model?: string },
   ) => Promise<string>;
   chatModel?: string;
+  onEnterNext?: () => void;
 }) {
   const { showConfirm } = useDarkAlert();
   const [tab, setTab] = useState<DramaAssetVisualKind>('characters');
@@ -5213,7 +5181,7 @@ function DramaAssetLibraryPanel({
           </span>
         ) : null}
         <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
-          {missingDesign.length > 0 ? (
+          {tab === 'characters' && missingDesign.length > 0 ? (
             <span
               className={`rounded-md px-2 py-1 text-[12px] ${
                 isDark ? 'bg-amber-500/20 text-amber-200' : 'bg-amber-50 text-amber-800'
@@ -5222,46 +5190,8 @@ function DramaAssetLibraryPanel({
             >
               需设计形象 {missingDesign.length}
             </span>
-          ) : (
-            <span
-              className={`rounded-md px-2 py-1 text-[12px] ${
-                isDark ? 'bg-emerald-500/15 text-emerald-200/90' : 'bg-emerald-50 text-emerald-800'
-              }`}
-            >
-              出场人物形象已齐
-            </span>
-          )}
-          {isVisualTab ? imageGenToolbarSlot : null}
-          {missingDesign.length > 0 ? (
-            <DramaYuanbaoHoverWrap priceLabel={unitImagePriceLabel} tipBelow>
-              <button
-                type="button"
-                className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                  isDark ? 'bg-amber-500/80 text-white' : 'bg-amber-700 text-white'
-                } disabled:opacity-50`}
-                disabled={!!busy}
-                onClick={() => {
-                  setTab('characters');
-                  void (async () => {
-                    const next = await hydrateEmptyLooks(session);
-                    const before = (session.bible.characters || [])
-                      .map((c) => `${c.character_id}:${c.imageUrl || ''}`)
-                      .join('|');
-                    const after = (next.bible.characters || [])
-                      .map((c) => `${c.character_id}:${c.imageUrl || ''}`)
-                      .join('|');
-                    if (before !== after) onChange(next);
-                    const stillMissing = listCharactersMissingDesign(next);
-                    for (const c of stillMissing) {
-                      onGenerateAssetImage?.('characters', c.character_id);
-                    }
-                  })();
-                }}
-              >
-                生成缺形象人物
-              </button>
-            </DramaYuanbaoHoverWrap>
           ) : null}
+          {isVisualTab ? imageGenToolbarSlot : null}
           {isVisualTab ? (
             <DramaYuanbaoHoverWrap
               priceLabel={batchImagePriceLabel || unitImagePriceLabel}
@@ -5274,42 +5204,50 @@ function DramaAssetLibraryPanel({
                 } disabled:opacity-50`}
                 disabled={!!busy}
                 onClick={() => {
-                  // 勿用点击瞬间的 stale session 整包回写 generating，否则会冲掉已 ready 的图
-                  const kinds: DramaAssetVisualKind[] = ['characters', 'scenes', 'props', 'creatures'];
-                  for (const kind of kinds) {
-                    const items =
-                      kind === 'characters'
-                        ? session.bible.characters.map((c) => ({
-                            id: c.character_id,
-                            imageUrl: c.imageUrl,
-                          }))
-                        : kind === 'scenes'
-                          ? session.bible.scenes.map((s) => ({
-                              id: s.scene_id,
-                              imageUrl: s.imageUrl,
-                            }))
-                          : kind === 'props'
-                            ? session.bible.props.map((p) => ({
-                                id: p.prop_id,
-                                imageUrl: p.imageUrl,
-                              }))
-                            : session.bible.creatures.map((c) => ({
-                                id: c.creature_id,
-                                imageUrl: c.imageUrl,
-                              }));
-                    for (const item of items) {
-                      if (kind === 'characters') {
-                        const ch = session.bible.characters.find((c) => c.character_id === item.id);
-                        if (characterHasUsableReference(ch)) continue;
-                      } else if (item.imageUrl) {
-                        continue;
+                  if (tab === 'characters') {
+                    void (async () => {
+                      const next = await hydrateEmptyLooks(session);
+                      const before = (session.bible.characters || [])
+                        .map((c) => `${c.character_id}:${c.imageUrl || ''}`)
+                        .join('|');
+                      const after = (next.bible.characters || [])
+                        .map((c) => `${c.character_id}:${c.imageUrl || ''}`)
+                        .join('|');
+                      if (before !== after) onChange(next);
+                      for (const c of listCharactersMissingDesign(next)) {
+                        onGenerateAssetImage?.('characters', c.character_id);
                       }
-                      onGenerateAssetImage?.(kind, item.id);
-                    }
+                    })();
+                    return;
+                  }
+                  const items =
+                    tab === 'scenes'
+                      ? session.bible.scenes.map((s) => ({
+                          id: s.scene_id,
+                          imageUrl: s.imageUrl,
+                        }))
+                      : tab === 'props'
+                        ? session.bible.props.map((p) => ({
+                            id: p.prop_id,
+                            imageUrl: p.imageUrl,
+                          }))
+                        : session.bible.creatures.map((c) => ({
+                            id: c.creature_id,
+                            imageUrl: c.imageUrl,
+                          }));
+                  for (const item of items) {
+                    if (item.imageUrl) continue;
+                    onGenerateAssetImage?.(tab, item.id);
                   }
                 }}
               >
-                一键生成
+                {tab === 'characters'
+                  ? '一键生成人物'
+                  : tab === 'scenes'
+                    ? '一键生成场景'
+                    : tab === 'props'
+                      ? '一键生成道具'
+                      : '一键生成生物'}
               </button>
             </DramaYuanbaoHoverWrap>
           ) : null}
@@ -5436,10 +5374,27 @@ function DramaAssetLibraryPanel({
               className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
                 isDark ? 'bg-white/12 text-white' : 'bg-gray-100 text-gray-800'
               }`}
-              title="从素材库勾选已有人物与声音，写入本集卡片"
+              title="从本剧人物库勾选已有人物与声音，写入本页"
               onClick={() => setLibraryPick({ characterId: null, prefer: 'both' })}
             >
               勾选已有人物/声音
+            </button>
+          ) : null}
+          {onEnterNext ? (
+            <button
+              type="button"
+              className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium disabled:opacity-50 ${
+                isDark ? 'bg-emerald-500/85 text-white hover:bg-emerald-500' : 'bg-emerald-700 text-white hover:bg-emerald-800'
+              }`}
+              disabled={!!busy || !(session.shots || []).length}
+              title={
+                (session.shots || []).length
+                  ? '确认素材，进入导演分镜生成视频'
+                  : '请先完成剧本分析生成分镜脚本'
+              }
+              onClick={() => onEnterNext()}
+            >
+              下一步：生成视频
             </button>
           ) : null}
         </div>
@@ -6123,7 +6078,7 @@ function resolveDramaShotBoardVideo(
  * 成片预览：挂载窗内（最多 3 镜）常驻 video 拉首帧；悬停有声播放；移开暂停静音。
  * 窗外不挂 video，仅 poster / 占位，防多路解码 OOM。
  */
-function DramaShotVideoPreview({
+const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
   playableUrl,
   posterHint,
   generating,
@@ -6277,7 +6232,7 @@ function DramaShotVideoPreview({
       ) : null}
     </div>
   );
-}
+});
 
 /** 分镜卡右侧：单镜视频生成槽（可选手动视频模型 + 按模型挡位向上取整） */
 function DramaShotVideoSlot({
@@ -8462,6 +8417,7 @@ function DramaBoardPanel({
                   ) : null}
                   {renderShotCard(raw, {
                     index,
+                    // 视口内镜头挂载 video 显示首帧（当前帧），悬停播放；视口外由 DramaViewportMount 卸载、不加载
                     mountVideo: true,
                     mediaActive: true,
                   })}

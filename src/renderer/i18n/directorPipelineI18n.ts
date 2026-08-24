@@ -5,6 +5,8 @@ export type DirectorPipelineStrings = {
   scriptPlaceholder: string;
   directorTitle: string;
   modeScript: string;
+  /** AI 短剧导演模式 */
+  modeDrama: string;
   modeMv: string;
   phaseMusic: string;
   phaseStyle: string;
@@ -12,6 +14,8 @@ export type DirectorPipelineStrings = {
   phaseCast: string;
   phaseRatio: string;
   phaseVideos: string;
+  /** MV 第 8 步：歌词 / 卡拉OK 字幕 */
+  phaseKaraoke: string;
   phaseShots: string;
   phaseAssets: string;
   phaseMvScenes: string;
@@ -53,13 +57,17 @@ export type DirectorPipelineStrings = {
   nextStyle: string;
   nextStory: string;
   nextCast: string;
-  /** 选角完成后进入剧本 */
+  /** 选角完成后进入场景 */
   nextStoryAfterCast: string;
   nextRatio: string;
   nextVideos: string;
+  /** 视频生成后进入卡拉OK */
+  nextKaraoke: string;
   generateThisVideo: string;
   generatingVideo: string;
   generatingStoryboard: string;
+  generatingCharacter: string;
+  generatingScene: string;
   videosHint: string;
   nextScenes: string;
   nextMvScenes: string;
@@ -70,11 +78,39 @@ export type DirectorPipelineStrings = {
   step4GenerateStoryboards: string;
   step5SpawnVideos: string;
   previewToSplice: string;
-  /** 剪辑预览：已生成视频 + 原曲入轨 */
+  /** 第 7 步剪辑预览：各镜成片 + 原曲入轨（文案同「剪辑预览」，素材是成片非分镜图） */
   previewVideosToSplice: string;
   previewVideosHint: string;
   confirmGenVideos: string;
   exportMv: string;
+  /** 一键卡拉OK字幕 */
+  karaokeSubtitles: string;
+  karaokeNeedMusicLyrics: string;
+  /**
+   * 第 7→8 步：无可用成片（全失败/未生成）时仍可进入的确认文案。
+   * 产品：不要静默拦住；说清风险后允许进入调歌词。
+   */
+  confirmEnterKaraokeWithoutVideos: string;
+  /** 第 8 步：成片来源 */
+  karaokeSourceTitle: string;
+  karaokeImportCompose: string;
+  karaokeImportComposeHint: string;
+  karaokeImportComposeRunning: string;
+  karaokeImportComposeFailed: string;
+  karaokeUploadVideo: string;
+  karaokeUploadVideoHint: string;
+  karaokeUploadVideoRunning: string;
+  karaokeUploadVideoFailed: string;
+  karaokeUploadVideoTooLarge: string;
+  karaokeVideoReady: string;
+  karaokeVideoEmpty: string;
+  karaokeClearVideo: string;
+  karaokeClearVideoHint: string;
+  karaokeOpenEditor: string;
+  karaokeBurnedTitle: string;
+  karaokeBurnedEmpty: string;
+  /** 第8步识别语言一行说明 */
+  karaokeAsrLanguageHint: string;
   musicChipLabel: string;
   absorbedMusicEmpty: string;
   musicTitle: string;
@@ -90,6 +126,13 @@ export type DirectorPipelineStrings = {
   /** AI识别 / 歌曲分析进行中：取消 */
   musicJobCancel: string;
   musicLyricsPlaceholder: string;
+  /** 识别语言（AI识别 / 歌曲分析 / 卡拉OK） */
+  musicAsrLanguage: string;
+  musicAsrLanguageAuto: string;
+  musicAsrLanguageZh: string;
+  musicAsrLanguageYue: string;
+  musicAsrLanguageHint: string;
+  musicAsrLanguageYueTip: string;
   musicUploadAudio: string;
   musicUploadLyrics: string;
   musicReplaceAudio: string;
@@ -102,6 +145,15 @@ export type DirectorPipelineStrings = {
   musicStep2Title: string;
   musicStep3Title: string;
   musicStep2Hint: string;
+  /** 歌曲名（开场字幕） */
+  musicSongTitle: string;
+  musicSongTitlePlaceholder: string;
+  /** 作词人 */
+  musicLyricist: string;
+  /** 作曲人 */
+  musicComposer: string;
+  /** 作词/作曲空时默认署名 */
+  musicCreditDefault: string;
   musicAiAnalyzeTitle: string;
   musicAiAnalyzeIdle: string;
   musicAiAnalyzeDesc: string;
@@ -124,6 +176,7 @@ export type DirectorPipelineStrings = {
   phaseMvScenesSub: string;
   phaseShotsSub: string;
   phaseVideosSub: string;
+  phaseKaraokeSub: string;
   phasePreviewSub: string;
   musicDropFormats: string;
   musicConnectHint: string;
@@ -167,6 +220,7 @@ export type DirectorPipelineStrings = {
   castRoleIndex: string;
   castEditRole: string;
   castUploadRole: string;
+  castClearPrompt: string;
   castRole2DisabledHint: string;
   /** 选角：主角人数与性别 */
   castLeadCountLabel: string;
@@ -179,6 +233,13 @@ export type DirectorPipelineStrings = {
   castLead2Label: string;
   castNeedLeads: string;
   castLibraryGenderNote: string;
+  /** 选角：按故事自动打开的组合提示 */
+  castAutoOpenedHint: string;
+  castComboSoloFemale: string;
+  castComboSoloMale: string;
+  castComboDuoMf: string;
+  castComboDuoFf: string;
+  castComboDuoMm: string;
   scenesHint: string;
   scenesSyncFromScript: string;
   scenesNeedScript: string;
@@ -224,6 +285,7 @@ export type DirectorPipelineStrings = {
   storyPlotBeatColAngle: string;
   storyPlotBeatColFocal: string;
   storyPlotBeatColAction: string;
+  storyPlotBeatColLipsyncAction: string;
   storyPlotBeatColMood: string;
   storyPlotBeatRawEdit: string;
   storySectionWorldViewPh: string;
@@ -232,6 +294,31 @@ export type DirectorPipelineStrings = {
   storySectionScenesPh: string;
   storySectionPropsPh: string;
   storyAnalyzeBtn: string;
+  storyGenerateOutlineBtn: string;
+  storyConfirmOutlineBtn: string;
+  storyOutlineConfirmedBadge: string;
+  storyOutlinePendingBadge: string;
+  storyOutlineTitle: string;
+  storyOutlineHint: string;
+  storyOutlinePlaceholder: string;
+  /** 生成故事前：类型/风格/结局偏好 */
+  storyPrefsHint: string;
+  storyPrefsGenreLabel: string;
+  storyPrefsToneLabel: string;
+  storyPrefsEndingLabel: string;
+  storyPrefsAutoOption: string;
+  /** 尚未生成故事时的醒目提示 */
+  storyPrefsThenGenerateHint: string;
+  storyNeedOutline: string;
+  storyNeedConfirmOutline: string;
+  storyOutlineFailed: string;
+  storyOutlineWriting: string;
+  /** 剧本步：撰写剧本中提示 */
+  storyScriptWriting: string;
+  /** 撰写中点同一按钮取消等待；云端已发出的请求通常仍结算 */
+  storyCancelChatHint: string;
+  /** 客户端等待超时（约 2 分钟） */
+  storyLlmTimeout: string;
   storyGenerateScriptBtn: string;
   /** 分析音乐 + 生成剧本 一次完成 */
   storyOneShotBtn: string;
@@ -241,6 +328,49 @@ export type DirectorPipelineStrings = {
   storyAnalysisEmpty: string;
   storyAnalyzeFailed: string;
   storyScriptFailed: string;
+  /** 短剧三步台：剧本解析 → 分镜导演 → 生成视频 */
+  dramaConfirmShots: string;
+  regenerateShots: string;
+  batchGenerateStoryboardsToolbar: string;
+  batchGenerateVideosToolbar: string;
+  globalStyleLabel: string;
+  globalStylePlaceholder: string;
+  dramaFlowHint: string;
+  dramaPhaseStory: string;
+  dramaPhaseStorySub: string;
+  dramaPhaseShots: string;
+  dramaPhaseShotsSub: string;
+  dramaPhaseAnalyze: string;
+  dramaPhaseAnalyzeSub: string;
+  dramaPhaseStoryboard: string;
+  dramaPhaseStoryboardSub: string;
+  dramaPhaseAssets: string;
+  dramaPhaseAssetsSub: string;
+  dramaPhaseVideo: string;
+  dramaPhaseVideoSub: string;
+  dramaAnalyzeHint: string;
+  dramaAnalyzeLinkedScript: string;
+  dramaAnalyzeBtn: string;
+  dramaAnalyzeDoneSummary: string;
+  dramaNextStoryboard: string;
+  dramaNextAssets: string;
+  dramaNextVideos: string;
+  dramaGenerateOrUploadCharacter: string;
+  dramaGenerateOrUploadScene: string;
+  dramaGenerateOrUploadProp: string;
+  dramaGenerateOrUploadCreature: string;
+  dramaAddNew: string;
+  dramaStatusPending: string;
+  dramaStatusAnalyzeDone: string;
+  dramaStatusAnalyzeAndShotsDone: string;
+  dramaStorySourceLabel: string;
+  dramaStorySourcePlaceholder: string;
+  dramaStoryGenerate: string;
+  dramaStoryNeedSource: string;
+  dramaStoryGenerating: string;
+  dramaStoryReadySummary: string;
+  dramaStoryPlotPreview: string;
+  dramaStoryScriptPreview: string;
   storyAnalyzing: string;
   storyWriting: string;
   ratioHint: string;
@@ -252,12 +382,48 @@ export type DirectorPipelineStrings = {
   generateThisStoryboard: string;
   /** 已有分镜图：重新生成 */
   regenerateStoryboard: string;
+  /** 视频/分镜步：从历史版本里选当前参考分镜图 */
+  storyboardPickVersion: string;
+  /** 视频步：从历史版本里选当前成片 */
+  videoPickVersion: string;
   colStoryboard: string;
   colShotVideo: string;
   /** 视频生成表：参考分镜图列 */
   colRefStoryboard: string;
+  /** 视频生成表：本镜绑定角色列 */
+  colShotCast: string;
+  /** 对口型旁：标明跟唱主体 */
+  lipsyncCastSubject: string;
   needStoryboardsFirst: string;
   confirmSpawnWithoutAllStoryboards: string;
+  /** 批量生视频：全部已有成片，无需再跑 */
+  batchSpawnVideosAllReady: string;
+  /** 一键生视频：同时进行中上限（超出排队） */
+  mvVideoBatchCapped: string;
+  /** Skill 改写进度 */
+  videoSkillRewriteProgress: string;
+  videoSkillRewriteWaveWait: string;
+  videoSkillRewriteFailed: string;
+  videoSkillRewriteBatchSummary: string;
+  videoSkillRewriteGuideMissing: string;
+  /** 视频步：Skill 改写用的大模型 */
+  videoSkillModelHint: string;
+  videoOptimizePrompt: string;
+  videoOptimizePromptBusy: string;
+  videoOptimizePromptBatch: string;
+  videoRebuildPromptFromScript: string;
+  videoRebuildPromptFromScriptBatch: string;
+  videoRebuildPromptFromScriptHint: string;
+  confirmRebuildPromptFromScriptBatch: string;
+  videoRebuildPromptDone: string;
+  videoPromptOriginal: string;
+  videoPromptOptimized: string;
+  videoPromptUseOriginal: string;
+  videoPromptUseOptimized: string;
+  videoPromptUsingOriginal: string;
+  videoPromptUsingOptimized: string;
+  videoPromptNoOptimized: string;
+  videoPromptOptimizeNeedText: string;
   /** 对口型生成前确认 */
   confirmLipsyncGen: string;
   confirmLipsyncShotLine: string;
@@ -288,6 +454,9 @@ export type DirectorPipelineStrings = {
   downloadShotVideo: string;
   videoMute: string;
   videoUnmute: string;
+  /** 第 7 步：成片悬停出声总开关 */
+  videoHoverSoundLabel: string;
+  videoHoverSoundHint: string;
   colShotAudio: string;
   playShotAudio: string;
   shotAudioNeedMusic: string;
@@ -299,6 +468,12 @@ export type DirectorPipelineStrings = {
   lyricTimelineHint: string;
   lyricTimelineReady: string;
   lyricTimelineFailed: string;
+  /** 云端转写未登录且余额够 */
+  asrNeedLoginBalanceOk: string;
+  /** 云端转写未登录 */
+  asrNeedLogin: string;
+  goLogin: string;
+  asrBalanceInsufficient: string;
   lyricTimelineEmpty: string;
   lyricTimelineNeedEngine: string;
   lyricTimelineSeparateFallback: string;
@@ -320,6 +495,12 @@ export type DirectorPipelineStrings = {
   /** 切镜档位：短镜 4–6s */
   clipLengthModeShort: string;
   clipLengthModeHint: string;
+  /** 镜头变化：三档 */
+  shotChangePaceLabel: string;
+  shotChangePaceFast: string;
+  shotChangePaceNormal: string;
+  shotChangePaceSlow: string;
+  shotChangePaceHint: string;
   shotsConfirmSummaryModel: string;
   shotsConfirmSummaryModelDurations: string;
   shotsConfirmSummaryModelLipsync: string;
@@ -338,6 +519,7 @@ export type DirectorPipelineStrings = {
   assetsStepCharacters: string;
   assetsStepScenes: string;
   assetsStepProps: string;
+  assetsStepCreatures: string;
   nextGenerateScenes: string;
   nextGenerateProps: string;
   generateCharactersBatch: string;
@@ -360,6 +542,9 @@ export type DirectorPipelineStrings = {
   styleCustomHint: string;
   styleLongPressHint: string;
   stylePromptEditTitle: string;
+  /** 自定义风格参考图标题 */
+  styleRefImageLabel: string;
+  styleRefImageClear: string;
   stylePromptSave: string;
   stylePromptCancel: string;
   /** 风格库标题 */
@@ -372,6 +557,8 @@ export type DirectorPipelineStrings = {
   characters: string;
   scenes: string;
   props: string;
+  /** 宠物 / 怪物等非人类生物 */
+  creatures: string;
   addAsset: string;
   deleteAsset: string;
   pickFromCanvas: string;
@@ -384,15 +571,25 @@ export type DirectorPipelineStrings = {
   libraryPickEmpty: string;
   libraryPickLoading: string;
   uploadLocal: string;
+  /** 第 7 步成片格：拖入本地视频提示 */
+  shotVideoDropHint: string;
+  /** 第 7 步成片格：拖入非视频文件 */
+  shotVideoDropUnsupported: string;
   generateOrUpload: string;
   generateThis: string;
   generateCategory: string;
+  generateAllCharacters: string;
+  generateAllScenes: string;
+  generateAllProps: string;
+  generateAllCreatures: string;
   /** MV 场景步：批量生成场景九宫格 */
   batchGenerateSceneImages: string;
   /** 角色卡：隐藏链接提示（不展示正文） */
   characterLinkedHint: string;
   sceneLinkedHint: string;
   creditsSuffix: string;
+  /** 无 OTS 云端价时禁止生成（弹窗仅提示登录） */
+  otsPriceRequired: string;
   /** 批量生成视频按钮悬停价签；{n}=条数，{cost}=已含单位的总价（如 384元宝 / 384 credits） */
   batchVideoYuanbaoHover: string;
   /** 一键生成场景图按钮悬停价签；{n}=张数，{cost}=已含单位的总价 */
@@ -402,6 +599,8 @@ export type DirectorPipelineStrings = {
   priceTooltip: string;
   assetsMonitor: string;
   missingAssetsHint: string;
+  /** 短剧资产：含生物 */
+  dramaMissingAssetsHint: string;
   batchModalTitle: string;
   selectedCount: string;
   generateN: string;
@@ -434,19 +633,46 @@ export type DirectorPipelineStrings = {
   pendingPrompt: string;
   viewPrompt: string;
   viewImage: string;
+  /** 剧本已更新：单镜受控刷新提示词与素材匹配 */
+  scriptPromptsStaleUpdate: string;
+  scriptPromptsStaleHint: string;
+  scriptPromptsStaleBanner: string;
+  scriptPromptsUpdatedToast: string;
+  scriptPromptsUpdateAllStale: string;
   colShotNo: string;
   colDuration: string;
   colDesc: string;
+  /** 短剧导演本：画面动作（同画面描述列） */
+  colAction: string;
   /** 确认镜头：角度+焦距合并列 */
   colAngleFocal: string;
   colAngle: string;
+  /** 短剧：机位/角度 */
+  colAngleCamera: string;
   colFocal: string;
   colShotSize: string;
   colLighting: string;
+  /** 短剧导演本：情绪（同光影氛围列） */
+  colMood: string;
   colDialogue: string;
+  /** 短剧导演本：对白列（强调角色名:台词） */
+  colDialogueSpeaker: string;
   colSfx: string;
   colCamera: string;
   colFinalPrompt: string;
+  /** 短剧场次层 */
+  colSceneNo: string;
+  colIntExt: string;
+  colDayNight: string;
+  colLocation: string;
+  colCastOn: string;
+  /** 短剧制作层 */
+  colProdNotes: string;
+  colContinuity: string;
+  colRefBind: string;
+  layerScene: string;
+  layerShot: string;
+  layerProd: string;
   /** 视频步：按意见 AI 改写当前镜最终提示词 */
   aiReviseFinalPrompt: string;
   aiReviseFinalPromptOpinionPlaceholder: string;
@@ -482,8 +708,9 @@ export type DirectorPipelineStrings = {
 const zh: DirectorPipelineStrings = {
   scriptTitle: '剧本',
   scriptPlaceholder: '在此粘贴或编写剧本正文…',
-  directorTitle: '导演',
+  directorTitle: 'MV导演',
   modeScript: '剧本',
+  modeDrama: '短剧',
   modeMv: 'MV',
   phaseMusic: '音乐上传/分析',
   phaseStyle: '风格选择',
@@ -491,6 +718,7 @@ const zh: DirectorPipelineStrings = {
   phaseCast: '选角',
   phaseRatio: '画幅',
   phaseVideos: '视频生成',
+  phaseKaraoke: '歌词/卡拉OK',
   phaseShots: '分镜生成',
   phaseAssets: '准备资产',
   phaseMvScenes: '场景配置',
@@ -514,19 +742,22 @@ const zh: DirectorPipelineStrings = {
   promptsProgress: '{ready}/{total} 已合成',
   storyboardsProgress: '{ready}/{total} 已生成，剩余 {left}',
   afterPartialHint: '分镜图就绪后可批量生成视频',
-  afterPartialHintMv: '分镜生成→视频生成→剪辑预览',
+  afterPartialHintMv: '分镜生成→视频生成→卡拉OK',
   nextPrepareAssets: '下一步：准备资产',
   nextGenerateStoryboards: '下一步：生成分镜图',
   nextPreviewTimeline: '下一步：入剪辑轨预览',
   nextStyle: '下一步：风格选择',
   nextStory: '下一步：写剧本',
   nextCast: '下一步：选角色',
-  nextStoryAfterCast: '下一步：写剧本',
+  nextStoryAfterCast: '下一步：风格选择',
   nextRatio: '下一步：选画幅',
   nextVideos: '下一步：视频生成',
+  nextKaraoke: '下一步：歌词/卡拉OK',
   generateThisVideo: '生成视频',
   generatingVideo: '生成中…',
   generatingStoryboard: '分镜生成中…',
+  generatingCharacter: '角色生成中…',
+  generatingScene: '场景生成中…',
   videosHint: '以下字段来自分镜生成：画面描述、分镜图、歌曲片段、运镜、景别、光影氛围与最终提示词',
   nextScenes: '下一步：场景参考',
   nextMvScenes: '下一步：场景图',
@@ -537,10 +768,32 @@ const zh: DirectorPipelineStrings = {
   step4GenerateStoryboards: '第四步：生成分镜图',
   step5SpawnVideos: '第五步：批量生成视频',
   previewToSplice: '剪辑预览',
-  previewVideosToSplice: '视频合成',
-  previewVideosHint: '将已生成的视频按镜头顺序铺到视频轨，原曲铺到音轨',
+  previewVideosToSplice: '剪辑预览',
+  previewVideosHint: '将各镜成片按镜头顺序铺到视频轨，原曲铺到音轨',
   confirmGenVideos: '确认生成视频并替换轨',
   exportMv: '导出 MV',
+  karaokeSubtitles: '卡拉OK字幕',
+  karaokeNeedMusicLyrics: '请先上传歌曲并填写歌词',
+  confirmEnterKaraokeWithoutVideos:
+    '当前没有可用成片（生成失败或尚未生成）。仍可进入第 8 步调整歌词时间轴；烧录到视频前请先上传成片，或完成剪辑预览导出。',
+  karaokeSourceTitle: '成片来源',
+  karaokeImportCompose: '导入合成成片',
+  karaokeImportComposeHint: '从关联剪辑轨导出合成 MV 作为字幕底片',
+  karaokeImportComposeRunning: '正在导出合成成片…',
+  karaokeImportComposeFailed: '未能导入合成成片，请先完成剪辑预览导出或改用上传',
+  karaokeUploadVideo: '上传本地成片',
+  karaokeUploadVideoHint: '支持 MP4 / WEBM / MOV，单文件最大 800MB',
+  karaokeUploadVideoRunning: '正在导入成片…',
+  karaokeUploadVideoFailed: '导入成片失败，请重试或换用较小文件',
+  karaokeUploadVideoTooLarge: '成片过大（最大 800MB），请压缩后再上传',
+  karaokeVideoReady: '已选定成片',
+  karaokeVideoEmpty: '尚未选定成片（可导入合成结果或上传）',
+  karaokeClearVideo: '清除成片',
+  karaokeClearVideoHint: '清除当前成片后可重新导入或上传',
+  karaokeOpenEditor: '打开卡拉OK编辑器',
+  karaokeBurnedTitle: '烧录结果',
+  karaokeBurnedEmpty: '烧录完成后会挂回本步，并在画布生成视频节点',
+  karaokeAsrLanguageHint: '字级对齐时传给云端 fun-asr（歌词以第 1 步为准）。',
   musicChipLabel: '音乐',
   absorbedMusicEmpty: '连接音频节点以吸收音乐，或填写情绪/主题',
   musicTitle: '曲名',
@@ -554,6 +807,13 @@ const zh: DirectorPipelineStrings = {
   musicLyricsExtractFailed: '识别歌词失败',
   musicJobCancel: '取消',
   musicLyricsPlaceholder: '可粘贴歌词，或点击「AI识别」',
+  musicAsrLanguage: '识别语言',
+  musicAsrLanguageAuto: '自动',
+  musicAsrLanguageZh: '普通话',
+  musicAsrLanguageYue: '粤语',
+  musicAsrLanguageHint: 'AI识别与歌曲分析会传给云端 fun-asr；第8步卡拉OK默认跟随。',
+  musicAsrLanguageYueTip:
+    '局限：fun-asr 含粤语能力，但文件转写文档未正式列 yue；将尽量传 yue。不准时请用带时间戳的粤语 LRC。',
   musicUploadAudio: '上传歌曲音频',
   musicUploadLyrics: '上传歌词文件',
   musicReplaceAudio: '更换音频',
@@ -566,6 +826,11 @@ const zh: DirectorPipelineStrings = {
   musicStep2Title: '第二步：填入歌词',
   musicStep3Title: '第三步：歌曲分析',
   musicStep2Hint: '上传歌曲后可自动填入歌词',
+  musicSongTitle: '歌曲名',
+  musicSongTitlePlaceholder: '填写歌曲名（开场居中显示）',
+  musicLyricist: '作词人',
+  musicComposer: '作曲人',
+  musicCreditDefault: '致音',
   musicAiAnalyzeTitle: 'AI 分析',
   musicAiAnalyzeIdle: '上传歌曲后自动分析',
   musicAiAnalyzeDesc: 'AI 将分析歌曲结构、情绪、节奏等信息，为您生成最佳 MV 方案',
@@ -582,22 +847,23 @@ const zh: DirectorPipelineStrings = {
   musicDimKeywordsSub: '提取歌词关键词',
   musicRecommendDuration: '推荐时长',
   phaseMusicSub: '选择或上传音乐',
+  phaseStorySub: '先写故事与分段剧本',
   phaseStyleSub: '选择MV整体风格',
-  phaseCastSub: '选择人物角色',
-  phaseStorySub: 'AI生成分镜脚本',
+  phaseCastSub: '按剧本人物库选角',
   phaseMvScenesSub: '生成视觉素材',
   phaseShotsSub: '生成分镜图',
   phaseVideosSub: '生成MV视频',
+  phaseKaraokeSub: '成片歌词字幕',
   phasePreviewSub: '导出或分享作品',
-  musicDropFormats: '支持 MP3 / WAV / M4A，最大 30MB',
+  musicDropFormats: '支持 MP3 / WAV / M4A，最大 80MB',
   musicConnectHint: '画布上的歌曲请把声音节点连到导演即可吸收',
   musicNeedFirst: '请先上传或接入音乐',
-  musicAudioTooLarge: '音频文件不能超过 30MB',
+  musicAudioTooLarge: '音频文件不能超过 80MB',
   musicAudioTooLong: '音频时长不能超过 6 分钟',
   musicAudioBadFormat: '仅支持 MP3 / WAV / M4A',
   castHint: '先定主角人数与性别，再为每个主角选形象；性别跟槽位走，不必给素材库每张图单独标性别',
   castFromScriptCount: '剧本识别到 {n} 人',
-  castSyncFromScript: '从剧本同步配角',
+  castSyncFromScript: '从剧本同步人物',
   castNeedScriptCharacters: '请先生成剧本人物库，或在本步先锁定主角',
   castEmptyHint: '请选择主角人数与性别，将自动创建主角卡',
   castAddToShot: '添加角色',
@@ -621,6 +887,7 @@ const zh: DirectorPipelineStrings = {
   castRoleIndex: '角色 {n}',
   castEditRole: '编辑',
   castUploadRole: '上传',
+  castClearPrompt: '清空提示词',
   castRole2DisabledHint: '勾选启用角色 2',
   castLeadCountLabel: '主角人数',
   castLeadSolo: '1 个主角',
@@ -632,14 +899,20 @@ const zh: DirectorPipelineStrings = {
   castLead2Label: '主角 2',
   castNeedLeads: '请先选定主角人数与性别',
   castLibraryGenderNote: '从资产库选图时无需预先标性别：图放进男主/女主槽即视为该性别',
+  castAutoOpenedHint: '已按故事自动打开：{combo}（可自行修改）',
+  castComboSoloFemale: '单个女主',
+  castComboSoloMale: '单个男主',
+  castComboDuoMf: '一男一女',
+  castComboDuoFf: '两个女主',
+  castComboDuoMm: '两个男主',
   scenesHint: '根据剧本场景库列出地点，再一键生成九宫格空场景参考图（不生成道具）',
   scenesSyncFromScript: '同步场景',
   scenesNeedScript: '请先在「剧本」步骤填写场景库（如：天台：……）',
   scenesFromScriptCount: '剧本识别到 {n} 个场景',
-  storyHint: '开启「参考生成」可填参考并由 AI 写剧本；关闭则自行填写。剧本宜有短剧情节，并穿插旁侧唱歌跳舞等 MV 表演感',
+  storyHint: '流程：①选故事类型/风格/结局 → ②生成故事 → ③生成分段剧本。「参考生成」只影响故事；剧本按当前故事展开。',
   storyRefGenSwitchLabel: '参考生成',
-  storyRefGenOnHint: '根据下方参考内容生成剧本（可留空，仍会按歌词与歌曲分析生成）',
-  storyManualHint: '已关闭参考生成：请在下方分节中自行编写剧本',
+  storyRefGenOnHint: '仅影响「生成故事」：优先按下方参考写故事；歌词与分析只调情绪。不影响「生成剧本」',
+  storyManualHint: '已关闭参考生成：故事按歌词与歌曲分析生成。「生成剧本」直接用当前故事',
   closeUpFramingSwitchLabel: '近景特写',
   closeUpFramingOnHint: '开：有人镜仅特写（脸贴镜头），禁止半身、禁止全身；空镜仍按场景公式',
   closeUpFramingOffHint: '关：不限景别与运镜（全身/半身/近景等均可）',
@@ -669,6 +942,7 @@ const zh: DirectorPipelineStrings = {
   storyPlotBeatColAngle: '镜头角度',
   storyPlotBeatColFocal: '焦距',
   storyPlotBeatColAction: '动作与画面',
+  storyPlotBeatColLipsyncAction: '对口型动作',
   storyPlotBeatColMood: '情绪',
   storyPlotBeatRawEdit: '编辑原始表格文本',
   storySectionWorldViewPh: '时空、氛围、视觉基调…',
@@ -677,6 +951,28 @@ const zh: DirectorPipelineStrings = {
   storySectionScenesPh: '一景一行：短名：室内外 + 地点 + 光色 + 陈设（无人物空场景，供九宫格）',
   storySectionPropsPh: '关键道具，可空…',
   storyAnalyzeBtn: 'AI 分析音乐',
+  storyGenerateOutlineBtn: '生成故事',
+  storyConfirmOutlineBtn: '确认故事',
+  storyOutlineConfirmedBadge: '已确认',
+  storyOutlinePendingBadge: '待确认',
+  storyOutlineTitle: '故事',
+  storyOutlineHint: '先选类型/风格/结局（可选「AI 自选」），生成故事后即可直接生成下方分段剧本',
+  storyOutlinePlaceholder: '',
+  storyPrefsHint: '生成前请选择短剧偏好；留空「AI 自选」则由模型根据歌词推断',
+  storyPrefsGenreLabel: '类型',
+  storyPrefsToneLabel: '风格',
+  storyPrefsEndingLabel: '结局',
+  storyPrefsAutoOption: 'AI 自选',
+  storyPrefsThenGenerateHint: '选好类型/风格/结局后，请先点右上角「生成故事」——故事出来后才能确认并生成剧本',
+  storyNeedOutline: '请先生成故事',
+  storyNeedConfirmOutline: '请先确认故事，再生成分段剧本',
+  storyOutlineFailed: '故事生成失败',
+  storyOutlineWriting: '撰写故事中…',
+  storyScriptWriting: '撰写剧本中…',
+  storyCancelChatHint:
+    '取消后界面立即恢复。请求若已发往云端，费用通常仍会结算（上游失败/超时会自动退回；成功但本地已取消则可能已扣费）',
+  storyLlmTimeout:
+    '大模型响应超时或网络中断。请检查网络后重试；段数很多时可先切「长镜」减少片段。上游失败会自动退费；若上游已成功则可能已扣费',
   storyGenerateScriptBtn: '生成剧本',
   storyOneShotBtn: '一键分析并生成剧本',
   storyOneShotRunning: '生成中…',
@@ -685,6 +981,51 @@ const zh: DirectorPipelineStrings = {
   storyAnalysisEmpty: '歌曲分析来自「音乐」步骤；若为空请返回上一步重新分析',
   storyAnalyzeFailed: '音乐分析失败',
   storyScriptFailed: '剧本生成失败',
+  dramaConfirmShots: '确认镜头',
+  regenerateShots: '重新生成',
+  batchGenerateStoryboardsToolbar: '批量生成分镜',
+  batchGenerateVideosToolbar: '批量生成视频',
+  globalStyleLabel: '全局风格',
+  globalStylePlaceholder: '描述全片视觉风格、画风、光影与色彩倾向…',
+  dramaFlowHint: '流程：①剧本解析 → ②准备资产 → ③生成视频',
+  dramaPhaseStory: '剧本解析',
+  dramaPhaseStorySub: '吸收文本 → AI 分析',
+  dramaPhaseShots: '分镜导演',
+  dramaPhaseShotsSub: '核对镜头表与提示词',
+  dramaPhaseAnalyze: '剧本分析',
+  dramaPhaseAnalyzeSub: '吸收文本 → AI 分析 → 资产草稿',
+  dramaPhaseStoryboard: '分镜导演',
+  dramaPhaseStoryboardSub: '镜头表与视觉指令',
+  dramaPhaseAssets: '参考图',
+  dramaPhaseAssetsSub: '人物 / 场景 / 道具 / 生物 / 声音',
+  dramaPhaseVideo: '生成视频',
+  dramaPhaseVideoSub: '生成包 → MiniMax H3',
+  dramaAnalyzeHint:
+    '第一步：把左侧文本节点连进来，或直接粘贴剧本。点击「开始分析」后，会拆出角色、场景与分镜草案。',
+  dramaAnalyzeLinkedScript: '已从连线文本节点吸收剧本，可直接分析或先编辑。',
+  dramaAnalyzeBtn: '开始分析',
+  dramaAnalyzeDoneSummary: '解析完成：角色 {cast} · 场景 {scenes} · 分镜 {shots}',
+  dramaNextStoryboard: '下一步：分镜导演',
+  dramaNextAssets: '下一步：准备资产',
+  dramaNextVideos: '下一步：生成视频',
+  dramaMissingAssetsHint: '检测到有 {c} 个角色、{s} 个场景、{p} 个道具、{b} 个生物没有视觉图，可手动上传或 AI 一键生成',
+  dramaGenerateOrUploadCharacter: '生成或上传角色图',
+  dramaGenerateOrUploadScene: '生成或上传场景图',
+  dramaGenerateOrUploadProp: '生成或上传道具图',
+  dramaGenerateOrUploadCreature: '生成或上传生物图',
+  dramaAddNew: '新增',
+  dramaStatusPending: '待解析剧本',
+  dramaStatusAnalyzeDone: '已完成剧本解析',
+  dramaStatusAnalyzeAndShotsDone: '已完成剧本解析及分镜生成',
+  dramaStorySourceLabel: '小说 / 剧本草稿',
+  dramaStorySourcePlaceholder:
+    '粘贴剧本、小说或梗概。分析后得到角色、场景与分镜草案，再进入「分镜导演」核对镜头表。',
+  dramaStoryGenerate: '开始分析',
+  dramaStoryNeedSource: '请先连接文本节点或粘贴剧本草稿',
+  dramaStoryGenerating: '正在分析剧本…',
+  dramaStoryReadySummary: '已就绪：角色 {cast} · 场景 {scenes} · 分镜草案 {shots}',
+  dramaStoryPlotPreview: '剧情分段表（草案）',
+  dramaStoryScriptPreview: '剧本摘要',
   storyAnalyzing: '分析中…',
   storyWriting: '撰写中…',
   ratioHint: '锁定画幅后，分镜图与视频将统一使用',
@@ -695,11 +1036,42 @@ const zh: DirectorPipelineStrings = {
   oneClickGenerateStoryboards: '全部分镜生成',
   generateThisStoryboard: '生成',
   regenerateStoryboard: '重新生成',
+  storyboardPickVersion: '选择分镜图',
+  videoPickVersion: '选择成片',
   colStoryboard: '分镜图',
   colShotVideo: '成片',
   colRefStoryboard: '参考分镜图',
+  colShotCast: '本镜角色',
+  lipsyncCastSubject: '对口型：{name}',
   needStoryboardsFirst: '请先生成分镜图',
   confirmSpawnWithoutAllStoryboards: '仍有 {n} 镜缺少分镜图，仅对已生成的镜头生成视频？',
+  batchSpawnVideosAllReady: '所有镜头已有成片，已跳过。如需重跑请点单镜「重新生成」。',
+  mvVideoBatchCapped: '同时最多跑 {n} 条视频，已提交本批；剩余 {left} 条已排队，完成后自动继续。',
+  videoSkillRewriteProgress: '正在优化提示词 {cur}/{total}…',
+  videoSkillRewriteWaveWait: '已完成 {cur}/{total}，{sec} 秒后继续下一批…',
+  videoSkillRewriteFailed: '镜{no} 提示词优化失败，已保留原版',
+  videoSkillRewriteBatchSummary:
+    '已优化 {ok} 镜。未完成 {fail} 镜（{nos}）。请再点「批量优化提示词」，或对未变绿的镜头点「优化提示词」。',
+  videoSkillRewriteGuideMissing: '无法读取 MiniMax Skill 指南，请稍后重试',
+  videoSkillModelHint: '用于手动优化 MiniMax Skill 提示词，与生成视频分开',
+  videoOptimizePrompt: '优化提示词',
+  videoOptimizePromptBusy: '优化中…',
+  videoOptimizePromptBatch: '批量优化提示词',
+  videoRebuildPromptFromScript: '更新提示词',
+  videoRebuildPromptFromScriptBatch: '更新提示词',
+  videoRebuildPromptFromScriptHint:
+    '用当前剧本剧情表和镜头脚本重新拼出原版提示词，并清空优化稿。不重跑分镜图和成片。',
+  confirmRebuildPromptFromScriptBatch:
+    '将用剧本和镜头脚本重新拼出全部提示词，并清空当前优化稿。分镜图和成片不会重跑。确定？',
+  videoRebuildPromptDone: '已更新提示词',
+  videoPromptOriginal: '原版提示词',
+  videoPromptOptimized: '优化后提示词',
+  videoPromptUseOriginal: '使用原版',
+  videoPromptUseOptimized: '使用优化稿',
+  videoPromptUsingOriginal: '当前使用原版',
+  videoPromptUsingOptimized: '当前使用优化稿',
+  videoPromptNoOptimized: '尚未优化，请先点「优化提示词」',
+  videoPromptOptimizeNeedText: '请先写好最终提示词再优化',
   confirmLipsyncGen:
     '即将用 LTX2.3 对口型生成 {n} 镜。\n每镜须同时传入：分镜图 + 歌曲片段 + 提示词。\n确认后才会开始生成；取消则不创建、不生成。\n\n{detail}',
   confirmLipsyncShotLine: '镜{no}：分镜{sb} · 歌曲片段{clip} · 提示词{prompt}',
@@ -709,9 +1081,9 @@ const zh: DirectorPipelineStrings = {
   lipsyncRecommend: '有 {n} 镜含对白，建议开启对口型（将自动裁剪对应歌曲片段）',
   lipsyncUse: '改用对口型',
   lipsyncRevert: '恢复原模型',
-  lipsyncShotBadge: '推荐对口型（特写脸近 + 有台词）· 点击可关闭',
-  lipsyncShotBadgeOff: '未推荐对口型 · 点击可开启（需特写脸近且有台词）',
-  lipsyncShotBadgeClimax: '高潮优先对口型（特写脸近+台词+高潮）· 点击可关闭',
+  lipsyncShotBadge: '对口型开：提示词要求跟唱口型 · 点击关闭后角色保持沉默、不要说话',
+  lipsyncShotBadgeOff: '对口型关：提示词要求角色保持沉默、不要说话 · 点击开启',
+  lipsyncShotBadgeClimax: '高潮对口型开：提示词要求跟唱口型 · 点击关闭后角色保持沉默、不要说话',
   lipsyncShotBadgeFarWarning: '警告：脸可能不够近，对口型易崩 · 仍可强制开启',
   lipsyncToggleLabel: '对口型',
   colLipsync: '对白/旁白',
@@ -722,6 +1094,8 @@ const zh: DirectorPipelineStrings = {
   downloadShotVideo: '下载成片',
   videoMute: '静音',
   videoUnmute: '开启声音',
+  videoHoverSoundLabel: '声音总开关',
+  videoHoverSoundHint: '开启后，鼠标移到任意成片即可听到声音（同时只播一个）',
   colShotAudio: '音频片段',
   playShotAudio: '试听本镜',
   shotAudioNeedMusic: '请先接入歌曲',
@@ -733,6 +1107,11 @@ const zh: DirectorPipelineStrings = {
   lyricTimelineHint: '先分析歌曲，再按歌词切段',
   lyricTimelineReady: '{packs} 镜',
   lyricTimelineFailed: '歌曲分析失败',
+  asrNeedLoginBalanceOk: '云端转写需要登录，余额充足，是否前往登录？',
+  asrNeedLogin: '云端转写需要登录，是否前往登录？',
+  goLogin: '前往登录',
+  asrBalanceInsufficient:
+    '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。',
   lyricTimelineEmpty: '未识别到可用片段',
   lyricTimelineNeedEngine: '当前环境不支持云端歌词转写。请登录账号后重试，或完全退出后重新运行应用（需重建主进程）',
   lyricTimelineSeparateFallback: '人声分离不可用，已改用整曲识别（精度可能下降）',
@@ -749,6 +1128,12 @@ const zh: DirectorPipelineStrings = {
   clipLengthModeShort: '短镜 4–6s',
   clipLengthModeHint:
     '短镜严格 4/5/6（含纯音乐）；两句间隔较大则拆段；长镜 10/15 贴歌词小句',
+  shotChangePaceLabel: '镜头变化',
+  shotChangePaceFast: '快速 0.8s · 激烈',
+  shotChangePaceNormal: '普通 1.2s · 叙事',
+  shotChangePaceSlow: '慢速 2.0s · 抒情',
+  shotChangePaceHint:
+    '写入剧本/成片提示词的动作时轴切段密度：激烈更密、叙事适中、抒情更疏',
   shotsConfirmSummaryModel: '视频模型',
   shotsConfirmSummaryModelDurations: '支持时长 {durs}',
   shotsConfirmSummaryModelLipsync: '对口型：成片跟音频片段时长（就近计费档）',
@@ -766,6 +1151,7 @@ const zh: DirectorPipelineStrings = {
   assetsStepCharacters: '生成角色',
   assetsStepScenes: '生成场景',
   assetsStepProps: '生成道具',
+  assetsStepCreatures: '生成生物',
   nextGenerateScenes: '下一步：生成场景',
   nextGenerateProps: '下一步：生成道具',
   generateCharactersBatch: '一键生成角色',
@@ -781,13 +1167,15 @@ const zh: DirectorPipelineStrings = {
   editShotAudioRange: '编辑音频起止时间',
   globalStyle: '全篇风格',
   stylePreset: '风格',
-  styleCustomHint: '点击风格参考图选择；选中图将作为全片风格参考',
+  styleCustomHint: '写光色/氛围描述；可上传或从画布选择参考图（只参考光色，画风固定真人写实）',
   styleLongPressHint: '点击选择 · 长按编辑提示词',
   stylePromptEditTitle: '编辑风格提示词',
+  styleRefImageLabel: '风格参考图',
+  styleRefImageClear: '清除参考图',
   stylePromptSave: '保存',
   stylePromptCancel: '取消',
   styleLibraryTitle: '艺术风格',
-  styleLibraryTabSystem: '系统风格',
+  styleLibraryTabSystem: '影视风格',
   styleLibraryTabMine: '我的风格',
   styleLibraryMineEmpty: '还没有自定义风格，点「自定义」创建',
   styleLibrarySelected: '已选：{name}',
@@ -795,6 +1183,7 @@ const zh: DirectorPipelineStrings = {
   characters: '角色',
   scenes: '场景',
   props: '道具',
+  creatures: '生物',
   addAsset: '添加',
   deleteAsset: '删除',
   generateOrUpload: '生成或上传参考图',
@@ -808,12 +1197,19 @@ const zh: DirectorPipelineStrings = {
   libraryPickEmpty: '资产库暂无可用项',
   libraryPickLoading: '加载中…',
   uploadLocal: '电脑上传',
+  shotVideoDropHint: '拖入本地视频替换本镜成片（MP4 / MOV / WEBM）',
+  shotVideoDropUnsupported: '仅支持视频文件（MP4 / MOV / WEBM 等）',
   generateThis: '生成',
   generateCategory: '生成本类',
+  generateAllCharacters: '生成所有角色',
+  generateAllScenes: '生成所有场景',
+  generateAllProps: '生成所有道具',
+  generateAllCreatures: '生成所有生物',
   batchGenerateSceneImages: '一键生成所有场景图',
   characterLinkedHint: '生成时自动附加真人写实四宫格（等大、无分界线；正文不显示）',
   sceneLinkedHint: '生成时自动附加九宫格通用约束：等大分格、无间隙、无文字、空场景（正文不显示）',
   creditsSuffix: '元宝',
+  otsPriceRequired: '请登录',
   batchVideoYuanbaoHover: '{n}个视频共{cost}',
   batchSceneYuanbaoHover: '{n}个场景图共{cost}',
   batchStoryboardYuanbaoHover: '{n}个分镜图共{cost}',
@@ -846,20 +1242,41 @@ const zh: DirectorPipelineStrings = {
   pendingPrompt: '待生成提示词',
   viewPrompt: '查看提示词',
   viewImage: '点击放大查看',
-  colShotNo: '镜号',
+  scriptPromptsStaleUpdate: '更新',
+  scriptPromptsStaleHint: '剧本已更新：刷新本镜提示词与素材匹配（不重跑分镜图/成片；手改内容会保留）',
+  scriptPromptsStaleBanner:
+    '剧本已更新，{n} 镜提示词过期。可在编号下点「更新」，或「全部更新过期镜」（不重跑图/视频）',
+  scriptPromptsUpdatedToast: '已更新提示词与素材匹配',
+  scriptPromptsUpdateAllStale: '全部更新过期镜',
+  colShotNo: '编号',
   colDuration: '时长',
   colDesc: '画面描述',
+  colAction: '画面动作',
   colAngleFocal: '机位',
   colAngle: '镜头角度',
+  colAngleCamera: '机位/角度',
   colFocal: '焦距',
   colShotSize: '景别',
   colLighting: '光影氛围',
+  colMood: '情绪',
   colDialogue: '对白/旁白',
+  colDialogueSpeaker: '对白',
   colSfx: '音效',
   colCamera: '运镜',
   colFinalPrompt: '最终提示词',
+  colSceneNo: '场号',
+  colIntExt: '内外景',
+  colDayNight: '日夜',
+  colLocation: '地点',
+  colCastOn: '出场人物',
+  colProdNotes: '服装/化妆/道具/特效',
+  colContinuity: '连贯性',
+  colRefBind: '参考图绑定',
+  layerScene: '场次层',
+  layerShot: '镜头层',
+  layerProd: '制作层',
   aiReviseFinalPrompt: 'AI 调整',
-  aiReviseFinalPromptOpinionPlaceholder: '例如：再近一点、光线更冷、去掉文字、女主看镜头…',
+  aiReviseFinalPromptOpinionPlaceholder: '局部：再近一点、光线更冷…｜整段：写「全部重写：…」可彻底重写',
   aiReviseFinalPromptBusy: '改写中…',
   aiReviseFinalPromptNeedOpinion: '请先填写调整意见',
   aiReviseFinalPromptNeedPrompt: '当前最终提示词为空，请先填写或生成',
@@ -892,8 +1309,9 @@ const zh: DirectorPipelineStrings = {
 const en: DirectorPipelineStrings = {
   scriptTitle: 'Script',
   scriptPlaceholder: 'Paste or write the screenplay here…',
-  directorTitle: 'Director',
+  directorTitle: 'MV Director',
   modeScript: 'Script',
+  modeDrama: 'Drama',
   modeMv: 'MV',
   phaseMusic: 'Music upload/analysis',
   phaseStyle: 'Style',
@@ -901,6 +1319,7 @@ const en: DirectorPipelineStrings = {
   phaseCast: 'Cast',
   phaseRatio: 'Aspect',
   phaseVideos: 'Video gen',
+  phaseKaraoke: 'Lyrics / Karaoke',
   phaseShots: 'Storyboard gen',
   phaseAssets: 'Prepare assets',
   phaseMvScenes: 'Scenes',
@@ -924,19 +1343,22 @@ const en: DirectorPipelineStrings = {
   promptsProgress: '{ready}/{total} composed',
   storyboardsProgress: '{ready}/{total} ready, {left} left',
   afterPartialHint: 'Batch video after storyboards are ready',
-  afterPartialHintMv: 'Confirm shots → video table → timeline preview',
+  afterPartialHintMv: 'Confirm shots → video table → karaoke',
   nextPrepareAssets: 'Next: Prepare assets',
   nextGenerateStoryboards: 'Next: Storyboard frames',
   nextPreviewTimeline: 'Next: Timeline preview',
   nextStyle: 'Next: Style selection',
   nextStory: 'Next: Story',
   nextCast: 'Next: Cast',
-  nextStoryAfterCast: 'Next: Story',
+  nextStoryAfterCast: 'Next: Style selection',
   nextRatio: 'Next: Aspect ratio',
   nextVideos: 'Next: Video generation',
+  nextKaraoke: 'Next: Lyrics / Karaoke',
   generateThisVideo: 'Generate video',
   generatingVideo: 'Generating…',
   generatingStoryboard: 'Generating storyboard…',
+  generatingCharacter: 'Generating character…',
+  generatingScene: 'Generating scene…',
   videosHint:
     'Carried from confirm shots: description, storyboard, song clip, camera, framing, lighting, and final prompt',
   nextScenes: 'Next: Scene refs',
@@ -948,10 +1370,32 @@ const en: DirectorPipelineStrings = {
   step4GenerateStoryboards: 'Step 4: Generate storyboards',
   step5SpawnVideos: 'Step 5: Spawn videos',
   previewToSplice: 'Timeline preview',
-  previewVideosToSplice: 'Compose video',
-  previewVideosHint: 'Place generated videos on the video track and the song on the audio track',
+  previewVideosToSplice: 'Timeline preview',
+  previewVideosHint: 'Place finished shot videos on the video track and the song on the audio track',
   confirmGenVideos: 'Generate videos & replace clips',
   exportMv: 'Export MV',
+  karaokeSubtitles: 'Karaoke subtitles',
+  karaokeNeedMusicLyrics: 'Upload a song and lyrics first',
+  confirmEnterKaraokeWithoutVideos:
+    'No finished shot videos yet (failed or not generated). You can still open step 8 to edit lyrics timing; upload a video or finish timeline preview export before burning.',
+  karaokeSourceTitle: 'MV source',
+  karaokeImportCompose: 'Import composed MV',
+  karaokeImportComposeHint: 'Export the linked timeline as the karaoke base video',
+  karaokeImportComposeRunning: 'Exporting composed MV…',
+  karaokeImportComposeFailed: 'Could not import composed MV — finish timeline preview export or upload a file',
+  karaokeUploadVideo: 'Upload local video',
+  karaokeUploadVideoHint: 'MP4 / WEBM / MOV, max 800MB',
+  karaokeUploadVideoRunning: 'Importing video…',
+  karaokeUploadVideoFailed: 'Failed to import video — retry or use a smaller file',
+  karaokeUploadVideoTooLarge: 'Video too large (max 800MB). Compress and try again',
+  karaokeVideoReady: 'Video selected',
+  karaokeVideoEmpty: 'No video yet — import composed MV or upload',
+  karaokeClearVideo: 'Clear video',
+  karaokeClearVideoHint: 'Clear the current video so you can import or upload again',
+  karaokeOpenEditor: 'Open karaoke editor',
+  karaokeBurnedTitle: 'Burned result',
+  karaokeBurnedEmpty: 'After burning, the result appears here and as a canvas video node',
+  karaokeAsrLanguageHint: 'Sent to cloud fun-asr for word-level align (lyrics from step 1).',
   musicChipLabel: 'Music',
   absorbedMusicEmpty: 'Connect an audio node, or fill mood/theme',
   musicTitle: 'Title',
@@ -965,6 +1409,14 @@ const en: DirectorPipelineStrings = {
   musicLyricsExtractFailed: 'Failed to recognize lyrics',
   musicJobCancel: 'Cancel',
   musicLyricsPlaceholder: 'Paste lyrics, or tap AI recognize',
+  musicAsrLanguage: 'ASR language',
+  musicAsrLanguageAuto: 'Auto',
+  musicAsrLanguageZh: 'Mandarin',
+  musicAsrLanguageYue: 'Cantonese',
+  musicAsrLanguageHint:
+    'Used by AI recognize and song analysis (fun-asr). Karaoke step 8 follows this by default.',
+  musicAsrLanguageYueTip:
+    'Limit: fun-asr covers Cantonese, but file-transcribe docs omit yue — we still send yue. Prefer timed Cantonese LRC if accuracy is poor.',
   musicUploadAudio: 'Upload audio',
   musicUploadLyrics: 'Upload lyrics file',
   musicReplaceAudio: 'Replace audio',
@@ -977,6 +1429,11 @@ const en: DirectorPipelineStrings = {
   musicStep2Title: 'Step 2: Fill in lyrics',
   musicStep3Title: 'Step 3: Song analysis',
   musicStep2Hint: 'Lyrics can be filled in after upload',
+  musicSongTitle: 'Song title',
+  musicSongTitlePlaceholder: 'Song title (opening credits)',
+  musicLyricist: 'Lyricist',
+  musicComposer: 'Composer',
+  musicCreditDefault: '致音',
   musicAiAnalyzeTitle: 'AI analysis',
   musicAiAnalyzeIdle: 'Analyze automatically after upload',
   musicAiAnalyzeDesc: 'AI analyzes structure, mood, and rhythm to plan your MV',
@@ -993,22 +1450,23 @@ const en: DirectorPipelineStrings = {
   musicDimKeywordsSub: 'From lyrics',
   musicRecommendDuration: 'Suggested length',
   phaseMusicSub: 'Select or upload music',
+  phaseStorySub: 'Story & beat-sheet first',
   phaseStyleSub: 'Pick overall MV style',
-  phaseCastSub: 'Pick characters',
-  phaseStorySub: 'AI storyboard script',
+  phaseCastSub: 'Cast from script characters',
   phaseMvScenesSub: 'Generate visual assets',
   phaseShotsSub: 'Generate storyboards',
   phaseVideosSub: 'Generate MV video',
+  phaseKaraokeSub: 'Lyrics karaoke burn',
   phasePreviewSub: 'Export or share',
-  musicDropFormats: 'MP3 / WAV / M4A, max 30MB',
+  musicDropFormats: 'MP3 / WAV / M4A, max 80MB',
   musicConnectHint: 'For canvas audio, connect the sound node to Director',
   musicNeedFirst: 'Upload or connect music first',
-  musicAudioTooLarge: 'Audio must be 30MB or less',
+  musicAudioTooLarge: 'Audio must be 80MB or less',
   musicAudioTooLong: 'Audio must be 6 minutes or less',
   musicAudioBadFormat: 'Only MP3 / WAV / M4A are supported',
   castHint: 'Set lead count & gender first, then pick looks — gender follows the slot, no need to tag every library image',
   castFromScriptCount: '{n} from script',
-  castSyncFromScript: 'Sync supporting cast',
+  castSyncFromScript: 'Sync cast from script',
   castNeedScriptCharacters: 'Generate the script cast list first, or lock leads here',
   castEmptyHint: 'Choose lead count & gender to create lead cards',
   castAddToShot: 'Add cast',
@@ -1032,6 +1490,7 @@ const en: DirectorPipelineStrings = {
   castRoleIndex: 'Cast {n}',
   castEditRole: 'Edit',
   castUploadRole: 'Upload',
+  castClearPrompt: 'Clear prompt',
   castRole2DisabledHint: 'Check to enable Lead 2',
   castLeadCountLabel: 'Leads',
   castLeadSolo: '1 lead',
@@ -1043,14 +1502,20 @@ const en: DirectorPipelineStrings = {
   castLead2Label: 'Lead 2',
   castNeedLeads: 'Set lead count and gender first',
   castLibraryGenderNote: 'Library images need no gender tag — placing into a male/female lead slot sets gender',
+  castAutoOpenedHint: 'Opened from story: {combo} (you can change this)',
+  castComboSoloFemale: '1 female lead',
+  castComboSoloMale: '1 male lead',
+  castComboDuoMf: '1 male + 1 female',
+  castComboDuoFf: '2 female leads',
+  castComboDuoMm: '2 male leads',
   scenesHint: 'List locations from the script, then generate 9-grid empty scene maps (no props)',
   scenesSyncFromScript: 'Sync scenes',
   scenesNeedScript: 'Add a scene list in the Script step first (e.g. Rooftop: …)',
   scenesFromScriptCount: '{n} scenes from script',
-  storyHint: 'Turn on Reference gen to draft from notes; off = write the script yourself. Keep a short-drama arc with MV singing/dancing moments',
+  storyHint: 'Flow: ① Genre/tone/ending → ② Story → ③ Beat-sheet. Reference gen affects story only; script uses the current story.',
   storyRefGenSwitchLabel: 'Reference gen',
-  storyRefGenOnHint: 'Generate from the reference below (optional — lyrics & analysis still apply)',
-  storyManualHint: 'Reference gen is off — edit the sections below yourself',
+  storyRefGenOnHint: 'Affects Generate story only: prefer the reference below; lyrics/analysis color mood. Does not affect Generate script',
+  storyManualHint: 'Reference gen off: story from lyrics & analysis. Generate script uses the current story directly',
   closeUpFramingSwitchLabel: 'Close-up',
   closeUpFramingOnHint: 'On: people shots = close-up only (no half/full body); empty shots still use scene formula',
   closeUpFramingOffHint: 'Off: any framing / camera move allowed',
@@ -1080,6 +1545,7 @@ const en: DirectorPipelineStrings = {
   storyPlotBeatColAngle: 'Angle',
   storyPlotBeatColFocal: 'Focal length',
   storyPlotBeatColAction: 'Action',
+  storyPlotBeatColLipsyncAction: 'Lipsync action',
   storyPlotBeatColMood: 'Mood',
   storyPlotBeatRawEdit: 'Edit raw table text',
   storySectionWorldViewPh: 'Time, place, mood, visual tone…',
@@ -1088,6 +1554,29 @@ const en: DirectorPipelineStrings = {
   storySectionScenesPh: 'One per line: ShortName: indoor/outdoor + place + light + props (empty, no people)',
   storySectionPropsPh: 'Key props (optional)…',
   storyAnalyzeBtn: 'Analyze music',
+  storyGenerateOutlineBtn: 'Generate story',
+  storyConfirmOutlineBtn: 'Confirm story',
+  storyOutlineConfirmedBadge: 'Confirmed',
+  storyOutlinePendingBadge: 'Pending confirm',
+  storyOutlineTitle: 'Story',
+  storyOutlineHint: 'Pick genre/tone/ending (or Auto), generate the story, then generate the beat-sheet below',
+  storyOutlinePlaceholder: '',
+  storyPrefsHint: 'Choose short-drama prefs before generating; leave Auto to let the model infer from lyrics',
+  storyPrefsGenreLabel: 'Genre',
+  storyPrefsToneLabel: 'Tone',
+  storyPrefsEndingLabel: 'Ending',
+  storyPrefsAutoOption: 'Auto',
+  storyPrefsThenGenerateHint:
+    'After picking prefs, click Generate story (top-right) — then confirm and generate the script',
+  storyNeedOutline: 'Generate the story first',
+  storyNeedConfirmOutline: 'Confirm the story before generating the beat-sheet script',
+  storyOutlineFailed: 'Story generation failed',
+  storyOutlineWriting: 'Writing story…',
+  storyScriptWriting: 'Writing script…',
+  storyCancelChatHint:
+    'Stops waiting in the UI. If the request already reached the cloud, the fee usually still applies (auto-refund only when upstream fails/times out; a successful upstream run may still be charged after local cancel)',
+  storyLlmTimeout:
+    'LLM timed out or the network dropped. Check the network and retry; for many segments switch to long clips first. Upstream failure auto-refunds; a successful upstream run may still be charged',
   storyGenerateScriptBtn: 'Generate script',
   storyOneShotBtn: 'Analyze & generate script',
   storyOneShotRunning: 'Generating…',
@@ -1096,6 +1585,52 @@ const en: DirectorPipelineStrings = {
   storyAnalysisEmpty: 'Song analysis comes from the Music step; go back and re-analyze if empty',
   storyAnalyzeFailed: 'Music analysis failed',
   storyScriptFailed: 'Script generation failed',
+  dramaConfirmShots: 'Confirm shots',
+  regenerateShots: 'Regenerate',
+  batchGenerateStoryboardsToolbar: 'Batch storyboards',
+  batchGenerateVideosToolbar: 'Batch videos',
+  globalStyleLabel: 'Global style',
+  globalStylePlaceholder: 'Describe look, lighting, palette for the whole piece…',
+  dramaFlowHint: 'Flow: ① Script analysis → ② Prepare assets → ③ Generate video',
+  dramaPhaseStory: 'Script analysis',
+  dramaPhaseStorySub: 'Ingest text → AI analysis',
+  dramaPhaseShots: 'Storyboard',
+  dramaPhaseShotsSub: 'Review shot table & prompts',
+  dramaPhaseAnalyze: 'Script analysis',
+  dramaPhaseAnalyzeSub: 'Ingest text → AI analysis',
+  dramaPhaseStoryboard: 'Storyboard',
+  dramaPhaseStoryboardSub: 'Shot table & visual prompts',
+  dramaPhaseAssets: 'Reference images',
+  dramaPhaseAssetsSub: 'Cast / scenes / props / creatures / voices',
+  dramaPhaseVideo: 'Generate video',
+  dramaPhaseVideoSub: 'MiniMax H3 etc.',
+  dramaAnalyzeHint:
+    'Step 1: connect a text node or paste the script, then tap Analyze to extract cast, scenes and a shot draft.',
+  dramaAnalyzeLinkedScript: 'Script absorbed from a linked text node — analyze or edit first.',
+  dramaAnalyzeBtn: 'Analyze',
+  dramaAnalyzeDoneSummary: 'Done: cast {cast} · scenes {scenes} · shots {shots}',
+  dramaNextStoryboard: 'Next: Storyboard',
+  dramaNextAssets: 'Next: Prepare assets',
+  dramaNextVideos: 'Next: Generate video',
+  dramaMissingAssetsHint:
+    '{c} characters, {s} scenes, {p} props, {b} creatures have no image — upload manually or generate all with AI',
+  dramaGenerateOrUploadCharacter: 'Generate or upload character',
+  dramaGenerateOrUploadScene: 'Generate or upload scene',
+  dramaGenerateOrUploadProp: 'Generate or upload prop',
+  dramaGenerateOrUploadCreature: 'Generate or upload creature',
+  dramaAddNew: 'Add',
+  dramaStatusPending: 'Script pending',
+  dramaStatusAnalyzeDone: 'Script analysis done',
+  dramaStatusAnalyzeAndShotsDone: 'Script analysis & storyboard done',
+  dramaStorySourceLabel: 'Novel / script draft',
+  dramaStorySourcePlaceholder:
+    'Paste a script, novel, or synopsis. Analysis fills cast, scenes and a shot draft; then open Storyboard to review.',
+  dramaStoryGenerate: 'Analyze',
+  dramaStoryNeedSource: 'Connect a text node or paste a script draft first',
+  dramaStoryGenerating: 'Analyzing script…',
+  dramaStoryReadySummary: 'Ready: cast {cast} · scenes {scenes} · shot draft {shots}',
+  dramaStoryPlotPreview: 'Plot beat table (draft)',
+  dramaStoryScriptPreview: 'Script summary',
   storyAnalyzing: 'Analyzing…',
   storyWriting: 'Writing…',
   ratioHint: 'Aspect ratio locks storyboard frames and video output',
@@ -1106,11 +1641,44 @@ const en: DirectorPipelineStrings = {
   oneClickGenerateStoryboards: 'Generate all storyboards',
   generateThisStoryboard: 'Gen',
   regenerateStoryboard: 'Regenerate',
+  storyboardPickVersion: 'Choose storyboard',
+  videoPickVersion: 'Choose video',
   colStoryboard: 'Storyboard',
   colShotVideo: 'Video',
   colRefStoryboard: 'Ref storyboard',
+  colShotCast: 'Shot cast',
+  lipsyncCastSubject: 'Lipsync: {name}',
   needStoryboardsFirst: 'Generate storyboard frames first',
   confirmSpawnWithoutAllStoryboards: '{n} shots lack storyboards. Generate video only for ready shots?',
+  batchSpawnVideosAllReady:
+    'All shots already have videos — skipped. Use per-shot Regenerate to rerun one.',
+  mvVideoBatchCapped:
+    'Up to {n} videos run at once. Submitted this wave; {left} queued and will continue automatically.',
+  videoSkillRewriteProgress: 'Optimizing prompts {cur}/{total}…',
+  videoSkillRewriteWaveWait: 'Finished {cur}/{total}. Next batch in {sec}s…',
+  videoSkillRewriteFailed: 'Shot {no} prompt optimize failed; original kept',
+  videoSkillRewriteBatchSummary:
+    'Optimized {ok} shots. {fail} unfinished ({nos}). Run Batch optimize again, or Optimize on rows that are not green.',
+  videoSkillRewriteGuideMissing: 'Could not load the MiniMax Skill guide. Try again later.',
+  videoSkillModelHint: 'LLM used to optimize MiniMax Skill prompts (separate from video gen)',
+  videoOptimizePrompt: 'Optimize prompt',
+  videoOptimizePromptBusy: 'Optimizing…',
+  videoOptimizePromptBatch: 'Optimize prompts',
+  videoRebuildPromptFromScript: 'Update prompt',
+  videoRebuildPromptFromScriptBatch: 'Update prompts',
+  videoRebuildPromptFromScriptHint:
+    'Rebuild original prompts from the current plot table and shot script, and clear optimized drafts. Does not rerun storyboards or videos.',
+  confirmRebuildPromptFromScriptBatch:
+    'This will rebuild all prompts from the plot and shot script, and clear current optimized drafts. Storyboards and videos will not be rerun. Continue?',
+  videoRebuildPromptDone: 'Prompts updated',
+  videoPromptOriginal: 'Original prompt',
+  videoPromptOptimized: 'Optimized prompt',
+  videoPromptUseOriginal: 'Use original',
+  videoPromptUseOptimized: 'Use optimized',
+  videoPromptUsingOriginal: 'Using original',
+  videoPromptUsingOptimized: 'Using optimized',
+  videoPromptNoOptimized: 'Not optimized yet — run Optimize prompt first',
+  videoPromptOptimizeNeedText: 'Write the final prompt before optimizing',
   confirmLipsyncGen:
     'Generate {n} shot(s) with LTX2.3 lipsync.\nEach shot needs: storyboard + song clip + prompt.\nGeneration starts only after you confirm.\n\n{detail}',
   confirmLipsyncShotLine: 'Shot {no}: storyboard{sb} · clip{clip} · prompt{prompt}',
@@ -1120,9 +1688,9 @@ const en: DirectorPipelineStrings = {
   lipsyncRecommend: '{n} shots have dialogue — recommend LTX lipsync (auto-trims the matching song clip)',
   lipsyncUse: 'Use lipsync',
   lipsyncRevert: 'Restore model',
-  lipsyncShotBadge: 'Recommend lipsync (close-up face + dialogue) · click to turn off',
-  lipsyncShotBadgeOff: 'Lipsync not recommended · enable if close-up face and dialogue',
-  lipsyncShotBadgeClimax: 'Climax-priority lipsync (close-up + dialogue + climax) · click to turn off',
+  lipsyncShotBadge: 'Lipsync on: prompt asks for singing lip-sync · click to keep characters silent, do not speak',
+  lipsyncShotBadgeOff: 'Lipsync off: prompt requires characters remain silent, do not speak · click to enable',
+  lipsyncShotBadgeClimax: 'Climax lipsync on: prompt asks for singing lip-sync · click to keep characters silent',
   lipsyncShotBadgeFarWarning: 'Warning: face may be too far for lipsync · force-enable anyway',
   lipsyncToggleLabel: 'Lipsync',
   colLipsync: 'Dialogue',
@@ -1133,6 +1701,8 @@ const en: DirectorPipelineStrings = {
   downloadShotVideo: 'Download video',
   videoMute: 'Mute',
   videoUnmute: 'Unmute',
+  videoHoverSoundLabel: 'Preview sound',
+  videoHoverSoundHint: 'When on, hovering any shot video plays audio (one at a time)',
   colShotAudio: 'Audio clip',
   playShotAudio: 'Play clip',
   shotAudioNeedMusic: 'Connect a song first',
@@ -1144,6 +1714,12 @@ const en: DirectorPipelineStrings = {
   lyricTimelineHint: 'Analyze first, then cut by lyrics',
   lyricTimelineReady: '{packs} shots',
   lyricTimelineFailed: 'Song analysis failed',
+  asrNeedLoginBalanceOk:
+    'Cloud transcription requires sign-in. Balance is sufficient — go to sign in?',
+  asrNeedLogin: 'Cloud transcription requires sign-in. Go to sign in?',
+  goLogin: 'Go to sign in',
+  asrBalanceInsufficient:
+    'Insufficient balance\n\nYour account balance is not enough for this action. Please top up in Settings and try again.',
   lyricTimelineEmpty: 'No usable segments found',
   lyricTimelineNeedEngine:
     'Cloud lyric transcription is unavailable. Sign in and retry, or fully quit and relaunch the app (rebuild main process)',
@@ -1161,6 +1737,12 @@ const en: DirectorPipelineStrings = {
   clipLengthModeShort: 'Short 4–6s',
   clipLengthModeHint:
     'Short is strict 4/5/6 (incl. instrumental); split on larger gaps between lines; long uses 10/15',
+  shotChangePaceLabel: 'Shot pacing',
+  shotChangePaceFast: 'Fast 0.8s · Intense',
+  shotChangePaceNormal: 'Normal 1.2s · Narrative',
+  shotChangePaceSlow: 'Slow 2.0s · Lyrical',
+  shotChangePaceHint:
+    'Controls action-timeline beat density in script/video prompts',
   shotsConfirmSummaryModel: 'Video model',
   shotsConfirmSummaryModelDurations: 'Supported durations {durs}',
   shotsConfirmSummaryModelLipsync: 'Lipsync: output follows audio clip length (nearest billing tier)',
@@ -1179,6 +1761,7 @@ const en: DirectorPipelineStrings = {
   assetsStepCharacters: 'Characters',
   assetsStepScenes: 'Scenes',
   assetsStepProps: 'Props',
+  assetsStepCreatures: 'Creatures',
   nextGenerateScenes: 'Next: Scenes',
   nextGenerateProps: 'Next: Props',
   generateCharactersBatch: 'Generate characters',
@@ -1194,13 +1777,15 @@ const en: DirectorPipelineStrings = {
   editShotAudioRange: 'Edit audio start/end',
   globalStyle: 'Global style',
   stylePreset: 'Style',
-  styleCustomHint: 'Tap a style reference to select; it becomes the global style ref',
+  styleCustomHint: 'Describe lighting/color mood; upload or pick a canvas image (light/color only; always photorealistic)',
   styleLongPressHint: 'Tap to select · Long-press to edit prompt',
   stylePromptEditTitle: 'Edit style prompt',
+  styleRefImageLabel: 'Style reference',
+  styleRefImageClear: 'Clear reference',
   stylePromptSave: 'Save',
   stylePromptCancel: 'Cancel',
   styleLibraryTitle: 'Art style',
-  styleLibraryTabSystem: 'System',
+  styleLibraryTabSystem: 'Cinematic',
   styleLibraryTabMine: 'My styles',
   styleLibraryMineEmpty: 'No custom styles yet. Tap Custom to create one.',
   styleLibrarySelected: 'Selected: {name}',
@@ -1208,6 +1793,7 @@ const en: DirectorPipelineStrings = {
   characters: 'Characters',
   scenes: 'Scenes',
   props: 'Props',
+  creatures: 'Creatures',
   addAsset: 'Add',
   deleteAsset: 'Delete',
   generateOrUpload: 'Generate or upload',
@@ -1221,12 +1807,19 @@ const en: DirectorPipelineStrings = {
   libraryPickEmpty: 'No items in library',
   libraryPickLoading: 'Loading…',
   uploadLocal: 'Upload',
+  shotVideoDropHint: 'Drop a local video to fill this shot (MP4 / MOV / WEBM)',
+  shotVideoDropUnsupported: 'Only video files are supported (MP4 / MOV / WEBM…)',
   generateThis: 'Generate',
   generateCategory: 'Generate category',
+  generateAllCharacters: 'Generate all characters',
+  generateAllScenes: 'Generate all scenes',
+  generateAllProps: 'Generate all props',
+  generateAllCreatures: 'Generate all creatures',
   batchGenerateSceneImages: 'Generate all scene images',
   characterLinkedHint: 'Photoreal 2×2 sheet auto-appended (equal cells, no gutters; hidden in text)',
   sceneLinkedHint: '9-grid rules auto-appended: equal cells, no gaps, no text, empty set (hidden in text)',
   creditsSuffix: 'credits',
+  otsPriceRequired: 'Please sign in',
   batchVideoYuanbaoHover: '{n} videos for {cost}',
   batchSceneYuanbaoHover: '{n} scene images for {cost}',
   batchStoryboardYuanbaoHover: '{n} storyboards for {cost}',
@@ -1260,21 +1853,43 @@ const en: DirectorPipelineStrings = {
   pendingPrompt: 'Pending prompt',
   viewPrompt: 'View prompt',
   viewImage: 'Click to enlarge',
+  scriptPromptsStaleUpdate: 'Update',
+  scriptPromptsStaleHint:
+    'Script updated: refresh this shot’s prompts & asset match (won’t re-run storyboard/video; manual edits kept)',
+  scriptPromptsStaleBanner:
+    'Script updated — {n} shot(s) stale. Tap Update under the number, or Update all stale (no re-gen of images/videos)',
+  scriptPromptsUpdatedToast: 'Prompts & asset match updated',
+  scriptPromptsUpdateAllStale: 'Update all stale',
   colShotNo: 'No.',
   colDuration: 'Dur.',
   colDesc: 'Description',
+  colAction: 'Action',
   colAngleFocal: 'Camera',
   colAngle: 'Angle',
+  colAngleCamera: 'Angle',
   colFocal: 'Focal length',
   colShotSize: 'Size',
   colLighting: 'Lighting',
+  colMood: 'Mood',
   colDialogue: 'Dialogue',
+  colDialogueSpeaker: 'Dialogue',
   colSfx: 'SFX',
-  colCamera: 'Camera',
+  colCamera: 'Move',
   colFinalPrompt: 'Final prompt',
+  colSceneNo: 'Scene #',
+  colIntExt: 'I/E',
+  colDayNight: 'D/N',
+  colLocation: 'Location',
+  colCastOn: 'Cast',
+  colProdNotes: 'Costume/Makeup/Props/VFX',
+  colContinuity: 'Continuity',
+  colRefBind: 'Ref bind',
+  layerScene: 'Scene',
+  layerShot: 'Shot',
+  layerProd: 'Production',
   aiReviseFinalPrompt: 'AI revise',
   aiReviseFinalPromptOpinionPlaceholder:
-    'e.g. closer shot, cooler light, remove text, heroine looks at camera…',
+    'Local: closer, cooler light… | Full rewrite: start with “rewrite all: …”',
   aiReviseFinalPromptBusy: 'Revising…',
   aiReviseFinalPromptNeedOpinion: 'Enter a revision note first',
   aiReviseFinalPromptNeedPrompt: 'Final prompt is empty — fill or generate it first',

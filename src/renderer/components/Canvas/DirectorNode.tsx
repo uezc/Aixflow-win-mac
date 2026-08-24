@@ -38,6 +38,7 @@ import {
   Download,
   Volume2,
   VolumeX,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useAI } from '../../hooks/useAI';
 import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
@@ -45,10 +46,40 @@ import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { directorPipelineT, fillDirectorI18n } from '../../i18n/directorPipelineI18n';
+import {
+  formatCloudLlmUserError,
+  isCloudRateLimitError,
+} from '../../../shared/cloudLlmUserError';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import {
+  enqueueDirectorConcurrentChat,
+  enqueueDirectorSkillOptimizeChat,
+  type DirectorConcurrentChatQueueStatus,
+} from '../../utils/directorConcurrentChatQueue';
+import { NEXFLOW_MAX_TASK_CONCURRENCY } from '../../../shared/nexflowTaskConcurrency';
+import { acquireVoiceModalLock, forceClearVoiceModalLock, isVoiceModalLocked, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { ModuleProgressBar } from './ModuleProgressBar';
 import VoiceMicGlyph from './VoiceMicGlyph';
+import DirectorStoryReferenceVoiceField from './DirectorStoryReferenceVoiceField';
+import KaraokeSubtitleEditor, {
+  type KaraokeSubtitleEditorBusy,
+  type KaraokeSubtitleEditorHandle,
+} from './KaraokeSubtitleEditor';
+import { karaokeT } from '../../i18n/karaokeI18n';
+import {
+  DEFAULT_KARAOKE_STYLE,
+  KARAOKE_ASR_LANGUAGE_OPTIONS,
+  karaokeAsrLanguageToApiParam,
+  karaokeProjectFromDirectorState,
+  lyricsTextFromKaraokeLines,
+  normalizeKaraokeAsrLanguage,
+  normalizeKaraokeRoleMarkersInText,
+  remapKaraokeLineText,
+  resolveKaraokeAudioSource,
+  type KaraokeAsrLanguage,
+  type KaraokeProject,
+} from '../../../shared/karaoke';
 import { useCanvasTheme } from '../../contexts/CanvasThemeContext';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import {
@@ -60,17 +91,26 @@ import {
 import { getImageDisplayPrice, getLlmChatDisplayPrice, getFileTranscribeDisplayPrice, getVideoDisplayPrice } from '../../utils/cloudModelPricing';
 import { isModelNotPricedError } from '../../utils/priceCalc';
 import {
+  CLOUD_BALANCE_INSUFFICIENT_ALERT,
+  resolveCloudAuthErrorWithBalance,
+} from '../../utils/cloudAiGateMessage';
+import { useNavigate } from 'react-router-dom';
+import {
   ACTIVE_IMAGE_MODELS,
   DEFAULT_IMAGE_MODEL,
   filterImageModelsForMode,
   normalizeImageModelIfRetired,
 } from '../../config/imageModelUiPolicy';
-import { HIDE_DIRECTOR_SCRIPT_MODE_UI } from '../../config/directorUiPolicy';
+import { directorModeForNodeType } from '../../utils/directorNodeType';
 import {
   assetLibBtnPrimary,
   assetLibBtnSecondary,
   nodeFloatToolBtn,
 } from '../../utils/assetLibraryChrome';
+import {
+  nexflowOrangePillBtnBg,
+  nexflowOrangePillBtnClass,
+} from '../darkModalShell';
 import type { ScratchColorId } from '../../theme/scratchColors';
 import {
   addDirectorShot,
@@ -83,9 +123,19 @@ import {
   buildDirectorAssetsMessages,
   buildDirectorMvShotsMessages,
   buildDirectorMvStoryAnalyzeMessages,
+  buildDirectorMvStoryOutlineMessages,
   buildDirectorMvScriptMessages,
+  buildDirectorMvScriptPlotContinueMessages,
+  DIRECTOR_MV_STORY_GENRE_TYPES,
+  DIRECTOR_MV_STORY_TONE_STYLES,
+  DIRECTOR_MV_STORY_ENDING_TYPES,
+  applyDirectorMvStoryPrefsToOutline,
+  buildDirectorDramaScriptMessages,
   buildDirectorPromptsMessages,
   buildDirectorShotsMessages,
+  applyDirectorDramaScriptResult,
+  ensureDirectorDramaShotsFromScript,
+  completeDirectorDramaShotLayers,
   distributeShotDurations,
   sumDirectorShotsDurationSec,
   ensureMvShotsMatchMusicDuration,
@@ -104,12 +154,19 @@ import {
   isBlankDirectorShot,
   composeDirectorMvScriptText,
   directorMvScriptSectionsHaveContent,
+  directorAssetBagKey,
   flattenDirectorAssets,
   findDirectorAssetById,
   getDirectorMvCharactersSectionText,
   getDirectorMvScenesSectionText,
   getOrderedAssetsWithImages,
   getDirectorShotStoryboard,
+  migrateBareDirectorStoryboardsToEpisode,
+  listDirectorShotStoryboardImages,
+  listDirectorShotVideos,
+  directorMediaUrlKey,
+  isDirectorShotVideoSelection,
+  getDirectorShotPromptVersions,
   getValidDirectorShotSongClipUrl,
   resolveDirectorShotPreferLipsync,
   recommendDirectorShotLipsync,
@@ -134,6 +191,7 @@ import {
   normalizeDirectorShotsResult,
   normalizeDirectorMvStoryAnalyzeResult,
   normalizeDirectorMvScriptResult,
+  normalizeDirectorMvStoryOutlineResult,
   coerceAssistantText,
   normalizeDirectorMvScriptSections,
   parseDirectorMvCharacterEntries,
@@ -142,9 +200,11 @@ import {
   syncDirectorMvCastFromScript,
   syncDirectorMvScenesFromScript,
   ensureDirectorMvLeadSlots,
+  applyAutoDirectorMvCastPlan,
+  directorMvCastPlanComboId,
   normalizeDirectorMvCastPlan,
+  listDirectorMvLeadAssetIds,
   setDirectorPhase,
-  setDirectorMode,
   patchDirectorMvMusic,
   patchDirectorMvStoryAnalysis,
   patchDirectorMvScriptInput,
@@ -154,6 +214,7 @@ import {
   setDirectorAssetsStep,
   setSelectedDirectorAssetIds,
   updateDirectorAsset,
+  upsertDirectorAsset,
   removeDirectorAsset,
   updateDirectorShotCell,
   updateDirectorShotStoryboard,
@@ -170,9 +231,12 @@ import {
   composeDirectorShotFinalPrompt,
   composeDirectorShotStoryboardPrompt,
   composeDirectorShotVideoPrompt,
+  resolveDirectorShotVideoPromptForGen,
+  replaceDirectorStyleTextWithImageRef,
   directorStyleLooksMonochrome,
   DIRECTOR_MONOCHROME_STYLE_LOCK_GUARD,
   shouldAutoSyncDirectorFinalPrompt,
+  applyDirectorLipsyncToggleToFinalPrompt,
   buildDirectorReviseFinalPromptMessages,
   parseDirectorRevisedFinalPrompt,
   buildDirectorSceneImagePrompt,
@@ -185,19 +249,35 @@ import {
   matchDirectorAssetIndicesForShot,
   matchDirectorShotsAssetIndices,
   inferDirectorAssetGender,
+  resolveDirectorShotRefItems,
+  clarifyDirectorPromptRefPictureNumbers,
+  repairDirectorMvPromptImageMap,
+  buildDirectorShotRefItems,
+  buildDirectorShotSceneStoryHint,
+  directorMvPromptNeedsLookRelock,
+  stripDirectorPromptInventedLook,
+  parseDirectorShotRefBindings,
   shotSuggestsNoCharacterRefs,
   parseDirectorMvPlotBeatTable,
   formatDirectorMvPlotBeatTable,
+  coerceDirectorMvPlotToBeatTable,
   countDirectorMvPlotBeatsWithCast,
   applyDirectorMvPlotBeatsToShots,
   getDirectorMvPlotBeatsFromState,
   alignDirectorMvPlotBeatsToCount,
   alignDirectorMvScriptSectionsToClipCount,
   resolveDirectorMvAudioClipCount,
+  bumpDirectorScriptContentRevision,
+  isDirectorShotPromptsStale,
+  countDirectorStalePromptShots,
+  markAllDirectorShotsPromptsSynced,
+  applyDirectorMvStaleScriptUpdateToShot,
+  applyDirectorMvStaleScriptUpdateToAllStaleShots,
+  rebuildDirectorShotPromptFromScript,
+  rebuildDirectorAllShotPromptsFromScript,
   type DirectorAsset,
   type DirectorAssetKind,
   type DirectorAssetsStep,
-  type DirectorMode,
   type DirectorMvCastPlan,
   type DirectorMvLeadGender,
   type DirectorMvPlotBeatRow,
@@ -214,29 +294,46 @@ import {
 import { createPortal } from 'react-dom';
 import { extractSeedanceImageMentionIndices } from '../../utils/seedanceImageMentions';
 import {
+  buildMinimaxH3OptimizeMessages,
+  isAcceptableMinimaxH3OptimizedPrompt,
+  parseMinimaxH3OptimizedPrompt,
+  recoverMinimaxH3OptimizedPrompt,
+  resolveMinimaxH3BaseSubMode,
+  resolveMinimaxH3OptimizeStructure,
+} from '../../../shared/minimaxH3OptimizePrompt';
+import {
+  DIRECTOR_MV_FORCE_H3_LIPSYNC,
+  DIRECTOR_MV_PROMPT_OPTIMIZE_PARALLEL,
+  DIRECTOR_MV_PROMPT_OPTIMIZE_WAVE_GAP_MS,
   DIRECTOR_VIDEO_BATCH_MODELS,
   DIRECTOR_VIDEO_LIPSYNC_MODELS,
-  DIRECTOR_VIDEO_LIPSYNC_MODEL,
+  DIRECTOR_VIDEO_MINIMAX_LIPSYNC_MODEL,
   buildDirectorVideoPriceParams,
+  directorShotNeedsVideoGeneration,
   directorVideoBatchModelLabel,
   getDirectorVideoBatchAspectOptions,
   getDirectorVideoBatchDurationOptions,
   getDirectorVideoBatchResolutionDisplay,
   getDirectorVideoBatchResolutionOptions,
   isDirectorLipsyncModel,
+  isDirectorLtxSingleImageModel,
   normalizeDirectorVideoBatchAspect,
   normalizeDirectorVideoBatchDuration,
   normalizeDirectorVideoBatchModel,
   normalizeDirectorVideoBatchResolution,
   normalizeDirectorVideoLipsyncModel,
   pickNearestDirectorVideoBatchDuration,
+  resolveDirectorMvForceLipsyncOn,
+  resolveDirectorMvLipsyncModel,
+  resolveDirectorMvShotVideoModel,
 } from '../../utils/directorVideoBatch';
 import { audioDisplayTitleFromFileName } from '../../utils/audioSongModels';
 import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
+import { getCharactersCoalesced } from '../../utils/characterLibraryCache';
 import { ReferenceAudioWaveStrip } from './ReferenceAudioWaveStrip';
 import { MusicPlayer } from '../Workspace/MusicPlayer';
 import { scaleModulePx } from '../../utils/moduleDisplayScale';
-import { PanelOptionDropdown } from './PanelOptionDropdown';
+import { PanelOptionDropdown, forceRemoveOrphanPanelDropdownPortals } from './PanelOptionDropdown';
 import {
   DirectorShotTableVirtual,
   DirectorTableVirtualPad,
@@ -244,6 +341,42 @@ import {
   DIRECTOR_MV_VIDEO_ROW_ESTIMATE_PX,
   type DirectorShotTableVirtualHandle,
 } from './DirectorShotTableVirtual';
+import { DramaStudioHost, type DramaAssetVisualKind } from '../DirectorStudio/DramaStudioHost';
+import type { DramaDirectorSession } from '../../../shared/directorDomain';
+import {
+  createEmptyDramaSession,
+  dramaStudioNodeTitle,
+  projectDramaSessionToPipeline,
+  refreshDramaContinuity,
+  refreshDramaPackages,
+  refreshDramaReviews,
+  setDramaSessionPhase,
+  composeDramaImageStyleHint,
+  ensureDramaCharacterPromptGenreLock,
+  resolveDramaGenreLock,
+  applyDramaSessionAssetImage,
+  applyDramaSessionVoiceSample,
+  composeDramaCharacterCostumePrompt,
+  healDramaSessionStuckAssetGenerating,
+  restoreDramaBibleMediaFromPipeline,
+  composeDramaVoiceSampleLine,
+  ensureVoiceSampleTexts,
+  buildDramaShotDoubaoAudioPrompt,
+  collectDramaShotVoiceRefUrls,
+  dramaShotNeedsAudioContent,
+  domainPhaseToUserPhase,
+  preferredDomainPhaseForUserPhase,
+  canEnterDramaUserPhase,
+  confirmDramaAssets,
+  isDramaAssetsConfirmed,
+  isDramaUserPhaseDone,
+  DRAMA_USER_PHASES,
+  DRAMA_USER_PHASE_LABELS,
+  DRAMA_USER_PHASE_SUB,
+  type DramaUserPhase,
+} from '../../../shared/directorDomain';
+import { DOUBAO_SEED_AUDIO_MODEL_ID } from '../../utils/doubaoSeedAudioModel';
+import { getAudioDisplayPrice } from '../../utils/cloudModelPricing';
 
 const SHOT_ROW_LONG_PRESS_MS = 480;
 const SHOT_ROW_DRAG_THRESHOLD_PX = 8;
@@ -261,6 +394,8 @@ const DIRECTOR_CHAT_MODEL_DEFAULT =
 
 export interface DirectorNodeData {
   director?: DirectorPipelineState;
+  /** 短剧 V2 Domain 会话（可与 director-v2/ 旁路文件同步） */
+  directorDomain?: import('../../../shared/directorDomain').DramaDirectorSession | null;
   userPrompt?: string;
   isGenerating?: boolean;
   error?: string;
@@ -271,22 +406,56 @@ export interface DirectorNodeData {
   /** 与文本模块一致：10–28，默认 28 */
   fontSizePx?: number;
   projectId?: string | null;
+  /** 卡拉OK工程（第 8 步持久化） */
+  karaokeProject?: KaraokeProject;
+  /**
+   * 第 7 步「剪辑预览」导出的成片 URL（缓存，避免第 8 步重复导出）。
+   * 用户上传本地成片时仍保留，清除本地后可回退。
+   */
+  karaokeComposedVideoUrl?: string;
+  /**
+   * 当前 karaokeProject.videoUrl 来源：
+   * - composed：合成成片（默认）
+   * - user：用户上传的本地成片（优先）
+   */
+  karaokeVideoSource?: 'composed' | 'user';
+  /** 烧录成片 URL（挂回第 8 步） */
+  karaokeBurnedVideoUrl?: string;
+  /** 清除 MV 歌曲时断开入边音频，避免 Workspace 再灌回 */
+  unlinkIncomingAudio?: boolean;
   onUpdate?: (d: Partial<DirectorNodeData>) => void;
   onSpawnVideos?: (opts?: {
     shotNos?: string[];
     startLipsync?: boolean;
     /** 确认清单中材料齐全、须强制走对口型的镜号 */
     lipsyncShotNos?: string[];
+    /** Skill 改写后的最终提示词（避免 setNodes 未刷新就开跑） */
+    shotPromptOverrides?: Record<string, string>;
+    /** 短剧：覆盖本批视频模型 */
+    videoModel?: string;
+    /** 短剧：按镜号覆盖模型 */
+    shotModels?: Record<string, string>;
   }) => void;
   onPreviewToSplice?: () => void;
-  /** 剪辑预览：已生成视频 + 原曲入轨 */
+  /** 第 7 步剪辑预览：各镜成片 + 原曲入轨，聚焦右侧 VideoSplice（与分镜步同套 UX） */
   onVideosToSplice?: () => void;
   onConfirmGenVideos?: () => void;
   onExportMv?: () => void;
+  /** 卡拉OK：解析成片视频 URL（通常导出关联剪辑轨） */
+  onResolveKaraokeMvVideo?: () => Promise<string | null>;
+  /** 卡拉OK烧录结果落到画布 */
+  onAddVideoClipNodes?: (payload: {
+    nodes: import('reactflow').Node[];
+    edges: import('reactflow').Edge[];
+  }) => void;
   /** 从画布点选图片 URL（参考图） */
   onPickImageFromCanvas?: () => Promise<string | null>;
   /** 从画布点选视频 URL（成片） */
   onPickVideoFromCanvas?: () => Promise<string | null>;
+  /** 从画布点选参考音（声音样本） */
+  onPickAudioFromCanvas?: () => Promise<{ url: string; label: string } | null>;
+  /** 切换历史成片后，写回关联剪辑预览轨 */
+  onApplyShotVideoToSplice?: (shotNo: string, videoUrl: string) => void;
   [key: string]: unknown;
 }
 
@@ -314,7 +483,9 @@ function directorMvLockedSize(width: number): { width: number; height: number } 
   return { width: w, height: h };
 }
 const DIRECTOR_FONT_MIN = 10;
-const DIRECTOR_FONT_MAX = 28;
+const DIRECTOR_FONT_DEFAULT = 28;
+/** 放大镜上限：原 28px 再 ×3，便于看清分镜色块文字 */
+const DIRECTOR_FONT_MAX = 84;
 /** 导演生图：与 ImageInputPanel 同源活跃模型目录（标签查找） */
 const DIRECTOR_IMAGE_MODELS = ACTIVE_IMAGE_MODELS;
 
@@ -336,6 +507,155 @@ function pickDirectorImageModel(
 /** 每个资产独立 nodeId，避免共用 id 时 SUCCESS 对不上队列/组件重挂丢失回写 */
 function directorAssetImageNodeId(directorNodeId: string, assetId: string): string {
   return `${directorNodeId}-director-img-${assetId}`;
+}
+
+function directorVoiceSampleNodeId(directorNodeId: string, voiceId: string): string {
+  return `${directorNodeId}-director-voice-${voiceId}`;
+}
+
+function parseDirectorVoicePacketNodeId(
+  packetNodeId: string,
+  directorNodeId: string,
+): { voiceId: string } | null {
+  const pid = String(packetNodeId || '').trim();
+  const prefix = `${directorNodeId}-director-voice-`;
+  if (!pid.startsWith(prefix)) return null;
+  const voiceId = pid.slice(prefix.length).trim();
+  return voiceId ? { voiceId } : null;
+}
+
+/** 短剧本镜声音（对白+环境音） */
+function directorShotAudioNodeId(directorNodeId: string, shotId: string): string {
+  return `${directorNodeId}-director-shot-audio-${encodeURIComponent(String(shotId || '').trim())}`;
+}
+
+function parseDirectorShotAudioPacketNodeId(
+  packetNodeId: string,
+  directorNodeId: string,
+): { shotId: string } | null {
+  const pid = String(packetNodeId || '').trim();
+  const prefix = `${directorNodeId}-director-shot-audio-`;
+  if (!pid.startsWith(prefix)) return null;
+  try {
+    const shotId = decodeURIComponent(pid.slice(prefix.length).trim());
+    return shotId ? { shotId } : null;
+  } catch {
+    const shotId = pid.slice(prefix.length).trim();
+    return shotId ? { shotId } : null;
+  }
+}
+
+/** 本镜声音：模块级暂存/等待，避免 React effect 随 patch 重建漏接 SUCCESS */
+type DirectorShotAudioResult =
+  | { ok: true; audioUrl: string }
+  | { ok: false; error: string };
+type DirectorShotAudioWaiter = { resolve: (r: DirectorShotAudioResult) => void };
+const directorShotAudioWaiters = new Map<string, DirectorShotAudioWaiter>();
+const directorShotAudioStashByNodeId = new Map<string, { audioUrl: string; at: number }>();
+const DIRECTOR_SHOT_AUDIO_STASH_TTL_MS = 3 * 60 * 1000 + 30_000;
+const DIRECTOR_SHOT_AUDIO_WAIT_MS = 3 * 60 * 1000;
+
+function extractAudioUrlFromAiPayload(payload?: {
+  audioUrl?: string;
+  url?: string;
+  localPath?: string;
+}): string {
+  let audioUrl = String(payload?.audioUrl || payload?.url || '').trim();
+  const localPath = String(payload?.localPath || '').trim();
+  if (localPath) {
+    let filePath = localPath.replace(/\\/g, '/');
+    if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+    if (filePath.startsWith('local-resource://')) audioUrl = filePath;
+    else audioUrl = `local-resource://${filePath}`;
+  }
+  return audioUrl;
+}
+
+let directorShotAudioListenerBound = false;
+function ensureDirectorShotAudioStatusListener(): void {
+  if (directorShotAudioListenerBound) return;
+  if (typeof window === 'undefined' || !window.electronAPI?.onAIStatusUpdate) return;
+  directorShotAudioListenerBound = true;
+  window.electronAPI.onAIStatusUpdate((packet: {
+    nodeId?: string;
+    status?: string;
+    payload?: { audioUrl?: string; url?: string; localPath?: string; error?: string };
+  }) => {
+    const nodeId = String(packet?.nodeId || '');
+    if (!nodeId.includes('-director-shot-audio-')) return;
+    if (packet.status === 'SUCCESS') {
+      const audioUrl = extractAudioUrlFromAiPayload(packet.payload);
+      if (audioUrl) {
+        directorShotAudioStashByNodeId.set(nodeId, { audioUrl, at: Date.now() });
+      }
+      const waiter = directorShotAudioWaiters.get(nodeId);
+      if (!waiter) return;
+      directorShotAudioWaiters.delete(nodeId);
+      if (audioUrl) {
+        directorShotAudioStashByNodeId.delete(nodeId);
+        waiter.resolve({ ok: true, audioUrl });
+      } else {
+        waiter.resolve({ ok: false, error: 'empty-shot-audio' });
+      }
+      return;
+    }
+    if (packet.status === 'ERROR') {
+      const waiter = directorShotAudioWaiters.get(nodeId);
+      if (!waiter) return;
+      directorShotAudioWaiters.delete(nodeId);
+      waiter.resolve({
+        ok: false,
+        error: String(packet.payload?.error || 'shot-audio-failed'),
+      });
+    }
+  });
+}
+
+function takeDirectorShotAudioStash(nodeId: string): string | null {
+  const hit = directorShotAudioStashByNodeId.get(nodeId);
+  if (!hit) return null;
+  directorShotAudioStashByNodeId.delete(nodeId);
+  if (Date.now() - hit.at > DIRECTOR_SHOT_AUDIO_STASH_TTL_MS) return null;
+  return hit.audioUrl || null;
+}
+
+/** 放弃本地等待：解除 waiter，不取消云端已发出任务 */
+function cancelDirectorShotAudioWaiter(nodeId: string): void {
+  const nid = String(nodeId || '').trim();
+  if (!nid) return;
+  const waiter = directorShotAudioWaiters.get(nid);
+  if (!waiter) return;
+  directorShotAudioWaiters.delete(nid);
+  waiter.resolve({ ok: false, error: 'abandoned' });
+}
+
+function waitDirectorShotAudioResult(
+  nodeId: string,
+  timeoutMs = DIRECTOR_SHOT_AUDIO_WAIT_MS,
+): Promise<DirectorShotAudioResult> {
+  ensureDirectorShotAudioStatusListener();
+  const stashed = takeDirectorShotAudioStash(nodeId);
+  if (stashed) return Promise.resolve({ ok: true, audioUrl: stashed });
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      directorShotAudioWaiters.delete(nodeId);
+      const late = takeDirectorShotAudioStash(nodeId);
+      if (late) {
+        resolve({ ok: true, audioUrl: late });
+        return;
+      }
+      resolve({
+        ok: false,
+        error: '本镜音频生成超时（3分钟未完成），请重试',
+      });
+    }, timeoutMs);
+    directorShotAudioWaiters.set(nodeId, {
+      resolve: (r) => {
+        window.clearTimeout(timer);
+        resolve(r);
+      },
+    });
+  });
 }
 
 function directorStoryboardImageNodeId(directorNodeId: string, shotNo: string): string {
@@ -375,7 +695,17 @@ function parseDirectorStoryboardPacketNodeId(
 function formatDirectorLocalImageUrl(localPath: string): string {
   let filePath = String(localPath || '').replace(/\\/g, '/');
   if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
-  return `local-resource://${filePath}`;
+  if (filePath.match(/^([a-zA-Z])\//)) {
+    filePath = `${filePath[0].toUpperCase()}:${filePath.substring(1)}`;
+  }
+  // 与 Workspace.formatImagePathSync 一致：中文/空格分段 encode，避免 img 黑块
+  const parts = filePath.split('/');
+  const encoded = parts.map((part, index) => {
+    if (index === 0 && /^[a-zA-Z]:$/.test(part)) return part;
+    if (/[\u4e00-\u9fa5\s]/.test(part)) return encodeURIComponent(part);
+    return part;
+  });
+  return `local-resource://${encoded.join('/')}`;
 }
 
 function syncMvShotDescForCastScene(
@@ -426,21 +756,51 @@ function syncMvShotDescForCastScene(
 
 function clampDirectorFontPx(n: unknown): number {
   const x = typeof n === 'number' ? n : typeof n === 'string' ? parseFloat(n) : NaN;
-  if (!Number.isFinite(x)) return DIRECTOR_FONT_MAX;
+  if (!Number.isFinite(x)) return DIRECTOR_FONT_DEFAULT;
   return Math.min(DIRECTOR_FONT_MAX, Math.max(DIRECTOR_FONT_MIN, Math.round(x)));
 }
 
 const SHOT_COLS: { key: DirectorShotColumnKey; width: string }[] = [
   { key: '镜号', width: '52px' },
-  { key: '时长', width: '64px' },
-  { key: '画面描述', width: '220px' },
-  { key: '镜头角度', width: '72px' },
-  { key: '焦距', width: '64px' },
+  { key: '时长', width: '56px' },
+  { key: '画面描述', width: '200px' },
   { key: '景别', width: '72px' },
-  { key: '光影氛围', width: '120px' },
+  { key: '光影氛围', width: '110px' },
+  { key: '对白旁白', width: '120px' },
+  { key: '音效', width: '100px' },
   { key: '运镜', width: '100px' },
   { key: '最终提示词', width: '120px' },
 ];
+
+/** 短剧剧本解析：场次层 + 镜头层 + 制作层 */
+const DRAMA_SHOT_COLS: { key: DirectorShotColumnKey; width: string; layer: 'scene' | 'shot' | 'prod' }[] =
+  [
+    { key: '场号', width: '44px', layer: 'scene' },
+    { key: '内外景', width: '48px', layer: 'scene' },
+    { key: '日夜', width: '40px', layer: 'scene' },
+    { key: '地点', width: '100px', layer: 'scene' },
+    { key: '出场人物', width: '96px', layer: 'scene' },
+    { key: '镜号', width: '44px', layer: 'shot' },
+    { key: '景别', width: '64px', layer: 'shot' },
+    { key: '镜头角度', width: '80px', layer: 'shot' },
+    { key: '焦距', width: '72px', layer: 'shot' },
+    { key: '运镜', width: '72px', layer: 'shot' },
+    { key: '时长', width: '48px', layer: 'shot' },
+    { key: '画面描述', width: '180px', layer: 'shot' },
+    { key: '对白旁白', width: '160px', layer: 'shot' },
+    { key: '音效', width: '88px', layer: 'shot' },
+    { key: '光影氛围', width: '100px', layer: 'shot' },
+    { key: '制作备注', width: '120px', layer: 'prod' },
+    { key: '连贯性', width: '110px', layer: 'prod' },
+    { key: '参考图绑定', width: '130px', layer: 'prod' },
+    { key: '最终提示词', width: '100px', layer: 'prod' },
+  ];
+
+const DRAMA_LAYER_COLSPAN = {
+  scene: DRAMA_SHOT_COLS.filter((c) => c.layer === 'scene').length,
+  shot: DRAMA_SHOT_COLS.filter((c) => c.layer === 'shot').length,
+  prod: DRAMA_SHOT_COLS.filter((c) => c.layer === 'prod').length,
+};
 
 /** 分镜图缩略图基准高度（原比例 contain，非强制 1:1） */
 const STORYBOARD_THUMB_PX = 84;
@@ -451,7 +811,18 @@ const SHOTS_CONFIRM_SB_THUMB_PX = Math.round(STORYBOARD_THUMB_PX * 1.45);
 const SHOTS_CONFIRM_REF_CELL_H = 72;
 /** 确认镜头表：歌曲波形默认宽度（窗口模式） */
 const SHOTS_CONFIRM_AUDIO_WIDTH_CLS = 'w-full min-w-0';
-/** 大表行：跳过视口外布局/绘制（Electron Chromium） */
+/** 第 7 步成片格：本地拖入/电脑上传可接受的视频后缀 */
+const DIRECTOR_SHOT_VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|mkv|avi)$/i;
+const isDirectorShotVideoFile = (file: File | null | undefined): boolean => {
+  if (!file) return false;
+  const mime = String(file.type || '').toLowerCase();
+  if (mime.startsWith('video/')) return true;
+  const name = String(file.name || '').trim();
+  if (DIRECTOR_SHOT_VIDEO_EXT_RE.test(name)) return true;
+  const path = String((file as File & { path?: string }).path || '').trim();
+  return !!path && DIRECTOR_SHOT_VIDEO_EXT_RE.test(path);
+};
+/** 全屏大表行：跳过视口外布局/绘制。画布节点在 React Flow transform 里，content-visibility 会把行背景裁成错位色条，窗口模式禁用。 */
 const DIRECTOR_MV_TABLE_ROW_CV: React.CSSProperties = {
   contentVisibility: 'auto',
   containIntrinsicSize: 'auto 120px',
@@ -683,16 +1054,559 @@ function highlightDescription(
   });
 }
 
+/**
+ * 视频「最终提示词」：具体动作描写用蓝色，画风/风格锁/机位/焦距等通用段保持默认色。
+ * 匹配：主体运动 / 对口型动作 / 动作时轴 / 动作 / 秒级时轴行 / 手眼脸手法句。
+ */
+const VIDEO_PROMPT_ACTION_SPAN_RE =
+  /(?:主体运动|对口型动作|动作时轴|动作)\s*[：:][^。；;\n]*|人物正在面对镜头唱歌[^。；;\n]*|(?:手部|眼部|脸部)\s*[：:][^。；;\n]+|\d+(?:\.\d+)?\s*[–\-〜~到至]\s*\d+(?:\.\d+)?\s*s?\s*｜[^；;\n]+/gi;
+
+const DIRECTOR_PROMPT_SECTION_LABELS =
+  '主体定义|概述|内容保留分析|详细描述|整体声景|非剧情配乐|subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music|画风|场景|人物|出场|动作时轴|动作|主体运动|对口型动作|机位|镜头角度|焦距|运镜|景别|光影氛围|光影|镜头语言';
+
+type DirectorPromptSectionTone = 'action' | 'guard' | 'style' | 'lens' | 'cast' | 'scene' | 'ref' | 'default';
+
+type DirectorPromptSection = {
+  label: string;
+  body: string;
+  tone: DirectorPromptSectionTone;
+};
+
+function toneForDirectorPromptLabel(label: string): DirectorPromptSectionTone {
+  const l = String(label || '');
+  if (/主体运动|对口型动作|动作时轴|^动作$|对口型|表情|场景动态|详细描述|detailed_description/.test(l))
+    return 'action';
+  if (/画风|风格|约束|禁止|硬性|概述|summary/.test(l)) return 'style';
+  if (/机位|镜头角度|焦距|运镜|景别|镜头语言|光影/.test(l)) return 'lens';
+  if (/人物|出场|角色|主体定义|subject_definitions/.test(l)) return 'cast';
+  if (/场景|内容保留|retention/.test(l)) return 'scene';
+  if (/参考图|@图片|整体声景|非剧情|overall_soundscape|non_diegetic/.test(l)) return 'ref';
+  if (/约束|禁止|硬性|风格锁/.test(l)) return 'guard';
+  return 'default';
+}
+
+/** 将最终提示词拆成带标签的段落，便于大框结构化阅读 */
+function parseDirectorFinalPromptSections(text: string): DirectorPromptSection[] {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+
+  // H3 中文六段式：按六段标题切，避免把每个 [镜头N]/每句守卫拆成十几张「画面」卡
+  const h3SectionRe =
+    /^(主体定义|概述|内容保留分析|详细描述|整体声景|非剧情配乐)\s*[：:]\s*/m;
+  if (
+    h3SectionRe.test(raw) &&
+    /主体定义\s*[：:]/.test(raw) &&
+    /详细描述\s*[：:]/.test(raw)
+  ) {
+    const names =
+      '主体定义|概述|内容保留分析|详细描述|整体声景|非剧情配乐';
+    const splitRe = new RegExp(`(?:^|\\n)\\s*(${names})\\s*[：:]\\s*`, 'g');
+    const parts: { label: string; body: string }[] = [];
+    let lastLabel = '';
+    let lastIdx = -1;
+    let m: RegExpExecArray | null;
+    const src = raw.replace(/\r\n/g, '\n');
+    while ((m = splitRe.exec(src))) {
+      if (lastIdx >= 0 && lastLabel) {
+        parts.push({
+          label: lastLabel,
+          body: src.slice(lastIdx, m.index).trim(),
+        });
+      }
+      lastLabel = m[1];
+      lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx >= 0 && lastLabel) {
+      parts.push({ label: lastLabel, body: src.slice(lastIdx).trim() });
+    }
+    if (parts.length >= 3) {
+      return parts
+        .filter((p) => p.body)
+        .map((p) => ({
+          label: p.label,
+          body: p.body,
+          tone: toneForDirectorPromptLabel(p.label),
+        }));
+    }
+  }
+
+  const refs: string[] = [];
+  let main = raw.replace(/(?:^|[。；;\n])\s*(@(?:图片|Image)\s*\d+[^。；;\n]*)/gi, (_m, p: string) => {
+    const t = String(p || '').trim();
+    if (t) refs.push(t);
+    return '。';
+  });
+  main = main.replace(/[。]{2,}/g, '。').replace(/^[。；;\s]+|[。；;\s]+$/g, '').trim();
+
+  const labelRe = new RegExp(
+    `^(${DIRECTOR_PROMPT_SECTION_LABELS})\\s*[：:]\\s*([\\s\\S]+)$`,
+  );
+  const clauses = main
+    .split(/(?<=[。；;])|(?:\n+)/)
+    .map((s) => s.replace(/^[。；;\s]+|[。；;\s]+$/g, '').trim())
+    .filter(Boolean);
+
+  const sections: DirectorPromptSection[] = [];
+  const push = (label: string, body: string, tone?: DirectorPromptSectionTone) => {
+    const b = String(body || '').trim();
+    if (!b) return;
+    sections.push({
+      label,
+      body: b,
+      tone: tone || toneForDirectorPromptLabel(label),
+    });
+  };
+
+  for (const clause of clauses) {
+    const m = clause.match(labelRe);
+    if (m) {
+      push(m[1], m[2].replace(/[。；;]+$/g, '').trim());
+      continue;
+    }
+    if (/^人物正在面对镜头唱歌/.test(clause)) {
+      push('对口型', clause, 'action');
+      continue;
+    }
+    if (/^全片风格锁/.test(clause) || /^【/.test(clause) || /^画面内禁止/.test(clause)) {
+      const guardLabel = /^全片风格锁/.test(clause)
+        ? '风格锁'
+        : /^【对口型/.test(clause)
+          ? '对口型约束'
+          : /^【非对口型/.test(clause)
+            ? '非对口型约束'
+            : /^【风格/.test(clause) || /^【单色/.test(clause)
+              ? '风格约束'
+              : /^画面内禁止/.test(clause)
+                ? '无文字'
+                : '约束';
+      push(guardLabel, clause, 'guard');
+      continue;
+    }
+    // 无标签的画面描写：并入上一段「画面」或新建
+    const last = sections[sections.length - 1];
+    if (last && last.label === '画面' && last.tone === 'default') {
+      last.body = `${last.body}${/[。；;]$/.test(last.body) ? '' : '。'}${clause}`;
+    } else {
+      push('画面', clause, 'default');
+    }
+  }
+
+  for (const r of refs) {
+    push('参考图', r, 'ref');
+  }
+
+  return sections.length ? sections : [{ label: '提示词', body: raw, tone: 'default' }];
+}
+
+function directorPromptSectionToneClass(tone: DirectorPromptSectionTone, isDarkMode: boolean): string {
+  switch (tone) {
+    case 'action':
+      return isDarkMode
+        ? 'text-sky-200 border-sky-400/40 bg-sky-950'
+        : 'text-sky-800 border-sky-200 bg-sky-50';
+    case 'style':
+    case 'guard':
+      return isDarkMode
+        ? 'text-amber-100 border-amber-400/35 bg-amber-950'
+        : 'text-amber-900 border-amber-200 bg-amber-50';
+    case 'lens':
+      return isDarkMode
+        ? 'text-violet-100 border-violet-400/35 bg-violet-950'
+        : 'text-violet-900 border-violet-200 bg-violet-50';
+    case 'cast':
+      return isDarkMode
+        ? 'text-rose-100 border-rose-400/35 bg-rose-950'
+        : 'text-rose-900 border-rose-200 bg-rose-50';
+    case 'scene':
+      return isDarkMode
+        ? 'text-emerald-100 border-emerald-400/35 bg-emerald-950'
+        : 'text-emerald-900 border-emerald-200 bg-emerald-50';
+    case 'ref':
+      return isDarkMode
+        ? 'text-cyan-100 border-cyan-400/35 bg-cyan-950'
+        : 'text-cyan-900 border-cyan-200 bg-cyan-50';
+    default:
+      return isDarkMode
+        ? 'text-white/90 border-white/15 bg-zinc-900'
+        : 'text-gray-800 border-gray-200 bg-gray-50';
+  }
+}
+
+function renderDirectorFinalPromptStructured(
+  text: string,
+  isDarkMode: boolean,
+  assets?: DirectorAsset[],
+  stylePictureIndex?: number,
+  styleUrl?: string,
+): React.ReactNode {
+  const sections = parseDirectorFinalPromptSections(
+    clarifyDirectorPromptRefPictureNumbers(
+      replaceDirectorStyleTextWithImageRef(text, stylePictureIndex ?? 1),
+      { styleUrl, libraryAssets: assets },
+    ),
+  );
+  return (
+    <div className="flex flex-col gap-2">
+      {sections.map((sec, i) => (
+        <div
+          key={`ps-${i}-${sec.label}`}
+          className={`rounded-xl border px-3 py-2 ${directorPromptSectionToneClass(sec.tone, isDarkMode)}`}
+        >
+          <div
+            className={`mb-0.5 text-[11px] font-semibold tracking-wide opacity-80 ${
+              isDarkMode ? 'text-white/70' : 'text-gray-600'
+            }`}
+          >
+            {sec.label}
+          </div>
+          <div className="whitespace-pre-wrap break-words leading-snug">
+            {sec.tone === 'action'
+              ? highlightVideoPromptActions(sec.body, isDarkMode, assets)
+              : assets?.length
+                ? highlightDescription(sec.body, assets, isDarkMode)
+                : sec.body}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** MV 故事大纲：按【小标题】分段着色 */
+type MvStoryOutlineTone =
+  | 'genre'
+  | 'style'
+  | 'ending'
+  | 'cast'
+  | 'world'
+  | 'plot'
+  | 'subplot'
+  | 'foreshadow'
+  | 'scenes'
+  | 'default';
+
+function toneForMvStoryOutlineLabel(label: string): MvStoryOutlineTone {
+  const t = String(label || '').trim();
+  if (/故事类型|题材|类型/.test(t)) return 'genre';
+  if (/风格|气质|调性/.test(t)) return 'style';
+  if (/结局/.test(t)) return 'ending';
+  if (/角色|人物|主角|配角/.test(t)) return 'cast';
+  if (/背景|世界观|设定/.test(t)) return 'world';
+  if (/主线|起因|发展|转折|高潮/.test(t)) return 'plot';
+  if (/支线/.test(t)) return 'subplot';
+  if (/伏笔|隐藏/.test(t)) return 'foreshadow';
+  if (/可拍|场景节点|场景/.test(t)) return 'scenes';
+  return 'default';
+}
+
+function mvStoryOutlineToneClass(tone: MvStoryOutlineTone, isDarkMode: boolean): string {
+  if (isDarkMode) {
+    switch (tone) {
+      case 'genre':
+        return 'border-cyan-400/35 bg-cyan-500/10 text-cyan-100';
+      case 'style':
+        return 'border-violet-400/35 bg-violet-500/10 text-violet-100';
+      case 'ending':
+        return 'border-amber-400/35 bg-amber-500/10 text-amber-100';
+      case 'cast':
+        return 'border-emerald-400/35 bg-emerald-500/10 text-emerald-50';
+      case 'world':
+        return 'border-orange-400/35 bg-orange-500/10 text-orange-50';
+      case 'plot':
+        return 'border-sky-400/35 bg-sky-500/10 text-sky-50';
+      case 'subplot':
+        return 'border-fuchsia-400/35 bg-fuchsia-500/10 text-fuchsia-50';
+      case 'foreshadow':
+        return 'border-rose-400/35 bg-rose-500/10 text-rose-50';
+      case 'scenes':
+        return 'border-teal-400/35 bg-teal-500/10 text-teal-50';
+      default:
+        return 'border-white/12 bg-white/[0.04] text-white/85';
+    }
+  }
+  switch (tone) {
+    case 'genre':
+      return 'border-cyan-200 bg-cyan-50 text-cyan-950';
+    case 'style':
+      return 'border-violet-200 bg-violet-50 text-violet-950';
+    case 'ending':
+      return 'border-amber-200 bg-amber-50 text-amber-950';
+    case 'cast':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-950';
+    case 'world':
+      return 'border-orange-200 bg-orange-50 text-orange-950';
+    case 'plot':
+      return 'border-sky-200 bg-sky-50 text-sky-950';
+    case 'subplot':
+      return 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-950';
+    case 'foreshadow':
+      return 'border-rose-200 bg-rose-50 text-rose-950';
+    case 'scenes':
+      return 'border-teal-200 bg-teal-50 text-teal-950';
+    default:
+      return 'border-gray-200 bg-gray-50 text-gray-900';
+  }
+}
+
+function parseMvStoryOutlineSections(
+  text: string,
+): Array<{ label: string; body: string; tone: MvStoryOutlineTone }> {
+  const raw = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return [];
+  const re = /【([^】]+)】/g;
+  const hits: Array<{ label: string; index: number; end: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) != null) {
+    hits.push({ label: m[1].trim(), index: m.index, end: m.index + m[0].length });
+  }
+  if (!hits.length) {
+    return [{ label: '故事', body: raw, tone: 'default' }];
+  }
+  const sections: Array<{ label: string; body: string; tone: MvStoryOutlineTone }> = [];
+  const preface = raw.slice(0, hits[0].index).trim();
+  if (preface) {
+    sections.push({ label: '前言', body: preface, tone: 'default' });
+  }
+  for (let i = 0; i < hits.length; i++) {
+    const cur = hits[i];
+    const nextStart = i + 1 < hits.length ? hits[i + 1].index : raw.length;
+    const body = raw.slice(cur.end, nextStart).replace(/^\s+/, '').replace(/\s+$/, '');
+    sections.push({
+      label: cur.label,
+      body: body || '—',
+      tone: toneForMvStoryOutlineLabel(cur.label),
+    });
+  }
+  return sections;
+}
+
+function renderMvStoryOutlineColored(text: string, isDarkMode: boolean): React.ReactNode {
+  const sections = parseMvStoryOutlineSections(text);
+  return (
+    <div className="flex flex-col gap-2">
+      {sections.map((sec, i) => (
+        <div
+          key={`story-sec-${i}-${sec.label}`}
+          className={`rounded-xl border px-3 py-2 ${mvStoryOutlineToneClass(sec.tone, isDarkMode)}`}
+        >
+          <div
+            className={`mb-0.5 text-[11px] font-semibold tracking-wide ${
+              isDarkMode ? 'text-white/75' : 'opacity-80'
+            }`}
+          >
+            【{sec.label}】
+          </div>
+          <div className="whitespace-pre-wrap break-words leading-relaxed opacity-95">{sec.body}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 大纲着色预览：text 未变时跳过正则分段，减轻 busyAction 切换时的主线程压力 */
+const MvStoryOutlineColoredView = memo(function MvStoryOutlineColoredView({
+  text,
+  isDarkMode,
+}: {
+  text: string;
+  isDarkMode: boolean;
+}) {
+  return <>{renderMvStoryOutlineColored(text, isDarkMode)}</>;
+});
+
+function highlightVideoPromptActions(
+  text: string,
+  isDarkMode: boolean,
+  assets?: DirectorAsset[],
+): React.ReactNode {
+  const raw = String(text || '');
+  if (!raw) return raw;
+  const blueCls = isDarkMode ? 'text-sky-400 font-medium' : 'text-sky-600 font-medium';
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  const re = new RegExp(VIDEO_PROMPT_ACTION_SPAN_RE.source, 'gi');
+  while ((match = re.exec(raw)) != null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (start > last) {
+      const before = raw.slice(last, start);
+      nodes.push(
+        <span key={`g-${last}`}>
+          {assets?.length ? highlightDescription(before, assets, isDarkMode) : before}
+        </span>,
+      );
+    }
+    nodes.push(
+      <span key={`a-${start}`} className={blueCls}>
+        {match[0]}
+      </span>,
+    );
+    last = end;
+  }
+  if (last < raw.length) {
+    const rest = raw.slice(last);
+    nodes.push(
+      <span key={`g-${last}`}>
+        {assets?.length ? highlightDescription(rest, assets, isDarkMode) : rest}
+      </span>,
+    );
+  }
+  return nodes.length > 0 ? nodes : raw;
+}
+
 function countReadyInList(list: DirectorAsset[]): number {
   return (list || []).filter((a) => String(a.imageUrl || '').trim()).length;
 }
 
-const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selected }) => {
+/** 导演 LLM 等待者放模块级：HMR / React Flow 重挂时实例 ref 会丢，SUCCESS 仍能交给原 Promise */
+type DirectorChatWaiter = {
+  resolve: (t: string) => void;
+  reject: (e: Error) => void;
+  gen: number;
+  requestId: string;
+};
+const directorChatWaiters = new Map<string, DirectorChatWaiter>();
+const directorChatTextByNodeId = new Map<string, { requestId: string; text: string; at: number }>();
+
+/** 批量 Skill 优化：按 nodeId 等待，支持多路并发 */
+type DirectorSkillOptWaiter = {
+  resolve: (t: string) => void;
+  reject: (e: Error) => void;
+  directorId: string;
+};
+const directorSkillOptWaiters = new Map<string, DirectorSkillOptWaiter>();
+/** SUCCESS 可能早于 waiter 注册，或 invoke 返回后事件迟到：先暂存再消费 */
+const directorSkillOptTextByNodeId = new Map<string, { text: string; at: number }>();
+const DIRECTOR_SKILL_OPT_STASH_TTL_MS = 120_000;
+
+function directorSkillOptNodeId(directorNodeId: string, requestId: string): string {
+  return `${String(directorNodeId || '').trim()}__skillOpt__${String(requestId || '').trim()}`;
+}
+
+function parseDirectorSkillOptNodeId(
+  packetNodeId: string,
+  directorNodeId: string,
+): string | null {
+  const prefix = `${String(directorNodeId || '').trim()}__skillOpt__`;
+  const raw = String(packetNodeId || '');
+  if (!raw.startsWith(prefix)) return null;
+  const requestId = raw.slice(prefix.length).trim();
+  return requestId || null;
+}
+
+function rejectDirectorSkillOptWaiters(directorNodeId: string, reason: string) {
+  const prefix = `${String(directorNodeId || '').trim()}__skillOpt__`;
+  for (const [nodeId, waiter] of [...directorSkillOptWaiters.entries()]) {
+    if (!nodeId.startsWith(prefix) && waiter.directorId !== directorNodeId) continue;
+    directorSkillOptWaiters.delete(nodeId);
+    directorSkillOptTextByNodeId.delete(nodeId);
+    try {
+      const err = new Error(reason);
+      err.name = 'AbortError';
+      waiter.reject(err);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function takeDirectorSkillOptStash(nodeId: string): string | null {
+  const hit = directorSkillOptTextByNodeId.get(nodeId);
+  if (!hit) return null;
+  directorSkillOptTextByNodeId.delete(nodeId);
+  if (Date.now() - hit.at > DIRECTOR_SKILL_OPT_STASH_TTL_MS) return null;
+  return hit.text || null;
+}
+
+/** 模块级监听：不依赖 React effect，避免 patch 重建时漏接 SUCCESS 导致「优化无结果」 */
+let directorSkillOptListenerBound = false;
+function ensureDirectorSkillOptStatusListener(): void {
+  if (directorSkillOptListenerBound) return;
+  if (typeof window === 'undefined' || !window.electronAPI?.onAIStatusUpdate) return;
+  directorSkillOptListenerBound = true;
+  window.electronAPI.onAIStatusUpdate((packet: {
+    nodeId?: string;
+    status?: string;
+    payload?: { text?: string; content?: string; result?: string; error?: string };
+  }) => {
+    const nodeId = String(packet?.nodeId || '');
+    if (!nodeId.includes('__skillOpt__')) return;
+    if (packet.status === 'SUCCESS') {
+      const text = coerceAssistantText(
+        packet.payload?.text ?? packet.payload?.content ?? packet.payload?.result ?? '',
+      );
+      if (text) {
+        directorSkillOptTextByNodeId.set(nodeId, { text, at: Date.now() });
+      }
+      const waiter = directorSkillOptWaiters.get(nodeId);
+      if (!waiter) return;
+      directorSkillOptWaiters.delete(nodeId);
+      if (text) {
+        directorSkillOptTextByNodeId.delete(nodeId);
+        waiter.resolve(text);
+      } else {
+        waiter.reject(new Error('empty-skill-prompt'));
+      }
+      return;
+    }
+    if (packet.status === 'ERROR') {
+      directorSkillOptTextByNodeId.delete(nodeId);
+      const waiter = directorSkillOptWaiters.get(nodeId);
+      if (!waiter) return;
+      directorSkillOptWaiters.delete(nodeId);
+      waiter.reject(new Error(String(packet.payload?.error || 'optimize-failed')));
+    }
+  });
+}
+
+function directorPhaseChatKey(directorNodeId: string): string {
+  return `${String(directorNodeId || '').trim()}-director-phase-chat`;
+}
+
+function looksLikeMvStoryOutlineText(text: string): boolean {
+  const s = String(text || '').trim();
+  if (s.length < 40) return false;
+  if (/"plot"\s*:/.test(s) || /段号\s*\|/.test(s)) return false;
+  return /【\s*(故事类型|主线|角色)\s*】/.test(s);
+}
+
+function stashDirectorChatText(chatNodeId: string, requestId: string, text: string) {
+  const t = String(text || '').trim();
+  if (!t) return;
+  directorChatTextByNodeId.set(chatNodeId, { requestId, text: t, at: Date.now() });
+}
+
+function clearDirectorChatTextStash(chatNodeId: string) {
+  directorChatTextByNodeId.delete(chatNodeId);
+}
+
+/** 只取「这一次请求」迟到的正文；不会把上一轮成功结果当成新故事。 */
+function consumeStashedDirectorChatText(
+  chatNodeId: string,
+  requestId?: string,
+  maxAgeMs = 180_000,
+): string {
+  const hit = directorChatTextByNodeId.get(chatNodeId);
+  if (!hit) return '';
+  if (Date.now() - hit.at > maxAgeMs) {
+    directorChatTextByNodeId.delete(chatNodeId);
+    return '';
+  }
+  if (requestId && hit.requestId && hit.requestId !== requestId) return '';
+  directorChatTextByNodeId.delete(chatNodeId);
+  return hit.text;
+}
+
+const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selected, type: rfNodeType }) => {
   const { locale } = useAppLocale();
+  const navigate = useNavigate();
   const tt = useMemo(() => directorPipelineT(locale), [locale]);
+  const ktt = useMemo(() => karaokeT(locale), [locale]);
   const wc = useMemo(() => workspaceChromeT(locale), [locale]);
   const { showConfirm, showAlert } = useDarkAlert();
-  const { isDarkMode } = useCanvasTheme();
+  /** 画布主题明暗；MV 向导在命令模式（明亮）下另见下方 `isDarkMode` 覆写 */
+  const { isDarkMode: themeIsDark } = useCanvasTheme();
   const { cloudMap } = useNxModelPricing();
   // 勿订阅 transform zoom：缩放时整棵 Director 树重渲染是平移/缩放掉帧主因之一；工具栏用 CSS --rf-zoom-inv
   const isCanvasInteracting = useGlobalInteractionSelector(
@@ -703,8 +1617,23 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const nodeRef = useRef<HTMLDivElement | null>(null);
   const resizeHandleRef = useRef<HTMLDivElement | null>(null);
   const [isResizing, setIsResizing] = useState(false);
-  const [fontSizePx, setFontSizePx] = useState(() => clampDirectorFontPx(data?.fontSizePx ?? DIRECTOR_FONT_MAX));
+  const [fontSizePx, setFontSizePx] = useState(() => clampDirectorFontPx(data?.fontSizePx ?? DIRECTOR_FONT_DEFAULT));
   const [isNodeFullscreen, setIsNodeFullscreen] = useState(false);
+  const [karaokeOpen, setKaraokeOpen] = useState(false);
+  const [karaokeSeed, setKaraokeSeed] = useState<KaraokeProject | null>(null);
+  const karaokeEditorActionsRef = useRef<KaraokeSubtitleEditorHandle | null>(null);
+  const [karaokeEditorBusy, setKaraokeEditorBusy] =
+    useState<KaraokeSubtitleEditorBusy>('idle');
+  /** 第1步歌词：本地草稿编辑，失焦再写回（避免受控 patch 重渲染打掉光标 / 打断 IME） */
+  const [mvLyricsDraft, setMvLyricsDraft] = useState('');
+  const mvLyricsFocusedRef = useRef(false);
+  const mvLyricsComposingRef = useRef(false);
+  /** 同步真相源：onUpdate 回写 data 前，effect 也能读到最新成片来源，避免上传被合成 URL 打回 */
+  const karaokeVideoSourceRef = useRef<'composed' | 'user' | undefined>(
+    (data as DirectorNodeData | undefined)?.karaokeVideoSource,
+  );
+  const karaokeSeedRef = useRef<KaraokeProject | null>(karaokeSeed);
+  karaokeSeedRef.current = karaokeSeed;
   /** 分镜表：长按后显示删除 / 拖拽排序 */
   const [shotRowArmedIndex, setShotRowArmedIndex] = useState<number | null>(null);
   const [shotDragFromIndex, setShotDragFromIndex] = useState<number | null>(null);
@@ -726,28 +1655,84 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const sizeW = Math.max(DIRECTOR_MIN_W, Number(data?.width) || DIRECTOR_DEFAULT_W);
   const sizeH = Math.max(DIRECTOR_MIN_H, Number(data?.height) || DIRECTOR_DEFAULT_H);
 
-  const state = useMemo(
-    () => createDefaultDirectorPipelineState(data?.director || {}),
-    [data?.director],
-  );
-  const isMvMode = state.mode === 'mv';
+  /** 由画布节点 type 锁定：director=MV，directorDrama=短剧（不再同模块切换） */
+  const moduleMode = directorModeForNodeType(rfNodeType);
+  /** 勿把整份 directorDomain 放进 pipeline useMemo：Domain 每次 onUpdate 都会新建 storyboards 引用，触发分镜视频同步死循环 */
+  const dramaActiveEpisodeId = useMemo(() => {
+    if (moduleMode !== 'drama') return '';
+    const domain = (data?.directorDomain as DramaDirectorSession | null) || null;
+    const rawEp = String(
+      (data?.director as DirectorPipelineState | undefined)?.activeDramaEpisodeId || '',
+    ).trim();
+    return String(domain?.active_episode_id || rawEp || '').trim();
+  }, [
+    moduleMode,
+    (data?.directorDomain as DramaDirectorSession | null | undefined)?.active_episode_id,
+    (data?.director as DirectorPipelineState | undefined)?.activeDramaEpisodeId,
+  ]);
+  const dramaFirstEpisodeId = useMemo(() => {
+    if (moduleMode !== 'drama') return '';
+    const domain = (data?.directorDomain as DramaDirectorSession | null) || null;
+    return String(domain?.episodes?.[0]?.episode_id || '').trim();
+  }, [
+    moduleMode,
+    (data?.directorDomain as DramaDirectorSession | null | undefined)?.episodes?.[0]?.episode_id,
+  ]);
+  const state = useMemo(() => {
+    const raw = createDefaultDirectorPipelineState(data?.director || {});
+    const epForBoards = dramaActiveEpisodeId || dramaFirstEpisodeId;
+    const boards = epForBoards
+      ? migrateBareDirectorStoryboardsToEpisode(raw.storyboardsByShotNo, epForBoards)
+      : raw.storyboardsByShotNo;
+    return createDefaultDirectorPipelineState({
+      ...raw,
+      mode: moduleMode,
+      title:
+        moduleMode === 'drama'
+          ? raw.title === 'MV导演' || !String(raw.title || '').trim()
+            ? 'AI短剧导演'
+            : raw.title
+          : raw.title === 'AI短剧导演' || !String(raw.title || '').trim()
+            ? 'MV导演'
+            : raw.title,
+      activeDramaEpisodeId: dramaActiveEpisodeId,
+      storyboardsByShotNo: boards,
+    });
+  }, [data?.director, moduleMode, dramaActiveEpisodeId, dramaFirstEpisodeId]);
+  const isMvMode = moduleMode === 'mv';
+  const isDramaMode = moduleMode === 'drama';
+  const dramaHeaderTitle = useMemo(() => {
+    if (!isDramaMode) return '';
+    const domain = (data?.directorDomain as DramaDirectorSession | null) || null;
+    return domain ? dramaStudioNodeTitle(domain) : '';
+  }, [isDramaMode, data?.directorDomain]);
+  /** 仅 MV 用向导壳；短剧走经典三步台（确认镜头→准备资产→合成提示词） */
+  const isWizardMode = isMvMode;
+  /**
+   * 命令模式 = 画布明亮/炫彩（`!themeIsDark`），相对暗黑主题。
+   * MV/短剧向导在命令模式下强制深色壳（顶栏步骤条 / 圆角面板 / 底栏）；
+   * 避免步骤间皮肤不一致。
+   * Scratch 主按钮配色仍由祖先 `.light-mode` CSS 生效。
+   */
+  const isDarkMode = themeIsDark || isMvMode || isDramaMode;
   const directorStateRef = useRef(state);
   const dataRef = useRef(data);
   dataRef.current = data;
+  // 父级 props 回写时对齐；本地 persist 会先写 ref，避免被旧 props 短暂盖回
+  const dataKaraokeVideoSource = (data as DirectorNodeData | undefined)?.karaokeVideoSource;
+  useEffect(() => {
+    karaokeVideoSourceRef.current = dataKaraokeVideoSource;
+  }, [dataKaraokeVideoSource]);
   useEffect(() => {
     directorStateRef.current = state;
   }, [state]);
 
-  /** 「剧本」模式页未完成：隐藏入口并强制切到 MV */
+  /** 第1步歌词：非编辑时跟随 props；编辑中用本地草稿，避免父级回写重置光标 */
+  const mvLyricsProp = String(state.mvMusic?.lyrics || '');
   useEffect(() => {
-    if (!HIDE_DIRECTOR_SCRIPT_MODE_UI) return;
-    if (directorStateRef.current.mode === 'mv') return;
-    const next = setDirectorMode(directorStateRef.current, 'mv');
-    dataRef.current?.onUpdate?.({
-      director: next,
-      title: next.title || dataRef.current?.title,
-    });
-  }, [state.mode]);
+    if (mvLyricsFocusedRef.current || mvLyricsComposingRef.current) return;
+    setMvLyricsDraft(mvLyricsProp);
+  }, [mvLyricsProp]);
 
   const [editing, setEditing] = useState<{ row: number; col: DirectorShotColumnKey } | null>(null);
   /** 分镜/视频步：最终提示词编辑态草稿与 AI 调整意见 */
@@ -758,6 +1743,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const finalPromptDraftRef = useRef('');
   finalPromptDraftRef.current = finalPromptDraft;
   const finalPromptEditRowRef = useRef<number | null>(null);
+  /** 仅用户改过原版才回写；点开预览/点行内按钮不得清掉优化稿绿标 */
+  const finalPromptDraftDirtyRef = useRef(false);
   const finalPromptPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
@@ -798,10 +1785,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   useEffect(() => {
     const open = isFinalPromptOpinionDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!open) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isFinalPromptOpinionDictationActive]);
 
   useEffect(() => {
@@ -814,6 +1800,93 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const [editingAudioRow, setEditingAudioRow] = useState<number | null>(null);
   const [batchOpen, setBatchOpen] = useState(false);
   const [promptPreview, setPromptPreview] = useState<string | null>(null);
+  const [promptPreviewShotNo, setPromptPreviewShotNo] = useState<string | null>(null);
+  const [promptPreviewTab, setPromptPreviewTab] = useState<'original' | 'optimized'>('original');
+  /** 故事大纲：有内容时默认彩色预览，点击后进入编辑 */
+  const [storyOutlineEditing, setStoryOutlineEditing] = useState(false);
+  /** 生成刚完成时先显示本地稿，避免父级 props 晚一拍时故事框空白 */
+  const [storyOutlineLocal, setStoryOutlineLocal] = useState<string | null>(null);
+  const storyOutlineTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (storyOutlineLocal == null) return;
+    if (String(state.mvStoryOutline || '') === storyOutlineLocal) {
+      setStoryOutlineLocal(null);
+    }
+  }, [state.mvStoryOutline, storyOutlineLocal]);
+  /** 最终提示词悬停结构化大框 */
+  const [promptHover, setPromptHover] = useState<{
+    text: string;
+    title?: string;
+    x: number;
+    y: number;
+    width: number;
+    shotNo?: string;
+  } | null>(null);
+  const promptHoverLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const promptHoverPanelRef = useRef<HTMLDivElement | null>(null);
+  const clearPromptHoverLeaveTimer = useCallback(() => {
+    if (promptHoverLeaveTimerRef.current == null) return;
+    clearTimeout(promptHoverLeaveTimerRef.current);
+    promptHoverLeaveTimerRef.current = null;
+  }, []);
+  const openPromptHover = useCallback(
+    (text: string, e: React.MouseEvent, title?: string, shotNo?: string) => {
+      const t = String(text || '').trim();
+      if (!t) return;
+      clearPromptHoverLeaveTimer();
+      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const pad = 16;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      // 尽量铺开阅读，避免小框+滚动条
+      const boxW = Math.min(960, Math.max(640, vw - pad * 2));
+      let x = rect.right + 10;
+      if (x + boxW > vw - pad) x = Math.max(pad, rect.left - boxW - 10);
+      if (x + boxW > vw - pad) x = pad;
+      // 先贴触发格顶部，渲染后再按实高贴边校正
+      let y = Math.max(pad, Math.min(rect.top, vh - pad - 120));
+      setPromptHover({ text: t, title, x, y, width: boxW, shotNo });
+    },
+    [clearPromptHoverLeaveTimer],
+  );
+  const scheduleClosePromptHover = useCallback(() => {
+    clearPromptHoverLeaveTimer();
+    promptHoverLeaveTimerRef.current = setTimeout(() => setPromptHover(null), 160);
+  }, [clearPromptHoverLeaveTimer]);
+  useEffect(() => () => clearPromptHoverLeaveTimer(), [clearPromptHoverLeaveTimer]);
+  /** 悬浮框按内容增高后，保证完整落在视口内（无需滚动条） */
+  useLayoutEffect(() => {
+    if (!promptHover) return;
+    const el = promptHoverPanelRef.current;
+    if (!el) return;
+    const pad = 16;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const h = el.offsetHeight;
+    const w = el.offsetWidth;
+    let nextX = promptHover.x;
+    let nextY = promptHover.y;
+    if (nextY + h > vh - pad) nextY = Math.max(pad, vh - pad - h);
+    if (nextY < pad) nextY = pad;
+    if (nextX + w > vw - pad) nextX = Math.max(pad, vw - pad - w);
+    if (nextX < pad) nextX = pad;
+    if (nextX !== promptHover.x || nextY !== promptHover.y) {
+      setPromptHover((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
+    }
+  }, [promptHover?.text, promptHover?.width, promptHover?.x, promptHover?.y]);
+
+  // 点悬停框外立刻关掉，避免高层 portal 残留挡住全屏点击
+  useEffect(() => {
+    if (!promptHover) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('[data-director-prompt-hover="1"]')) return;
+      clearPromptHoverLeaveTimer();
+      setPromptHover(null);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [promptHover, clearPromptHoverLeaveTimer]);
   const [imagePreview, setImagePreview] = useState<{ url: string; name: string } | null>(null);
   const [videoPreview, setVideoPreview] = useState<{ url: string; name: string } | null>(null);
   const videoPreviewElRef = useRef<HTMLVideoElement | null>(null);
@@ -824,6 +1897,193 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const styleLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const styleLongPressFiredRef = useRef(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [videoSkillRewriteHint, setVideoSkillRewriteHint] = useState<string | null>(null);
+  const [optimizingShotNos, setOptimizingShotNos] = useState<string[]>([]);
+  const optimizingShotNosRef = useRef<string[]>([]);
+  const rewriteMvVideoPromptsToSkillRef = useRef<
+    (
+      shotNos: string[],
+    ) => Promise<{ ok: boolean; overrides: Record<string, string>; failedShotNos: string[] }>
+  >(async () => ({ ok: true, overrides: {}, failedShotNos: [] }));
+  /** 资产生图进行中的 id（即时 UI，不依赖 assets.status 是否已写回） */
+  const [imageGenProgressIds, setImageGenProgressIds] = useState<Record<string, true>>({});
+  const markImageGenProgress = useCallback((assetId: string, on: boolean) => {
+    const id = String(assetId || '').trim();
+    if (!id) return;
+    setImageGenProgressIds((prev) => {
+      const has = !!prev[id];
+      if (on && has) return prev;
+      if (!on && !has) return prev;
+      if (on) return { ...prev, [id]: true };
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+  /** 角色试听音生成中的 id（即时绿条，不依赖 voice.status 是否已写回） */
+  const [voiceGenProgressIds, setVoiceGenProgressIds] = useState<Record<string, true>>({});
+  const voiceGenProgressIdsRef = useRef<Record<string, true>>({});
+  /** 试听音开始时间：超过 3 分钟强制失败并撤绿条 */
+  const voiceGenStartedAtRef = useRef<Record<string, number>>({});
+  /** 本镜音频生成开始时间：满 3 分钟强制失败 */
+  const shotAudioStartedAtRef = useRef<Record<string, number>>({});
+  const markVoiceGenProgress = useCallback((voiceId: string, on: boolean) => {
+    const id = String(voiceId || '').trim();
+    if (!id) return;
+    const prev = voiceGenProgressIdsRef.current;
+    const has = !!prev[id];
+    if (on && has) return;
+    if (!on && !has) return;
+    const next = { ...prev };
+    if (on) {
+      next[id] = true;
+      voiceGenStartedAtRef.current[id] = Date.now();
+    } else {
+      delete next[id];
+      delete voiceGenStartedAtRef.current[id];
+    }
+    voiceGenProgressIdsRef.current = next;
+    setVoiceGenProgressIds(next);
+  }, []);
+  /** 短剧成片：生成中镜号（即时绿条 + 防连点；与 storyboard.videoStatus 互补） */
+  const [videoGenProgressIds, setVideoGenProgressIds] = useState<Record<string, true>>({});
+  const videoGenProgressIdsRef = useRef<Record<string, true>>({});
+  const markVideoGenProgress = useCallback((shotNo: string, on: boolean) => {
+    const id = String(shotNo || '').trim();
+    if (!id) return;
+    setVideoGenProgressIds((prev) => {
+      const has = !!prev[id];
+      if (on && has) return prev;
+      if (!on && !has) return prev;
+      if (on) {
+        const next = { ...prev, [id]: true };
+        videoGenProgressIdsRef.current = next;
+        return next;
+      }
+      const next = { ...prev };
+      delete next[id];
+      videoGenProgressIdsRef.current = next;
+      return next;
+    });
+  }, []);
+  /**
+   * 成片绿条对账（P0）：不依赖 SUCCESS 是否被早退。
+   * - 有 URL 且 status=ready/error → 立刻清绿条
+   * - 有 URL 且仍标 generating：重新生成宽限内保留；宽限外视为矛盾，收成 ready 并清条
+   */
+  const VIDEO_GEN_PROGRESS_GRACE_MS = 120_000;
+  const reconcileVideoGenProgress = useCallback(() => {
+    const board = directorStateRef.current;
+    const progressIds = Object.keys(videoGenProgressIdsRef.current);
+    const shotNos = new Set<string>([
+      ...progressIds,
+      ...Object.keys(board.storyboardsByShotNo || {}).filter((no) => {
+        const st = String(getDirectorShotStoryboard(board, no).videoStatus || '').trim();
+        return st === 'generating' || st === 'queued';
+      }),
+    ]);
+    if (shotNos.size === 0) return;
+
+    let nextBoard = board;
+    let boardChanged = false;
+    const clearProgress: string[] = [];
+    const now = Date.now();
+
+    for (const id of shotNos) {
+      const sb = getDirectorShotStoryboard(nextBoard, id);
+      const st = String(sb.videoStatus || '').trim();
+      const hasUrl = !!String(sb.videoUrl || '').trim();
+      const startedAt = Number(sb.videoGeneratingStartedAt || 0);
+      const inGrace = startedAt > 0 && now - startedAt < VIDEO_GEN_PROGRESS_GRACE_MS;
+
+      if (st === 'ready' || st === 'error') {
+        clearProgress.push(id);
+        continue;
+      }
+      // 假卡死：成片 URL 已在，却仍标 generating（SUCCESS 早退 / Domain 不同步）
+      if (hasUrl && (st === 'generating' || st === 'queued')) {
+        if (inGrace) continue; // 重新生成：旧片仍在，宽限内保留绿条
+        nextBoard = updateDirectorShotStoryboard(nextBoard, id, {
+          videoStatus: 'ready',
+          videoError: '',
+          videoGeneratingStartedAt: undefined,
+        });
+        boardChanged = true;
+        clearProgress.push(id);
+        continue;
+      }
+      if (hasUrl && st !== 'generating' && st !== 'queued') {
+        clearProgress.push(id);
+      }
+    }
+
+    if (boardChanged) {
+      directorStateRef.current = nextBoard;
+      dataRef.current?.onUpdate?.({
+        director: nextBoard,
+        title: nextBoard.title,
+        isGenerating: nextBoard.isGenerating,
+        error: nextBoard.error || undefined,
+      });
+      // Domain 镜状态与画布表对齐，避免分镜卡仍显示「生成中」
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      if (domain?.shots?.length) {
+        const clearSet = new Set(clearProgress);
+        dataRef.current?.onUpdate?.({
+          directorDomain: createEmptyDramaSession({
+            ...domain,
+            shots: domain.shots.map((s) => {
+              const no = String(s.shot_no || '').trim();
+              if (!clearSet.has(no)) return s;
+              const url = String(s.video_url || '').trim();
+              if (!url && !String(getDirectorShotStoryboard(nextBoard, no).videoUrl || '').trim()) {
+                return s;
+              }
+              return {
+                ...s,
+                video_url:
+                  String(getDirectorShotStoryboard(nextBoard, no).videoUrl || '').trim() ||
+                  s.video_url,
+                video_status: 'ready',
+              };
+            }),
+          }),
+        });
+      }
+    }
+
+    if (clearProgress.length) {
+      setVideoGenProgressIds((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const id of clearProgress) {
+          if (next[id]) {
+            delete next[id];
+            changed = true;
+          }
+        }
+        if (!changed) return prev;
+        videoGenProgressIdsRef.current = next;
+        return next;
+      });
+    }
+  }, []);
+  useEffect(() => {
+    reconcileVideoGenProgress();
+  }, [state.storyboardsByShotNo, reconcileVideoGenProgress]);
+  useEffect(() => {
+    const hasWork =
+      Object.keys(videoGenProgressIds).length > 0 ||
+      Object.values(state.storyboardsByShotNo || {}).some((sb) => {
+        const st = String(sb?.videoStatus || '').trim();
+        return st === 'generating' || st === 'queued';
+      });
+    if (!hasWork) return;
+    const timer = window.setInterval(() => {
+      reconcileVideoGenProgress();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [videoGenProgressIds, state.storyboardsByShotNo, reconcileVideoGenProgress]);
   /** 音乐步 AI识别 / 歌曲分析：取消令牌（递增 gen 使进行中的 await 失效） */
   const musicJobGenRef = useRef(0);
   const musicJobCancelledRef = useRef(false);
@@ -844,25 +2104,45 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const [scenePickerShotNo, setScenePickerShotNo] = useState<string | null>(null);
   /** 确认镜头：分镜图上传来源菜单 */
   const [sbSourceMenuShotNo, setSbSourceMenuShotNo] = useState<string | null>(null);
+  /** 视频/分镜步：选择本镜历史分镜图 */
+  const [sbPickerShotNo, setSbPickerShotNo] = useState<string | null>(null);
+  const sbPickerLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 视频步：选择本镜历史成片 */
+  const [videoPickerShotNo, setVideoPickerShotNo] = useState<string | null>(null);
+  const videoPickerLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sbUploadShotNoRef = useRef<string | null>(null);
   const sbUploadInputRef = useRef<HTMLInputElement | null>(null);
   const videoUploadShotNoRef = useRef<string | null>(null);
   const videoUploadInputRef = useRef<HTMLInputElement | null>(null);
-  /** 成片预览：默认静音，按镜号记录取消静音 */
+  const karaokeVideoUploadInputRef = useRef<HTMLInputElement | null>(null);
+  /** 第 7 步成片格：当前拖入高亮的镜号 */
+  const [shotVideoDropShotNo, setShotVideoDropShotNo] = useState<string | null>(null);
+  /** 成片预览：默认静音；总开关打开后悬停任意成片出声 */
   const [shotVideoUnmuted, setShotVideoUnmuted] = useState<Record<string, boolean>>({});
+  const [videoHoverSoundOn, setVideoHoverSoundOn] = useState(false);
   const [sourceMenuAssetId, setSourceMenuAssetId] = useState<string | null>(null);
   const sourceMenuRef = useRef<HTMLDivElement | null>(null);
+  /** 选角形象菜单：portal 到 body，避免被面板 overflow 裁切 */
+  const sourceMenuPortalRef = useRef<HTMLDivElement | null>(null);
+  const [sourceMenuFixedStyle, setSourceMenuFixedStyle] = useState<{
+    left: number;
+    bottom: number;
+    minWidth: number;
+  } | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const styleRefUploadInputRef = useRef<HTMLInputElement | null>(null);
   const musicAudioInputRef = useRef<HTMLInputElement | null>(null);
-  /** 风格库 Tab：系统风格 / 我的风格 */
-  const [styleLibraryTab, setStyleLibraryTab] = useState<'system' | 'mine'>('system');
+  /** 风格库 Tab：影视风格 / 我的风格 */
   /**
    * 分镜/视频大表：仅当前阶段挂载重内容。
    * 旧「保活 hidden」会在切换后同时挂两张全表（缩略图+波形+video），镜头一多主线程卡死；
    * 卸载非活动表换来的 remount 成本远小于双表常驻。
    */
-  const shotsPanelActive = isMvMode && state.phase === 'shots';
-  const videosPanelActive = isMvMode && state.phase === 'videos';
+  const shotsPanelActive = state.phase === 'shots';
+  const videosPanelActive =
+    (isMvMode && state.phase === 'videos');
+  // 短剧 V2 视频步由 DramaStudioHost 承接，不再走旧 videos 面板
+  const karaokePanelActive = isMvMode && state.phase === 'karaoke';
   const videosPanelHostRef = useRef<HTMLDivElement | null>(null);
   /** 卸载视频表时释放 decoder，避免隐藏/切换后仍占解码槽 */
   const setVideosPanelHost = useCallback((el: HTMLDivElement | null) => {
@@ -886,27 +2166,257 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const imageGenActiveRef = useRef(false);
   /** 正在请求中的资产图（可多路并行） */
   const imageGenInFlightRef = useRef<Set<string>>(new Set());
-  /** 场景批量时尽量同时开跑；单卡/角色等默认 6 路 */
-  const imageGenMaxParallelRef = useRef(6);
-  const IMAGE_GEN_MAX_PARALLEL_DEFAULT = 6;
-  const IMAGE_GEN_MAX_PARALLEL_SCENE_BATCH = 12;
+  const imageGenMaxParallelRef = useRef(NEXFLOW_MAX_TASK_CONCURRENCY);
+  const IMAGE_GEN_MAX_PARALLEL_DEFAULT = NEXFLOW_MAX_TASK_CONCURRENCY;
+  const IMAGE_GEN_MAX_PARALLEL_SCENE_BATCH = NEXFLOW_MAX_TASK_CONCURRENCY;
   const sbGenQueueRef = useRef<string[]>([]);
   /** 正在请求中的镜号（可多路并行） */
   const sbGenInFlightRef = useRef<Set<string>>(new Set());
   const runNextSbGenRef = useRef<(() => Promise<void>) | null>(null);
-  const SB_GEN_MAX_PARALLEL = 6;
+  const SB_GEN_MAX_PARALLEL = NEXFLOW_MAX_TASK_CONCURRENCY;
   /** 稳定 patch：勿依赖整个 data，否则连线灌入 mvMusic 后 patch 重建会触发 effect 用旧状态回写把音乐清掉 */
-  const patch = useCallback((next: DirectorPipelineState) => {
-    directorStateRef.current = next;
-    dataRef.current?.onUpdate?.({
-      director: next,
-      title: next.title,
-      isGenerating: next.isGenerating,
-      error: next.error || undefined,
-    });
-  }, []);
+  const patch = useCallback(
+    (next: DirectorPipelineState) => {
+      const locked =
+        next.mode === moduleMode
+          ? next
+          : createDefaultDirectorPipelineState({ ...next, mode: moduleMode });
+      directorStateRef.current = locked;
+      dataRef.current?.onUpdate?.({
+        director: locked,
+        title: locked.title,
+        isGenerating: locked.isGenerating,
+        error: locked.error || undefined,
+      });
+    },
+    [moduleMode],
+  );
   const patchRef = useRef(patch);
   patchRef.current = patch;
+
+  const abandonVideoWait = useCallback(
+    (shotNo: string) => {
+      const no = String(shotNo || '').trim();
+      if (!no) return;
+      markVideoGenProgress(no, false);
+      const sb = getDirectorShotStoryboard(directorStateRef.current, no);
+      if (sb.videoStatus === 'generating') {
+        const hasUrl = !!String(sb.videoUrl || '').trim();
+        patch(
+          updateDirectorShotStoryboard(directorStateRef.current, no, {
+            videoStatus: hasUrl ? 'ready' : 'pending',
+            videoError: '',
+          }),
+        );
+      }
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      if (domain?.shots?.length) {
+        dataRef.current?.onUpdate?.({
+          directorDomain: createEmptyDramaSession({
+            ...domain,
+            shots: domain.shots.map((s) =>
+              String(s.shot_no || '').trim() === no
+                ? {
+                    ...s,
+                    video_status: String(s.video_url || '').trim() ? 'ready' : 'pending',
+                  }
+                : s,
+            ),
+          }),
+        });
+      }
+    },
+    [markVideoGenProgress, patch],
+  );
+
+  /** 本镜音频：放弃本地「生成中」等待（云端任务不撤回） */
+  const abandonShotAudioWait = useCallback(
+    (shotId: string) => {
+      const sid = String(shotId || '').trim();
+      if (!sid) return;
+      delete shotAudioStartedAtRef.current[sid];
+      cancelDirectorShotAudioWaiter(directorShotAudioNodeId(id, sid));
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      if (!domain?.shots?.length) return;
+      const shot = domain.shots.find((s) => s.shot_id === sid);
+      if (!shot || String(shot.audio_status || '') !== 'generating') return;
+      const hasUrl = !!String(shot.audio_url || '').trim();
+      const next = createEmptyDramaSession({
+        ...domain,
+        shots: domain.shots.map((s) =>
+          s.shot_id === sid
+            ? {
+                ...s,
+                audio_status: hasUrl ? 'ready' : '',
+                audio_error: '',
+              }
+            : s,
+        ),
+      });
+      const cur = dataRef.current;
+      if (cur) dataRef.current = { ...cur, directorDomain: next };
+      dataRef.current?.onUpdate?.({ directorDomain: next });
+    },
+    [id],
+  );
+
+  const handleApplyStaleScriptUpdateToShot = useCallback(
+    (rowIndex: number) => {
+      const next = applyDirectorMvStaleScriptUpdateToShot(directorStateRef.current, rowIndex);
+      patch(next);
+    },
+    [patch],
+  );
+
+  const handleApplyStaleScriptUpdateToAll = useCallback(() => {
+    const next = applyDirectorMvStaleScriptUpdateToAllStaleShots(directorStateRef.current);
+    patch(next);
+  }, [patch]);
+
+  const handleRebuildShotPromptFromScript = useCallback(
+    (rowIndex: number) => {
+      const next = rebuildDirectorShotPromptFromScript(directorStateRef.current, rowIndex);
+      patch(next);
+      setPromptPreviewTab('original');
+      void showAlert(tt.videoRebuildPromptDone);
+    },
+    [patch, showAlert, tt.videoRebuildPromptDone],
+  );
+
+  const handleRebuildAllShotPromptsFromScript = useCallback(async () => {
+    const ok = await showConfirm(tt.confirmRebuildPromptFromScriptBatch);
+    if (!ok) return;
+    const next = rebuildDirectorAllShotPromptsFromScript(directorStateRef.current);
+    patch(next);
+    setPromptPreviewTab('original');
+    void showAlert(tt.videoRebuildPromptDone);
+  }, [patch, showAlert, showConfirm, tt.confirmRebuildPromptFromScriptBatch, tt.videoRebuildPromptDone]);
+
+  const stalePromptShotCount = useMemo(
+    () => (isMvMode ? countDirectorStalePromptShots(state) : 0),
+    [isMvMode, state.scriptContentRevision, state.shots, state.storyboardsByShotNo],
+  );
+
+  const renderScriptStaleBanner = () => {
+    if (!isMvMode || stalePromptShotCount <= 0) return null;
+    return (
+      <div
+        className={`shrink-0 rounded-lg border px-2.5 py-1.5 flex flex-wrap items-center gap-2 ${
+          isDarkMode
+            ? 'border-amber-400/35 bg-amber-500/10 text-amber-100'
+            : 'border-amber-300 bg-amber-50 text-amber-900'
+        }`}
+        style={{ fontSize: fsChrome }}
+      >
+        <span className="flex-1 min-w-[12rem]">
+          {fillDirectorI18n(tt.scriptPromptsStaleBanner, { n: stalePromptShotCount })}
+        </span>
+        <button
+          type="button"
+          className={`nodrag rounded-md px-2 py-1 font-medium ring-1 ${
+            isDarkMode
+              ? 'bg-amber-500/25 text-amber-50 ring-amber-400/50 hover:bg-amber-500/35'
+              : 'bg-amber-100 text-amber-900 ring-amber-300 hover:bg-amber-200'
+          }`}
+          title={tt.scriptPromptsStaleHint}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleApplyStaleScriptUpdateToAll();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {tt.scriptPromptsUpdateAllStale}
+        </button>
+      </div>
+    );
+  };
+
+  const renderShotNoCellContent = (shotNo: string, rowIndex: number, leading?: React.ReactNode) => {
+    const stale = isMvMode && isDirectorShotPromptsStale(state, shotNo);
+    return (
+      <div className="flex flex-col items-center justify-center gap-0.5 min-w-0">
+        <div className="flex items-center justify-center gap-0.5 min-w-0">
+          {leading}
+          <span
+            className={`inline-flex h-7 w-7 items-center justify-center rounded-full ring-1 tabular-nums text-[11px] font-medium shrink-0 ${
+              stale
+                ? isDarkMode
+                  ? 'ring-amber-400/55 text-amber-100'
+                  : 'ring-amber-400 text-amber-800'
+                : isDarkMode
+                  ? 'ring-white/25 text-white/85'
+                  : 'ring-gray-300 text-gray-800'
+            }`}
+          >
+            {String(shotNo).padStart(2, '0')}
+          </span>
+        </div>
+        {stale ? (
+          <button
+            type="button"
+            className={`nodrag rounded px-1 py-0.5 text-[10px] font-semibold leading-none ring-1 ${
+              isDarkMode
+                ? 'bg-sky-500/25 text-sky-100 ring-sky-400/45 hover:bg-sky-500/40'
+                : 'bg-sky-50 text-sky-700 ring-sky-300 hover:bg-sky-100'
+            }`}
+            title={tt.scriptPromptsStaleHint}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleApplyStaleScriptUpdateToShot(rowIndex);
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {tt.scriptPromptsStaleUpdate}
+          </button>
+        ) : null}
+      </div>
+    );
+  };
+
+  /** 表格内最终提示词：截断展示 + 悬停结构化大框；单击/双击进入「原版」编辑 */
+  const renderFinalPromptHoverCell = (opts: {
+    text: string;
+    /** 编辑弹窗用的原版文案；缺省则用 text */
+    editText?: string;
+    shotNo?: string;
+    rowIndex: number;
+    className?: string;
+  }) => {
+    const finalVal = String(opts.text || '').trim();
+      const editVal = String(opts.editText ?? opts.text ?? '').trim();
+    const hoverTitle = opts.shotNo
+      ? `${tt.colFinalPrompt} · ${tt.colShotNo} ${String(opts.shotNo).padStart(2, '0')}`
+      : tt.colFinalPrompt;
+    return (
+      <div
+        className={`nodrag relative cursor-text whitespace-pre-wrap break-words min-h-[18px] text-left line-clamp-4 ${bodyCls} ${
+          opts.className || ''
+        }`}
+        onMouseEnter={(e) => {
+          if (finalVal) openPromptHover(finalVal, e, hoverTitle, opts.shotNo);
+        }}
+        onMouseLeave={scheduleClosePromptHover}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          setPromptHover(null);
+          openFinalPromptEdit(opts.rowIndex, editVal || finalVal);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditingAudioRow(null);
+          setPromptHover(null);
+          openFinalPromptEdit(opts.rowIndex, editVal || finalVal);
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {finalVal ? (
+          highlightVideoPromptActions(finalVal, isDarkMode, allAssets)
+        ) : (
+          <span className={mutedCls}>{tt.pendingPrompt}</span>
+        )}
+      </div>
+    );
+  };
 
   const clearFinalPromptPersistTimer = useCallback(() => {
     if (finalPromptPersistTimerRef.current == null) return;
@@ -919,21 +2429,50 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     const row = finalPromptEditRowRef.current;
     if (row == null) return;
     const value = finalPromptDraftRef.current;
+    if (!finalPromptDraftDirtyRef.current) return;
     const cur = directorStateRef.current;
-    if (String(cur.shots[row]?.['最终提示词'] || '') === value) return;
-    patch(updateDirectorShotCell(cur, row, '最终提示词', value));
+    const shotNo = String(cur.shots[row]?.['镜号'] || row + 1).trim() || String(row + 1);
+    const sb = getDirectorShotStoryboard(cur, shotNo);
+    const prevOriginal = String(sb.promptOriginal || cur.shots[row]?.['最终提示词'] || '').trim();
+    if (prevOriginal === value) {
+      finalPromptDraftDirtyRef.current = false;
+      return;
+    }
+    let nextState = updateDirectorShotCell(cur, row, '最终提示词', value);
+    nextState = updateDirectorShotStoryboard(nextState, shotNo, {
+      promptOriginal: value,
+      promptOptimized: '',
+      useOptimizedPrompt: false,
+    });
+    finalPromptDraftDirtyRef.current = false;
+    patch(nextState);
   }, [clearFinalPromptPersistTimer, patch]);
 
   const scheduleFinalPromptPersist = useCallback(
     (rowIndex: number, value: string) => {
       finalPromptDraftRef.current = value;
       finalPromptEditRowRef.current = rowIndex;
+      finalPromptDraftDirtyRef.current = true;
       clearFinalPromptPersistTimer();
       finalPromptPersistTimerRef.current = setTimeout(() => {
         finalPromptPersistTimerRef.current = null;
         const cur = directorStateRef.current;
-        if (String(cur.shots[rowIndex]?.['最终提示词'] || '') === value) return;
-        patch(updateDirectorShotCell(cur, rowIndex, '最终提示词', value));
+        const shotNo =
+          String(cur.shots[rowIndex]?.['镜号'] || rowIndex + 1).trim() || String(rowIndex + 1);
+        const sb = getDirectorShotStoryboard(cur, shotNo);
+        const prevOriginal = String(sb.promptOriginal || cur.shots[rowIndex]?.['最终提示词'] || '').trim();
+        if (prevOriginal === value) {
+          finalPromptDraftDirtyRef.current = false;
+          return;
+        }
+        let nextState = updateDirectorShotCell(cur, rowIndex, '最终提示词', value);
+        nextState = updateDirectorShotStoryboard(nextState, shotNo, {
+          promptOriginal: value,
+          promptOptimized: '',
+          useOptimizedPrompt: false,
+        });
+        finalPromptDraftDirtyRef.current = false;
+        patch(nextState);
       }, 300);
     },
     [clearFinalPromptPersistTimer, patch],
@@ -942,13 +2481,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const openFinalPromptEdit = useCallback(
     (rowIndex: number, prompt: string) => {
       clearFinalPromptPersistTimer();
+      finalPromptDraftDirtyRef.current = false;
       finalPromptDraftRef.current = prompt;
       finalPromptEditRowRef.current = rowIndex;
       setFinalPromptDraft(prompt);
       setFinalPromptOpinion('');
+      if (isMvMode) {
+        const shotNo =
+          String(directorStateRef.current.shots[rowIndex]?.['镜号'] || rowIndex + 1).trim() ||
+          String(rowIndex + 1);
+        setEditing(null);
+        setPromptHover(null);
+        setPromptPreview(prompt);
+        setPromptPreviewShotNo(shotNo);
+        setPromptPreviewTab('original');
+        return;
+      }
       setEditing({ row: rowIndex, col: '最终提示词' });
     },
-    [clearFinalPromptPersistTimer],
+    [clearFinalPromptPersistTimer, isMvMode],
   );
 
   const closeFinalPromptEdit = useCallback(() => {
@@ -958,6 +2509,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     finalPromptEditRowRef.current = null;
     setEditing(null);
     setFinalPromptOpinion('');
+  }, [busyAction, cancelFinalPromptOpinionDictation, flushFinalPromptDraft]);
+
+  const closePromptPreviewModal = useCallback(() => {
+    if (busyAction === 'revise-final-prompt') return;
+    flushFinalPromptDraft();
+    cancelFinalPromptOpinionDictation();
+    finalPromptEditRowRef.current = null;
+    setFinalPromptOpinion('');
+    setPromptPreview(null);
+    setPromptPreviewShotNo(null);
   }, [busyAction, cancelFinalPromptOpinionDictation, flushFinalPromptDraft]);
 
   useEffect(() => {
@@ -980,22 +2541,53 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   );
 
   useEffect(() => {
-    if (!castPickerShotNo && !scenePickerShotNo && !sbSourceMenuShotNo) return;
+    if (
+      !castPickerShotNo &&
+      !scenePickerShotNo &&
+      !sbSourceMenuShotNo &&
+      !sbPickerShotNo &&
+      !videoPickerShotNo
+    ) {
+      return;
+    }
     const onDown = (e: PointerEvent) => {
       const el = e.target as HTMLElement | null;
       if (el?.closest?.('[data-director-picker-keep]')) return;
+      if (sbPickerLeaveTimerRef.current) {
+        clearTimeout(sbPickerLeaveTimerRef.current);
+        sbPickerLeaveTimerRef.current = null;
+      }
+      if (videoPickerLeaveTimerRef.current) {
+        clearTimeout(videoPickerLeaveTimerRef.current);
+        videoPickerLeaveTimerRef.current = null;
+      }
       setCastPickerShotNo(null);
       setScenePickerShotNo(null);
       setSbSourceMenuShotNo(null);
+      setSbPickerShotNo(null);
+      setVideoPickerShotNo(null);
     };
     document.addEventListener('pointerdown', onDown, true);
     return () => document.removeEventListener('pointerdown', onDown, true);
-  }, [castPickerShotNo, scenePickerShotNo, sbSourceMenuShotNo]);
+  }, [castPickerShotNo, scenePickerShotNo, sbSourceMenuShotNo, sbPickerShotNo, videoPickerShotNo]);
+
+  useEffect(
+    () => () => {
+      if (sbPickerLeaveTimerRef.current) clearTimeout(sbPickerLeaveTimerRef.current);
+      if (videoPickerLeaveTimerRef.current) clearTimeout(videoPickerLeaveTimerRef.current);
+    },
+    [],
+  );
 
   // 已有镜头表若最终提示词为空/占位，按画面描述+景别+光影+对白+音效+运镜回填
+  // 短剧：分析后保持「待生成提示词」，由「一键生成全部提示词」显式合成
   useEffect(() => {
+    if (isDramaMode) return;
     const style = resolveDirectorStylePrompt(state.stylePresetId, state.globalStyle);
-    const nextShots = withComposedDirectorFinalPrompts(state.shots, style, false);
+    const nextShots = withComposedDirectorFinalPrompts(state.shots, style, false, {
+      shotChangePace: state.mvMusic?.shotChangePace,
+      stylePresetId: state.stylePresetId,
+    });
     const changed = nextShots.some(
       (s, i) => String(s['最终提示词'] || '') !== String(state.shots[i]?.['最终提示词'] || ''),
     );
@@ -1004,7 +2596,50 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       ...directorStateRef.current,
       shots: nextShots,
     });
-  }, [state.shots, state.stylePresetId, state.globalStyle]);
+  }, [isDramaMode, state.shots, state.stylePresetId, state.globalStyle, state.mvMusic?.shotChangePace]);
+
+  // 短剧：已有镜头表若场次/制作层大量为空，本地自动补齐（兼容旧分析结果 / 模型漏字段）
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const shots = state.shots || [];
+    if (shots.length < 1) return;
+    const emptyScene = shots.filter((s) => {
+      const v = String(s['场号'] || s['地点'] || s['内外景'] || '').trim();
+      return !v || v === '—';
+    }).length;
+    const emptyProd = shots.filter((s) => {
+      const v = String(s['制作备注'] || s['连贯性'] || s['参考图绑定'] || '').trim();
+      return !v || v === '—';
+    }).length;
+    // 超过一半镜头缺场次或制作信息才回填，避免用户刻意清空后被反复写回
+    if (emptyScene < shots.length / 2 && emptyProd < shots.length / 2) return;
+    const sections = state.mvStoryAnalysis?.sections;
+    const nextShots = completeDirectorDramaShotLayers(shots, {
+      charactersText: String(sections?.characters || ''),
+      beats: getDirectorMvPlotBeatsFromState(state),
+    });
+    const changed = nextShots.some((s, i) => {
+      const prev = shots[i];
+      if (!prev) return true;
+      return (
+        String(s['场号'] || '') !== String(prev['场号'] || '') ||
+        String(s['内外景'] || '') !== String(prev['内外景'] || '') ||
+        String(s['日夜'] || '') !== String(prev['日夜'] || '') ||
+        String(s['地点'] || '') !== String(prev['地点'] || '') ||
+        String(s['出场人物'] || '') !== String(prev['出场人物'] || '') ||
+        String(s['制作备注'] || '') !== String(prev['制作备注'] || '') ||
+        String(s['连贯性'] || '') !== String(prev['连贯性'] || '') ||
+        String(s['参考图绑定'] || '') !== String(prev['参考图绑定'] || '') ||
+        String(s['对白旁白'] || '') !== String(prev['对白旁白'] || '') ||
+        String(s['画面描述'] || '') !== String(prev['画面描述'] || '')
+      );
+    });
+    if (!changed) return;
+    patchRef.current({
+      ...directorStateRef.current,
+      shots: nextShots,
+    });
+  }, [isDramaMode, state.shots, state.mvStoryAnalysis?.sections]);
 
   const stylePrompt = useMemo(
     () => resolveDirectorStylePrompt(state.stylePresetId, state.globalStyle),
@@ -1056,9 +2691,29 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const resolveShotFinalPrompt = useCallback(
     (shot: { 最终提示词?: string; 画面描述?: string; 景别?: string; 光影氛围?: string; 对白旁白?: string; 音效?: string; 运镜?: string }) => {
+      const latest = directorStateRef.current;
+      const styleUrl = resolveDirectorStyleReferenceImageUrl(
+        latest.stylePresetId,
+        latest.styleReferenceImageUrl,
+      );
+      const library = getOrderedAssetsWithImages(latest);
       const raw = String(shot['最终提示词'] || '').trim();
-      if (!shouldAutoSyncDirectorFinalPrompt(raw)) return raw;
-      return composeDirectorShotFinalPrompt(shot, stylePrompt) || raw;
+      const cleanedRaw = directorMvPromptNeedsLookRelock(raw)
+        ? stripDirectorPromptInventedLook(raw)
+        : raw;
+      const base = !shouldAutoSyncDirectorFinalPrompt(cleanedRaw)
+        ? replaceDirectorStyleTextWithImageRef(cleanedRaw, 1)
+        : replaceDirectorStyleTextWithImageRef(
+            composeDirectorShotFinalPrompt(shot, stylePrompt, {
+              stylePresetId: latest.stylePresetId,
+              stylePictureIndex: 1,
+            }) || cleanedRaw,
+            1,
+          );
+      return clarifyDirectorPromptRefPictureNumbers(base, {
+        styleUrl,
+        libraryAssets: library,
+      });
     },
     [stylePrompt],
   );
@@ -1085,11 +2740,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       if (isDirectorInstrumentalLyricText(shot['对白旁白'])) return false;
       return null as boolean | null;
     });
-    return matchDirectorShotsAssetIndices(state.shots, refs, { hasHumanVoiceByShot });
+    return matchDirectorShotsAssetIndices(state.shots, refs, {
+      hasHumanVoiceByShot,
+      leadAssetIds: listDirectorMvLeadAssetIds(state),
+    });
   }, [
     isMvMode,
     state.shots,
     state.assets,
+    state.mvCastPlan,
     state.mvMusic?.lyricSegments,
     state.mvMusic?.clipLengthMode,
     state.mvMusic?.durationSec,
@@ -1116,11 +2775,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       if (isMvMode && rowIndex != null) {
         base = mvShotRefIndicesByRow[rowIndex] || [];
       } else {
-        const matched = matchDirectorAssetIndicesForShot(shot, refs);
+        const matched = matchDirectorAssetIndicesForShot(shot, refs, {
+          leadAssetIds: listDirectorMvLeadAssetIds(state),
+        });
         const val = resolveShotFinalPrompt(shot);
-        const fromMentions = extractSeedanceImageMentionIndices(val)
-          .map((n) => n - 1)
-          .filter((i) => i >= 0 && i < refs.length);
+        const fromBindings = parseDirectorShotRefBindings(val)
+          .filter((b) => !/风格/.test(b.kind))
+          .map((b) =>
+            refs.findIndex((r) => {
+              const name = String(r?.name || '').trim();
+              return !!name && (name === b.name || name.includes(b.name) || b.name.includes(name));
+            }),
+          )
+          .filter((i) => i >= 0);
+        const fromMentions =
+          fromBindings.length > 0
+            ? fromBindings
+            : extractSeedanceImageMentionIndices(val)
+                .map((n) => n - 1)
+                .filter((i) => i >= 0 && i < refs.length);
         if (fromMentions.length === 0) {
           base = matched;
         } else {
@@ -1163,6 +2836,98 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     },
     [isMvMode, mvShotRefIndicesByRow, resolveShotFinalPrompt, state],
   );
+
+  const getRepairedShotPromptVersions = useCallback(
+    (
+      shot: {
+        镜号?: string;
+        最终提示词?: string;
+        画面描述?: string;
+        地点?: string;
+      },
+      rowIndex: number,
+      sb?: ReturnType<typeof getDirectorShotStoryboard>,
+    ) => {
+      // 仅读已存版本，禁止在渲染路径调用 repair（曾导致锚点叠层 + 渲染进程卡死）
+      const latest = directorStateRef.current;
+      const shotNo = String(shot['镜号'] || rowIndex + 1).trim() || String(rowIndex + 1);
+      const storyboard = sb || getDirectorShotStoryboard(latest, shotNo);
+      const versions = getDirectorShotPromptVersions(shot, storyboard);
+      const original = String(versions.original || '').trim();
+      const optimized = String(versions.optimized || '').trim();
+      const useOptimized = !!optimized && versions.useOptimized;
+      return {
+        original,
+        optimized,
+        useOptimized,
+        active: useOptimized ? optimized : original,
+      };
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isMvMode) return;
+    const latest = directorStateRef.current;
+    let next = latest;
+    let changed = false;
+    (latest.shots || []).forEach((shot, i) => {
+      const shotNo = String(shot['镜号'] || i + 1).trim() || String(i + 1);
+      const sb = getDirectorShotStoryboard(next, shotNo);
+      const orderedRefs = getOrderedAssetsWithImages(next);
+      const boundIdx = getShotBoundRefIndices(shot, orderedRefs, i);
+      const boundChars = boundIdx
+        .map((idx) => orderedRefs[idx])
+        .filter(
+          (a): a is (typeof orderedRefs)[number] =>
+            !!a && a.kind === 'character' && !!String(a.imageUrl || '').trim(),
+        );
+      const items = buildDirectorShotRefItems({
+        storyboardUrl: String(sb.imageUrl || '').trim() || undefined,
+        boundAssets: boundChars,
+      });
+      const hint = buildDirectorShotSceneStoryHint(shot);
+      const rawOpt = String(sb.promptOptimized || '').trim();
+      if (rawOpt && directorMvPromptNeedsLookRelock(rawOpt)) {
+        const cleaned = repairDirectorMvPromptImageMap(rawOpt, items, hint);
+        // 必须真正变短或结构修复；禁止越修越长导致死循环卡死渲染进程
+        if (
+          cleaned &&
+          cleaned !== rawOpt &&
+          cleaned.length <= rawOpt.length + 2500 &&
+          !directorMvPromptNeedsLookRelock(cleaned)
+        ) {
+          next = updateDirectorShotStoryboard(next, shotNo, { promptOptimized: cleaned });
+          changed = true;
+        } else if (cleaned && cleaned !== rawOpt && cleaned.length < rawOpt.length) {
+          // 脏稿叠层：允许只做压缩去重写回
+          next = updateDirectorShotStoryboard(next, shotNo, { promptOptimized: cleaned });
+          changed = true;
+        }
+      }
+      const rawFinal = String(shot['最终提示词'] || '').trim();
+      if (rawFinal && directorMvPromptNeedsLookRelock(rawFinal)) {
+        const cleanedFinal = repairDirectorMvPromptImageMap(rawFinal, items, hint);
+        if (
+          cleanedFinal &&
+          cleanedFinal !== rawFinal &&
+          cleanedFinal.length <= rawFinal.length + 2500 &&
+          !directorMvPromptNeedsLookRelock(cleanedFinal)
+        ) {
+          next = updateDirectorShotCell(next, i, '最终提示词', cleanedFinal);
+          changed = true;
+        } else if (
+          cleanedFinal &&
+          cleanedFinal !== rawFinal &&
+          cleanedFinal.length < rawFinal.length
+        ) {
+          next = updateDirectorShotCell(next, i, '最终提示词', cleanedFinal);
+          changed = true;
+        }
+      }
+    });
+    if (changed) patch(next);
+  }, [getShotBoundRefIndices, isMvMode, patch, state.shots, state.storyboardsByShotNo]);
 
   const rebuildShotBindingWithOverrides = useCallback(
     (
@@ -1210,6 +2975,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
 
       let nextDesc = String(shot['画面描述'] || '');
+      let nextCastOn: string | undefined;
       if (Array.isArray(castIds)) {
         const castNames = castIds
           .map((id) => {
@@ -1217,6 +2983,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             return String(a?.name || '').trim();
           })
           .filter(Boolean);
+        nextCastOn = castNames.join('、');
         nextDesc = syncMvShotDescForCastScene(nextDesc, { castNames });
       }
       if (Array.isArray(sceneIds) && sceneIds[0]) {
@@ -1231,19 +2998,28 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const patchedShot = {
         ...shot,
         画面描述: nextDesc,
+        ...(nextCastOn !== undefined ? { 出场人物: nextCastOn } : {}),
       };
       const stylePrompt = resolveDirectorStylePrompt(latest.stylePresetId, latest.globalStyle);
       const prevPrompt = String(shot['最终提示词'] || '').trim();
       // 用户已改过最终提示词：只更新 @图片 绑定，不再用风格/机位等整段重拼
       const basePrompt = !shouldAutoSyncDirectorFinalPrompt(prevPrompt)
         ? prevPrompt
-        : composeDirectorShotFinalPrompt(patchedShot, stylePrompt) ||
+        : composeDirectorShotFinalPrompt(patchedShot, stylePrompt, {
+            stylePresetId: latest.stylePresetId,
+          }) ||
           resolveShotFinalPrompt(patchedShot);
       const nextPrompt = applyDirectorShotAssetBindingIndices(
         basePrompt,
         patchedShot,
         refs,
         indices,
+        {
+          styleUrl: resolveDirectorStyleReferenceImageUrl(
+            latest.stylePresetId,
+            latest.styleReferenceImageUrl,
+          ),
+        },
       );
 
       let next = updateDirectorShotStoryboard(latest, shotNo, {
@@ -1251,7 +3027,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         ...(overrides.sceneAssetIds !== undefined ? { sceneAssetIds: sceneIds || [] } : {}),
       });
       const prevDesc = String(shot['画面描述'] || '').trim();
-      if (nextPrompt !== prevPrompt || nextDesc !== prevDesc) {
+      const prevCastOn = String((shot as { 出场人物?: string })['出场人物'] || '').trim();
+      if (
+        nextPrompt !== prevPrompt ||
+        nextDesc !== prevDesc ||
+        (nextCastOn !== undefined && nextCastOn !== prevCastOn)
+      ) {
         next = {
           ...next,
           shots: next.shots.map((s, i) =>
@@ -1260,6 +3041,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   ...s,
                   画面描述: nextDesc,
                   最终提示词: nextPrompt,
+                  ...(nextCastOn !== undefined ? { 出场人物: nextCastOn } : {}),
                 }
               : s,
           ),
@@ -1423,13 +3205,30 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   }, [isMvMode, state.phase, state.mvMusic?.summary, state.mvMusic?.moodHint, patch]);
 
   // MV：进入选角步时校正男主/女主槽位文案（避免男主卡片里写着女主描述）
+  // 勿依赖整份 characters（含 status/imageUrl），否则一点「生成」写 status 就会重跑
+  const castStoryKey = useMemo(() => {
+    const sec = normalizeDirectorMvScriptSections(state.mvStoryAnalysis?.sections);
+    return [
+      String(state.mvStoryOutline || ''),
+      sec.characters,
+      sec.relationships,
+      sec.plot,
+    ].join('\0');
+  }, [state.mvStoryOutline, state.mvStoryAnalysis, state.scriptText]);
   useEffect(() => {
-    if (!isMvMode || state.phase !== 'cast') return;
+    if (!isWizardMode || state.phase !== 'cast') return;
     const latest = directorStateRef.current;
-    const next = ensureDirectorMvLeadSlots(latest);
+    const next = applyAutoDirectorMvCastPlan(latest);
     const before = latest.assets.characters || [];
     const after = next.assets.characters || [];
-    const changed =
+    const planChanged =
+      normalizeDirectorMvCastPlan(latest.mvCastPlan).leadCount !==
+        normalizeDirectorMvCastPlan(next.mvCastPlan).leadCount ||
+      normalizeDirectorMvCastPlan(latest.mvCastPlan).lead1Gender !==
+        normalizeDirectorMvCastPlan(next.mvCastPlan).lead1Gender ||
+      normalizeDirectorMvCastPlan(latest.mvCastPlan).lead2Gender !==
+        normalizeDirectorMvCastPlan(next.mvCastPlan).lead2Gender;
+    const charsChanged =
       before.length !== after.length ||
       before.some(
         (a, i) =>
@@ -1437,14 +3236,38 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           String(a?.prompt || '') !== String(after[i]?.prompt || '') ||
           String(a?.gender || '') !== String(after[i]?.gender || ''),
       );
-    if (changed) patch(next);
-  }, [isMvMode, state.phase, state.mvCastPlan, state.assets.characters, patch]);
+    if (planChanged || charsChanged) patch(next);
+  }, [isWizardMode, state.phase, castStoryKey, patch]);
 
-  // MV：确认镜头步若画面/景别/运镜为空，或与剧情表男女/空镜对不上，用步骤四回填
+  // 剧情规划若被写成 ```json / 整段 JSON，自动规范成 | 表格（修复「应该是表格却显示代码」）
+  const plotJsonRepairKeyRef = useRef('');
+  useEffect(() => {
+    if (!isMvMode || state.phase !== 'story') return;
+    const plot = String(state.mvStoryAnalysis?.sections?.plot || '').trim();
+    if (!plot) return;
+    // 已是标准表
+    if (plot.includes('|') && /段号/.test(plot) && !/"schemaVersion"\s*:/.test(plot)) return;
+    if (!/```|schemaVersion|"plot"\s*:/.test(plot)) return;
+    const table = coerceDirectorMvPlotToBeatTable(plot);
+    if (!table || table === plot) return;
+    if (plotJsonRepairKeyRef.current === plot) return;
+    plotJsonRepairKeyRef.current = plot;
+    const cur = directorStateRef.current;
+    const baseSections = normalizeDirectorMvScriptSections(cur.mvStoryAnalysis?.sections);
+    const nextSections = { ...baseSections, plot: table };
+    let next = {
+      ...cur,
+      scriptText: composeDirectorMvScriptText(nextSections),
+    };
+    next = patchDirectorMvStoryAnalysis(next, { sections: nextSections });
+    patch(next);
+  }, [isMvMode, state.phase, state.mvStoryAnalysis?.sections?.plot, patch]);
+
+  // MV/短剧：确认镜头步若画面/景别/运镜为空，或与剧情表男女/空镜对不上，用剧情表回填
   // 手动添加的全空行不参与判定、不被灌描述（用户要手填）
   const plotBeatSyncKeyRef = useRef('');
   useEffect(() => {
-    if (!isMvMode || state.phase !== 'shots') return;
+    if (!isWizardMode || state.phase !== 'shots') return;
     if (!state.shots.length) return;
     const plotBeats = getDirectorMvPlotBeatsFromState(directorStateRef.current);
     if (!plotBeats?.length) return;
@@ -1513,7 +3336,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       preserveBlankShots: true,
     });
     const style = resolveDirectorStylePrompt(latest.stylePresetId, latest.globalStyle);
-    shots = withComposedDirectorFinalPrompts(shots, style, true);
+    shots = withComposedDirectorFinalPrompts(shots, style, true, {
+      stylePresetId: latest.stylePresetId,
+    });
     // 强制重拼后仍还原手动空行（避免只写出「画风：…」最终提示词）
     shots = shots.map((s, i) =>
       isBlankDirectorShot(latest.shots[i]) ? latest.shots[i] : s,
@@ -1544,7 +3369,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
     patch({ ...latest, shots: rebound.shots });
   }, [
-    isMvMode,
+    isWizardMode,
     state.phase,
     state.shots,
     state.mvStoryAnalysis?.sections?.plot,
@@ -1552,15 +3377,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     patch,
   ]);
 
-  // MV：剧情表明细列错位时自动纠偏并写回（场景/角色/角度串列）；行数与音频片段不一致时强制对齐
+  // MV/短剧：剧情表明细列错位时自动纠偏并写回；MV 另按音频片段数强制对齐行数
   const plotHealKeyRef = useRef('');
   useEffect(() => {
-    if (!isMvMode) return;
+    if (!isWizardMode) return;
     if (state.phase !== 'story' && state.phase !== 'shots' && state.phase !== 'videos') return;
     const latest = directorStateRef.current;
     const plotBeats = getDirectorMvPlotBeatsFromState(latest);
     if (!plotBeats?.length) return;
-    const clipCount = resolveDirectorMvAudioClipCount(latest);
+    const clipCount = isMvMode ? resolveDirectorMvAudioClipCount(latest) : 0;
     const rows =
       clipCount > 0 && plotBeats.length !== clipCount
         ? alignDirectorMvPlotBeatsToCount(plotBeats, clipCount) || plotBeats
@@ -1578,6 +3403,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     next = patchDirectorMvStoryAnalysis(next, { sections: nextSections });
     patch(next);
   }, [
+    isWizardMode,
     isMvMode,
     state.phase,
     state.mvStoryAnalysis?.sections?.plot,
@@ -1589,9 +3415,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     patch,
   ]);
 
-  // MV：补齐未写入画面描述的场景名，并按「有人声？+提示词」匹配写入角色/场景绑定
+  // MV/短剧：补齐未写入画面描述的场景名，并按提示词匹配写入角色/场景绑定
   useEffect(() => {
-    if (!isMvMode || state.phase !== 'shots') return;
+    if (!isWizardMode || state.phase !== 'shots') return;
     if (!state.shots.length) return;
     const latest = directorStateRef.current;
     const sceneNames = (latest.assets.scenes || [])
@@ -1625,7 +3451,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       if (isDirectorInstrumentalLyricText(shot['对白旁白'])) return false;
       return null as boolean | null;
     });
-    const indexLists = matchDirectorShotsAssetIndices(shots, refs, { hasHumanVoiceByShot });
+    const indexLists = matchDirectorShotsAssetIndices(shots, refs, {
+      hasHumanVoiceByShot,
+      leadAssetIds: listDirectorMvLeadAssetIds(latest),
+    });
     let bindChanged = false;
     shots = shots.map((shot, i) => {
       const prompt = String(shot['最终提示词'] || '').trim();
@@ -1651,14 +3480,28 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           if (idx >= 0 && !indices.includes(idx)) indices.push(idx);
         }
       }
-      const next = applyDirectorShotAssetBindingIndices(prompt, shot, refs, indices);
+      const next = applyDirectorShotAssetBindingIndices(prompt, shot, refs, indices, {
+        styleUrl: resolveDirectorStyleReferenceImageUrl(
+          latest.stylePresetId,
+          latest.styleReferenceImageUrl,
+        ),
+      });
       if (next === prompt) return shot;
       bindChanged = true;
       return { ...shot, 最终提示词: next };
     });
     if (!descChanged && !bindChanged) return;
     patch({ ...latest, shots });
-  }, [isMvMode, state.phase, state.shots, state.assets, state.mvMusic, patch]);
+  }, [
+    isWizardMode,
+    state.phase,
+    state.shots,
+    state.assets,
+    state.mvMusic,
+    state.stylePresetId,
+    state.styleReferenceImageUrl,
+    patch,
+  ]);
 
   const handleResizeMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -1676,7 +3519,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const startY = e.clientY;
       const startW = sizeW;
       const startH = sizeH;
-      const lock169 = isMvMode && !isNodeFullscreen;
+      const lock169 = isWizardMode && !isNodeFullscreen;
 
       let rafId: number | null = null;
       const scheduleUpdate = () => {
@@ -1763,6 +3606,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     setIsNodeFullscreen((v) => !v);
   }, []);
 
+  // 短剧：不自动全屏（避免一进节点就拉满整棵导演台 → OOM）；画布内直接嵌工作室，需要时再点工具栏全屏
+  useEffect(() => {
+    if (!isDramaMode) return;
+    setIsNodeFullscreen(false);
+  }, [isDramaMode, id]);
+
   // 同步 React Flow 节点宽高，避免蓝色选框尺寸/位置错位
   useLayoutEffect(() => {
     data?.onUpdate?.({ width: sizeW, height: sizeH });
@@ -1772,29 +3621,183 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   }, [id, sizeW, sizeH, updateNodeInternals]);
 
   useEffect(() => {
-    if (!isNodeFullscreen) return;
+    const dismissDirectorOverlays = (): boolean => {
+      let closed = false;
+      try {
+        const hadDropdown = !!document.querySelector('.panel-option-dropdown-backdrop');
+        const voiceLocked = isVoiceModalLocked();
+        window.dispatchEvent(new CustomEvent('nexflow-force-end-dictation'));
+        cancelFinalPromptOpinionDictation();
+        forceClearVoiceModalLock();
+        forceRemoveOrphanPanelDropdownPortals();
+        if (hadDropdown || voiceLocked) closed = true;
+      } catch {
+        /* ignore */
+      }
+      if (promptHover != null) {
+        setPromptHover(null);
+        closed = true;
+      }
+      if (imagePreview != null) {
+        setImagePreview(null);
+        closed = true;
+      }
+      if (promptPreview != null) {
+        if (busyAction !== 'revise-final-prompt') {
+          closePromptPreviewModal();
+          closed = true;
+        }
+      }
+      if (libraryPick != null) {
+        setLibraryPick(null);
+        closed = true;
+      }
+      if (batchOpen) {
+        setBatchOpen(false);
+        closed = true;
+      }
+      if (videoPreview != null) {
+        videoPreviewOpenRef.current = false;
+        setVideoPreview(null);
+        closed = true;
+      }
+      if (stylePromptEditId != null) {
+        setStylePromptEditId(null);
+        closed = true;
+      }
+      if (storyOutlineEditing) {
+        setStoryOutlineEditing(false);
+        closed = true;
+      }
+      if (
+        castPickerShotNo != null ||
+        scenePickerShotNo != null ||
+        sbSourceMenuShotNo != null ||
+        sbPickerShotNo != null ||
+        videoPickerShotNo != null
+      ) {
+        setCastPickerShotNo(null);
+        setScenePickerShotNo(null);
+        setSbSourceMenuShotNo(null);
+        setSbPickerShotNo(null);
+        setVideoPickerShotNo(null);
+        closed = true;
+      }
+      if (editing?.col === '最终提示词') {
+        if (busyAction !== 'revise-final-prompt') {
+          closeFinalPromptEdit();
+          closed = true;
+        }
+      } else if (editing != null) {
+        setEditing(null);
+        closed = true;
+      }
+      return closed;
+    };
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // 卡拉OK CSS 全屏预览：交给 KaraokeSubtitleEditor 自己处理
+      if (document.querySelector('[data-nexflow-karaoke-preview-fs="1"]')) return;
+
+      const closedOverlay = dismissDirectorOverlays();
+      if (closedOverlay) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+
+      if (!isNodeFullscreen) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       setIsNodeFullscreen(false);
     };
-    // capture：先于 Workspace 的 Esc「确认退出应用」，避免全屏时被抢走
+
+    // capture：先于 Workspace「确认退出应用」，并优先关掉导演遮罩
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [isNodeFullscreen]);
+  }, [
+    isNodeFullscreen,
+    promptHover,
+    imagePreview,
+    promptPreview,
+    libraryPick,
+    batchOpen,
+    videoPreview,
+    stylePromptEditId,
+    storyOutlineEditing,
+    castPickerShotNo,
+    scenePickerShotNo,
+    sbSourceMenuShotNo,
+    sbPickerShotNo,
+    videoPickerShotNo,
+    editing,
+    busyAction,
+    closeFinalPromptEdit,
+    closePromptPreviewModal,
+    cancelFinalPromptOpinionDictation,
+  ]);
+
+  // 切后台：仅 visibility hidden 时停听写；勿在 window.blur 取消（麦克风授权框会 blur）
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== 'hidden') return;
+      try {
+        window.dispatchEvent(new CustomEvent('nexflow-force-end-dictation'));
+        cancelFinalPromptOpinionDictation();
+        forceClearVoiceModalLock();
+        forceRemoveOrphanPanelDropdownPortals();
+      } catch {
+        /* ignore */
+      }
+    };
+    const onBlurUnlockChrome = () => {
+      try {
+        forceClearVoiceModalLock();
+        forceRemoveOrphanPanelDropdownPortals();
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener('blur', onBlurUnlockChrome);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('blur', onBlurUnlockChrome);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [cancelFinalPromptOpinionDictation]);
 
   useEffect(() => {
     setDirectorFullscreenNodeId(isNodeFullscreen ? id : null);
     return () => setDirectorFullscreenNodeId(null);
   }, [isNodeFullscreen, id]);
 
-  const pauseShotThumbVideos = useCallback(() => {
-    const root = nodeRef.current;
-    if (!root) return;
-    root.querySelectorAll('video').forEach((el) => {
+  // 切步骤时清掉悬停提示词大框，避免透明/高层 portal 残留挡住全屏点击
+  useEffect(() => {
+    setPromptHover(null);
+    setPromptPreview(null);
+    setImagePreview(null);
+    setLibraryPick(null);
+    setBatchOpen(false);
+    setCastPickerShotNo(null);
+    setScenePickerShotNo(null);
+    setSbSourceMenuShotNo(null);
+    setSbPickerShotNo(null);
+    try {
+      window.dispatchEvent(new CustomEvent('nexflow-force-end-dictation'));
+      cancelFinalPromptOpinionDictation();
+      forceClearVoiceModalLock();
+      forceRemoveOrphanPanelDropdownPortals();
+    } catch {
+      /* ignore */
+    }
+  }, [state.phase, cancelFinalPromptOpinionDictation]);
+
+  const pauseShotThumbVideos = useCallback((keep?: HTMLVideoElement | null) => {
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('video[data-director-shot-video]').forEach((el) => {
       if (!(el instanceof HTMLVideoElement)) return;
-      if (el === videoPreviewElRef.current) return;
+      if (el === keep || el === videoPreviewElRef.current) return;
       try {
         el.pause();
       } catch {
@@ -1807,6 +3810,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     if (!isCanvasInteracting) return;
     pauseShotThumbVideos();
   }, [isCanvasInteracting, pauseShotThumbVideos]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.querySelectorAll('video[data-director-shot-video]').forEach((el) => {
+      if (!(el instanceof HTMLVideoElement)) return;
+      const shotNo = String(el.getAttribute('data-director-shot-no') || '');
+      const unmuted = !!shotVideoUnmuted[shotNo];
+      el.muted = !(videoHoverSoundOn || unmuted);
+    });
+  }, [videoHoverSoundOn, shotVideoUnmuted]);
 
   const closeVideoPreview = useCallback(() => {
     const v = videoPreviewElRef.current;
@@ -1927,6 +3940,30 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   /** 生图/分镜队列忙时仍允许单卡入队；仅 LLM/分析等硬忙才锁全局操作 */
   const isDirectorHardBusy =
     !!busyAction && busyAction !== 'images' && busyAction !== 'storyboards';
+  /**
+   * 故事工具栏禁用只看 busyAction，不看 isGenerating。
+   * isGenerating 曾因取消/超时/顶栏字段不同步而卡在 true，导致模型与「生成故事」永久灰掉。
+   */
+  const isStoryToolbarBusy = !!busyAction;
+  /** 无 busyAction 却仍 isGenerating：视为卡死，自动解开 */
+  const clearStuckDirectorGenerating = useCallback(() => {
+    const cur = directorStateRef.current;
+    const topStuck = !!(dataRef.current as DirectorNodeData | undefined)?.isGenerating;
+    if (!cur.isGenerating && !topStuck) return;
+    patch({ ...cur, isGenerating: false, error: cur.error || '' });
+  }, [patch]);
+
+  useEffect(() => {
+    if (busyAction) return;
+    const stuck =
+      !!state.isGenerating || !!(data as DirectorNodeData | undefined)?.isGenerating;
+    if (!stuck) return;
+    const t = window.setTimeout(() => {
+      clearStuckDirectorGenerating();
+    }, 1500);
+    return () => window.clearTimeout(t);
+  }, [busyAction, clearStuckDirectorGenerating, data, state.isGenerating]);
+
   const titleCls = isDarkMode ? 'text-white/90' : 'text-gray-950';
   const mutedCls = isDarkMode ? 'text-white/45' : 'text-gray-800/70';
   const bodyCls = isDarkMode ? 'text-white/80' : 'text-gray-950';
@@ -1939,13 +3976,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const linkCls = isDarkMode ? 'text-sky-300 hover:underline' : 'text-gray-800 hover:underline font-medium';
   const tableHeadBg = isDarkMode ? 'bg-zinc-950/95' : 'bg-gray-200/95';
   const rowHover = isDarkMode ? 'hover:bg-white/[0.03]' : 'hover:bg-gray-200/70';
+  const shotRowUnseenHighlightCls = isDarkMode
+    ? 'bg-sky-500/[0.07] hover:bg-sky-500/[0.11] shadow-[inset_3px_0_0_0_rgb(56,189,248)]'
+    : 'bg-sky-50 hover:bg-sky-100/80 shadow-[inset_3px_0_0_0_rgb(14,165,233)]';
   const cellBorder = isDarkMode ? 'border-white/18' : 'border-black/12';
   const accentSpin = isDarkMode ? 'text-sky-300' : 'text-gray-700';
   const fsChrome = Math.max(11, Math.round(fontSizePx * 0.72));
   const fsBody = fontSizePx;
   const fsSmall = Math.max(11, Math.round(fontSizePx * 0.78));
 
-  /** 炫彩模式：按钮仍用 Looks Scratch；明亮模块底色已改为浅灰（见 index.css） */
+  /** 命令模式按钮 Scratch 色；MV 壳已强制深色（见 isDarkMode 覆写 / index.css） */
   const DIRECTOR_MODULE_SCRATCH: ScratchColorId = 'looks';
   const btnPrimary = (extra = '', _scratch?: ScratchColorId) =>
     assetLibBtnPrimary(isDarkMode, extra, DIRECTOR_MODULE_SCRATCH);
@@ -1966,19 +4006,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const imageGenYuanbao = useCallback(
     (quantity = 1): number | null => {
-      try {
-        return getImageDisplayPrice(
-          {
-            model: state.imageModel || DEFAULT_IMAGE_MODEL,
-            resolution: normalizeDirectorImageResolution(state.imageResolution),
-            quantity: Math.max(1, quantity),
-          },
-          cloudMap,
-        );
-      } catch (e) {
-        if (isModelNotPricedError(e)) return null;
-        return null;
-      }
+      return getImageDisplayPrice(
+        {
+          model: state.imageModel || DEFAULT_IMAGE_MODEL,
+          resolution: normalizeDirectorImageResolution(state.imageResolution),
+          quantity: Math.max(1, quantity),
+        },
+        cloudMap,
+      );
     },
     [cloudMap, state.imageModel, state.imageResolution],
   );
@@ -2001,6 +4036,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     (opts: {
       preferLipsync?: boolean;
       durationSec?: number;
+      model?: string;
     }): {
       yuanbao: number;
       label: string;
@@ -2010,30 +4046,39 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       clarity: string;
     } | null => {
       try {
-        const model = opts.preferLipsync
-          ? normalizeDirectorVideoLipsyncModel(state.videoBatchLipsyncModel)
-          : normalizeDirectorVideoBatchModel(state.videoBatchModel);
+        const modelOverride = String(opts.model || '').trim();
+        const model = modelOverride
+          ? isDirectorLipsyncModel(modelOverride)
+            ? normalizeDirectorVideoLipsyncModel(modelOverride)
+            : normalizeDirectorVideoBatchModel(modelOverride)
+          : DIRECTOR_MV_FORCE_H3_LIPSYNC && isMvMode
+            ? resolveDirectorMvLipsyncModel(state.videoBatchLipsyncModel)
+            : opts.preferLipsync
+              ? isMvMode
+                ? resolveDirectorMvLipsyncModel(state.videoBatchLipsyncModel)
+                : normalizeDirectorVideoLipsyncModel(state.videoBatchLipsyncModel)
+              : normalizeDirectorVideoBatchModel(state.videoBatchModel);
         const clipSec =
           opts.durationSec && opts.durationSec > 0 ? opts.durationSec : 10;
         // 对口型成片时长跟歌曲片段；展示用真实片段秒数，不计费档位秒数
-        const duration = opts.preferLipsync
+        const duration = isDirectorLipsyncModel(model)
           ? String(Math.max(1, Math.round(clipSec)))
           : pickNearestDirectorVideoBatchDuration(model, clipSec);
         const resolution = normalizeDirectorVideoBatchResolution(
           model,
-          opts.preferLipsync
+          isDirectorLipsyncModel(model)
             ? state.videoBatchLipsyncResolution
             : state.videoBatchResolution,
         );
         const params = buildDirectorVideoPriceParams({
           model,
-          duration: opts.preferLipsync
+          duration: isDirectorLipsyncModel(model)
             ? pickNearestDirectorVideoBatchDuration(model, clipSec)
             : duration,
           resolution,
         });
         const y = getVideoDisplayPrice(params, cloudMap);
-        if (!Number.isFinite(y) || y <= 0) return null;
+        if (y == null || !Number.isFinite(y) || y <= 0) return null;
         const modelLabel = directorVideoBatchModelLabel(model);
         const clarity = getDirectorVideoBatchResolutionDisplay(model, resolution);
         const cost = locale === 'en' ? `${y} ${tt.creditsSuffix}` : `${y}${tt.creditsSuffix}`;
@@ -2062,46 +4107,82 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     return DIRECTOR_CHAT_MODEL_DEFAULT;
   }, [state.chatModel]);
 
-  const chatRunYuanbao = useMemo(() => {
+  const chatRunYuanbao = useMemo((): number | null => {
     try {
       const y = getLlmChatDisplayPrice(cloudMap, 1, chatModelForPrice);
-      return Number.isFinite(y) && y > 0 ? y : 1;
+      return Number.isFinite(y) && y > 0 ? y : null;
     } catch {
-      return 1;
+      return null;
     }
   }, [cloudMap, chatModelForPrice]);
 
   /** 云端 fun-asr 文件转写按次价（与 FC /asr/file-transcribe 扣费对齐） */
-  const fileTranscribeYuanbao = useMemo(() => {
+  const fileTranscribeYuanbao = useMemo((): number | null => {
     try {
       const y = getFileTranscribeDisplayPrice(cloudMap, 1);
-      return Number.isFinite(y) && y > 0 ? y : 5;
+      return Number.isFinite(y) && y > 0 ? y : null;
     } catch {
-      return 5;
+      return null;
     }
   }, [cloudMap]);
 
-  /** 歌曲分析：LLM 风格分析 + 云端转写（展示与实扣合计） */
-  const musicAnalyzeYuanbao = useMemo(
-    () => chatRunYuanbao + fileTranscribeYuanbao,
-    [chatRunYuanbao, fileTranscribeYuanbao],
-  );
+  /** 歌曲分析：LLM 风格分析 + 云端转写（展示与实扣合计）；任一侧无 OTS 价则为 null */
+  const musicAnalyzeYuanbao = useMemo(() => {
+    if (chatRunYuanbao == null || fileTranscribeYuanbao == null) return null;
+    return chatRunYuanbao + fileTranscribeYuanbao;
+  }, [chatRunYuanbao, fileTranscribeYuanbao]);
 
   const formatChatYuanbaoLabel = useCallback(() => {
+    if (chatRunYuanbao == null) return null;
     return locale === 'en' ? `${chatRunYuanbao} ${tt.creditsSuffix}` : `${chatRunYuanbao}${tt.creditsSuffix}`;
   }, [chatRunYuanbao, locale, tt.creditsSuffix]);
 
   const formatMusicAnalyzeYuanbaoLabel = useCallback(() => {
+    if (musicAnalyzeYuanbao == null) return null;
     return locale === 'en'
       ? `${musicAnalyzeYuanbao} ${tt.creditsSuffix}`
       : `${musicAnalyzeYuanbao}${tt.creditsSuffix}`;
   }, [locale, musicAnalyzeYuanbao, tt.creditsSuffix]);
 
   const formatFileTranscribeYuanbaoLabel = useCallback(() => {
+    if (fileTranscribeYuanbao == null) return null;
     return locale === 'en'
       ? `${fileTranscribeYuanbao} ${tt.creditsSuffix}`
       : `${fileTranscribeYuanbao}${tt.creditsSuffix}`;
   }, [fileTranscribeYuanbao, locale, tt.creditsSuffix]);
+
+  /** 云端转写「请先登录」：查余额 → 够则确认跳登录，不足则充值提示 */
+  const promptAsrAuthOrBalance = useCallback(
+    async (err: unknown) => {
+      const gate = await resolveCloudAuthErrorWithBalance(err, {
+        requiredYuanbao: fileTranscribeYuanbao ?? undefined,
+      });
+      if (gate.action === 'need-login') {
+        const msg = gate.balanceEnough ? tt.asrNeedLoginBalanceOk : tt.asrNeedLogin;
+        const ok = await showConfirm(msg, { okLabel: tt.goLogin });
+        if (ok) {
+          void window.electronAPI?.setFullscreen?.(false);
+          navigate('/settings', { replace: true });
+        }
+        return true;
+      }
+      if (gate.action === 'insufficient') {
+        showAlert(tt.asrBalanceInsufficient || CLOUD_BALANCE_INSUFFICIENT_ALERT);
+        return true;
+      }
+      return false;
+    },
+    [
+      fileTranscribeYuanbao,
+      navigate,
+      showAlert,
+      showConfirm,
+      tt.asrBalanceInsufficient,
+      tt.asrNeedLogin,
+      tt.asrNeedLoginBalanceOk,
+      tt.goLogin,
+    ],
+  );
 
   const yuanbaoHoverTipCls =
     'pointer-events-none absolute left-1/2 z-[80] -translate-x-1/2 bottom-[calc(100%+6px)] whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium tabular-nums shadow-md bg-[#2a2218]/95 text-amber-200/95 border-amber-500/45';
@@ -2199,13 +4280,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         range.startSec,
         range.endSec,
       );
-      const preferLipsync = resolveDirectorShotPreferLipsync(shot, sb, {
-        hasHumanVoice: hasVoice,
-        packText: packs[i]?.text || String(shot['对白旁白'] || ''),
-        audioStartSec: range.startSec,
-        songDurationSec: songDur,
-        closeUpFramingOn: state.mvCloseUpFraming !== false,
-      });
+      const preferLipsync = resolveDirectorMvForceLipsyncOn(
+        isMvMode,
+        resolveDirectorShotPreferLipsync(shot, sb, {
+          hasHumanVoice: hasVoice,
+          packText: packs[i]?.text || String(shot['对白旁白'] || ''),
+          audioStartSec: range.startSec,
+          songDurationSec: songDur,
+          closeUpFramingOn: state.mvCloseUpFraming !== false,
+        }),
+      );
       const priced = videoGenYuanbaoForShot({
         preferLipsync,
         durationSec: Number(range.durationSec) || parseDirectorShotDurationSec(shot['时长'], 5),
@@ -2243,6 +4327,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const renderChatYuanbaoHoverTip = (key: string) => {
     if (priceHoverKey !== key) return null;
     const label = formatChatYuanbaoLabel();
+    if (!label) {
+      return (
+        <span className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`} title={tt.otsPriceRequired}>
+          {tt.otsPriceRequired}
+        </span>
+      );
+    }
     return (
       <span className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`} title={tt.priceTooltip}>
         {label}
@@ -2255,23 +4346,26 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     lipsyncOn: boolean,
     priority: 'none' | 'normal' | 'climax' = 'normal',
     faceFarWarning = false,
-  ) => (
+  ) => {
+    const badgeCls = `nodrag shrink-0 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium ${
+      lipsyncOn
+        ? priority === 'climax'
+          ? isDarkMode
+            ? 'bg-orange-500/30 text-orange-100 ring-orange-400/60'
+            : 'bg-orange-100 text-orange-800 ring-orange-400'
+          : isDarkMode
+            ? 'bg-emerald-500/25 text-emerald-100 ring-emerald-400/50'
+            : 'bg-emerald-100 text-emerald-800 ring-emerald-400'
+        : isDarkMode
+          ? 'bg-white/[0.04] text-white/35 ring-white/10 hover:text-white/60'
+          : 'bg-gray-100 text-gray-400 ring-gray-200 hover:text-gray-600'
+    }`;
+    const badgeStyle = { fontSize: Math.max(10, fsChrome - 1) };
+    return (
     <button
       type="button"
-      className={`nodrag shrink-0 rounded-md px-1.5 py-0.5 ring-1 transition-colors whitespace-nowrap font-medium ${
-        lipsyncOn
-          ? priority === 'climax'
-            ? isDarkMode
-              ? 'bg-orange-500/30 text-orange-100 ring-orange-400/60'
-              : 'bg-orange-100 text-orange-800 ring-orange-400'
-            : isDarkMode
-              ? 'bg-emerald-500/25 text-emerald-100 ring-emerald-400/50'
-              : 'bg-emerald-100 text-emerald-800 ring-emerald-400'
-          : isDarkMode
-            ? 'bg-white/[0.04] text-white/35 ring-white/10 hover:text-white/60'
-            : 'bg-gray-100 text-gray-400 ring-gray-200 hover:text-gray-600'
-      }`}
-      style={{ fontSize: Math.max(10, fsChrome - 1) }}
+      className={`${badgeCls} transition-colors`}
+      style={badgeStyle}
       title={
         lipsyncOn
           ? priority === 'climax'
@@ -2283,10 +4377,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
       onClick={(e) => {
         e.stopPropagation();
+        void (async () => {
         const latest = directorStateRef.current;
         const nextOn = !lipsyncOn;
         if (nextOn && faceFarWarning) {
-          const ok = window.confirm(tt.lipsyncShotBadgeFarWarning);
+          const ok = await showConfirm(tt.lipsyncShotBadgeFarWarning, {
+            variant: 'primary',
+          });
           if (!ok) return;
         }
         let next = updateDirectorShotStoryboard(latest, shotNo, {
@@ -2297,22 +4394,53 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         );
         if (rowIndex >= 0) {
           const shot = next.shots[rowIndex];
-          const videoPrompt = composeDirectorShotVideoPrompt(shot, { lipsync: nextOn });
-          if (videoPrompt) {
-            next = {
+          const lipAction = String(shot['对口型动作'] || '').trim();
+          const applyLip = (text: string | undefined | null) => {
+            const raw = String(text || '').trim();
+            if (!raw) return '';
+            if (shouldAutoSyncDirectorFinalPrompt(raw)) {
+              return resolveDirectorShotVideoPromptForGen(
+                { ...shot, 最终提示词: raw },
+                { lipsync: nextOn },
+              );
+            }
+            return applyDirectorLipsyncToggleToFinalPrompt(raw, {
+              lipsync: nextOn,
+              lipsyncAction: lipAction,
+            });
+          };
+          const nextPrompt = applyLip(shot['最终提示词']);
+          const sbNow = getDirectorShotStoryboard(next, shotNo);
+          const nextOriginal = applyLip(sbNow.promptOriginal || shot['最终提示词']);
+          const nextOptimized = String(sbNow.promptOptimized || '').trim()
+            ? applyLip(sbNow.promptOptimized)
+            : '';
+          next = updateDirectorShotStoryboard(
+            {
               ...next,
               shots: next.shots.map((s, i) =>
-                i === rowIndex ? { ...s, 最终提示词: videoPrompt } : s,
+                i === rowIndex
+                  ? { ...s, 最终提示词: nextPrompt || s['最终提示词'] }
+                  : s,
               ),
-            };
-          }
+            },
+            shotNo,
+            {
+              ...(nextOriginal ? { promptOriginal: nextOriginal } : {}),
+              ...(nextOptimized
+                ? { promptOptimized: nextOptimized, promptOptimizedFrom: nextOriginal }
+                : {}),
+            },
+          );
         }
         patch(next);
+        })();
       }}
     >
       {tt.lipsyncToggleLabel}
     </button>
-  );
+    );
+  };
 
   const sectionScratch = (_kind: DirectorAssetKind): ScratchColorId => DIRECTOR_MODULE_SCRATCH;
 
@@ -2330,9 +4458,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     variant?: 'chip' | 'plain';
     menuPlacement?: 'auto' | 'up' | 'down';
   }) => {
-    const disabled =
-      opts?.disabled ??
-      !!(busyAction || state.isGenerating || data?.isGenerating || isDirectorHardBusy);
+    const disabled = opts?.disabled ?? isDirectorHardBusy;
     const variant = opts?.variant ?? 'chip';
     const dropdown = (
       <div
@@ -2343,12 +4469,21 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         <PanelOptionDropdown
           value={chatModelForPrice}
           options={DIRECTOR_CHAT_MODEL_OPTIONS}
-          onChange={(v) =>
+          onChange={(v) => {
             patch({
               ...directorStateRef.current,
               chatModel: v,
-            })
-          }
+            });
+            const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+            if (domain) {
+              dataRef.current?.onUpdate?.({
+                directorDomain: createEmptyDramaSession({
+                  ...domain,
+                  meta: { ...domain.meta, chatModel: v },
+                }),
+              });
+            }
+          }}
           isDarkMode={isDarkMode}
           title={tt.chatModelLabel}
           minWidthPx={128}
@@ -2587,7 +4722,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   };
 
   const videoBatchModel = normalizeDirectorVideoBatchModel(state.videoBatchModel);
-  const videoBatchLipsyncModel = normalizeDirectorVideoLipsyncModel(state.videoBatchLipsyncModel);
+  const videoBatchLipsyncModel = isMvMode
+    ? resolveDirectorMvLipsyncModel(state.videoBatchLipsyncModel)
+    : normalizeDirectorVideoLipsyncModel(state.videoBatchLipsyncModel);
   const videoBatchDuration = normalizeDirectorVideoBatchDuration(videoBatchModel, state.videoBatchDuration);
   const videoBatchAspectRatio = normalizeDirectorVideoBatchAspect(
     videoBatchModel,
@@ -2669,7 +4806,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             ))}
           </select>
         ) : (
-          <span className={isDarkMode ? 'text-white/45' : 'text-gray-500'} style={{ fontSize: fsSmall }}>
+          <span
+            className={isDarkMode ? 'text-white/45' : 'text-gray-500'}
+            style={{ fontSize: fsSmall }}
+          >
             —
           </span>
         )}
@@ -2815,7 +4955,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         closeUpFramingOn: closeUpOn,
       });
       const lipsyncOn =
-        typeof sb?.preferLipsync === 'boolean' ? sb.preferLipsync : evalLs.recommend;
+        resolveDirectorMvForceLipsyncOn(
+          isMvMode,
+          typeof sb?.preferLipsync === 'boolean' ? sb.preferLipsync : evalLs.recommend,
+        );
       return {
         hasVoice,
         lipsyncOn,
@@ -2825,6 +4968,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       };
     },
     [
+      isMvMode,
       lyricPacksForShots,
       state.mvCloseUpFraming,
       state.mvMusic?.durationSec,
@@ -2877,6 +5021,58 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         >
           {tt.closeUpFramingSwitchLabel}
         </button>
+      </div>
+    );
+  };
+
+  /** 镜头变化三档（剧本/成片提示词动作时轴密度） */
+  const renderShotChangePaceSelect = (opts?: { compact?: boolean }) => {
+    const compact = !!opts?.compact;
+    const activePace = (state.mvMusic?.shotChangePace || 'normal') as 'fast' | 'normal' | 'slow';
+    return (
+      <div
+        className="nodrag nopan inline-flex items-center gap-1.5 flex-wrap select-none shrink-0"
+        onPointerDown={(e) => e.stopPropagation()}
+        title={tt.shotChangePaceHint}
+      >
+        <span className={`shrink-0 ${mutedCls}`} style={{ fontSize: fsChrome }}>
+          {tt.shotChangePaceLabel}
+        </span>
+        {(
+          [
+            { id: 'fast' as const, label: tt.shotChangePaceFast },
+            { id: 'normal' as const, label: tt.shotChangePaceNormal },
+            { id: 'slow' as const, label: tt.shotChangePaceSlow },
+          ] as const
+        ).map((opt) => {
+          const on = activePace === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              className={`nodrag rounded-full font-medium transition-colors ${
+                compact ? 'px-2.5 py-0.5' : 'px-3 py-1'
+              } ${
+                on
+                  ? 'bg-sky-500 text-white'
+                  : isDarkMode
+                    ? 'bg-white/8 text-white/65 hover:bg-white/12'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200/80'
+              }`}
+              style={{ fontSize: fsChrome }}
+              disabled={!!busyAction}
+              onClick={(e) => {
+                e.stopPropagation();
+                const next = patchDirectorMvMusic(directorStateRef.current, {
+                  shotChangePace: opt.id,
+                });
+                patch({ ...next, error: '' });
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
       </div>
     );
   };
@@ -3302,17 +5498,54 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     }, wasFullscreen ? 80 : 0);
   };
 
-  const renderPreviewToSpliceButton = (opts?: { fontSize?: number }) => {
-    const canPreviewStills = storyboardsProg.ready > 0;
+  const handleVideosToSpliceClick = () => {
+    if (isDramaMode) {
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      if (domain?.shots?.length) {
+        patch(projectDramaSessionToPipeline(domain, directorStateRef.current));
+      }
+    }
+    const wasFullscreen = isNodeFullscreen;
+    if (wasFullscreen) setIsNodeFullscreen(false);
+    // 退出全屏后再入轨，便于画布用一键归位动画对准右侧剪辑模块（与分镜步同套 UX）
+    window.setTimeout(() => {
+      data?.onVideosToSplice?.();
+    }, wasFullscreen ? 120 : 0);
+  };
+
+  /** 分镜步 / 第 7 步「剪辑预览」共用橙色 pill（见 darkModalShell） */
+  const previewToSpliceBtnClass = nexflowOrangePillBtnClass;
+  const previewToSpliceBtnBg = nexflowOrangePillBtnBg;
+
+  const renderPreviewToSpliceButton = (opts?: {
+    fontSize?: number;
+    /** stills=分镜图入轨；videos=第 7 步成片入轨 */
+    mode?: 'stills' | 'videos';
+    hasReadyVideos?: boolean;
+  }) => {
+    const mode = opts?.mode ?? 'stills';
     const fs = opts?.fontSize ?? fsChrome;
+    if (mode === 'videos') {
+      const ready = !!opts?.hasReadyVideos;
+      return (
+        <button
+          type="button"
+          className={previewToSpliceBtnClass}
+          style={{ fontSize: fs, background: previewToSpliceBtnBg }}
+          disabled={!ready || isDirectorHardBusy}
+          title={ready ? tt.previewVideosHint : tt.previewVideosToSplice}
+          onClick={handleVideosToSpliceClick}
+        >
+          {tt.previewVideosToSplice}
+        </button>
+      );
+    }
+    const canPreviewStills = storyboardsProg.ready > 0;
     return (
       <button
         type="button"
-        className="nodrag inline-flex items-center justify-center gap-1 rounded-full border-0 !px-2.5 !py-1 !h-auto font-medium text-white shadow-[0_6px_18px_rgba(249,115,22,0.45)] transition-[filter,opacity] hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed"
-        style={{
-          fontSize: fs,
-          background: 'linear-gradient(to right, #ea580c, #f97316)',
-        }}
+        className={previewToSpliceBtnClass}
+        style={{ fontSize: fs, background: previewToSpliceBtnBg }}
         disabled={!canPreviewStills || isDirectorHardBusy}
         title={canPreviewStills ? tt.previewToSplice : tt.previewHint}
         onClick={handlePreviewToSplice}
@@ -3325,8 +5558,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const renderMvShotsConfirmSummary = () => {
     if (!isMvMode || state.phase !== 'shots') return null;
     return (
+      <div className="relative z-[50] overflow-visible shrink-0 flex flex-col gap-1.5">
+        {renderScriptStaleBanner()}
       <div
-        className={`relative z-[50] overflow-visible shrink-0 rounded-lg border px-2.5 py-2 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5 ${
+        className={`overflow-visible rounded-lg border px-2.5 py-2 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5 ${
           isDarkMode ? 'border-white/10 bg-white/[0.04]' : 'border-gray-200 bg-gray-100'
         }`}
         style={{ fontSize: fsChrome }}
@@ -3439,6 +5674,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             {tt.oneClickGenerateStoryboards}
           </button>
         </span>
+      </div>
       </div>
     );
   };
@@ -3638,17 +5874,20 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     includeGenerateBar?: boolean;
     className?: string;
     tableScrollClass?: string;
+    /** 短剧「剧本解析」步也可预览分析结果表 */
+    forceShow?: boolean;
   }) => {
-    if (state.phase !== 'shots') return null;
+    if (!opts?.forceShow && state.phase !== 'shots') return null;
     const includeGenerateBar = opts?.includeGenerateBar !== false;
     const wrapCls = opts?.className || 'flex flex-col flex-1 min-h-0 gap-1';
     const tableWrapCls =
       opts?.tableScrollClass ||
       'nowheel flex-1 min-h-0 overflow-auto custom-scrollbar-dark';
-    const shotTableColSpan = isMvMode ? 9 : SHOT_COLS.length;
+    const activeShotCols = isWizardMode ? null : isDramaMode ? DRAMA_SHOT_COLS : SHOT_COLS;
+    const shotTableColSpan = isWizardMode ? 9 : activeShotCols!.length;
     return (
       <div className={wrapCls}>
-            {isMvMode ? renderMvShotsConfirmSummary() : null}
+            {isWizardMode ? renderMvShotsConfirmSummary() : null}
         <DirectorShotTableVirtual
           ref={shotTableVirtualRef}
           count={state.shots.length}
@@ -3658,9 +5897,31 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         >
           {({ virtualItems, paddingTop, paddingBottom, measureElement }) => (
               <table className="w-full table-fixed border-collapse" style={{ fontSize: fsSmall }}>
-                <thead className={`sticky top-0 z-10 backdrop-blur-sm ${tableHeadBg}`}>
+                <thead className={`sticky top-0 z-10 ${tableHeadBg}`}>
+                  {isDramaMode && !isWizardMode ? (
+                    <tr className={`border-b ${cellBorder} ${mutedCls}`}>
+                      <th
+                        colSpan={DRAMA_LAYER_COLSPAN.scene}
+                        className="px-1.5 py-1 text-center font-semibold tracking-wide"
+                      >
+                        {tt.layerScene}
+                      </th>
+                      <th
+                        colSpan={DRAMA_LAYER_COLSPAN.shot}
+                        className="px-1.5 py-1 text-center font-semibold tracking-wide"
+                      >
+                        {tt.layerShot}
+                      </th>
+                      <th
+                        colSpan={DRAMA_LAYER_COLSPAN.prod}
+                        className="px-1.5 py-1 text-center font-semibold tracking-wide"
+                      >
+                        {tt.layerProd}
+                      </th>
+                    </tr>
+                  ) : null}
                   <tr className={`border-b ${cellBorder} ${mutedCls}`}>
-                    {(isMvMode
+                    {(isWizardMode
                       ? ([
                           { key: '镜号', width: '72px' },
                           { key: '时长', width: '44px' },
@@ -3672,7 +5933,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           { key: '__actions__', width: '96px' },
                           { key: '__sb__', width: '168px' },
                         ] as const)
-                      : SHOT_COLS
+                      : activeShotCols!
                     ).map((c) => (
                       <th
                         key={c.key}
@@ -3704,7 +5965,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     if (!shot) return null;
                     const shotNo = String(shot['镜号'] || rowIndex + 1);
                     const orderedRefs = orderedAssetsWithImages;
-                    const boundIdx = isMvMode
+                    const boundIdx = isWizardMode
                       ? getShotBoundRefIndices(shot, orderedRefs, rowIndex)
                       : [];
                     const sceneAsset = orderedRefs.find(
@@ -3715,11 +5976,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                       .filter((a) => a?.kind === 'character');
                     const sceneNames = String(sceneAsset?.name || '').trim();
                     const sceneUrl = String(sceneAsset?.imageUrl || '').trim();
-                    const sb = isMvMode ? getDirectorShotStoryboard(state, shotNo) : null;
+                    const sb = isWizardMode ? getDirectorShotStoryboard(state, shotNo) : null;
                     const sbUrl = String(sb?.imageUrl || '').trim();
+                    const sbVersions = listDirectorShotStoryboardImages(sb);
                     const sbGenerating =
                       !!sb &&
                       (sb.status === 'generating' || sbGenInFlightRef.current.has(shotNo));
+                    const rowUnseen = isShotRowUnseen(sb);
                     const finalVal = resolveShotFinalPrompt(shot);
                     const audioRange = shotMusicRanges[rowIndex] || {
                       startSec: 0,
@@ -3766,6 +6029,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                       }
                                       setCastPickerShotNo(null);
                                       setSbSourceMenuShotNo(null);
+                                      setSbPickerShotNo(null);
                                       setScenePickerShotNo(shotNo);
                                     }}
                                     onPointerDown={(e) => e.stopPropagation()}
@@ -3808,6 +6072,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                     if (!availableScenes.length) return;
                                     setCastPickerShotNo(null);
                                     setSbSourceMenuShotNo(null);
+                                    setSbPickerShotNo(null);
                                     setScenePickerShotNo(pickerOpen ? null : shotNo);
                                   }}
                                   onPointerDown={(e) => e.stopPropagation()}
@@ -3980,6 +6245,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                         }
                                         setScenePickerShotNo(null);
                                         setSbSourceMenuShotNo(null);
+                                        setSbPickerShotNo(null);
                                         setCastPickerShotNo(shotNo);
                                       }}
                                       onPointerDown={(e) => e.stopPropagation()}
@@ -4027,6 +6293,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                   if (!availableCast.length) return;
                                   setScenePickerShotNo(null);
                                   setSbSourceMenuShotNo(null);
+                                  setSbPickerShotNo(null);
                                   setCastPickerShotNo(pickerOpen ? null : shotNo);
                                 }}
                                 onPointerDown={(e) => e.stopPropagation()}
@@ -4216,14 +6483,22 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     };
                     const renderShotCell = (key: DirectorShotColumnKey) => {
                       const isFinal = key === '最终提示词';
-                      const isDesc = key === '画面描述';
+                      const isWideText =
+                        key === '画面描述' ||
+                        key === '对白旁白' ||
+                        key === '地点' ||
+                        key === '出场人物' ||
+                        key === '制作备注' ||
+                        key === '连贯性' ||
+                        key === '参考图绑定' ||
+                        key === '光影氛围';
                       const val = isFinal ? finalVal : shot[key] || '';
                       const isEdit = editing?.row === rowIndex && editing?.col === key;
                       return (
                         <td
                           key={key}
                           className={`px-1.5 py-1.5 border-t ${cellBorder} ${
-                            isDesc ? 'align-middle text-left' : 'align-top'
+                            isWideText ? 'align-middle text-left' : 'align-top'
                           }`}
                         >
                           {isFinal ? (
@@ -4231,7 +6506,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               <button
                                 type="button"
                                 className={`director-keep-visible nodrag ${linkCls}`}
-                                onClick={() => setPromptPreview(val)}
+                                onClick={() => {
+                                  setPromptPreviewShotNo(null);
+                                  setPromptPreview(val);
+                                }}
                               >
                                 {tt.viewPrompt}
                               </button>
@@ -4259,7 +6537,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           ) : (
                             <div
                               className={`nodrag cursor-text whitespace-pre-wrap break-words min-h-[18px] ${bodyCls} ${
-                                isDesc ? 'text-left line-clamp-4' : 'line-clamp-6'
+                                isWideText ? 'text-left line-clamp-4' : 'line-clamp-6'
                               }`}
                               onClick={() => {
                                 setEditingAudioRow(null);
@@ -4282,7 +6560,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         </td>
                       );
                     };
-                    if (!isMvMode) {
+                    if (!isWizardMode) {
                       return (
                         <tr
                           key={rowIndex}
@@ -4290,7 +6568,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           data-index={rowIndex}
                           className={rowHover}
                         >
-                          {SHOT_COLS.map((c) => renderShotCell(c.key))}
+                          {(isDramaMode ? DRAMA_SHOT_COLS : SHOT_COLS).map((c) =>
+                            renderShotCell(c.key),
+                          )}
                         </tr>
                       );
                     }
@@ -4301,11 +6581,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         data-index={rowIndex}
                         data-director-shot-row="1"
                         data-shot-row-index={rowIndex}
-                        className={`${rowHover} border-b ${cellBorder} ${
+                        className={`${rowUnseen ? shotRowUnseenHighlightCls : rowHover} border-b ${cellBorder} ${
                           shotFocusRowIndex === rowIndex
-                            ? isDarkMode
-                              ? 'ring-1 ring-inset ring-sky-400/50 bg-sky-500/10'
-                              : 'ring-1 ring-inset ring-sky-400/40 bg-sky-50'
+                            ? rowUnseen
+                              ? isDarkMode
+                                ? 'ring-sky-400/60'
+                                : 'ring-sky-500/50'
+                              : isDarkMode
+                                ? 'ring-1 ring-inset ring-sky-400/50 bg-sky-500/10'
+                                : 'ring-1 ring-inset ring-sky-400/40 bg-sky-50'
                             : ''
                         } ${
                           shotDragFromIndex === rowIndex
@@ -4320,12 +6604,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             ? 'cursor-grabbing'
                             : ''
                         }`}
-                        style={DIRECTOR_MV_TABLE_ROW_CV}
+                        style={isNodeFullscreen ? DIRECTOR_MV_TABLE_ROW_CV : undefined}
                         onPointerDown={(e) => onShotRowPointerDown(rowIndex, e)}
                         onPointerMove={(e) => onShotRowPointerMove(rowIndex, e)}
                         onPointerUp={(e) => onShotRowPointerUp(rowIndex, e)}
                         onPointerCancel={() => onShotRowPointerCancel(rowIndex)}
+                        {...bindShotRowUnseenAck(shotNo, rowUnseen)}
                         onClickCapture={(e) => {
+                          if (rowUnseen) acknowledgeShotRowUnseen(shotNo);
                           if (!shotRowSuppressClickRef.current) return;
                           e.preventDefault();
                           e.stopPropagation();
@@ -4335,8 +6621,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         <td
                           className={`px-1 py-2 align-middle text-center border-t ${cellBorder}`}
                         >
-                          <div className="flex items-center justify-center gap-0.5 min-w-0">
-                            {shotRowArmedIndex === rowIndex || shotDragFromIndex === rowIndex ? (
+                          {renderShotNoCellContent(
+                            shotNo,
+                            rowIndex,
+                            shotRowArmedIndex === rowIndex || shotDragFromIndex === rowIndex ? (
                               <button
                                 type="button"
                                 className={`nodrag inline-flex items-center justify-center rounded p-0.5 shrink-0 ${
@@ -4357,17 +6645,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
-                            ) : null}
-                            <span
-                              className={`inline-flex h-7 w-7 items-center justify-center rounded-full ring-1 tabular-nums text-[11px] font-medium shrink-0 ${
-                                isDarkMode
-                                  ? 'ring-white/25 text-white/85'
-                                  : 'ring-gray-300 text-gray-800'
-                              }`}
-                            >
-                              {String(shotNo).padStart(2, '0')}
-                            </span>
-                          </div>
+                            ) : null,
+                          )}
                         </td>
                         <td
                           className={`px-1 py-2 align-middle text-center tabular-nums border-t ${cellBorder} ${mutedCls}`}
@@ -4442,22 +6721,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         <td
                           className={`px-1.5 py-1.5 align-middle text-left border-t ${cellBorder}`}
                         >
-                          <div
-                            className={`nodrag cursor-text whitespace-pre-wrap break-words min-h-[18px] text-left line-clamp-4 ${bodyCls}`}
-                            title={finalVal || undefined}
-                            onDoubleClick={() => openFinalPromptEdit(rowIndex, finalVal)}
-                            onClick={() => {
-                              setEditingAudioRow(null);
-                              openFinalPromptEdit(rowIndex, finalVal);
-                            }}
-                            onPointerDown={(e) => e.stopPropagation()}
-                          >
-                            {finalVal ? (
-                              highlightDescription(finalVal, allAssets, isDarkMode)
-                            ) : (
-                              <span className={mutedCls}>{tt.pendingPrompt}</span>
-                            )}
-                          </div>
+                          {renderFinalPromptHoverCell({
+                            text: finalVal,
+                            editText: resolveShotFinalPrompt(shot),
+                            shotNo,
+                            rowIndex,
+                          })}
                         </td>
                         {renderMvNamedRefCell('scene', sceneUrl, sceneNames)}
                         {renderMvCastRefCell()}
@@ -4493,15 +6762,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           {(() => {
                             const actionFs = Math.max(10, fsChrome - 1);
                             const actionSecondaryCls = isDarkMode
-                              ? 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white/[0.06] text-white/75 ring-white/12 hover:bg-white/[0.1] hover:text-white/95 disabled:opacity-40'
-                              : 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-gray-100 text-gray-600 ring-gray-200 hover:bg-gray-200 hover:text-gray-800 disabled:opacity-40';
+                              ? 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white/[0.1] text-white/90 ring-white/20 hover:bg-white/[0.16] hover:text-white disabled:opacity-40'
+                              : 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white text-gray-800 ring-gray-300 hover:bg-sky-50 hover:text-sky-800 hover:ring-sky-300 disabled:opacity-40';
                             const rowIconCls = isDarkMode
                               ? 'nodrag inline-flex items-center justify-center rounded p-0.5 text-white/55 hover:bg-white/10 hover:text-white/90'
                               : 'nodrag inline-flex items-center justify-center rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900';
                             const sbGenLabel = sbUrl
                               ? tt.regenerateStoryboard
                               : tt.generateThisStoryboard;
-                            const sbGenDisabled = sbGenerating || !finalVal || isDirectorHardBusy;
+                            const sbGenDisabled = !finalVal || isDirectorHardBusy;
                             return (
                               <div className="flex flex-col items-stretch gap-1 min-w-0">
                                 <div className="flex items-center justify-center gap-0.5">
@@ -4602,11 +6871,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             );
                           })()}
                         </td>
-                        <td className={`p-1 align-middle border-t ${cellBorder}`}>
+                        <td className={`p-1 align-middle border-t overflow-visible ${cellBorder}`}>
                           <div
-                            className="relative w-full flex items-center justify-center"
+                            className="relative w-full flex items-center justify-center overflow-visible"
                             style={{ minHeight: SHOTS_CONFIRM_SB_THUMB_PX }}
                             data-director-picker-keep="sb"
+                            onMouseEnter={() => openSbVersionPicker(shotNo, sbVersions.length)}
+                            onMouseLeave={() => scheduleCloseSbVersionPicker(shotNo)}
                           >
                             {sbUrl ? (
                               <div
@@ -4620,16 +6891,34 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                   url={sbUrl}
                                   alt={`镜${shotNo}`}
                                   title={
-                                    finalVal
-                                      ? `${tt.viewPrompt}\n\n${finalVal}`
-                                      : `${tt.viewImage}: ${tt.colStoryboard} ${shotNo}`
+                                    sbVersions.length > 1
+                                      ? tt.storyboardPickVersion
+                                      : finalVal
+                                        ? `${tt.viewPrompt}\n\n${finalVal}`
+                                        : `${tt.viewImage}: ${tt.colStoryboard} ${shotNo}`
                                   }
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setImagePreview({ url: sbUrl, name: `镜${shotNo}` });
+                                    if (sbVersions.length > 1) {
+                                      openSbVersionPicker(shotNo, sbVersions.length);
+                                    } else {
+                                      setImagePreview({ url: sbUrl, name: `镜${shotNo}` });
+                                    }
                                   }}
                                   onPointerDown={(e) => e.stopPropagation()}
                                 />
+                                {sbVersions.length > 1 ? (
+                                  <span
+                                    className={`pointer-events-none absolute left-1 top-1 z-20 rounded px-1 font-medium tabular-nums ${
+                                      isDarkMode
+                                        ? 'bg-black/70 text-white/90'
+                                        : 'bg-gray-100/95 text-gray-700 shadow'
+                                    }`}
+                                    style={{ fontSize: 10 }}
+                                  >
+                                    {sbVersions.length}
+                                  </span>
+                                ) : null}
                                 <button
                                   type="button"
                                   className={`nodrag absolute top-1 right-1 z-30 rounded p-0.5 ${
@@ -4705,6 +6994,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                 <Plus className="w-4 h-4" strokeWidth={2} />
                               </div>
                             )}
+                            {sbUrl
+                              ? renderSbVersionPopover(shotNo, sbVersions, sbUrl)
+                              : null}
                           </div>
                           {sb?.status === 'error' && sb.error ? (
                             <div className="text-[10px] text-rose-400 mt-0.5 line-clamp-2">
@@ -4720,13 +7012,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               </table>
           )}
         </DirectorShotTableVirtual>
-            {isMvMode && state.shots.length > 0 ? (
+            {isWizardMode && state.shots.length > 0 ? (
               <div
                 className={`shrink-0 flex items-center gap-2 flex-wrap px-1 py-1.5 border-t ${cellBorder}`}
                 style={{ fontSize: fsSmall }}
               >
                 {(() => {
-                  const musicSec = Math.round(Number(state.mvMusic?.durationSec) || 0);
+                  const musicSec = isMvMode ? Math.round(Number(state.mvMusic?.durationSec) || 0) : 0;
                   const sumSec = sumDirectorShotsDurationSec(state.shots);
                   const matched = musicSec > 0 && Math.abs(sumSec - musicSec) <= 1;
                   return (
@@ -4773,7 +7065,6 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const renderLipsyncHint = () => {
     if (dialogueShotCount <= 0) return null;
-    const usingLipsync = isDirectorLipsyncModel(videoBatchModel);
     return (
       <div
         className={`flex items-center gap-2 flex-wrap justify-center w-full mb-1 px-2 py-1 rounded-md ${
@@ -4782,58 +7073,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         style={{ fontSize: fsSmall }}
       >
         <span>{fillDirectorI18n(tt.lipsyncRecommend, { n: dialogueShotCount })}</span>
-        {usingLipsync ? (
-          <button
-            type="button"
-            className={`nodrag ${btnSecondary('', 'sensing')}`}
-            style={{ fontSize: fsSmall }}
-            disabled={!!busyAction}
-            onClick={() => {
-              const prevRaw = String(directorStateRef.current.videoBatchModelBeforeLipsync || '').trim();
-              const next =
-                prevRaw && prevRaw !== DIRECTOR_VIDEO_LIPSYNC_MODEL
-                  ? normalizeDirectorVideoBatchModel(prevRaw)
-                  : 'ltx-2.3-i2v';
-              patchVideoBatch({
-                videoBatchModel: next,
-                videoBatchModelBeforeLipsync: '',
-                videoBatchDuration: normalizeDirectorVideoBatchDuration(
-                  next,
-                  directorStateRef.current.videoBatchDuration,
-                ),
-                videoBatchAspectRatio: normalizeDirectorVideoBatchAspect(
-                  next,
-                  directorStateRef.current.videoBatchAspectRatio,
-                ),
-                videoBatchResolution: normalizeDirectorVideoBatchResolution(
-                  next,
-                  directorStateRef.current.videoBatchResolution,
-                ),
-              });
-            }}
-          >
-            {tt.lipsyncRevert}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className={`nodrag ${btnPrimary('', 'motion')}`}
-            style={{ fontSize: fsSmall }}
-            disabled={!!busyAction}
-            onClick={() => {
-              patchVideoBatch({
-                videoBatchModelBeforeLipsync: videoBatchModel,
-                videoBatchModel: DIRECTOR_VIDEO_LIPSYNC_MODEL,
-                videoBatchLipsyncResolution: normalizeDirectorVideoBatchResolution(
-                  DIRECTOR_VIDEO_LIPSYNC_MODEL,
-                  directorStateRef.current.videoBatchLipsyncResolution || videoBatchLipsyncResolution,
-                ),
-              });
-            }}
-          >
-            {tt.lipsyncUse}
-          </button>
-        )}
+        <span className={isDarkMode ? 'text-amber-100/70' : 'text-amber-800/80'}>
+          {tt.videoBatchLipsyncModelLabel}
+        </span>
       </div>
     );
   };
@@ -4867,6 +7109,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       if (wasInFlight) {
         imageGenInFlightRef.current.delete(assetId);
       }
+      markImageGenProgress(assetId, false);
       if (opts?.advance !== false && (wasInFlight || wasQueued)) {
         void runNextImageGenRef.current?.();
         return;
@@ -4877,29 +7120,386 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         setBusyAction(null);
       }
     },
-    [],
+    [markImageGenProgress],
   );
+
+  /** 资产生图/上传结果回写短剧 Domain（人物/场景/道具/生物） */
+  const syncDomainAssetImage = useCallback(
+    (
+      assetId: string,
+      opts: {
+        imageUrl?: string;
+        status?: 'pending' | 'generating' | 'ready' | 'error';
+        error?: string;
+      },
+    ) => {
+      if (!isDramaMode) return;
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      const next = applyDramaSessionAssetImage(domain, assetId, opts);
+      if (!next) return;
+      dataRef.current?.onUpdate?.({ directorDomain: next });
+    },
+    [isDramaMode],
+  );
+
+  const syncDomainVoiceSample = useCallback(
+    (
+      voiceId: string,
+      opts: {
+        sampleUrl?: string;
+        model?: string;
+        status?: 'pending' | 'generating' | 'ready' | 'error';
+        error?: string;
+      },
+    ) => {
+      if (!isDramaMode) return;
+      const cur = dataRef.current;
+      const domain = (cur?.directorDomain as DramaDirectorSession | null) || null;
+      const next = applyDramaSessionVoiceSample(domain, voiceId, opts);
+      if (!next) return;
+      if (opts.status === 'ready' || opts.status === 'error' || opts.status === 'pending') {
+        markVoiceGenProgress(voiceId, false);
+      }
+      if (cur) dataRef.current = { ...cur, directorDomain: next };
+      dataRef.current?.onUpdate?.({ directorDomain: next });
+    },
+    [isDramaMode, markVoiceGenProgress],
+  );
+
+  /** 单条 / 一键：先立刻亮绿条，再一次性写回 Domain generating，避免并行整包互踩把进度冲掉 */
+  const startVoiceSampleGens = useCallback(
+    (voiceIds: string[]) => {
+      const wanted = [
+        ...new Set(voiceIds.map((x) => String(x || '').trim()).filter(Boolean)),
+      ].filter((id) => !voiceGenProgressIdsRef.current[id]);
+      if (!wanted.length) return;
+      for (const voiceId of wanted) markVoiceGenProgress(voiceId, true);
+      void (async () => {
+        let domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        if (!domain?.bible) {
+          for (const voiceId of wanted) markVoiceGenProgress(voiceId, false);
+          void showAlert(tt.generateFailed);
+          return;
+        }
+        domain = ensureVoiceSampleTexts(domain);
+        const voices = (domain.bible.voices || []).map((v) => {
+          if (!wanted.includes(v.voice_id)) return v;
+          let prompt = String(v.sample_text || '').trim();
+          const ch = domain!.bible.characters.find((c) => c.character_id === v.character_id);
+          if (!prompt) {
+            prompt = composeDramaVoiceSampleLine({
+              name: ch?.name,
+              age: ch?.age,
+              role: ch?.role,
+              identity: ch?.identity,
+              personality: ch?.personality,
+              gender: ch?.gender,
+              timbre: v.timbre,
+              voiceStyle: v.voiceStyle,
+              language_style: v.language_style,
+              emotion_range: v.emotion_range,
+            });
+          }
+          return { ...v, sample_text: prompt || v.sample_text };
+        });
+        domain = createEmptyDramaSession({
+          ...domain,
+          bible: { ...domain.bible, voices },
+        });
+        const toInvoke: Array<{ voiceId: string; text: string }> = [];
+        const generatingVoices = (domain.bible.voices || []).map((v) => {
+          if (!wanted.includes(v.voice_id)) return v;
+          const text = String(v.sample_text || '').trim();
+          if (!text) return v;
+          toInvoke.push({ voiceId: v.voice_id, text });
+          return {
+            ...v,
+            model: DOUBAO_SEED_AUDIO_MODEL_ID,
+            status: 'generating' as const,
+            error: undefined,
+          };
+        });
+        domain = createEmptyDramaSession({
+          ...domain,
+          bible: { ...domain.bible, voices: generatingVoices },
+        });
+        const skipped = wanted.filter((id) => !toInvoke.some((x) => x.voiceId === id));
+        for (const voiceId of skipped) markVoiceGenProgress(voiceId, false);
+        if (skipped.length && !toInvoke.length) {
+          void showAlert(
+            locale === 'en'
+              ? 'Add a sample dialogue line first'
+              : '请先填写试听台词（一段可念的短句）',
+          );
+          return;
+        }
+        if (!window.electronAPI?.invokeAI) {
+          for (const { voiceId } of toInvoke) markVoiceGenProgress(voiceId, false);
+          void showAlert(tt.generateFailed);
+          return;
+        }
+        const cur = dataRef.current;
+        if (cur) dataRef.current = { ...cur, directorDomain: domain };
+        dataRef.current?.onUpdate?.({ directorDomain: domain });
+        await Promise.all(
+          toInvoke.map(async ({ voiceId, text }) => {
+            const voice = domain!.bible.voices.find((v) => v.voice_id === voiceId);
+            try {
+              await window.electronAPI!.invokeAI({
+                modelId: 'audio',
+                nodeId: directorVoiceSampleNodeId(id, voiceId),
+                input: {
+                  model: DOUBAO_SEED_AUDIO_MODEL_ID,
+                  text,
+                  enable_base64_output: false,
+                  english_normalization: false,
+                  speechRate: 0,
+                  loudnessRate: 100,
+                  pitch: 0,
+                  doubaoFormat: 'mp3',
+                  doubaoSampleRate: '24000',
+                  projectId: data?.projectId || undefined,
+                  nodeTitle: `导演声音-${voice?.voice_id || voiceId}`,
+                },
+              });
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : tt.generateFailed;
+              syncDomainVoiceSample(voiceId, {
+                status: 'error',
+                error: msg,
+              });
+              void showAlert(
+                /超时|退回元宝/.test(msg)
+                  ? msg
+                  : locale === 'en'
+                    ? `Voice generation failed: ${msg}`
+                    : `声音生成失败：${msg}`,
+              );
+            }
+          }),
+        );
+      })();
+    },
+    [id, data?.projectId, locale, markVoiceGenProgress, showAlert, syncDomainVoiceSample, tt.generateFailed],
+  );
+
+  /** 试听音本地看门狗：略长于主进程 3 分钟，避免抢在退费 ERROR 前清掉 */
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const VOICE_GEN_TIMEOUT_MS = 3 * 60 * 1000 + 15_000;
+    const tick = () => {
+      const started = voiceGenStartedAtRef.current;
+      const now = Date.now();
+      const overdue = Object.keys(started).filter((vid) => now - (started[vid] || 0) >= VOICE_GEN_TIMEOUT_MS);
+      if (!overdue.length) return;
+      const failMsg =
+        locale === 'en'
+          ? 'Voice generation timed out (3 min). Credits refunded if charged.'
+          : '声音生成超时（3分钟未完成），已退回元宝';
+      for (const voiceId of overdue) {
+        syncDomainVoiceSample(voiceId, { status: 'error', error: failMsg });
+      }
+      void showAlert(failMsg);
+    };
+    const timer = window.setInterval(tick, 5000);
+    return () => window.clearInterval(timer);
+  }, [isDramaMode, locale, showAlert, syncDomainVoiceSample]);
+
+  /** 本镜音频本地看门狗：等待上限 3 分钟 */
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const SHOT_AUDIO_TIMEOUT_MS = 3 * 60 * 1000;
+    const tick = () => {
+      const started = shotAudioStartedAtRef.current;
+      const now = Date.now();
+      const overdue = Object.keys(started).filter(
+        (sid) => now - (started[sid] || 0) >= SHOT_AUDIO_TIMEOUT_MS,
+      );
+      if (!overdue.length) return;
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      if (!domain?.shots?.length) return;
+      const failMsg =
+        locale === 'en'
+          ? 'Shot audio timed out (3 min). Please retry.'
+          : '本镜音频生成超时（3分钟未完成），请重试';
+      let changed = false;
+      const shots = domain.shots.map((s) => {
+        if (!overdue.includes(s.shot_id) || String(s.audio_status || '') !== 'generating') {
+          return s;
+        }
+        changed = true;
+        delete shotAudioStartedAtRef.current[s.shot_id];
+        return { ...s, audio_status: 'error', audio_error: failMsg };
+      });
+      if (!changed) return;
+      dataRef.current?.onUpdate?.({
+        directorDomain: createEmptyDramaSession({ ...domain, shots }),
+      });
+      void showAlert(failMsg);
+    };
+    const timer = window.setInterval(tick, 5000);
+    return () => window.clearInterval(timer);
+  }, [isDramaMode, locale, showAlert]);
+
+  /** 重启/重进后仍卡在 generating 的试听音：清掉转圈（昨日未完成） */
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+    if (!domain?.bible?.voices?.length) return;
+    const active = voiceGenProgressIdsRef.current;
+    const stuck = (domain.bible.voices || []).filter(
+      (v) => v.status === 'generating' && !active[v.voice_id] && !String(v.sample_url || '').trim(),
+    );
+    if (!stuck.length) return;
+    let next = domain;
+    for (const v of stuck) {
+      const patched = applyDramaSessionVoiceSample(next, v.voice_id, {
+        status: 'error',
+        error:
+          locale === 'en'
+            ? 'Previous voice generation did not finish. Please retry.'
+            : '上次声音生成未完成（已超时或中断），请重新生成；失败任务通常会退回元宝',
+      });
+      if (patched) next = patched;
+    }
+    if (next === domain) return;
+    const cur = dataRef.current;
+    if (cur) dataRef.current = { ...cur, directorDomain: next };
+    dataRef.current?.onUpdate?.({ directorDomain: next });
+  }, [isDramaMode, locale]);
+
+  /** 重启/重进后仍卡在 generating 的本镜音频（只清一次，避免与 Domain 写回互撞） */
+  const shotAudioStuckClearedRef = useRef(false);
+  useEffect(() => {
+    if (!isDramaMode) return;
+    if (shotAudioStuckClearedRef.current) return;
+    const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+    if (!domain?.shots?.length) return;
+    const active = shotAudioStartedAtRef.current;
+    const stuck = domain.shots.filter(
+      (s) =>
+        String(s.audio_status || '') === 'generating' &&
+        !active[s.shot_id] &&
+        !String(s.audio_url || '').trim(),
+    );
+    if (!stuck.length) {
+      shotAudioStuckClearedRef.current = true;
+      return;
+    }
+    shotAudioStuckClearedRef.current = true;
+    const failMsg =
+      locale === 'en'
+        ? 'Previous shot audio did not finish. Please retry.'
+        : '上次本镜音频未完成（已超时或中断），请重新生成';
+    dataRef.current?.onUpdate?.({
+      directorDomain: createEmptyDramaSession({
+        ...domain,
+        shots: domain.shots.map((s) =>
+          stuck.some((x) => x.shot_id === s.shot_id)
+            ? { ...s, audio_status: 'error', audio_error: failMsg }
+            : s,
+        ),
+      }),
+    });
+  }, [isDramaMode, locale]);
+
+  // 补偿：pipeline 有图且 Domain 非生成中 → 回写；队列空时清孤儿 generating
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+    if (!domain?.bible) return;
+    const assets = flattenDirectorAssets(directorStateRef.current.assets);
+    const urlByAssetId: Record<string, string> = {};
+    for (const a of assets) {
+      const url = String(a.imageUrl || '').trim();
+      if (url) urlByAssetId[a.id] = url;
+    }
+    const queueBusy =
+      imageGenInFlightRef.current.size > 0 || imageGenQueueRef.current.length > 0;
+
+    if (queueBusy) {
+      // 生图进行中：pipeline 已有成图的 id 必须立刻回写 Domain（否则任务列表完成、卡片一直「等待」）
+      let next = domain;
+      let changed = false;
+      for (const [assetId, url] of Object.entries(urlByAssetId)) {
+        const id = String(assetId || '').trim();
+        if (!id || !url) continue;
+        const ch = next.bible.characters.find((c) => c.character_id === id);
+        const sc = next.bible.scenes.find((s) => s.scene_id === id);
+        const pr = next.bible.props.find((p) => p.prop_id === id);
+        const cr = next.bible.creatures.find((c) => c.creature_id === id);
+        const target = ch || sc || pr || cr;
+        if (!target) continue;
+        const own = String((target as { imageUrl?: string }).imageUrl || '').trim();
+        const st = String((target as { status?: string }).status || '').trim();
+        if (own === url && st === 'ready') continue;
+        const patched = applyDramaSessionAssetImage(next, id, {
+          imageUrl: url,
+          status: 'ready',
+        });
+        if (patched) {
+          next = patched;
+          changed = true;
+          markImageGenProgress(id, false);
+        }
+      }
+      if (changed) dataRef.current?.onUpdate?.({ directorDomain: next });
+      return;
+    }
+
+    // 声音生成不走 image queue：正在 generating 的 voice 必须列入 preserve，
+    // 否则对账会立刻把进度条清成 ready/pending。
+    // imageGenProgressIds：入队前的即时绿条窗口，也必须 preserve。
+    const preserveGenerating = new Set<string>([
+      ...imageGenInFlightRef.current,
+      ...Object.keys(imageGenProgressIds),
+      ...Object.keys(voiceGenProgressIds),
+      ...domain.bible.voices
+        .filter((v) => v.status === 'generating')
+        .map((v) => v.voice_id)
+        .filter(Boolean),
+    ]);
+    const healed = healDramaSessionStuckAssetGenerating(
+      domain,
+      urlByAssetId,
+      preserveGenerating,
+    );
+    const restored = restoreDramaBibleMediaFromPipeline(
+      healed || domain,
+      directorStateRef.current.assets,
+    );
+    if (restored) dataRef.current?.onUpdate?.({ directorDomain: restored });
+    else if (healed) dataRef.current?.onUpdate?.({ directorDomain: healed });
+  }, [isDramaMode, state.assets, imageGenProgressIds, voiceGenProgressIds, markImageGenProgress]);
 
   const applyDirectorImageSuccess = useCallback(
     (assetId: string, result: { imageUrl?: string; localPath?: string; url?: string }) => {
-      const imageUrl = resolveDirectorImageUrl(result);
-      if (!imageUrl) return; // 忽略无图 SUCCESS（避免抢跑把状态写成 error）
-      const latest = directorStateRef.current;
-      const hit = findDirectorAssetById(latest.assets, assetId);
-      if (!hit) {
+      let imageUrl = resolveDirectorImageUrl(result);
+      if (!imageUrl) {
+        const hit = findDirectorAssetById(directorStateRef.current.assets, assetId);
+        imageUrl = String(hit?.asset.imageUrl || '').trim();
+      }
+      if (!imageUrl) {
+        // SUCCESS 无图时也要结束槽位，避免绿条/「等待生成结果」永久卡住
         finishDirectorImageSlot(assetId);
         return;
       }
-      patch(
-        updateDirectorAsset(latest, assetId, {
-          imageUrl,
-          status: 'ready',
-          error: undefined,
-        }),
-      );
+      const latest = directorStateRef.current;
+      const hit = findDirectorAssetById(latest.assets, assetId);
+      if (hit) {
+        patch(
+          updateDirectorAsset(latest, assetId, {
+            imageUrl,
+            status: 'ready',
+            error: undefined,
+          }),
+        );
+      }
+      // 即使 pipeline 暂无该资产，也必须回写 Domain，否则任务列表有图、卡片仍「生成中」
+      syncDomainAssetImage(assetId, { imageUrl, status: 'ready' });
       finishDirectorImageSlot(assetId);
     },
-    [finishDirectorImageSlot, patch, resolveDirectorImageUrl],
+    [finishDirectorImageSlot, patch, resolveDirectorImageUrl, syncDomainAssetImage],
   );
 
   const applyDirectorImageError = useCallback(
@@ -4913,9 +7513,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           }),
         );
       }
+      syncDomainAssetImage(assetId, {
+        status: 'error',
+        error: msg || tt.generateFailed,
+      });
       finishDirectorImageSlot(assetId);
     },
-    [finishDirectorImageSlot, patch, tt.generateFailed],
+    [finishDirectorImageSlot, patch, syncDomainAssetImage, tt.generateFailed],
   );
 
   const materializeStyleReferenceUrl = useCallback(
@@ -4958,10 +7562,59 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const live = findDirectorAssetById(latest.assets, nextAsset.id);
       const asset = live?.asset || nextAsset;
       const kind = live?.kind || nextAsset.kind;
+      markImageGenProgress(asset.id, true);
       patch(updateDirectorAsset(latest, asset.id, { status: 'generating', error: undefined }));
       const imageNodeId = directorAssetImageNodeId(id, asset.id);
       try {
-        const styleHint = resolveDirectorStylePrompt(latest.stylePresetId, latest.globalStyle);
+        const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        const genreLock = resolveDramaGenreLock({
+          style: domain?.bible?.project?.style || latest.mvStoryAnalysis?.genre,
+          type: domain?.bible?.project?.type,
+          era: domain?.bible?.project?.era,
+          visual_style: domain?.bible?.project?.visual_style || latest.globalStyle,
+          worldview: domain?.bible?.project?.worldview,
+          plot: domain?.bible?.plot,
+          script: domain?.meta?.source_script || domain?.meta?.source_novel || latest.scriptText,
+          keywords: domain?.bible?.script_keywords,
+        });
+        const baseStyle = resolveDirectorStylePrompt(latest.stylePresetId, latest.globalStyle);
+        const styleHint = composeDramaImageStyleHint(
+          genreLock,
+          baseStyle,
+          domain?.bible?.project?.visual_style,
+          domain?.bible?.project?.style,
+        );
+        const assetPromptForGen =
+          kind === 'character'
+            ? ensureDramaCharacterPromptGenreLock(asset.prompt, genreLock)
+            : asset.prompt;
+        if (
+          kind === 'character' &&
+          assetPromptForGen !== String(asset.prompt || '').trim()
+        ) {
+          patch(
+            updateDirectorAsset(directorStateRef.current, asset.id, {
+              prompt: assetPromptForGen,
+            }),
+          );
+          if (domain) {
+            const nextChars = (domain.bible.characters || []).map((c) =>
+              c.character_id === asset.id
+                ? {
+                    ...c,
+                    prompt: assetPromptForGen,
+                    status: 'generating' as const,
+                  }
+                : c,
+            );
+            dataRef.current?.onUpdate?.({
+              directorDomain: createEmptyDramaSession({
+                ...domain,
+                bible: { ...domain.bible, characters: nextChars },
+              }),
+            });
+          }
+        }
         const prompt =
           kind === 'scene'
             ? buildDirectorSceneImagePrompt({
@@ -4969,23 +7622,26 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 prompt: asset.prompt,
                 styleHint,
               })
-            : kind === 'character'
+            : kind === 'character' || kind === 'creature'
               ? buildDirectorCharacterImagePrompt({
                   name: asset.name,
-                  prompt: asset.prompt,
+                  prompt: assetPromptForGen,
                   styleHint,
+                  subject: kind === 'creature' ? 'creature' : 'character',
                   gender:
-                    asset.gender ||
-                    (/男主/.test(String(asset.name || ''))
-                      ? 'male'
-                      : /女主/.test(String(asset.name || ''))
-                        ? 'female'
-                        : ''),
+                    kind === 'creature'
+                      ? ''
+                      : asset.gender ||
+                        (/男主/.test(String(asset.name || ''))
+                          ? 'male'
+                          : /女主/.test(String(asset.name || ''))
+                            ? 'female'
+                            : ''),
                 })
               : buildDirectorPropImagePrompt({
                   name: asset.name,
                   prompt: asset.prompt,
-                  styleHint,
+                  // 道具强制白底：不传题材 styleHint，避免复古西部等环境渗入背景
                 });
         if (kind === 'scene') {
           const ensured = ensureDirectorSceneBuiltinPrompt(asset.prompt || asset.name || '');
@@ -5034,6 +7690,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       applyDirectorImageError,
       data?.projectId,
       id,
+      markImageGenProgress,
       materializeStyleReferenceUrl,
       patch,
       tt.generateFailed,
@@ -5081,17 +7738,23 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const live = findDirectorAssetById(next.assets, a.id);
         if (!live || live.asset.status !== 'generating') continue;
         changed = true;
+        const ready = String(live.asset.imageUrl || '').trim();
         next = updateDirectorAsset(next, a.id, {
-          status: String(live.asset.imageUrl || '').trim() ? 'ready' : 'pending',
+          status: ready ? 'ready' : 'pending',
           error: undefined,
         });
+        syncDomainAssetImage(a.id, {
+          ...(ready ? { imageUrl: ready } : {}),
+          status: ready ? 'ready' : 'pending',
+        });
+        markImageGenProgress(a.id, false);
       }
       if (changed) patchRef.current(next);
     }, 800);
     return () => window.clearTimeout(t);
-  }, [id]);
+  }, [id, markImageGenProgress, syncDomainAssetImage]);
 
-  // 分镜图残留 generating 清理
+  // 分镜图残留 generating 清理（仅清「无队列、无 inFlight」的孤儿态；进行中绝不动，否则绿进度条会中途消失）
   useEffect(() => {
     const map = directorStateRef.current.storyboardsByShotNo || {};
     const stuckNos = Object.entries(map)
@@ -5105,6 +7768,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       for (const shotNo of stuckNos) {
         const cur = next.storyboardsByShotNo?.[shotNo];
         if (!cur || cur.status !== 'generating') continue;
+        // 双重确认：仍不在飞行中（避免误清）
+        if (sbGenInFlightRef.current.has(shotNo)) continue;
         changed = true;
         next = updateDirectorShotStoryboard(next, shotNo, {
           status: String(cur.imageUrl || '').trim() ? 'ready' : 'pending',
@@ -5118,19 +7783,28 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   // 按资产 / 分镜 nodeId 监听 SUCCESS/ERROR，组件重挂后仍能按后缀回写
   useEffect(() => {
+    ensureDirectorSkillOptStatusListener();
+    ensureDirectorShotAudioStatusListener();
     if (!window.electronAPI?.onAIStatusUpdate) return;
     const remove = window.electronAPI.onAIStatusUpdate((packet: {
       nodeId?: string;
       status?: string;
       payload?: {
         imageUrl?: string;
+        originalImageUrl?: string;
         localPath?: string;
         url?: string;
+        audioUrl?: string;
         error?: string;
         outputImages?: string[];
+        text?: string;
+        content?: string;
+        result?: string;
       };
     }) => {
       const nodeId = String(packet?.nodeId || '');
+      // Skill 优化由模块级 ensureDirectorSkillOptStatusListener 统一收 SUCCESS，避免本 effect 随 patch 重建漏事件
+      if (parseDirectorSkillOptNodeId(nodeId, id)) return;
       const sbParsed = parseDirectorStoryboardPacketNodeId(nodeId, id);
       if (sbParsed) {
         const shotNo = sbParsed.shotNo;
@@ -5151,6 +7825,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 imageUrl,
                 status: 'ready',
                 error: undefined,
+              }),
+            );
+          } else {
+            // 无图 SUCCESS 也要释放 inFlight，避免「重新生成」永久静默
+            const cur = directorStateRef.current.storyboardsByShotNo?.[shotNo];
+            patch(
+              updateDirectorShotStoryboard(directorStateRef.current, shotNo, {
+                status: String(cur?.imageUrl || '').trim() ? 'ready' : 'error',
+                error: String(cur?.imageUrl || '').trim() ? undefined : tt.generateFailed,
               }),
             );
           }
@@ -5174,31 +7857,142 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
 
       const parsed = parseDirectorImagePacketNodeId(nodeId, id);
-      if (!parsed) return;
-      const assetId =
-        'assetId' in parsed
-          ? parsed.assetId
-          : imageGenInFlightRef.current.values().next().value ||
-            flattenDirectorAssets(directorStateRef.current.assets).find((a) => a.status === 'generating')
-              ?.id ||
-            null;
-      if (!assetId) return;
+      if (parsed) {
+        const assetId =
+          'assetId' in parsed
+            ? parsed.assetId
+            : imageGenInFlightRef.current.values().next().value ||
+              flattenDirectorAssets(directorStateRef.current.assets).find((a) => a.status === 'generating')
+                ?.id ||
+              null;
+        if (!assetId) return;
 
-      if (packet.status === 'SUCCESS') {
-        const payload = packet.payload || {};
-        const fromList =
-          Array.isArray(payload.outputImages) && payload.outputImages.length > 0
-            ? String(payload.outputImages[0] || '').trim()
-            : '';
-        applyDirectorImageSuccess(assetId, {
-          imageUrl: payload.imageUrl || fromList || undefined,
-          localPath: payload.localPath,
-          url: payload.url,
-        });
+        if (packet.status === 'SUCCESS') {
+          const payload = packet.payload || {};
+          const fromList =
+            Array.isArray(payload.outputImages) && payload.outputImages.length > 0
+              ? String(payload.outputImages[0] || '').trim()
+              : '';
+          applyDirectorImageSuccess(assetId, {
+            imageUrl: payload.imageUrl || fromList || payload.originalImageUrl || undefined,
+            localPath: payload.localPath,
+            url: payload.url,
+          });
+          return;
+        }
+        if (packet.status === 'ERROR') {
+          applyDirectorImageError(assetId, String(packet.payload?.error || tt.generateFailed));
+        }
         return;
       }
-      if (packet.status === 'ERROR') {
-        applyDirectorImageError(assetId, String(packet.payload?.error || tt.generateFailed));
+
+      const voiceParsed = parseDirectorVoicePacketNodeId(nodeId, id);
+      if (voiceParsed) {
+        if (packet.status === 'SUCCESS') {
+          const payload = packet.payload || {};
+          let audioUrl = String(
+            (payload as { audioUrl?: string }).audioUrl || payload.url || '',
+          ).trim();
+          const localPath = String(payload.localPath || '').trim();
+          if (localPath) {
+            let filePath = localPath.replace(/\\/g, '/');
+            if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
+            audioUrl = `local-resource://${filePath}`;
+          }
+          if (audioUrl) {
+            syncDomainVoiceSample(voiceParsed.voiceId, {
+              sampleUrl: audioUrl,
+              model: DOUBAO_SEED_AUDIO_MODEL_ID,
+              status: 'ready',
+            });
+          } else {
+            syncDomainVoiceSample(voiceParsed.voiceId, {
+              status: 'error',
+              error: tt.generateFailed,
+            });
+          }
+          return;
+        }
+        if (packet.status === 'ERROR') {
+          const errMsg = String(packet.payload?.error || tt.generateFailed);
+          syncDomainVoiceSample(voiceParsed.voiceId, {
+            status: 'error',
+            error: errMsg,
+          });
+          void showAlert(
+            /超时|退回元宝/.test(errMsg)
+              ? errMsg
+              : locale === 'en'
+                ? `Voice generation failed: ${errMsg}`
+                : `声音生成失败：${errMsg}`,
+          );
+        }
+        return;
+      }
+
+      const shotAudioParsed = parseDirectorShotAudioPacketNodeId(nodeId, id);
+      if (shotAudioParsed) {
+        // 模块级 listener 已 resolve waiter / 写入 stash；此处做兜底回写（漏 waiter 时仍能落盘）
+        const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        if (!domain?.shots?.length) return;
+        if (packet.status === 'SUCCESS') {
+          const audioUrl = extractAudioUrlFromAiPayload(packet.payload);
+          if (audioUrl) {
+            delete shotAudioStartedAtRef.current[shotAudioParsed.shotId];
+            const next = createEmptyDramaSession({
+              ...domain,
+              shots: domain.shots.map((s) =>
+                s.shot_id === shotAudioParsed.shotId
+                  ? {
+                      ...s,
+                      audio_url: audioUrl,
+                      audio_status: 'ready',
+                      audio_error: '',
+                    }
+                  : s,
+              ),
+            });
+            const cur = dataRef.current;
+            if (cur) dataRef.current = { ...cur, directorDomain: next };
+            dataRef.current?.onUpdate?.({ directorDomain: next });
+          } else if (String(domain.shots.find((s) => s.shot_id === shotAudioParsed.shotId)?.audio_status || '') === 'generating') {
+            delete shotAudioStartedAtRef.current[shotAudioParsed.shotId];
+            const next = createEmptyDramaSession({
+              ...domain,
+              shots: domain.shots.map((s) =>
+                s.shot_id === shotAudioParsed.shotId
+                  ? {
+                      ...s,
+                      audio_status: 'error',
+                      audio_error: tt.generateFailed,
+                    }
+                  : s,
+              ),
+            });
+            const cur = dataRef.current;
+            if (cur) dataRef.current = { ...cur, directorDomain: next };
+            dataRef.current?.onUpdate?.({ directorDomain: next });
+          }
+          return;
+        }
+        if (packet.status === 'ERROR') {
+          delete shotAudioStartedAtRef.current[shotAudioParsed.shotId];
+          const next = createEmptyDramaSession({
+            ...domain,
+            shots: domain.shots.map((s) =>
+              s.shot_id === shotAudioParsed.shotId
+                ? {
+                    ...s,
+                    audio_status: 'error',
+                    audio_error: String(packet.payload?.error || tt.generateFailed),
+                  }
+                : s,
+            ),
+          });
+          const cur = dataRef.current;
+          if (cur) dataRef.current = { ...cur, directorDomain: next };
+          dataRef.current?.onUpdate?.({ directorDomain: next });
+        }
       }
     });
     return () => {
@@ -5208,8 +8002,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     applyDirectorImageError,
     applyDirectorImageSuccess,
     id,
+    locale,
     patch,
     resolveDirectorImageUrl,
+    showAlert,
+    syncDomainVoiceSample,
     tt.generateFailed,
   ]);
 
@@ -5263,7 +8060,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const matchedIdx =
           latest.mode === 'mv' && shotRowIndex >= 0
             ? getShotBoundRefIndices(shot, orderedRefs, shotRowIndex)
-            : matchDirectorAssetIndicesForShot(shot, orderedRefs);
+            : matchDirectorAssetIndicesForShot(shot, orderedRefs, {
+                leadAssetIds: listDirectorMvLeadAssetIds(latest),
+              });
         const styleRefRaw = resolveDirectorStyleReferenceImageUrl(
           latest.stylePresetId,
           latest.styleReferenceImageUrl,
@@ -5280,18 +8079,21 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           .filter(Boolean)
           .slice(0, 1);
         const sbCast = getDirectorShotStoryboard(latest, shotNo);
-        const emptyCast = Array.isArray(sbCast.castAssetIds)
-          ? charUrls.length === 0
-          : shotSuggestsNoCharacterRefs(shot) || charUrls.length === 0;
+        const userLockedCast = Array.isArray(sbCast.castAssetIds);
+        // 本镜角色只来自匹配/勾选；禁止再按「男主/主角」从全库抓第一个有图的人
+        const forcedCharUrls = [...charUrls];
+        const emptyCast = userLockedCast
+          ? sbCast.castAssetIds!.length === 0
+          : shotSuggestsNoCharacterRefs(shot) || forcedCharUrls.length === 0;
         // 分镜参考图固定槽位（图生，每镜都带风格图；空槽省略）：
-        // 1) 风格 — 画风/色调锁（对齐画面本身，勿按风格名称）
-        // 2) 场景 — 环境结构锁（只借构图空间，不得覆盖风格色调）
+        // 1) 风格 — 只锁光色（画风固定真人写实）
+        // 2) 场景 — 环境结构锁（只借构图空间，不得覆盖风格光色）
         // 3) 人物1 / 4) 人物2 — 身份/性别/外貌锁（最多 2 张）
         // 截断优先丢人物；永不丢风格图；空镜仅 风格→场景。
         const styleSlot = styleRef ? [styleRef] : [];
         const prioritizedRefs = emptyCast
           ? [...styleSlot, ...sceneUrls]
-          : [...styleSlot, ...sceneUrls, ...charUrls];
+          : [...styleSlot, ...sceneUrls, ...forcedCharUrls];
         const maxSbRefs = 4;
         let refImages = prioritizedRefs.slice(0, maxSbRefs);
         if (styleRef && !refImages.includes(styleRef)) {
@@ -5302,6 +8104,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const storyboardBody = composeDirectorShotStoryboardPrompt(shot, styleHint, {
           hasStyleReferenceImage: !!styleRef,
           closeUpFraming: latest.mvCloseUpFraming !== false,
+          stylePresetId: latest.stylePresetId,
+          stylePictureIndex: styleRef ? 1 : undefined,
         });
         if (!storyboardBody) {
           failAndPump(tt.generateFailed);
@@ -5311,22 +8115,26 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         let refNo = 1;
         if (styleRef) {
           refOrderLines.push(
-            `参考图${refNo}：风格图（只锁画面画风/色调，勿按风格名称理解；禁止照抄其中人物身份与性别）`,
+            `参考图${refNo}：风格图（只锁光色/色调；画风固定真人写实摄影；禁止照抄其中人物身份与性别）`,
           );
           refNo += 1;
         }
         if (sceneUrls[0] && refImages.includes(sceneUrls[0])) {
           refOrderLines.push(
             emptyCast
-              ? `参考图${refNo}：场景（环境结构锁，须为空场景；色调仍跟风格图画面）`
-              : `参考图${refNo}：场景（环境结构锁；色调仍跟风格图画面，禁止用场景彩光覆盖画风）`,
+              ? `参考图${refNo}：场景（环境结构锁，须为空场景；光色仍跟风格图）`
+              : `参考图${refNo}：场景（环境结构锁；光色仍跟风格图，禁止用场景彩光覆盖风格光色）`,
           );
           refNo += 1;
         }
         if (!emptyCast) {
-          charUrls.forEach((url, i) => {
+          forcedCharUrls.forEach((url, i) => {
             if (!refImages.includes(url)) return;
-            refOrderLines.push(`参考图${refNo}：人物${i + 1}（身份锁·性别与外貌以本图为准）`);
+            const ref = orderedRefs.find((r) => String(r?.imageUrl || '').trim() === url);
+            const name = String(ref?.name || '').trim() || `人物${i + 1}`;
+            refOrderLines.push(
+              `参考图${refNo}：人物${i + 1}「${name}」（身份锁·性别与外貌以本图为准；对应主体身份）`,
+            );
             refNo += 1;
           });
         }
@@ -5336,8 +8144,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             ? `参考图顺序（必须遵守）：\n${refOrderLines.join('\n')}`
             : '无参考图时仅按文字公式生成。',
           emptyCast
-            ? '本镜空镜/无人物：画面中禁止出现任何人、人脸、背影、剪影人形；只画环境与光色。风格图锁定画风色调（对齐画面本身，勿按风格名称）；场景图只借空间结构；即使风格图里有人也绝不能画进本镜。'
-            : '风格图锁定全片画风与色调（对齐风格参考图画面本身，勿按风格名称）；主体身份与性别必须跟人物参考图（禁止把风格图里的人物当成主角）；场景图只提供环境结构，不得用其彩色霓虹覆盖风格色调。',
+            ? `本镜空镜/无人物：画面中禁止出现任何人、人脸、背影、剪影人形；只画环境。第1张风格图只锁光色；画风固定真人写实摄影；场景图只借空间结构；即使风格图里有人也绝不能画进本镜。`
+            : `第1张风格图只锁光色；画风固定真人写实摄影。主体身份与性别必须跟人物参考图（禁止把风格图里的人物当成主角）；场景图只提供环境结构，不得覆盖风格图光色。`,
           monoStyle ? DIRECTOR_MONOCHROME_STYLE_LOCK_GUARD : '',
           'Strictly no text in the image: no subtitles, lyrics, captions, watermarks, logos, or letters/numbers.',
         ]
@@ -5402,25 +8210,74 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const enqueueStoryboardShots = useCallback(
     (shotNos: string[], opts?: { onlyMissing?: boolean }) => {
+      if (imageGenYuanbao(1) == null) {
+        void showAlert(tt.otsPriceRequired);
+        return;
+      }
       const onlyMissing = opts?.onlyMissing !== false;
       const latest = directorStateRef.current;
       const valid: string[] = [];
+      let blockedGenerating = 0;
       for (const raw of shotNos) {
         const shotNo = String(raw || '').trim();
         if (!shotNo) continue;
-        const shot = latest.shots.find((s, i) => String(s['镜号'] || i + 1) === shotNo);
+        const shot = latest.shots.find(
+          (s, i) => String(s['镜号'] || i + 1).trim() === shotNo,
+        );
         const canStoryboard =
           !!String(shot?.['最终提示词'] || '').trim() || !!String(shot?.['画面描述'] || '').trim();
         if (!shot || !canStoryboard) continue;
         if (onlyMissing && String(latest.storyboardsByShotNo?.[shotNo]?.imageUrl || '').trim()) {
           continue;
         }
-        if (sbGenInFlightRef.current.has(shotNo)) continue;
-        const sb = latest.storyboardsByShotNo?.[shotNo];
-        if (sb?.status === 'generating') continue;
+        // 用户点「重新生成」：强制清掉卡死的 generating / inFlight，允许立刻重跑
+        if (!onlyMissing) {
+          sbGenInFlightRef.current.delete(shotNo);
+          sbGenQueueRef.current = sbGenQueueRef.current.filter((n) => n !== shotNo);
+          valid.push(shotNo);
+          continue;
+        }
+        if (
+          sbGenInFlightRef.current.has(shotNo) ||
+          latest.storyboardsByShotNo?.[shotNo]?.status === 'generating'
+        ) {
+          blockedGenerating += 1;
+          continue;
+        }
         valid.push(shotNo);
       }
-      if (valid.length === 0) return;
+      if (valid.length === 0) {
+        if (!onlyMissing && shotNos.length > 0) {
+          void showAlert(tt.pendingPrompt);
+        }
+        if (blockedGenerating > 0) void runNextStoryboardGen();
+        return;
+      }
+      if (!onlyMissing) {
+        // 强制重跑：释放本镜占用；若并行位已被僵尸占满则整表清空，否则永远泵不动
+        if (sbGenInFlightRef.current.size >= SB_GEN_MAX_PARALLEL) {
+          sbGenInFlightRef.current.clear();
+        }
+        let next = directorStateRef.current;
+        let changed = false;
+        const resetNos =
+          sbGenInFlightRef.current.size === 0
+            ? Object.entries(next.storyboardsByShotNo || {})
+                .filter(([, v]) => v?.status === 'generating')
+                .map(([k]) => k)
+            : valid.filter((no) => next.storyboardsByShotNo?.[no]?.status === 'generating');
+        for (const shotNo of new Set([...valid, ...resetNos])) {
+          const sb = next.storyboardsByShotNo?.[shotNo];
+          if (sb?.status === 'generating') {
+            changed = true;
+            next = updateDirectorShotStoryboard(next, shotNo, {
+              status: String(sb.imageUrl || '').trim() ? 'ready' : 'pending',
+              error: undefined,
+            });
+          }
+        }
+        if (changed) patch(next);
+      }
       const existing = new Set(sbGenQueueRef.current);
       const toAdd = valid.filter((n) => !existing.has(n));
       if (toAdd.length === 0) {
@@ -5430,7 +8287,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       sbGenQueueRef.current = [...sbGenQueueRef.current, ...toAdd];
       void runNextStoryboardGen();
     },
-    [runNextStoryboardGen],
+    [imageGenYuanbao, patch, runNextStoryboardGen, showAlert, tt.otsPriceRequired, tt.pendingPrompt],
   );
 
   const startBatchStoryboards = useCallback(() => {
@@ -5448,27 +8305,118 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const handleSpawnVideosClick = useCallback(
     async (shotNos?: string[]) => {
-      const latest = directorStateRef.current;
-      const only =
+      if (busyAction === 'videos') return;
+      flushFinalPromptDraft();
+      const latestGate = directorStateRef.current;
+      // 批量：默认只补失败/缺失/生成中；单镜传入 shotNos 则强制重跑该镜
+      let only: Set<string> | null =
         Array.isArray(shotNos) && shotNos.length > 0
           ? new Set(shotNos.map((n) => String(n || '').trim()).filter(Boolean))
           : null;
+      if (!only) {
+        const needs: string[] = [];
+        let readyWithVideo = 0;
+        const assetReady =
+          flattenDirectorAssets(latestGate.assets).some((a) => String(a.imageUrl || '').trim()) ||
+          !!String(latestGate.styleReferenceImageUrl || '').trim();
+        for (let i = 0; i < (latestGate.shots || []).length; i++) {
+          const shot = latestGate.shots[i];
+          const shotNo = String(shot['镜号'] || i + 1).trim() || String(i + 1);
+          const sb = getDirectorShotStoryboard(latestGate, shotNo);
+          const hasSb = !!String(sb?.imageUrl || '').trim();
+          // 短剧：无分镜也可用风格/资产图推 H3
+          if (!hasSb && !(isDramaMode && assetReady)) continue;
+          if (!String(shot['最终提示词'] || shot['画面描述'] || '').trim()) continue;
+          if (directorShotNeedsVideoGeneration(sb)) needs.push(shotNo);
+          else readyWithVideo += 1;
+        }
+        if (needs.length === 0) {
+          if (readyWithVideo > 0) {
+            await showAlert(tt.batchSpawnVideosAllReady);
+          } else {
+            patch({
+              ...latestGate,
+              error: isDramaMode
+                ? '请先准备资产参考图（风格/角色/场景/道具/生物）或分镜图'
+                : tt.needStoryboardsFirst,
+            });
+          }
+          return;
+        }
+        only = new Set(needs);
+      }
+      // 无 OTS 价禁止生成（禁止本地价）
+      {
+        for (let i = 0; i < (latestGate.shots || []).length; i++) {
+          const shot = latestGate.shots[i];
+          const shotNo = String(shot['镜号'] || i + 1).trim() || String(i + 1);
+          if (only && !only.has(shotNo)) continue;
+          const sb = getDirectorShotStoryboard(latestGate, shotNo);
+          if (!String(sb?.imageUrl || '').trim()) continue;
+          const range = computeDirectorShotMusicRangesFromState(latestGate)[i] || {
+            durationSec: parseDirectorShotDurationSec(shot['时长'], 5),
+          };
+          const lipsyncOn = resolveMvShotLipsync(
+            shot,
+            i,
+            sb,
+            range as { startSec: number; endSec: number; durationSec: number },
+          ).lipsyncOn;
+          const priced = videoGenYuanbaoForShot({
+            preferLipsync: lipsyncOn,
+            durationSec: Number(range.durationSec) || 5,
+          });
+          if (!priced) {
+            await showAlert(tt.otsPriceRequired);
+            return;
+          }
+        }
+      }
+      setBusyAction('videos');
+      const spawnTargetNos = [...only];
+      const genStartedAt = Date.now();
+      {
+        let nextGen = directorStateRef.current;
+        for (const no of spawnTargetNos) {
+          markVideoGenProgress(no, true);
+          nextGen = updateDirectorShotStoryboard(nextGen, no, {
+            videoStatus: 'generating',
+            videoError: '',
+            videoGeneratingStartedAt: genStartedAt,
+          });
+        }
+        patch(nextGen);
+      }
+      const revertSpawnGenerating = () => {
+        let nextRev = directorStateRef.current;
+        for (const no of spawnTargetNos) {
+          markVideoGenProgress(no, false);
+          const sbNow = getDirectorShotStoryboard(nextRev, no);
+          if (sbNow.videoStatus !== 'generating') continue;
+          nextRev = updateDirectorShotStoryboard(nextRev, no, {
+            videoStatus: String(sbNow.videoUrl || '').trim() ? 'ready' : 'pending',
+            videoError: String(sbNow.videoError || ''),
+            videoGeneratingStartedAt: undefined,
+          });
+        }
+        patch(nextRev);
+      };
+      try {
+      const latest = directorStateRef.current;
       const shots = (latest.shots || []).filter((s, i) => {
         if (!only) return true;
         return only.has(String(s['镜号'] || i + 1));
       });
       const prog = countDirectorStoryboards(shots, latest.storyboardsByShotNo);
-      if (prog.ready === 0) {
-        patch({ ...latest, error: tt.needStoryboardsFirst });
+      const dramaAssetReady =
+        isDramaMode &&
+        (flattenDirectorAssets(latest.assets).some((a) => String(a.imageUrl || '').trim()) ||
+          !!String(latest.styleReferenceImageUrl || '').trim());
+      if (prog.ready === 0 && !dramaAssetReady) {
+        revertSpawnGenerating();
+        patch({ ...directorStateRef.current, error: tt.needStoryboardsFirst });
         return;
       }
-      if (!only && prog.missing > 0) {
-        const ok = await showConfirm(
-          fillDirectorI18n(tt.confirmSpawnWithoutAllStoryboards, { n: prog.missing }),
-        );
-        if (!ok) return;
-      }
-
       // 对口型：生成前先确认「分镜图 + 歌曲片段 + 提示词」，确认后才创建并开跑
       const mvMusicUrl = String(latest.mvMusic?.url || '').trim();
       const segs = latest.mvMusic?.lyricSegments || [];
@@ -5509,14 +8457,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           endSec = Math.min(endSec, songDur);
         }
         const hasVoice = shotAudioRangeHasHumanVoice(segs, startSec, endSec);
-        const preferLipsync = resolveDirectorShotPreferLipsync(shot, sb, {
-          hasHumanVoice: hasVoice,
-          packText: packs[i]?.text || String(shot['对白旁白'] || ''),
-          audioStartSec: startSec,
-          songDurationSec: songDur,
-          closeUpFramingOn: directorStateRef.current.mvCloseUpFraming !== false,
-        });
-        if (!preferLipsync) continue;
+        const preferLipsync = resolveDirectorMvForceLipsyncOn(
+          isMvMode,
+          resolveDirectorShotPreferLipsync(shot, sb, {
+            hasHumanVoice: hasVoice,
+            packText: packs[i]?.text || String(shot['对白旁白'] || ''),
+            audioStartSec: startSec,
+            songDurationSec: songDur,
+            closeUpFramingOn: directorStateRef.current.mvCloseUpFraming !== false,
+          }),
+        );
+        if (!(DIRECTOR_MV_FORCE_H3_LIPSYNC && isMvMode) && !preferLipsync) continue;
 
         let clipUrl = getValidDirectorShotSongClipUrl(sb, mvMusicUrl, startSec, endSec);
         if (!clipUrl && mvMusicUrl && window.electronAPI?.trimAudio) {
@@ -5562,6 +8513,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       let startLipsync = false;
       if (lipsyncLines.length > 0) {
         if (lipsyncBlocked > 0 && lipsyncShotNos.length === 0) {
+          revertSpawnGenerating();
           await showAlert(
             `${tt.confirmLipsyncMissingTitle}\n\n${lipsyncLines.slice(0, 12).join('\n')}${
               lipsyncLines.length > 12 ? '\n…' : ''
@@ -5569,58 +8521,162 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           );
           return;
         }
-        // 材料齐全则直接开跑，不再弹确认窗
+        // 材料齐全则直接开跑，不再弹确认窗；勿把 preferLipsync 写死为 true（逐镜开关管提示词）
         startLipsync = true;
-        let next = directorStateRef.current;
-        for (const no of lipsyncShotNos) {
-          next = updateDirectorShotStoryboard(next, no, { preferLipsync: true });
+      }
+
+      const spawnNos = only ? [...only] : [];
+      let shotPromptOverrides: Record<string, string> | undefined;
+      if (isMvMode && spawnNos.length > 0) {
+        const latestForPrompt = directorStateRef.current;
+        const overrides: Record<string, string> = {};
+        for (let i = 0; i < (latestForPrompt.shots || []).length; i++) {
+          const shot = latestForPrompt.shots[i];
+          const shotNo = String(shot['镜号'] || i + 1).trim() || String(i + 1);
+          if (!spawnNos.includes(shotNo)) continue;
+          const versions = getDirectorShotPromptVersions(
+            shot,
+            getDirectorShotStoryboard(latestForPrompt, shotNo),
+          );
+          if (versions.useOptimized && versions.optimized) {
+            const orderedRefs = getOrderedAssetsWithImages(latestForPrompt);
+            const boundIdx = getShotBoundRefIndices(shot, orderedRefs, i);
+            const boundChars = boundIdx
+              .map((idx) => orderedRefs[idx])
+              .filter(
+                (a): a is (typeof orderedRefs)[number] =>
+                  !!a && a.kind === 'character' && !!String(a.imageUrl || '').trim(),
+              );
+            const sbUrl = String(
+              getDirectorShotStoryboard(latestForPrompt, shotNo)?.imageUrl || '',
+            ).trim();
+            const sourceHint = [shot['地点'], shot['画面描述']]
+              .map((v) => String(v || '').trim())
+              .filter((v) => v && v !== '—')
+              .join('\n');
+            overrides[shotNo] = repairDirectorMvPromptImageMap(
+              versions.optimized,
+              buildDirectorShotRefItems({
+                storyboardUrl: sbUrl || undefined,
+                boundAssets: boundChars,
+              }),
+              sourceHint,
+            );
+          }
         }
-        if (lipsyncShotNos.length) patch(next);
+        if (Object.keys(overrides).length > 0) shotPromptOverrides = overrides;
       }
 
       data?.onSpawnVideos?.(
-        only
+        spawnNos.length
           ? {
-              shotNos: [...only],
+              shotNos: spawnNos,
               startLipsync,
               ...(startLipsync && lipsyncShotNos.length
                 ? { lipsyncShotNos: [...lipsyncShotNos] }
                 : {}),
+              ...(shotPromptOverrides ? { shotPromptOverrides } : {}),
             }
           : startLipsync
             ? {
                 startLipsync: true,
                 ...(lipsyncShotNos.length ? { lipsyncShotNos: [...lipsyncShotNos] } : {}),
+                ...(shotPromptOverrides ? { shotPromptOverrides } : {}),
               }
             : undefined,
       );
+      } finally {
+        setVideoSkillRewriteHint(null);
+        setBusyAction((prev) => (prev === 'videos' ? null : prev));
+      }
     },
-    [data, patch, showAlert, showConfirm, tt],
+    [busyAction, data, flushFinalPromptDraft, isDramaMode, isMvMode, markVideoGenProgress, patch, resolveMvShotLipsync, showAlert, tt, videoGenYuanbaoForShot],
   );
 
-  const chatResolverRef = useRef<{
-    resolve: (t: string) => void;
-    reject: (e: Error) => void;
-  } | null>(null);
+  const chatResolverRef = useRef<DirectorChatWaiter | null>(null);
+  const chatGenRef = useRef(0);
+  const chatTailRef = useRef(Promise.resolve());
+  const mountedRef = useRef(true);
+  const directorChatClientTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (directorChatClientTimerRef.current) {
+        clearTimeout(directorChatClientTimerRef.current);
+        directorChatClientTimerRef.current = null;
+      }
+    };
+  }, []);
+  const applyMvStoryOutlineFromChat = useCallback(
+    (raw: string): boolean => {
+      const normalized = normalizeDirectorMvStoryOutlineResult(raw);
+      if (!normalized.ok) return false;
+      const storyFixed = applyDirectorMvStoryPrefsToOutline(normalized.story, {
+        genreType: String(directorStateRef.current.mvStoryGenreType || ''),
+        toneStyle: String(directorStateRef.current.mvStoryToneStyle || ''),
+        endingType: String(directorStateRef.current.mvStoryEndingType || ''),
+      });
+      if (!String(storyFixed || '').trim()) return false;
+      setStoryOutlineLocal(storyFixed);
+      setStoryOutlineEditing(false);
+      const next = patchDirectorMvScriptInput(directorStateRef.current, {
+        mvStoryOutline: storyFixed,
+        mvStoryOutlineConfirmed: true,
+      });
+      patch({ ...next, isGenerating: false, error: '' });
+      return true;
+    },
+    [patch],
+  );
+  const applyMvStoryOutlineFromChatRef = useRef(applyMvStoryOutlineFromChat);
+  applyMvStoryOutlineFromChatRef.current = applyMvStoryOutlineFromChat;
 
   const { execute: executeChat2 } = useAI({
     nodeId: `${id}-director-phase-chat`,
     modelId: 'chat',
     onComplete: (payload) => {
       const text = coerceAssistantText(payload?.text ?? payload?.content ?? payload?.result ?? '');
-      const resolver = chatResolverRef.current;
-      chatResolverRef.current = null;
-      if (!resolver) return;
-      if (payload?.error && !text) {
-        resolver.reject(new Error(String(payload.error)));
+      const reqId = String((payload as { directorChatRequestId?: string } | null)?.directorChatRequestId || '');
+      const finishReason = String(
+        (payload as { finishReason?: string } | null)?.finishReason || '',
+      ).toLowerCase();
+      const chatNodeId = directorPhaseChatKey(id);
+      if (text) stashDirectorChatText(chatNodeId, reqId, text);
+      const waiter = directorChatWaiters.get(chatNodeId) || chatResolverRef.current;
+      if (waiter) {
+        if (reqId && reqId !== waiter.requestId) return;
+        if (!reqId && waiter.gen !== chatGenRef.current) return;
+        directorChatWaiters.delete(chatNodeId);
+        chatResolverRef.current = null;
+        if (payload?.error && !text) {
+          waiter.reject(new Error(String(payload.error)));
+          return;
+        }
+        // 截断但仍有正文：交给下游解析/补全；空正文则明确报错
+        if (finishReason === 'length' && !text) {
+          waiter.reject(new Error('模型输出被截断且内容为空，请换模型或缩短本集后重试'));
+          return;
+        }
+        waiter.resolve(text);
         return;
       }
-      resolver.resolve(text);
+      // 迟到的旧请求：禁止把上一版故事盖到当前框
+      const latestReqId = `director-chat-${id}-${chatGenRef.current}`;
+      if (reqId && reqId !== latestReqId) return;
+      if (!reqId) return;
+      // 实例已重挂、没人在 await：仅当前请求的故事大纲才写回
+      if (text && looksLikeMvStoryOutlineText(text)) {
+        applyMvStoryOutlineFromChatRef.current(text);
+      }
     },
     onError: (msg) => {
-      const resolver = chatResolverRef.current;
+      const chatNodeId = directorPhaseChatKey(id);
+      const waiter = directorChatWaiters.get(chatNodeId) || chatResolverRef.current;
+      if (!waiter) return;
+      directorChatWaiters.delete(chatNodeId);
       chatResolverRef.current = null;
-      if (resolver) resolver.reject(new Error(msg || tt.generateFailed));
+      waiter.reject(new Error(msg || tt.generateFailed));
     },
   });
 
@@ -5628,15 +8684,149 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     async (
       systemPrompt: string,
       userPrompt: string,
-      opts?: { max_tokens?: number; response_format?: unknown; temperature?: number },
+      opts?: {
+        max_tokens?: number;
+        response_format?: unknown;
+        temperature?: number;
+        model?: string;
+        /** 多路并行（提示词优化等）；默认串行且会取消上一路 */
+        concurrent?: boolean;
+        /** 走提示词优化专用队列（同时最多 2 路，其余等待中） */
+        skillOptimize?: boolean;
+        /** 客户端限流：排队/开跑时回调 */
+        onQueueStatus?: (status: DirectorConcurrentChatQueueStatus) => void;
+        /** 取消排队（等待中移除；已发出的请求不撤回） */
+        signal?: AbortSignal | null;
+      },
     ) => {
-      const raw = String(state.chatModel || '').trim();
+      const raw = String(
+        opts?.model || directorStateRef.current.chatModel || state.chatModel || '',
+      ).trim();
       const model = (DIRECTOR_CHAT_MODELS as readonly string[]).includes(raw)
         ? raw
         : DIRECTOR_CHAT_MODEL_DEFAULT;
-      return new Promise<string>((resolve, reject) => {
-        chatResolverRef.current = { resolve, reject };
-        void executeChat2({
+      const concurrent = !!opts?.concurrent;
+      const useSkillQueue = !!opts?.skillOptimize;
+
+      // 并行通道：独立 nodeId + 客户端限流
+      if (concurrent) {
+        const enqueue = useSkillQueue ? enqueueDirectorSkillOptimizeChat : enqueueDirectorConcurrentChat;
+        const { promise } = enqueue({
+          onStatus: opts?.onQueueStatus,
+          signal: opts?.signal,
+          run: () => {
+            ensureDirectorSkillOptStatusListener();
+            const requestId = `director-chat-conc-${id}-${Date.now()}-${Math.random()
+              .toString(36)
+              .slice(2, 9)}`;
+            const optNodeId = directorSkillOptNodeId(id, requestId);
+            const timeoutMs = 120_000;
+            return new Promise<string>((resolve, reject) => {
+              let settled = false;
+              const settleResolve = (text: string) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timer);
+                resolve(text);
+              };
+              const settleReject = (err: Error) => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(timer);
+                reject(err);
+              };
+              const timer = window.setTimeout(() => {
+                directorSkillOptWaiters.delete(optNodeId);
+                const err = new Error('timeout');
+                err.name = 'TimeoutError';
+                settleReject(err);
+              }, timeoutMs);
+              const early = takeDirectorSkillOptStash(optNodeId);
+              if (early) {
+                settleResolve(early);
+                return;
+              }
+              directorSkillOptWaiters.set(optNodeId, {
+                directorId: id,
+                resolve: settleResolve,
+                reject: settleReject,
+              });
+              const raced = takeDirectorSkillOptStash(optNodeId);
+              if (raced) {
+                directorSkillOptWaiters.delete(optNodeId);
+                settleResolve(raced);
+                return;
+              }
+              if (!window.electronAPI?.invokeAI) {
+                directorSkillOptWaiters.delete(optNodeId);
+                settleReject(new Error(tt.generateFailed));
+                return;
+              }
+              void window.electronAPI
+                .invokeAI({
+                  modelId: 'chat',
+                  nodeId: optNodeId,
+                  input: {
+                    model,
+                    messages: [
+                      { role: 'system', content: systemPrompt },
+                      { role: 'user', content: userPrompt },
+                    ],
+                    stream: false,
+                    projectId: data?.projectId || undefined,
+                    nodeTitle: isDramaMode ? 'AI短剧·提示词优化' : 'MV导演·对话',
+                    directorChatRequestId: requestId,
+                    ...(opts?.max_tokens != null ? { max_tokens: opts.max_tokens } : {}),
+                    ...(opts?.response_format != null
+                      ? { response_format: opts.response_format }
+                      : {}),
+                    ...(opts?.temperature != null ? { temperature: opts.temperature } : {}),
+                  },
+                })
+                .then(() => {
+                  const late = takeDirectorSkillOptStash(optNodeId);
+                  if (late) {
+                    directorSkillOptWaiters.delete(optNodeId);
+                    settleResolve(late);
+                  }
+                })
+                .catch((e: unknown) => {
+                  if (!directorSkillOptWaiters.has(optNodeId)) return;
+                  directorSkillOptWaiters.delete(optNodeId);
+                  settleReject(e instanceof Error ? e : new Error(String(e || tt.generateFailed)));
+                });
+            });
+          },
+        });
+        return promise;
+      }
+
+      const gen = ++chatGenRef.current;
+      const requestId = `director-chat-${id}-${gen}`;
+      const chatNodeId = directorPhaseChatKey(id);
+      const prev = directorChatWaiters.get(chatNodeId) || chatResolverRef.current;
+      if (prev) {
+        directorChatWaiters.delete(chatNodeId);
+        chatResolverRef.current = null;
+        const err = new Error('cancelled');
+        err.name = 'AbortError';
+        try {
+          prev.reject(err);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const result = new Promise<string>((resolve, reject) => {
+        const waiter: DirectorChatWaiter = { resolve, reject, gen, requestId };
+        chatResolverRef.current = waiter;
+        directorChatWaiters.set(chatNodeId, waiter);
+      });
+
+      const job = (async () => {
+        await chatTailRef.current.catch(() => undefined);
+        if (chatGenRef.current !== gen) return;
+        await executeChat2({
           model,
           messages: [
             { role: 'system', content: systemPrompt },
@@ -5644,17 +8834,22 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           ],
           stream: false,
           projectId: data?.projectId || undefined,
-          nodeTitle: '导演',
+          nodeTitle: isDramaMode ? 'AI短剧导演·分析本集' : 'MV导演',
+          directorChatRequestId: requestId,
           ...(opts?.max_tokens != null ? { max_tokens: opts.max_tokens } : {}),
           ...(opts?.response_format != null ? { response_format: opts.response_format } : {}),
           ...(opts?.temperature != null ? { temperature: opts.temperature } : {}),
-        }).catch((e) => {
-          chatResolverRef.current = null;
-          reject(e instanceof Error ? e : new Error(String(e)));
         });
-      });
+      })();
+
+      chatTailRef.current = job.then(
+        () => undefined,
+        () => undefined,
+      );
+
+      return result;
     },
-    [data?.projectId, executeChat2, state.chatModel],
+    [data?.projectId, executeChat2, id, isDramaMode, state.chatModel, tt.generateFailed],
   );
 
   const handleAiReviseFinalPrompt = useCallback(
@@ -5719,12 +8914,18 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         }
         clearFinalPromptPersistTimer();
         finalPromptDraftRef.current = next;
-        patch({
-          ...updateDirectorShotCell(directorStateRef.current, rowIndex, '最终提示词', next),
-          error: '',
+        const shotNoKey = String(shot['镜号'] || rowIndex + 1).trim() || String(rowIndex + 1);
+        let nextState = updateDirectorShotCell(directorStateRef.current, rowIndex, '最终提示词', next);
+        // AI 改的是最终提示词：同步为新原版，并清空旧优化稿，避免继续用过期优化结果
+        nextState = updateDirectorShotStoryboard(nextState, shotNoKey, {
+          promptOriginal: next,
+          promptOptimized: '',
+          useOptimizedPrompt: false,
         });
+        patch({ ...nextState, error: '' });
         setFinalPromptDraft(next);
         setFinalPromptOpinion('');
+        setPromptPreviewTab('original');
       } catch (e) {
         const rawMsg = e instanceof Error ? e.message : String(e || '');
         const msg = rawMsg || tt.aiReviseFinalPromptFailed;
@@ -5766,12 +8967,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const cancelMusicJob = useCallback(() => {
     musicJobCancelledRef.current = true;
     musicJobGenRef.current += 1;
-    const resolver = chatResolverRef.current;
-    if (resolver) {
-      chatResolverRef.current = null;
+    const chatNodeId = directorPhaseChatKey(id);
+    const waiter = directorChatWaiters.get(chatNodeId) || chatResolverRef.current;
+    directorChatWaiters.delete(chatNodeId);
+    chatResolverRef.current = null;
+    if (waiter) {
       const err = new Error('cancelled');
       err.name = 'AbortError';
-      resolver.reject(err);
+      waiter.reject(err);
     }
     void window.electronAPI?.cancelAudioTranscribeJobs?.();
     setBusyAction(null);
@@ -5786,13 +8989,688 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         }),
       );
     }
-  }, [patch]);
+  }, [id, patch]);
 
   const isMusicJobAbortError = useCallback((e: unknown) => {
     if (!e) return false;
     if (e instanceof Error && (e.name === 'AbortError' || /cancell?ed/i.test(e.message))) return true;
     return false;
   }, []);
+
+  /** 取消进行中的导演 LLM（故事/剧本/分析等）：先解放 UI；云端若已扣费，上游失败会退，成功则可能已扣 */
+  const cancelDirectorChat = useCallback(
+    (reason: 'user' | 'timeout' = 'user') => {
+      if (!mountedRef.current) {
+        chatResolverRef.current = null;
+        return;
+      }
+      chatGenRef.current += 1;
+      const chatNodeId = directorPhaseChatKey(id);
+      const waiter = directorChatWaiters.get(chatNodeId) || chatResolverRef.current;
+      directorChatWaiters.delete(chatNodeId);
+      chatResolverRef.current = null;
+      if (waiter) {
+        const err = new Error(reason === 'timeout' ? 'timeout' : 'cancelled');
+        err.name = reason === 'timeout' ? 'TimeoutError' : 'AbortError';
+        waiter.reject(err);
+      }
+      // 避免听写卡在 connecting 时全局锁死话筒/画布点击
+      try {
+        cancelFinalPromptOpinionDictation();
+      } catch {
+        /* ignore */
+      }
+      forceClearVoiceModalLock();
+      if (mountedRef.current) {
+        try {
+          void window.electronAPI?.abortFcLlm?.();
+        } catch {
+          /* ignore */
+        }
+      }
+      setBusyAction(null);
+      setOptimizingShotNos([]);
+      optimizingShotNosRef.current = [];
+      rejectDirectorSkillOptWaiters(id, reason === 'timeout' ? 'timeout' : 'cancelled');
+      if (!mountedRef.current) return;
+      const cur = directorStateRef.current;
+      // 顶栏 data.isGenerating 也可能单独卡住，一律清掉
+      patch({ ...cur, isGenerating: false, error: '' });
+    },
+    [cancelFinalPromptOpinionDictation, id, patch],
+  );
+
+  const isDirectorChatAbortError = useCallback((e: unknown) => {
+    if (!e) return false;
+    if (e instanceof Error && (e.name === 'AbortError' || /cancell?ed/i.test(e.message))) return true;
+    return false;
+  }, []);
+
+  const isDirectorChatTimeoutError = useCallback((e: unknown) => {
+    if (!e) return false;
+    if (e instanceof Error && (e.name === 'TimeoutError' || /timeout/i.test(e.message))) return true;
+    return false;
+  }, []);
+
+  /** 故事/剧本：带客户端超时（略长于 FC LLM 180s），超时自动取消等待 */
+  const DIRECTOR_CHAT_CLIENT_TIMEOUT_MS = 240_000;
+  const runDirectorChatWithTimeout = useCallback(
+    async (
+      systemPrompt: string,
+      userPrompt: string,
+      opts?: {
+        max_tokens?: number;
+        response_format?: unknown;
+        temperature?: number;
+        timeoutMs?: number;
+      },
+    ) => {
+      const timeoutMs =
+        opts?.timeoutMs != null && Number.isFinite(Number(opts.timeoutMs))
+          ? Math.max(5_000, Number(opts.timeoutMs))
+          : DIRECTOR_CHAT_CLIENT_TIMEOUT_MS;
+      const { timeoutMs: _ignored, ...chatOpts } = opts || {};
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        if (!mountedRef.current) return;
+        cancelDirectorChat('timeout');
+      }, timeoutMs);
+      directorChatClientTimerRef.current = timer;
+      try {
+        return await runChat(systemPrompt, userPrompt, chatOpts);
+      } catch (e) {
+        if (timedOut && !isDirectorChatTimeoutError(e)) {
+          const err = new Error('timeout');
+          err.name = 'TimeoutError';
+          throw err;
+        }
+        throw e;
+      } finally {
+        if (directorChatClientTimerRef.current === timer) {
+          directorChatClientTimerRef.current = null;
+        }
+        clearTimeout(timer);
+      }
+    },
+    [cancelDirectorChat, isDirectorChatTimeoutError, runChat],
+  );
+
+  /** 502/空包/瞬时断网：立刻再打 1 次。429 另走长等待，避免在限流窗口内连打。 */
+  const isDirectorChatFastRetryError = useCallback(
+    (e: unknown) => {
+      const msg = String((e as Error)?.message || e || '');
+      if (/NX_AUTH|请先登录/i.test(msg)) return false;
+      if (isCloudRateLimitError(e)) return false;
+      if (isDirectorChatAbortError(e) && !isDirectorChatTimeoutError(e)) return false;
+      return /502|503|504|Bad Gateway|空内容|返回为空|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|Failed to fetch|连接超时|ENOTFOUND/i.test(
+        msg,
+      );
+    },
+    [isDirectorChatAbortError, isDirectorChatTimeoutError],
+  );
+
+  const runDirectorChatWithRetry = useCallback(
+    async (
+      systemPrompt: string,
+      userPrompt: string,
+      opts?: {
+        max_tokens?: number;
+        response_format?: unknown;
+        temperature?: number;
+        timeoutMs?: number;
+        retries?: number;
+      },
+    ) => {
+      const retries = Math.max(0, Math.min(2, Math.round(Number(opts?.retries) || 1)));
+      const { retries: _r, ...chatOpts } = opts || {};
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) {
+          const waitMs = isCloudRateLimitError(lastErr) ? 16_000 : 900;
+          await new Promise((r) => setTimeout(r, waitMs));
+          if (!mountedRef.current) break;
+        }
+        try {
+          const text = await runDirectorChatWithTimeout(systemPrompt, userPrompt, chatOpts);
+          if (String(text || '').trim()) return text;
+          lastErr = new Error('模型返回为空（网络或上游未返回正文），请重试');
+          if (attempt >= retries) throw lastErr;
+        } catch (e) {
+          lastErr = e;
+          if (isDirectorChatAbortError(e) && !isDirectorChatTimeoutError(e)) throw e;
+          const retryable = isDirectorChatFastRetryError(e) || isCloudRateLimitError(e);
+          if (!retryable || attempt >= retries) throw e;
+        }
+      }
+      throw lastErr;
+    },
+    [
+      isDirectorChatAbortError,
+      isDirectorChatFastRetryError,
+      isDirectorChatTimeoutError,
+      runDirectorChatWithTimeout,
+    ],
+  );
+
+  const DIRECTOR_MV_SKILL_REWRITE_TIMEOUT_MS = 90_000;
+  const rewriteMvVideoPromptsToSkill = useCallback(
+    async (
+      shotNos: string[],
+    ): Promise<{ ok: boolean; overrides: Record<string, string>; failedShotNos: string[] }> => {
+      const overrides: Record<string, string> = {};
+      const failedShotNos: string[] = [];
+      if (!isMvMode || shotNos.length === 0) return { ok: true, overrides, failedShotNos };
+      if (!window.electronAPI?.getMinimaxH3PromptGuide) {
+        await showAlert(tt.videoSkillRewriteGuideMissing);
+        return { ok: false, overrides, failedShotNos: [...shotNos] };
+      }
+
+      const latest = directorStateRef.current;
+      const batchModel = normalizeDirectorVideoBatchModel(latest.videoBatchModel);
+      const batchLipsyncModel = resolveDirectorMvLipsyncModel(latest.videoBatchLipsyncModel);
+      const mvMusicUrl = String(latest.mvMusic?.url || '').trim();
+      const segs = latest.mvMusic?.lyricSegments || [];
+      const packs =
+        segs.length > 0
+          ? packLyricSegmentsIntoShotPacks(segs, {
+              clipLengthMode: latest.mvMusic?.clipLengthMode,
+            })
+          : [];
+      const songDur = Number(latest.mvMusic?.durationSec) || 0;
+      const ranges = computeDirectorShotMusicRangesFromState(latest);
+      const wanted = new Set(shotNos.map((n) => String(n || '').trim()).filter(Boolean));
+
+      type SkillJob = {
+        shotNo: string;
+        rowIndex: number;
+        structure: 'base' | 'ref';
+        sourcePrompt: string;
+        seedOriginal: string;
+        durationSec: number;
+        imageCount: number;
+        hasRefAudio: boolean;
+        modelId: string;
+        refMapHint: string;
+        sceneStoryHint: string;
+        refItems: ReturnType<typeof buildDirectorShotRefItems>;
+      };
+      const jobs: SkillJob[] = [];
+
+      for (let i = 0; i < (latest.shots || []).length; i++) {
+        const shot = latest.shots[i];
+        const shotNo = String(shot['镜号'] || i + 1).trim() || String(i + 1);
+        if (!wanted.has(shotNo)) continue;
+        const sb = getDirectorShotStoryboard(latest, shotNo);
+        const sbUrl = String(sb?.imageUrl || '').trim();
+        const range = ranges[i] || {
+          startSec: 0,
+          endSec: parseDirectorShotDurationSec(shot['时长'], 5),
+          durationSec: parseDirectorShotDurationSec(shot['时长'], 5),
+        };
+        const startSec = Math.max(0, Number(range.startSec) || 0);
+        let endSec = Number(range.endSec);
+        if (!Number.isFinite(endSec) || endSec <= startSec + 0.05) {
+          endSec = startSec + Math.max(0.5, Number(range.durationSec) || 5);
+        }
+        const hasVoice = shotAudioRangeHasHumanVoice(segs, startSec, endSec);
+        const preferLipsync = resolveDirectorMvForceLipsyncOn(
+          isMvMode,
+          resolveDirectorShotPreferLipsync(shot, sb, {
+            hasHumanVoice: hasVoice,
+            packText: packs[i]?.text || String(shot['对白旁白'] || ''),
+            audioStartSec: startSec,
+            songDurationSec: songDur,
+            closeUpFramingOn: directorStateRef.current.mvCloseUpFraming !== false,
+          }),
+        );
+        const shotModel = resolveDirectorMvShotVideoModel({
+          isMv: isMvMode,
+          preferLipsync,
+          batchLipsyncModel,
+          batchModel,
+        });
+        const structure = resolveMinimaxH3OptimizeStructure(shotModel);
+        const existingOpt = String(sb.promptOptimized || '').trim();
+        const baseOriginal = getDirectorShotPromptVersions(shot, sb).original;
+        const currentOriginal = String(baseOriginal || shot['最终提示词'] || '').trim();
+        const lastFrom = String(sb.promptOptimizedFrom || '').trim();
+        // 原文没变且已有优化稿才跳过；原文改过必须重新优化
+        if (existingOpt && lastFrom && lastFrom === currentOriginal) {
+          overrides[shotNo] = existingOpt;
+          continue;
+        }
+        const sourcePrompt = resolveDirectorShotVideoPromptForGen(
+          { ...shot, 最终提示词: baseOriginal || shot['最终提示词'] },
+          { lipsync: preferLipsync },
+        ).trim();
+        if (!sourcePrompt) {
+          failedShotNos.push(shotNo);
+          continue;
+        }
+        const orderedRefs = getOrderedAssetsWithImages(latest);
+        const boundIdx = getShotBoundRefIndices(shot, orderedRefs, i);
+        const boundChars = boundIdx
+          .map((idx) => orderedRefs[idx])
+          .filter(
+            (a): a is (typeof orderedRefs)[number] =>
+              !!a && a.kind === 'character' && !!String(a.imageUrl || '').trim(),
+          )
+          .slice(0, 2);
+        const ltxSingle = isDirectorLtxSingleImageModel(shotModel);
+        const refItems = buildDirectorShotRefItems({
+          storyboardUrl: sbUrl || undefined,
+          boundAssets: ltxSingle ? [] : boundChars,
+        });
+        const refMapHint = ltxSingle
+          ? (sbUrl
+              ? '<Picture 1> / @图片1 = this shot\'s storyboard only (first frame). Do not mention Picture 2 or a character sheet.'
+              : '')
+          : refItems
+              .map((it) =>
+                it.role === 'storyboard'
+                  ? `<Picture ${it.n}> / @图片${it.n} = this shot's storyboard (composition, scene, colors and rendering from this image — do not name colors; do not regrade; do not restyle into 3D CGI)`
+                  : `<Picture ${it.n}> / @图片${it.n} = character "${it.name}" identity sheet (face/hair/costume only)`,
+              )
+              .join('\n');
+        const imageCount = refItems.length;
+        const sceneStoryHint = buildDirectorShotSceneStoryHint(shot);
+        const repairedSource = repairDirectorMvPromptImageMap(
+          sourcePrompt,
+          refItems,
+          sceneStoryHint,
+        );
+        jobs.push({
+          shotNo,
+          rowIndex: i,
+          structure,
+          sourcePrompt: repairedSource || sourcePrompt,
+          seedOriginal: currentOriginal || repairedSource || sourcePrompt,
+          durationSec: Math.max(1, Number(range.durationSec) || endSec - startSec || 5),
+          imageCount,
+          hasRefAudio: preferLipsync && !!mvMusicUrl,
+          modelId: shotModel,
+          refMapHint,
+          sceneStoryHint,
+          refItems,
+        });
+      }
+
+      if (jobs.length === 0) return { ok: true, overrides, failedShotNos };
+
+      const guideCache: Partial<
+        Record<'base' | 'ref', { skillMd: string; guide: string }>
+      > = {};
+      for (const kind of new Set(jobs.map((j) => j.structure))) {
+        const guideRes = await window.electronAPI.getMinimaxH3PromptGuide(kind);
+        if (!guideRes?.ok) {
+          await showAlert(
+            (guideRes as { error?: string } | null)?.error || tt.videoSkillRewriteGuideMissing,
+          );
+          return { ok: false, overrides, failedShotNos: jobs.map((j) => j.shotNo) };
+        }
+        guideCache[kind] = { skillMd: guideRes.skillMd, guide: guideRes.guide };
+      }
+
+      const chatModelRaw = String(directorStateRef.current.chatModel || '').trim();
+      const chatModel = (DIRECTOR_CHAT_MODELS as readonly string[]).includes(chatModelRaw)
+        ? chatModelRaw
+        : DIRECTOR_CHAT_MODEL_DEFAULT;
+      let doneCount = 0;
+      const totalJobs = jobs.length;
+      const bumpProgress = () => {
+        setVideoSkillRewriteHint(
+          fillDirectorI18n(tt.videoSkillRewriteProgress, {
+            cur: Math.min(doneCount + 1, totalJobs),
+            total: totalJobs,
+          }),
+        );
+      };
+      const runOneSkillJob = async (job: (typeof jobs)[number]) => {
+        const guide = guideCache[job.structure];
+        if (!guide) return;
+        bumpProgress();
+        const { systemPrompt, userPrompt } = buildMinimaxH3OptimizeMessages({
+          structure: job.structure,
+          skillMd: guide.skillMd,
+          guideText: guide.guide,
+          prompt: job.sourcePrompt,
+          imageCount: job.imageCount,
+          hasRefAudio: job.hasRefAudio,
+          durationSec: job.durationSec,
+          baseSubMode: resolveMinimaxH3BaseSubMode(job.modelId, job.imageCount),
+          modelId: job.modelId,
+          refMapHint: job.refMapHint,
+          sceneStoryHint: job.sceneStoryHint,
+        });
+        ensureDirectorSkillOptStatusListener();
+        const requestId = `skill-${job.shotNo}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const optNodeId = directorSkillOptNodeId(id, requestId);
+        const raw = await new Promise<string>((resolve, reject) => {
+          let settled = false;
+          const settleResolve = (text: string) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            resolve(text);
+          };
+          const settleReject = (err: Error) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            reject(err);
+          };
+          const timer = window.setTimeout(() => {
+            directorSkillOptWaiters.delete(optNodeId);
+            const err = new Error('timeout');
+            err.name = 'TimeoutError';
+            settleReject(err);
+          }, DIRECTOR_MV_SKILL_REWRITE_TIMEOUT_MS);
+          const early = takeDirectorSkillOptStash(optNodeId);
+          if (early) {
+            settleResolve(early);
+            return;
+          }
+          directorSkillOptWaiters.set(optNodeId, {
+            directorId: id,
+            resolve: settleResolve,
+            reject: settleReject,
+          });
+          // 再读一次 stash：SUCCESS 可能夹在 check 与 set 之间
+          const raced = takeDirectorSkillOptStash(optNodeId);
+          if (raced) {
+            directorSkillOptWaiters.delete(optNodeId);
+            settleResolve(raced);
+            return;
+          }
+          if (!window.electronAPI?.invokeAI) {
+            directorSkillOptWaiters.delete(optNodeId);
+            settleReject(new Error(tt.generateFailed));
+            return;
+          }
+          void window.electronAPI
+            .invokeAI({
+              modelId: 'chat',
+              nodeId: optNodeId,
+              input: {
+                model: chatModel,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: userPrompt },
+                ],
+                stream: false,
+                projectId: data?.projectId || undefined,
+                nodeTitle: 'MV导演·优化提示词',
+                directorChatRequestId: requestId,
+                max_tokens: 8192,
+              },
+            })
+            .then(() => {
+              // invoke 已返回：若 SUCCESS 已暂存则立刻结算；否则继续等状态通道 / 总超时
+              const late = takeDirectorSkillOptStash(optNodeId);
+              if (late) {
+                directorSkillOptWaiters.delete(optNodeId);
+                settleResolve(late);
+              }
+            })
+            .catch((e: unknown) => {
+              if (!directorSkillOptWaiters.has(optNodeId)) return;
+              directorSkillOptWaiters.delete(optNodeId);
+              settleReject(e instanceof Error ? e : new Error(String(e || tt.generateFailed)));
+            });
+        });
+        let next = recoverMinimaxH3OptimizedPrompt(
+          repairDirectorMvPromptImageMap(
+            parseMinimaxH3OptimizedPrompt(raw, job.structure, job.sourcePrompt),
+            job.refItems,
+            job.sceneStoryHint,
+          ),
+        );
+        // multi/口型期望 ref 六段，但模型常回 base 三段或中文六段；都认
+        if (!isAcceptableMinimaxH3OptimizedPrompt(next)) {
+          const altStructure = job.structure === 'ref' ? 'base' : 'ref';
+          next = recoverMinimaxH3OptimizedPrompt(
+            repairDirectorMvPromptImageMap(
+              parseMinimaxH3OptimizedPrompt(raw, altStructure, job.sourcePrompt),
+              job.refItems,
+              job.sceneStoryHint,
+            ),
+          );
+        }
+        if (!isAcceptableMinimaxH3OptimizedPrompt(next)) {
+          console.warn('[Director] skill optimize invalid format', {
+            shotNo: job.shotNo,
+            structure: job.structure,
+            rawHead: String(raw || '').slice(0, 280),
+            parsedHead: String(next || '').slice(0, 280),
+          });
+          throw new Error('invalid-skill-prompt');
+        }
+        overrides[job.shotNo] = next;
+        const live = directorStateRef.current;
+        const prevSb = getDirectorShotStoryboard(live, job.shotNo);
+        const liveOrig = String(prevSb.promptOriginal || '').trim();
+        const liveOpt = String(prevSb.promptOptimized || '').trim();
+        const seed = String(job.seedOriginal || '').trim() || job.sourcePrompt;
+        const corrupted = !!(liveOrig && liveOpt && liveOrig === liveOpt);
+        const nextOriginal = corrupted
+          ? seed && seed !== liveOpt
+            ? seed
+            : liveOrig
+          : liveOrig || seed;
+        // 只更新优化稿；原版仅在空/曾被误写成优化稿时校正，不被本次优化结果覆盖
+        patch(
+          updateDirectorShotStoryboard(live, job.shotNo, {
+            ...(nextOriginal ? { promptOriginal: nextOriginal } : {}),
+            promptOptimized: next,
+            promptOptimizedFrom: seed,
+            useOptimizedPrompt: true,
+          }),
+        );
+      };
+      const waveSize = Math.min(DIRECTOR_MV_PROMPT_OPTIMIZE_PARALLEL, totalJobs);
+      const runJobWithRetry = async (job: (typeof jobs)[number]) => {
+        try {
+          await runOneSkillJob(job);
+          return false;
+        } catch (err) {
+          const retryable =
+            isCloudRateLimitError(err) ||
+            isDirectorChatFastRetryError(err) ||
+            (err instanceof Error &&
+              (err.name === 'TimeoutError' ||
+                err.message === 'invalid-skill-prompt' ||
+                err.message === 'empty-skill-prompt'));
+          let lastErr: unknown = err;
+          if (retryable && mountedRef.current) {
+            await new Promise((r) =>
+              setTimeout(r, isCloudRateLimitError(err) ? 16_000 : 1500),
+            );
+            try {
+              await runOneSkillJob(job);
+              lastErr = null;
+            } catch (err2) {
+              lastErr = err2;
+            }
+          }
+          if (lastErr) {
+            failedShotNos.push(job.shotNo);
+            console.warn(
+              `[Director] ${fillDirectorI18n(tt.videoSkillRewriteFailed, { no: job.shotNo })}`,
+              lastErr,
+            );
+            if (totalJobs === 1) {
+              const msg = lastErr instanceof Error ? lastErr.message : String(lastErr || '');
+              const aborted =
+                lastErr instanceof Error &&
+                (lastErr.name === 'AbortError' ||
+                  lastErr.name === 'CanceledError' ||
+                  lastErr.name === 'TimeoutError' ||
+                  /cancell?ed|已取消|timeout/i.test(msg));
+              if (!aborted) {
+                if (isCloudRateLimitError(lastErr)) {
+                  await showAlert(formatCloudLlmUserError(lastErr));
+                } else {
+                  const hint =
+                    msg === 'invalid-skill-prompt'
+                      ? '\n模型返回格式不符合 H3（需英文三段/六段，或中文：主体定义/详细描述/声景）'
+                      : msg === 'empty-skill-prompt'
+                        ? '\n模型未返回有效文本'
+                        : msg
+                          ? `\n${formatCloudLlmUserError(msg)}`
+                          : '';
+                  await showAlert(
+                    `${fillDirectorI18n(tt.videoSkillRewriteFailed, { no: job.shotNo })}${hint}`,
+                  );
+                }
+              }
+            }
+          }
+          return isCloudRateLimitError(lastErr);
+        } finally {
+          doneCount += 1;
+          setVideoSkillRewriteHint(
+            fillDirectorI18n(tt.videoSkillRewriteProgress, {
+              cur: Math.min(doneCount, totalJobs),
+              total: totalJobs,
+            }),
+          );
+        }
+      };
+
+      for (let start = 0; start < totalJobs; start += waveSize) {
+        if (!mountedRef.current) break;
+        const wave = jobs.slice(start, start + waveSize);
+        const waveFlags = await Promise.all(wave.map((job) => runJobWithRetry(job)));
+        const more = start + waveSize < totalJobs;
+        if (!more || !mountedRef.current) break;
+        const gapMs = waveFlags.some(Boolean)
+          ? 16_000
+          : DIRECTOR_MV_PROMPT_OPTIMIZE_WAVE_GAP_MS;
+        setVideoSkillRewriteHint(
+          fillDirectorI18n(tt.videoSkillRewriteWaveWait, {
+            cur: String(Math.min(doneCount, totalJobs)),
+            total: String(totalJobs),
+            sec: String(Math.round(gapMs / 1000)),
+          }),
+        );
+        await new Promise((r) => setTimeout(r, gapMs));
+      }
+      setVideoSkillRewriteHint(null);
+      return { ok: true, overrides, failedShotNos };
+    },
+    [data?.projectId, id, isCloudRateLimitError, isDirectorChatFastRetryError, isMvMode, patch, showAlert, tt],
+  );
+  rewriteMvVideoPromptsToSkillRef.current = rewriteMvVideoPromptsToSkill;
+
+  const handleOptimizeVideoPrompts = useCallback(
+    async (shotNos?: string[]) => {
+      if (!isMvMode) return;
+      if (busyAction === 'videos') return;
+      const isSingle = Array.isArray(shotNos) && shotNos.length === 1;
+      // 批量优化进行中：不再开新的批量；单镜仍可并行
+      if (!isSingle && (busyAction === 'optimize-prompts' || optimizingShotNosRef.current.length > 0)) {
+        return;
+      }
+      flushFinalPromptDraft();
+      const latest = directorStateRef.current;
+      const nos =
+        Array.isArray(shotNos) && shotNos.length > 0
+          ? shotNos.map((n) => String(n || '').trim()).filter(Boolean)
+          : (latest.shots || [])
+              .map((s, i) => ({
+                no: String(s['镜号'] || i + 1).trim() || String(i + 1),
+                ok: !!String(s['最终提示词'] || s['画面描述'] || '').trim(),
+              }))
+              .filter((x) => x.ok)
+              .map((x) => x.no);
+      if (nos.length === 0) {
+        await showAlert(tt.videoPromptOptimizeNeedText);
+        return;
+      }
+      if (isSingle) {
+        const no = nos[0];
+        if (!no || optimizingShotNosRef.current.includes(no)) return;
+        optimizingShotNosRef.current = [...optimizingShotNosRef.current, no];
+        setOptimizingShotNos([...optimizingShotNosRef.current]);
+      } else {
+        optimizingShotNosRef.current = nos;
+        setOptimizingShotNos(nos);
+        setBusyAction('optimize-prompts');
+      }
+      try {
+        const rewritten = await rewriteMvVideoPromptsToSkillRef.current(nos);
+        if (!rewritten.ok) return;
+        const failed = (rewritten.failedShotNos || []).filter(Boolean);
+        const wroteAny = nos.some((no) => !!String(rewritten.overrides?.[no] || '').trim());
+        if (!isSingle && failed.length > 0) {
+          const okCount = Math.max(0, nos.length - failed.length);
+          if (okCount > 0) setPromptPreviewTab('optimized');
+          await showAlert(
+            fillDirectorI18n(tt.videoSkillRewriteBatchSummary, {
+              ok: String(okCount),
+              fail: String(failed.length),
+              nos: `${failed.slice(0, 16).join('、')}${failed.length > 16 ? '…' : ''}`,
+            }),
+          );
+        } else if (wroteAny) {
+          setPromptPreviewTab('optimized');
+        } else if (isSingle) {
+          const sb = getDirectorShotStoryboard(directorStateRef.current, nos[0]);
+          if (!String(sb.promptOptimized || '').trim()) {
+            await showAlert(fillDirectorI18n(tt.videoSkillRewriteFailed, { no: nos[0] }));
+          } else {
+            setPromptPreviewTab('optimized');
+          }
+        } else {
+          setPromptPreviewTab('optimized');
+        }
+      } finally {
+        if (isSingle) {
+          const no = nos[0];
+          optimizingShotNosRef.current = optimizingShotNosRef.current.filter((n) => n !== no);
+          setOptimizingShotNos([...optimizingShotNosRef.current]);
+          if (optimizingShotNosRef.current.length === 0) {
+            setVideoSkillRewriteHint(null);
+          }
+        } else {
+          optimizingShotNosRef.current = [];
+          setOptimizingShotNos([]);
+          setVideoSkillRewriteHint(null);
+          setBusyAction((prev) => (prev === 'optimize-prompts' ? null : prev));
+        }
+      }
+    },
+    [busyAction, flushFinalPromptDraft, isMvMode, showAlert, tt],
+  );
+
+  const setShotPromptUseOptimized = useCallback(
+    (shotNo: string, useOptimized: boolean) => {
+      const latest = directorStateRef.current;
+      const sb = getDirectorShotStoryboard(latest, shotNo);
+      if (useOptimized && !String(sb.promptOptimized || '').trim()) return;
+      patch(updateDirectorShotStoryboard(latest, shotNo, { useOptimizedPrompt: useOptimized }));
+    },
+    [patch],
+  );
+
+  // Esc：故事/剧本撰写中优先取消等待（不退全屏）
+  useEffect(() => {
+    const storyBusy =
+      busyAction === 'story-outline' ||
+      busyAction === 'story-script' ||
+      busyAction === 'story-oneshot' ||
+      busyAction === 'story-analyze';
+    if (!storyBusy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cancelDirectorChat('user');
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [busyAction, cancelDirectorChat]);
 
   const absorbedScript = useMemo(() => String(state.scriptText || '').trim(), [state.scriptText]);
   const scriptChipTitle = useMemo(() => {
@@ -5821,55 +9699,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     </span>
   );
 
-  const renderModeToggle = () => {
-    const modes = (
-      HIDE_DIRECTOR_SCRIPT_MODE_UI ? (['mv'] as DirectorMode[]) : (['script', 'mv'] as DirectorMode[])
-    );
-    return (
-    <div
-      className={`nodrag inline-flex items-center shrink-0 rounded-lg p-0.5 border ${
-        isDarkMode ? 'border-white/10 bg-white/[0.04]' : 'border-gray-200 bg-gray-100'
-      }`}
-    >
-      {modes.map((mode) => {
-        const active = state.mode === mode;
-        const label = mode === 'script' ? tt.modeScript : tt.modeMv;
-        return (
-          <button
-            key={mode}
-            type="button"
-            className={`rounded-md px-2 py-0.5 transition-colors whitespace-nowrap ${
-              active
-                ? isDarkMode
-                  ? 'bg-sky-500/30 text-sky-100'
-                  : 'bg-gray-700 text-white'
-                : isDarkMode
-                  ? 'text-white/50 hover:text-white/85'
-                  : 'text-gray-600 hover:text-gray-900'
-            }`}
-            style={{ fontSize: fsChrome }}
-            onClick={() => {
-              if (HIDE_DIRECTOR_SCRIPT_MODE_UI && mode === 'script') return;
-              patch(setDirectorMode(directorStateRef.current, mode));
-              if (mode === 'mv' && !isNodeFullscreen) {
-                const locked = directorMvLockedSize(
-                  Number(dataRef.current?.width) || sizeW,
-                );
-                dataRef.current?.onUpdate?.({
-                  width: locked.width,
-                  height: locked.height,
-                });
-                updateNodeInternals(id);
-              }
-            }}
-          >
-            {label}
-          </button>
-        );
-      })}
-    </div>
-    );
-  };
+  /** MV / 短剧已拆成独立节点，不再显示模式切换 */
+  const renderModeToggle = () => null;
 
   const userPromptText = String(data?.userPrompt || '');
 
@@ -5934,7 +9765,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const style = resolveDirectorStylePrompt(nextState.stylePresetId, nextState.globalStyle);
         nextState = {
           ...nextState,
-          shots: withComposedDirectorFinalPrompts(nextState.shots, style, true),
+          shots: withComposedDirectorFinalPrompts(nextState.shots, style, true, {
+            stylePresetId: nextState.stylePresetId,
+          }),
         };
       } else if (isMv && durSec > 0 && nextState.shots.length > 0) {
         nextState = {
@@ -5978,7 +9811,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         }
         const covered = ensureMvShotsCoverSceneNames(nextState.shots, sceneNames);
         const style = resolveDirectorStylePrompt(nextState.stylePresetId, nextState.globalStyle);
-        const composed = withComposedDirectorFinalPrompts(covered, style, true);
+        const composed = withComposedDirectorFinalPrompts(covered, style, true, {
+          stylePresetId: nextState.stylePresetId,
+        });
         const ranges = computeDirectorShotMusicRangesFromState({ ...nextState, shots: composed });
         const segs = nextState.mvMusic?.lyricSegments;
         const hasHumanVoiceByShot = composed.map((s, i) => {
@@ -6014,13 +9849,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 nextState.shots,
                 resolveDirectorStylePrompt(nextState.stylePresetId, nextState.globalStyle),
                 true,
+                { stylePresetId: nextState.stylePresetId },
               ),
             };
           }
         }
       }
       patch({
-        ...nextState,
+        ...markAllDirectorShotsPromptsSynced(nextState),
         isGenerating: false,
         error: '',
       });
@@ -6095,6 +9931,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         globalStyle: resolveDirectorStylePrompt(state.stylePresetId, state.globalStyle),
         assetRefs: refList,
         closeUpFraming: state.mvCloseUpFraming !== false,
+        shotChangePace: state.mvMusic?.shotChangePace,
+        styleUrl: resolveDirectorStyleReferenceImageUrl(
+          state.stylePresetId,
+          state.styleReferenceImageUrl,
+        ),
+        leadAssetIds: listDirectorMvLeadAssetIds(state),
       });
       const text = await runChat(systemPrompt, userPrompt);
       const normalized = normalizeDirectorPromptsResult(text);
@@ -6130,20 +9972,32 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     if (busyAction === 'prompts' || state.isGenerating) return;
     const key = `${state.shots.map((s) => `${s['镜号']}:${s['画面描述']}:${s['最终提示词']}`).join('|')}#${flattenDirectorAssets(state.assets)
       .map((a) => `${a.id}:${a.name}:${a.imageUrl ? 1 : 0}`)
-      .join(',')}`;
+      .join(',')}#${state.stylePresetId || ''}:${state.styleReferenceImageUrl || ''}`;
     if (assetRebindKeyRef.current === key) return;
     const { shots, changed } = rebindDirectorPipelineAssetRefs(state);
     assetRebindKeyRef.current = key;
     if (!changed) return;
     const nextKey = `${shots.map((s) => `${s['镜号']}:${s['画面描述']}:${s['最终提示词']}`).join('|')}#${flattenDirectorAssets(state.assets)
       .map((a) => `${a.id}:${a.name}:${a.imageUrl ? 1 : 0}`)
-      .join(',')}`;
+      .join(',')}#${state.stylePresetId || ''}:${state.styleReferenceImageUrl || ''}`;
     assetRebindKeyRef.current = nextKey;
     patchRef.current({ ...directorStateRef.current, shots, phase: 'prompts' });
-  }, [state.phase, state.shots, state.assets, state.isGenerating, busyAction]);
+  }, [
+    state.phase,
+    state.shots,
+    state.assets,
+    state.isGenerating,
+    busyAction,
+    state.stylePresetId,
+    state.styleReferenceImageUrl,
+  ]);
 
   const enqueueAssetImages = useCallback(
     (targets: DirectorAsset[], opts?: { onlyMissing?: boolean; maxParallel?: number }) => {
+      if (imageGenYuanbao(1) == null) {
+        void showAlert(tt.otsPriceRequired);
+        return;
+      }
       const onlyMissing = opts?.onlyMissing === true;
       let valid = targets.filter((a) => String(a.prompt || a.name).trim());
       if (onlyMissing) {
@@ -6176,7 +10030,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
       void runNextImageGen();
     },
-    [runNextImageGen],
+    [imageGenYuanbao, runNextImageGen, showAlert, tt.otsPriceRequired],
   );
 
   const startBatchImages = useCallback(() => {
@@ -6190,12 +10044,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const generateCategory = useCallback(
     (kind: DirectorAssetKind) => {
-      const list =
-        kind === 'character'
-          ? state.assets.characters
-          : kind === 'scene'
-            ? state.assets.scenes
-            : state.assets.props;
+      const list = state.assets[directorAssetBagKey(kind)] || [];
       const pending = list.filter(
         (a) =>
           String(a.prompt || a.name).trim() && !String(a.imageUrl || '').trim(),
@@ -6214,24 +10063,81 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const generateOneAsset = useCallback(
     (asset: DirectorAsset) => {
+      if (!String(asset.prompt || asset.name || '').trim()) {
+        void showAlert(tt.castGenerateOrCanvas);
+        return;
+      }
+      if (imageGenYuanbao(1) == null) {
+        void showAlert(tt.otsPriceRequired);
+        return;
+      }
+      // 先打进度态，避免等队列/invoke 时界面无反馈
+      markImageGenProgress(asset.id, true);
+      patch(
+        updateDirectorAsset(directorStateRef.current, asset.id, {
+          status: 'generating',
+          error: undefined,
+        }),
+      );
       enqueueAssetImages([asset], { onlyMissing: false });
     },
-    [enqueueAssetImages],
+    [
+      enqueueAssetImages,
+      imageGenYuanbao,
+      markImageGenProgress,
+      patch,
+      showAlert,
+      tt.castGenerateOrCanvas,
+      tt.otsPriceRequired,
+    ],
   );
 
   useEffect(() => {
     if (!sourceMenuAssetId) return;
     const onDoc = (e: MouseEvent) => {
-      const el = sourceMenuRef.current;
-      if (el && !el.contains(e.target as Node)) setSourceMenuAssetId(null);
+      const t = e.target as Node;
+      const anchor = sourceMenuRef.current;
+      const portal = sourceMenuPortalRef.current;
+      if (anchor?.contains(t) || portal?.contains(t)) return;
+      setSourceMenuAssetId(null);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [sourceMenuAssetId]);
 
+  /** 选角缩略图来源菜单：相对锚点 fixed 定位（配合 portal，躲开 overflow 裁切） */
+  useLayoutEffect(() => {
+    if (!sourceMenuAssetId) {
+      setSourceMenuFixedStyle(null);
+      return;
+    }
+    const update = () => {
+      const el = sourceMenuRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const minWidth = Math.max(152, Math.min(220, rect.width));
+      let left = rect.left + rect.width / 2 - minWidth / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - minWidth - 8));
+      setSourceMenuFixedStyle({
+        left,
+        bottom: Math.max(8, window.innerHeight - rect.top + 6),
+        minWidth,
+      });
+    };
+    update();
+    const raf = requestAnimationFrame(update);
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [sourceMenuAssetId]);
+
   /** 进入选角：按选角计划确保主角槽位 */
   useEffect(() => {
-    if (!isMvMode || state.phase !== 'cast') return;
+    if (!isWizardMode || state.phase !== 'cast') return;
     const plan = normalizeDirectorMvCastPlan(state.mvCastPlan);
     const chars = state.assets.characters || [];
     const needEnsure =
@@ -6246,7 +10152,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   /** 进入场景步且列表为空时，按剧本场景库自动铺场景卡 */
   useEffect(() => {
-    if (!isMvMode || state.phase !== 'assets') return;
+    if (!isWizardMode || state.phase !== 'assets') return;
     if ((state.assets.scenes || []).length > 0) return;
     const entries = parseDirectorMvSceneEntries(getDirectorMvScenesSectionText(state));
     if (!entries.length) return;
@@ -6265,6 +10171,112 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       if (extra?.name?.trim()) updates.name = extra.name.trim();
       if (extra?.prompt?.trim()) updates.prompt = extra.prompt.trim();
       patch(updateDirectorAsset(directorStateRef.current, assetId, updates));
+      syncDomainAssetImage(assetId, { imageUrl: url, status: 'ready' });
+    },
+    [patch, syncDomainAssetImage],
+  );
+
+  const clearAssetImage = useCallback(
+    (assetId: string) => {
+      const id = String(assetId || '').trim();
+      if (!id) return;
+      if (findDirectorAssetById(directorStateRef.current.assets, id)) {
+        patch(
+          updateDirectorAsset(directorStateRef.current, id, {
+            imageUrl: '',
+            status: 'pending',
+            error: undefined,
+          }),
+        );
+      }
+      syncDomainAssetImage(id, { imageUrl: '', status: 'pending' });
+    },
+    [patch, syncDomainAssetImage],
+  );
+
+  /** 短剧 V2：Domain 资产 id → 确保 pipeline.assets 可生图 */
+  const ensureDramaPipelineAsset = useCallback(
+    (kind: DramaAssetVisualKind, assetId: string): DirectorAsset | null => {
+      const id = String(assetId || '').trim();
+      if (!id) return null;
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      let hit = findDirectorAssetById(directorStateRef.current.assets, id);
+      if (!hit && domain) {
+        const projected = projectDramaSessionToPipeline(domain, directorStateRef.current);
+        patch(projected);
+        hit = findDirectorAssetById(directorStateRef.current.assets, id);
+      }
+      if (!hit && domain && kind === 'characters') {
+        for (const ch of domain.bible.characters || []) {
+          const cos = (ch.costumes || []).find((x) => x.costume_id === id);
+          if (!cos) continue;
+          const prompt = composeDramaCharacterCostumePrompt(ch, cos);
+          const gender =
+            ch.gender === 'male' || ch.gender === 'female' ? ch.gender : '';
+          const asset = {
+            ...createEmptyDirectorAsset(
+              'character',
+              `${ch.name}·${cos.name}`,
+              prompt,
+              0,
+              gender,
+            ),
+            id,
+            imageUrl: String(cos.images?.[0] || '').trim(),
+            status: 'pending' as const,
+          };
+          patch(upsertDirectorAsset(directorStateRef.current, asset));
+          hit = findDirectorAssetById(directorStateRef.current.assets, id);
+          break;
+        }
+      }
+      if (hit && domain) {
+        const bibleItem =
+          kind === 'characters'
+            ? domain.bible.characters.find((c) => c.character_id === id)
+            : kind === 'scenes'
+              ? domain.bible.scenes.find((s) => s.scene_id === id)
+              : kind === 'props'
+                ? domain.bible.props.find((p) => p.prop_id === id)
+                : domain.bible.creatures.find((c) => c.creature_id === id);
+        if (bibleItem) {
+          const name = String(bibleItem.name || '').trim();
+          const prompt = String(
+            ('prompt' in bibleItem && bibleItem.prompt) ||
+              ('description' in bibleItem && bibleItem.description) ||
+              ('appearance' in bibleItem && bibleItem.appearance) ||
+              '',
+          ).trim();
+          if (
+            (name && name !== hit.asset.name) ||
+            (prompt && prompt !== String(hit.asset.prompt || '').trim())
+          ) {
+            patch(
+              updateDirectorAsset(directorStateRef.current, id, {
+                ...(name ? { name } : {}),
+                ...(prompt ? { prompt } : {}),
+              }),
+            );
+            hit = findDirectorAssetById(directorStateRef.current.assets, id);
+          }
+        } else if (kind === 'characters') {
+          for (const ch of domain.bible.characters || []) {
+            const cos = (ch.costumes || []).find((x) => x.costume_id === id);
+            if (!cos) continue;
+            const prompt = composeDramaCharacterCostumePrompt(ch, cos);
+            const name = `${ch.name}·${cos.name}`;
+            if (
+              name !== hit.asset.name ||
+              prompt !== String(hit.asset.prompt || '').trim()
+            ) {
+              patch(updateDirectorAsset(directorStateRef.current, id, { name, prompt }));
+              hit = findDirectorAssetById(directorStateRef.current.assets, id);
+            }
+            break;
+          }
+        }
+      }
+      return hit?.asset || null;
     },
     [patch],
   );
@@ -6291,6 +10303,68 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     [applyAssetImage, materializeStyleReferenceUrl],
   );
 
+  const clearSbPickerLeaveTimer = useCallback(() => {
+    if (sbPickerLeaveTimerRef.current) {
+      clearTimeout(sbPickerLeaveTimerRef.current);
+      sbPickerLeaveTimerRef.current = null;
+    }
+  }, []);
+
+  const openSbVersionPicker = useCallback(
+    (shotNo: string, versionCount: number) => {
+      if (versionCount < 2) return;
+      clearSbPickerLeaveTimer();
+      setCastPickerShotNo(null);
+      setScenePickerShotNo(null);
+      setSbSourceMenuShotNo(null);
+      setVideoPickerShotNo(null);
+      setSbPickerShotNo(shotNo);
+    },
+    [clearSbPickerLeaveTimer],
+  );
+
+  const scheduleCloseSbVersionPicker = useCallback(
+    (shotNo: string) => {
+      clearSbPickerLeaveTimer();
+      sbPickerLeaveTimerRef.current = setTimeout(() => {
+        setSbPickerShotNo((cur) => (cur === shotNo ? null : cur));
+        sbPickerLeaveTimerRef.current = null;
+      }, 180);
+    },
+    [clearSbPickerLeaveTimer],
+  );
+
+  const clearVideoPickerLeaveTimer = useCallback(() => {
+    if (videoPickerLeaveTimerRef.current) {
+      clearTimeout(videoPickerLeaveTimerRef.current);
+      videoPickerLeaveTimerRef.current = null;
+    }
+  }, []);
+
+  const openVideoVersionPicker = useCallback(
+    (shotNo: string, versionCount: number) => {
+      if (versionCount < 2) return;
+      clearVideoPickerLeaveTimer();
+      setCastPickerShotNo(null);
+      setScenePickerShotNo(null);
+      setSbSourceMenuShotNo(null);
+      setSbPickerShotNo(null);
+      setVideoPickerShotNo(shotNo);
+    },
+    [clearVideoPickerLeaveTimer],
+  );
+
+  const scheduleCloseVideoVersionPicker = useCallback(
+    (shotNo: string) => {
+      clearVideoPickerLeaveTimer();
+      videoPickerLeaveTimerRef.current = setTimeout(() => {
+        setVideoPickerShotNo((cur) => (cur === shotNo ? null : cur));
+        videoPickerLeaveTimerRef.current = null;
+      }, 180);
+    },
+    [clearVideoPickerLeaveTimer],
+  );
+
   const applyStoryboardImage = useCallback(
     (shotNo: string, imageUrl: string) => {
       const no = String(shotNo || '').trim();
@@ -6306,6 +10380,218 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     },
     [patch],
   );
+
+  /** 点击表格行后取消「新分镜/新成片/新优化提示词」绿色标记 */
+  const acknowledgeShotRowUnseen = useCallback(
+    (shotNo: string) => {
+      const no = String(shotNo || '').trim();
+      if (!no) return;
+      const sb = getDirectorShotStoryboard(directorStateRef.current, no);
+      if (!sb.storyboardUnseen && !sb.videoUnseen && !sb.promptOptimizedUnseen) return;
+      patch(
+        updateDirectorShotStoryboard(directorStateRef.current, no, {
+          storyboardUnseen: false,
+          videoUnseen: false,
+          promptOptimizedUnseen: false,
+        }),
+      );
+    },
+    [patch],
+  );
+
+  const bindShotRowUnseenAck = (shotNo: string, rowUnseen: boolean) =>
+    rowUnseen
+      ? {
+          onPointerDownCapture: () => acknowledgeShotRowUnseen(shotNo),
+          onClickCapture: () => acknowledgeShotRowUnseen(shotNo),
+        }
+      : {};
+
+  const isShotRowUnseen = (sb: {
+    storyboardUnseen?: boolean;
+    videoUnseen?: boolean;
+    promptOptimizedUnseen?: boolean;
+  } | null | undefined) =>
+    !!(sb?.storyboardUnseen || sb?.videoUnseen || sb?.promptOptimizedUnseen);
+
+  const renderSbVersionPopover = (shotNo: string, versions: string[], currentUrl: string) => {
+    if (sbPickerShotNo !== shotNo || versions.length < 2) return null;
+    return (
+      <div
+        data-director-picker-keep="sb"
+        className={`absolute left-1/2 top-full z-50 mt-1 w-[240px] -translate-x-1/2 rounded-lg border p-1.5 shadow-xl ${
+          isDarkMode ? 'border-white/15 bg-zinc-950' : 'border-gray-200 bg-white'
+        }`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseEnter={() => {
+          clearSbPickerLeaveTimer();
+          openSbVersionPicker(shotNo, versions.length);
+        }}
+        onMouseLeave={() => scheduleCloseSbVersionPicker(shotNo)}
+      >
+        <div className="flex items-center justify-between gap-1 px-1 pb-1">
+          <span className={mutedCls} style={{ fontSize: Math.max(10, fsChrome - 1) }}>
+            {tt.storyboardPickVersion}
+            <span className="ml-1 opacity-70">({versions.length})</span>
+          </span>
+          <button
+            type="button"
+            className={`nodrag rounded p-0.5 ${
+              isDarkMode ? 'text-white/70 hover:bg-white/10' : 'text-gray-600 hover:bg-gray-200'
+            }`}
+            title={tt.viewImage}
+            onClick={(e) => {
+              e.stopPropagation();
+              setImagePreview({ url: currentUrl, name: `镜${shotNo}` });
+              setSbPickerShotNo(null);
+            }}
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <div className="grid grid-cols-3 gap-1 max-h-48 overflow-auto">
+          {versions.map((u, i) => {
+            const on = u === currentUrl;
+            return (
+              <button
+                key={`${shotNo}-sb-${i}`}
+                type="button"
+                className={`nodrag relative overflow-hidden rounded-md ring-1 ${
+                  on
+                    ? 'ring-sky-400'
+                    : isDarkMode
+                      ? 'ring-white/15 hover:ring-white/35'
+                      : 'ring-gray-300 hover:ring-gray-400'
+                }`}
+                title={on ? tt.viewImage : tt.storyboardPickVersion}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (on) {
+                    setImagePreview({ url: u, name: `镜${shotNo}` });
+                  } else {
+                    applyStoryboardImage(shotNo, u);
+                  }
+                  setSbPickerShotNo(null);
+                }}
+              >
+                <img src={u} alt="" className="aspect-video w-full object-cover" draggable={false} />
+                {on ? (
+                  <span className="absolute right-0.5 top-0.5 rounded-full bg-sky-500 p-0.5 text-white">
+                    <Check className="w-2.5 h-2.5" />
+                  </span>
+                ) : (
+                  <span
+                    className={`absolute left-0.5 top-0.5 rounded px-0.5 font-medium tabular-nums ${
+                      isDarkMode ? 'bg-black/65 text-white/90' : 'bg-white/90 text-gray-700'
+                    }`}
+                    style={{ fontSize: 9 }}
+                  >
+                    {i + 1}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  const renderVideoVersionPopover = (
+    shotNo: string,
+    versions: string[],
+    currentUrl: string,
+  ) => {
+    if (videoPickerShotNo !== shotNo || versions.length < 2) return null;
+    const currentKey = directorMediaUrlKey(currentUrl) || currentUrl;
+    return (
+      <div
+        data-director-picker-keep="video"
+        className={`absolute left-1/2 top-full z-[60] mt-1 w-[260px] -translate-x-1/2 rounded-lg border p-1.5 shadow-xl ${
+          isDarkMode ? 'border-white/15 bg-zinc-950' : 'border-gray-200 bg-white'
+        }`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        onMouseEnter={() => {
+          clearVideoPickerLeaveTimer();
+          openVideoVersionPicker(shotNo, versions.length);
+        }}
+        onMouseLeave={() => scheduleCloseVideoVersionPicker(shotNo)}
+      >
+        <div className="flex items-center justify-between gap-1 px-1 pb-1">
+          <span className={mutedCls} style={{ fontSize: Math.max(10, fsChrome - 1) }}>
+            {tt.videoPickVersion}
+            <span className="ml-1 opacity-70">({versions.length})</span>
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-auto">
+          {versions.map((u, i) => {
+            const itemKey = directorMediaUrlKey(u) || u;
+            const on = isDirectorShotVideoSelection(currentUrl, u) || (!!currentKey && itemKey === currentKey);
+            const src = toElectronVideoElementSrc(u) || u;
+            return (
+              <button
+                key={`${shotNo}-vid-${itemKey || i}`}
+                type="button"
+                className={`nodrag nopan relative overflow-hidden rounded-md ring-1 text-left ${
+                  on
+                    ? 'ring-sky-400'
+                    : isDarkMode
+                      ? 'ring-white/15 hover:ring-white/35'
+                      : 'ring-gray-300 hover:ring-gray-400'
+                }`}
+                title={`${tt.videoPickVersion} ${i + 1}`}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  clearVideoPickerLeaveTimer();
+                  if (!on) applyShotVideo(shotNo, u);
+                }}
+              >
+                <video
+                  key={src}
+                  src={src}
+                  className="aspect-video w-full object-cover bg-black/40 pointer-events-none"
+                  muted
+                  playsInline
+                  preload="metadata"
+                  draggable={false}
+                  onLoadedMetadata={(e) => {
+                    const v = e.currentTarget;
+                    try {
+                      const t =
+                        Number.isFinite(v.duration) && v.duration > 0.6
+                          ? Math.min(0.5, v.duration * 0.2)
+                          : 0.1;
+                      if (t > 0) v.currentTime = t;
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                />
+                {on ? (
+                  <span className="absolute right-0.5 top-0.5 rounded-full bg-sky-500 p-0.5 text-white pointer-events-none">
+                    <Check className="w-2.5 h-2.5" />
+                  </span>
+                ) : null}
+                <span
+                  className={`absolute left-0.5 top-0.5 rounded px-0.5 font-medium tabular-nums pointer-events-none ${
+                    isDarkMode ? 'bg-black/65 text-white/90' : 'bg-white/90 text-gray-700'
+                  }`}
+                  style={{ fontSize: 9 }}
+                >
+                  {i + 1}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   const onUploadStoryboardClick = (shotNo: string) => {
     sbUploadShotNoRef.current = String(shotNo || '').trim();
@@ -6358,6 +10644,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const key = String(shotNo || '').trim();
       const videoUrl = String(url || '').trim();
       if (!key || !videoUrl) return;
+      const prev = getDirectorShotStoryboard(directorStateRef.current, key);
+      const prevUrl = String(prev?.videoUrl || '').trim();
+      const prevKey = directorMediaUrlKey(prevUrl) || prevUrl;
+      const nextKey = directorMediaUrlKey(videoUrl) || videoUrl;
+      // 同一成片（仅 URL 形态不同）不重复写入，避免历史膨胀、列表假多份
+      if (prevKey && nextKey && prevKey === nextKey) {
+        if (String(prev?.videoStatus || '').trim() !== 'ready') {
+          patch(
+            updateDirectorShotStoryboard(directorStateRef.current, key, {
+              videoUrl,
+              videoStatus: 'ready',
+              videoError: '',
+            }),
+          );
+        }
+        markVideoGenProgress(key, false);
+        data?.onApplyShotVideoToSplice?.(key, videoUrl);
+        return;
+      }
       patch(
         updateDirectorShotStoryboard(directorStateRef.current, key, {
           videoUrl,
@@ -6365,8 +10670,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           videoError: '',
         }),
       );
+      markVideoGenProgress(key, false);
+      data?.onApplyShotVideoToSplice?.(key, videoUrl);
     },
-    [patch],
+    [patch, data, markVideoGenProgress],
   );
 
   const onUploadShotVideoClick = (shotNo: string) => {
@@ -6374,15 +10681,40 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     videoUploadInputRef.current?.click();
   };
 
-  const onUploadShotVideoFile = async (file: File | null) => {
-    const shotNo = videoUploadShotNoRef.current;
+  const onUploadShotVideoFile = async (file: File | null, shotNoOverride?: string) => {
+    const shotNo = String(shotNoOverride || videoUploadShotNoRef.current || '').trim();
     videoUploadShotNoRef.current = null;
     if (!file || !shotNo) return;
+    if (!isDirectorShotVideoFile(file)) {
+      showAlert(tt.shotVideoDropUnsupported);
+      return;
+    }
     const api = window.electronAPI;
     const projectId = data?.projectId || undefined;
+    const filePath = String((file as File & { path?: string }).path || '').trim();
+    const prevUrl = String(
+      getDirectorShotStoryboard(directorStateRef.current, shotNo)?.videoUrl || '',
+    ).trim();
     let videoUrl = '';
     try {
-      if (api?.saveDroppedFileBufferToProjectAssets) {
+      // 拖入本地文件时优先按路径复制，避免整包 arrayBuffer 卡死
+      if (filePath && api?.createVideoLocalResourceFromFile) {
+        try {
+          const r = await api.createVideoLocalResourceFromFile(projectId, filePath);
+          videoUrl = String(r?.originalUrl || '').trim();
+        } catch (e) {
+          console.warn('[DirectorNode] createVideoLocalResourceFromFile 失败', e);
+        }
+      }
+      if (!videoUrl && filePath && api?.copyFileToProjectAssets) {
+        try {
+          const { savedPath } = await api.copyFileToProjectAssets(projectId, filePath);
+          videoUrl = `local-resource://${savedPath}`;
+        } catch (e) {
+          console.warn('[DirectorNode] copyFileToProjectAssets 失败', e);
+        }
+      }
+      if (!videoUrl && api?.saveDroppedFileBufferToProjectAssets) {
         const buffer = await file.arrayBuffer();
         const { savedPath } = await api.saveDroppedFileBufferToProjectAssets(
           projectId,
@@ -6407,6 +10739,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         return;
       }
     }
+    if (prevUrl.startsWith('blob:') && prevUrl !== videoUrl) {
+      try {
+        URL.revokeObjectURL(prevUrl);
+      } catch {
+        /* ignore */
+      }
+    }
     applyShotVideo(shotNo, videoUrl);
   };
 
@@ -6428,6 +10767,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     },
     [applyShotVideo, data, isNodeFullscreen, patch, tt.generateFailed],
   );
+
+  const onUploadClick = (assetId: string) => {
+    uploadAssetIdRef.current = String(assetId || '').trim() || null;
+    uploadInputRef.current?.click();
+  };
 
   const onUploadFile = async (file: File | null) => {
     const assetId = uploadAssetIdRef.current;
@@ -6477,7 +10821,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       setLibraryLoading(true);
       try {
         if (kind === 'character') {
-          const list = (await window.electronAPI?.getCharacters?.()) || [];
+          const list = await getCharactersCoalesced();
           setLibraryItems(
             list
               .map((c) => {
@@ -6518,7 +10862,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   );
 
   const addAsset = (kind: DirectorAssetKind) => {
-    const listKey = kind === 'character' ? 'characters' : kind === 'scene' ? 'scenes' : 'props';
+    const listKey = directorAssetBagKey(kind);
     const empty = createEmptyDirectorAsset(kind, '', '', state.assets[listKey].length);
     if (kind === 'scene') {
       empty.prompt = ensureDirectorSceneBuiltinPrompt(empty.prompt);
@@ -6533,8 +10877,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const applyStylePreset = (id: DirectorStylePresetId) => {
     const preset = getDirectorStylePreset(id);
     const nextStyle = id === 'custom' ? directorStateRef.current.globalStyle : preset.prompt;
+    // 自定义：保留已上传参考图；从系统风格切到自定义时清空系统预设图
     const publicRef =
-      id === 'custom' ? '' : directorStylePresetImageUrl(preset.imageFile);
+      id === 'custom'
+        ? directorStateRef.current.stylePresetId === 'custom'
+          ? String(directorStateRef.current.styleReferenceImageUrl || '').trim()
+          : ''
+        : directorStylePresetImageUrl(preset.imageFile);
     const base = {
       ...directorStateRef.current,
       stylePresetId: id,
@@ -6543,9 +10892,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     };
     patch({
       ...base,
-      shots: withComposedDirectorFinalPrompts(base.shots, nextStyle, true),
+      shots: withComposedDirectorFinalPrompts(base.shots, nextStyle, true, {
+        stylePresetId: id,
+      }),
     });
-    if (!publicRef) return;
+    if (!publicRef || id === 'custom') return;
     void materializeStyleReferenceUrl(publicRef).then((localUrl) => {
       if (!localUrl || localUrl === publicRef) return;
       if (directorStateRef.current.stylePresetId !== id) return;
@@ -6555,6 +10906,74 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       });
     });
   };
+
+  const applyStyleReferenceImage = useCallback(
+    (url: string) => {
+      const nextUrl = String(url || '').trim();
+      if (!nextUrl) return;
+      const cur = directorStateRef.current;
+      const nextStyle =
+        String(cur.globalStyle || '').trim() ||
+        (stylePromptEditId === 'custom' ? stylePromptDraft.trim() : '') ||
+        cur.globalStyle;
+      const base = {
+        ...cur,
+        stylePresetId: 'custom' as const,
+        globalStyle: nextStyle,
+        styleReferenceImageUrl: nextUrl,
+      };
+      patch({
+        ...base,
+        shots: withComposedDirectorFinalPrompts(base.shots, nextStyle, true, {
+          stylePresetId: 'custom',
+        }),
+      });
+    },
+    [patch, stylePromptDraft, stylePromptEditId],
+  );
+
+  const clearStyleReferenceImage = useCallback(() => {
+    const cur = directorStateRef.current;
+    if (cur.stylePresetId !== 'custom') return;
+    patch({
+      ...cur,
+      styleReferenceImageUrl: '',
+    });
+  }, [patch]);
+
+  const onUploadStyleRefClick = useCallback(() => {
+    styleRefUploadInputRef.current?.click();
+  }, []);
+
+  const onUploadStyleRefFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      try {
+        const reader = new FileReader();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(new Error('read failed'));
+          reader.readAsDataURL(file);
+        });
+        if (dataUrl) applyStyleReferenceImage(dataUrl);
+      } catch (e) {
+        console.warn('[DirectorNode] 风格参考图上传失败', e);
+        showAlert(e instanceof Error ? e.message : tt.generateFailed);
+      }
+    },
+    [applyStyleReferenceImage, showAlert, tt.generateFailed],
+  );
+
+  const pickStyleRefFromCanvas = useCallback(async () => {
+    if (!data?.onPickImageFromCanvas) return;
+    if (isNodeFullscreen) setIsNodeFullscreen(false);
+    try {
+      const url = await data.onPickImageFromCanvas();
+      if (url) applyStyleReferenceImage(url);
+    } catch (e) {
+      showAlert(e instanceof Error ? e.message : tt.generateFailed);
+    }
+  }, [applyStyleReferenceImage, data, isNodeFullscreen, showAlert, tt.generateFailed]);
 
   const clearStyleLongPressTimer = useCallback(() => {
     if (styleLongPressTimerRef.current != null) {
@@ -6594,7 +11013,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     };
     patch({
       ...base,
-      shots: withComposedDirectorFinalPrompts(base.shots, nextStyle, true),
+      shots: withComposedDirectorFinalPrompts(base.shots, nextStyle, true, {
+        stylePresetId: stylePromptEditId,
+      }),
     });
     setStylePromptEditId(null);
   }, [stylePromptDraft, stylePromptEditId, patch]);
@@ -6631,7 +11052,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         : getDirectorStylePreset(activeStylePresetId).labelZh;
     const systemPresets = DIRECTOR_STYLE_PRESETS.filter((p) => p.id !== 'custom');
     const hasCustomStyle =
-      activeStylePresetId === 'custom' && !!String(state.globalStyle || '').trim();
+      activeStylePresetId === 'custom' &&
+      (!!String(state.globalStyle || '').trim() || !!activeStyleRefUrl);
     const cardBorder = (active: boolean, editing: boolean) =>
       active || editing
         ? isDarkMode
@@ -6644,26 +11066,55 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     const renderCustomCard = () => (
       <button
         type="button"
-        className={`nodrag select-none relative overflow-hidden rounded-xl aspect-[16/10] border transition-all flex flex-col items-center justify-center gap-1 ${
-          activeStylePresetId === 'custom' || stylePromptEditId === 'custom'
-            ? isDarkMode
-              ? 'border-white ring-2 ring-white/80 bg-white/[0.08]'
-              : 'border-gray-300 ring-2 ring-gray-400/40 bg-gray-200/80'
-            : isDarkMode
-              ? 'border-dashed border-white/25 bg-white/[0.04] text-white/70 hover:bg-white/[0.07]'
-              : 'border-dashed border-gray-300 bg-gray-100 text-gray-800 hover:bg-gray-200/70'
+        className={`nodrag select-none relative overflow-hidden rounded-xl aspect-[16/10] border transition-all text-left ${
+          hasCustomStyle
+            ? cardBorder(true, stylePromptEditId === 'custom')
+            : activeStylePresetId === 'custom' || stylePromptEditId === 'custom'
+              ? isDarkMode
+                ? 'border-white ring-2 ring-white/80 bg-white/[0.08] flex flex-col items-center justify-center gap-1'
+                : 'border-gray-300 ring-2 ring-gray-400/40 bg-gray-200/80 flex flex-col items-center justify-center gap-1'
+              : isDarkMode
+                ? 'border-dashed border-white/25 bg-white/[0.04] text-white/70 hover:bg-white/[0.07] flex flex-col items-center justify-center gap-1'
+                : 'border-dashed border-gray-300 bg-gray-100 text-gray-800 hover:bg-gray-200/70 flex flex-col items-center justify-center gap-1'
         }`}
         style={{ fontSize: fsChrome }}
-        title={tt.styleLongPressHint}
+        title={locale === 'en' ? 'Custom style' : '自定义风格'}
         onClick={(e) => {
           e.stopPropagation();
-          setStyleLibraryTab('mine');
           openStylePromptEditor('custom');
           applyStylePreset('custom');
         }}
       >
-        <Plus className="w-5 h-5 opacity-80" strokeWidth={2} />
-        <span className="font-medium">{locale === 'en' ? 'Custom' : '自定义'}</span>
+        {hasCustomStyle ? (
+          <>
+            {activeStyleRefUrl ? (
+              <img
+                src={activeStyleRefUrl}
+                alt={activeLabel}
+                className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+                draggable={false}
+              />
+            ) : (
+              <div
+                className={`absolute inset-0 flex items-center justify-center px-2 text-center ${
+                  isDarkMode ? 'bg-white/[0.06] text-white/70' : 'bg-gray-200/80 text-gray-800'
+                }`}
+              >
+                <span className="line-clamp-3">{String(state.globalStyle || '').slice(0, 80)}</span>
+              </div>
+            )}
+            <div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/25 to-transparent px-1.5 pb-1.5 pt-5">
+              <span className="text-white text-[11px] font-medium drop-shadow">
+                {locale === 'en' ? 'Custom' : '自定义'}
+              </span>
+            </div>
+          </>
+        ) : (
+          <>
+            <Plus className="w-5 h-5 opacity-80" strokeWidth={2} />
+            <span className="font-medium">{locale === 'en' ? 'Custom' : '自定义'}</span>
+          </>
+        )}
       </button>
     );
 
@@ -6672,175 +11123,82 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         ref={stylePickerRef}
         className="director-keep-visible relative flex flex-col flex-1 min-h-0 gap-2.5 w-full"
       >
-        <div className="shrink-0 flex flex-col gap-1.5">
-          <div className="flex items-baseline justify-between gap-2">
-            <h3 className={`font-semibold ${titleCls}`} style={{ fontSize: fsSmall + 1 }}>
-              {tt.styleLibraryTitle}
-            </h3>
-            <span className={`truncate ${mutedCls}`} style={{ fontSize: fsChrome }}>
-              {fillDirectorI18n(tt.styleLibrarySelected, { name: activeLabel })}
-            </span>
-          </div>
-          <div
-            className={`flex items-center gap-4 border-b ${
-              isDarkMode ? 'border-white/10' : 'border-gray-300/80'
-            }`}
-          >
-            {(
-              [
-                { id: 'system' as const, label: tt.styleLibraryTabSystem },
-                { id: 'mine' as const, label: tt.styleLibraryTabMine },
-              ] as const
-            ).map((tab) => {
-              const on = styleLibraryTab === tab.id;
+        <div className="shrink-0 flex items-baseline justify-between gap-2">
+          <h3 className={`font-semibold ${titleCls}`} style={{ fontSize: fsSmall + 1 }}>
+            {tt.styleLibraryTitle}
+          </h3>
+          <span className={`truncate ${mutedCls}`} style={{ fontSize: fsChrome }}>
+            {fillDirectorI18n(tt.styleLibrarySelected, { name: activeLabel })}
+          </span>
+        </div>
+
+        <div className={`flex-1 min-h-0 overflow-y-auto nowheel pr-0.5 ${scrollCls}`}>
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
+            {renderCustomCard()}
+            {systemPresets.map((preset) => {
+              const active = activeStylePresetId === preset.id;
+              const label = locale === 'en' ? preset.labelEn : preset.labelZh;
+              const editing = stylePromptEditId === preset.id;
+              const thumb = directorStylePresetImageUrl(preset.imageFile);
               return (
                 <button
-                  key={tab.id}
+                  key={preset.id}
                   type="button"
-                  className={`nodrag relative pb-1.5 transition-colors ${
-                    on
-                      ? isDarkMode
-                        ? 'text-white font-medium'
-                        : 'text-gray-950 font-medium'
-                      : mutedCls
-                  }`}
-                  style={{ fontSize: fsSmall }}
-                  onClick={() => setStyleLibraryTab(tab.id)}
+                  className={`nodrag select-none relative overflow-hidden rounded-xl aspect-[16/10] border transition-all text-left ${cardBorder(active, editing)}`}
+                  title={`${label} · ${tt.styleLongPressHint}`}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    styleLongPressFiredRef.current = false;
+                    clearStyleLongPressTimer();
+                    styleLongPressTimerRef.current = setTimeout(() => {
+                      styleLongPressFiredRef.current = true;
+                      styleLongPressTimerRef.current = null;
+                      openStylePromptEditor(preset.id);
+                    }, 480);
+                  }}
+                  onPointerUp={clearStyleLongPressTimer}
+                  onPointerLeave={clearStyleLongPressTimer}
+                  onPointerCancel={clearStyleLongPressTimer}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    clearStyleLongPressTimer();
+                    styleLongPressFiredRef.current = true;
+                    openStylePromptEditor(preset.id);
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (styleLongPressFiredRef.current) {
+                      styleLongPressFiredRef.current = false;
+                      return;
+                    }
+                    applyStylePreset(preset.id);
+                  }}
                 >
-                  {tab.label}
-                  {on ? (
-                    <span
-                      className={`absolute left-0 right-0 -bottom-px h-0.5 rounded-full ${
-                        isDarkMode ? 'bg-sky-400' : 'bg-gray-950'
-                      }`}
+                  {thumb ? (
+                    <img
+                      src={thumb}
+                      alt={label}
+                      className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+                      draggable={false}
                     />
-                  ) : null}
+                  ) : (
+                    <div className={`absolute inset-0 ${isDarkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
+                  )}
+                  <div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/25 to-transparent px-1.5 pb-1.5 pt-5">
+                    <span className="text-white text-[11px] font-medium drop-shadow text-center line-clamp-1">
+                      {label}
+                    </span>
+                  </div>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* 六列紧凑风格卡（对齐图二艺术风格库） */}
-        <div className={`flex-1 min-h-0 overflow-y-auto nowheel pr-0.5 ${scrollCls}`}>
-          {styleLibraryTab === 'system' ? (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
-              {renderCustomCard()}
-              {systemPresets.map((preset) => {
-                const active = activeStylePresetId === preset.id;
-                const label = locale === 'en' ? preset.labelEn : preset.labelZh;
-                const editing = stylePromptEditId === preset.id;
-                const thumb = directorStylePresetImageUrl(preset.imageFile);
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={`nodrag select-none relative overflow-hidden rounded-xl aspect-[16/10] border transition-all text-left ${cardBorder(active, editing)}`}
-                    title={`${label} · ${tt.styleLongPressHint}`}
-                    onPointerDown={(e) => {
-                      if (e.button !== 0) return;
-                      styleLongPressFiredRef.current = false;
-                      clearStyleLongPressTimer();
-                      styleLongPressTimerRef.current = setTimeout(() => {
-                        styleLongPressFiredRef.current = true;
-                        styleLongPressTimerRef.current = null;
-                        openStylePromptEditor(preset.id);
-                      }, 480);
-                    }}
-                    onPointerUp={clearStyleLongPressTimer}
-                    onPointerLeave={clearStyleLongPressTimer}
-                    onPointerCancel={clearStyleLongPressTimer}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      clearStyleLongPressTimer();
-                      styleLongPressFiredRef.current = true;
-                      openStylePromptEditor(preset.id);
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (styleLongPressFiredRef.current) {
-                        styleLongPressFiredRef.current = false;
-                        return;
-                      }
-                      applyStylePreset(preset.id);
-                    }}
-                  >
-                    {thumb ? (
-                      <img
-                        src={thumb}
-                        alt={label}
-                        className="absolute inset-0 h-full w-full object-cover pointer-events-none"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className={`absolute inset-0 ${isDarkMode ? 'bg-white/5' : 'bg-gray-100'}`} />
-                    )}
-                    <div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/25 to-transparent px-1.5 pb-1.5 pt-5">
-                      <span className="text-white text-[11px] font-medium drop-shadow text-center line-clamp-1">
-                        {label}
-                      </span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2">
-              {renderCustomCard()}
-              {hasCustomStyle ? (
-                <button
-                  type="button"
-                  className={`nodrag select-none relative overflow-hidden rounded-xl aspect-[16/10] border transition-all text-left ${cardBorder(
-                    true,
-                    stylePromptEditId === 'custom',
-                  )}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    openStylePromptEditor('custom');
-                    applyStylePreset('custom');
-                  }}
-                >
-                  {activeStyleRefUrl ? (
-                    <img
-                      src={activeStyleRefUrl}
-                      alt={activeLabel}
-                      className="absolute inset-0 h-full w-full object-cover pointer-events-none"
-                      draggable={false}
-                    />
-                  ) : (
-                    <div
-                      className={`absolute inset-0 flex items-center justify-center px-2 text-center ${
-                        isDarkMode ? 'bg-white/[0.06] text-white/70' : 'bg-gray-200/80 text-gray-800'
-                      }`}
-                      style={{ fontSize: fsChrome }}
-                    >
-                      <span className="line-clamp-3">{String(state.globalStyle || '').slice(0, 80)}</span>
-                    </div>
-                  )}
-                  <div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/25 to-transparent px-1.5 pb-1.5 pt-5">
-                    <span className="text-white text-[11px] font-medium drop-shadow">
-                      {locale === 'en' ? 'Custom' : '自定义'}
-                    </span>
-                  </div>
-                </button>
-              ) : (
-                <div
-                  className={`col-span-full rounded-xl border border-dashed px-4 py-8 text-center ${
-                    isDarkMode ? 'border-white/15 text-white/45' : 'border-gray-300 text-gray-700'
-                  }`}
-                  style={{ fontSize: fsSmall }}
-                >
-                  {tt.styleLibraryMineEmpty}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
         {stylePromptEditId ? (
           <div
             className={`nodrag nowheel shrink-0 w-full rounded-xl px-3 py-2.5 shadow-xl ring-1 ${
-              isDarkMode ? 'bg-zinc-900/95 ring-white/15 backdrop-blur-md' : 'bg-gray-100 ring-gray-200'
+              isDarkMode ? 'bg-zinc-900 ring-white/15' : 'bg-gray-100 ring-gray-200'
             }`}
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
@@ -6866,6 +11224,84 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
+            {stylePromptEditId === 'custom' ? (
+              <div className="mb-2 flex items-start gap-2.5">
+                <div
+                  className={`relative h-[72px] w-[112px] shrink-0 overflow-hidden rounded-md border ${
+                    isDarkMode ? 'border-white/15 bg-black/35' : 'border-gray-200 bg-gray-100'
+                  }`}
+                >
+                  {activeStyleRefUrl ? (
+                    <img
+                      src={activeStyleRefUrl}
+                      alt={tt.styleRefImageLabel}
+                      className="h-full w-full object-cover pointer-events-none"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div
+                      className={`flex h-full w-full items-center justify-center px-1 text-center ${mutedCls}`}
+                      style={{ fontSize: fsChrome }}
+                    >
+                      {tt.styleRefImageLabel}
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1 flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    className={`nodrag inline-flex items-center gap-1 rounded-md px-2 py-1 transition-colors ${
+                      isDarkMode
+                        ? 'bg-white/10 text-white/85 hover:bg-white/15'
+                        : 'bg-gray-200/80 text-gray-800 hover:bg-gray-300/80'
+                    }`}
+                    style={{ fontSize: fsChrome }}
+                    title={tt.uploadLocal}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUploadStyleRefClick();
+                    }}
+                  >
+                    <Upload className="w-3.5 h-3.5 shrink-0" strokeWidth={2.25} />
+                    {tt.uploadLocal}
+                  </button>
+                  {data?.onPickImageFromCanvas ? (
+                    <button
+                      type="button"
+                      className={`nodrag inline-flex items-center gap-1 rounded-md px-2 py-1 transition-colors ${
+                        isDarkMode
+                          ? 'bg-white/10 text-white/85 hover:bg-white/15'
+                          : 'bg-gray-200/80 text-gray-800 hover:bg-gray-300/80'
+                      }`}
+                      style={{ fontSize: fsChrome }}
+                      title={tt.pickFromCanvas}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void pickStyleRefFromCanvas();
+                      }}
+                    >
+                      <MousePointerClick className="w-3.5 h-3.5 shrink-0" strokeWidth={2.25} />
+                      {tt.pickFromCanvas}
+                    </button>
+                  ) : null}
+                  {activeStyleRefUrl ? (
+                    <button
+                      type="button"
+                      className={`nodrag rounded-md px-2 py-1 transition-colors ${
+                        isDarkMode ? 'text-white/55 hover:bg-white/10' : 'text-gray-600 hover:bg-gray-200/70'
+                      }`}
+                      style={{ fontSize: fsChrome }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        clearStyleReferenceImage();
+                      }}
+                    >
+                      {tt.styleRefImageClear}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             <textarea
               className={`nodrag nowheel w-full min-h-[72px] max-h-[140px] resize-y rounded-md px-2.5 py-2 leading-relaxed outline-none focus:ring-1 ${
                 isDarkMode
@@ -6912,13 +11348,48 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     (phase: DirectorPhase) => {
       let next = setDirectorPhase(directorStateRef.current, phase);
       if (isMvMode && phase === 'cast') {
-        next = ensureDirectorMvLeadSlots(next);
+        next = applyAutoDirectorMvCastPlan(next);
       }
       if (isMvMode && phase === 'assets') {
         next = syncDirectorMvScenesFromScript(
           setDirectorAssetsStep(next, 'scenes'),
           'fill',
         );
+      }
+      if (isDramaMode && phase === 'assets') {
+        next = syncDirectorMvCastFromScript(next, 'fill');
+        next = syncDirectorMvScenesFromScript(
+          setDirectorAssetsStep(next, 'characters'),
+          'fill',
+        );
+      }
+      if (isDramaMode && (phase === 'shots' || phase === 'board')) {
+        next = ensureDirectorDramaShotsFromScript(next, { keepPhase: true });
+        next = setDirectorPhase(next, 'board');
+      }
+      if (isDramaMode && (phase === 'storyboards' || phase === 'videos')) {
+        const locked =
+          coerceDirectorMvAspectRatio(next.mvAspectRatio || next.videoBatchAspectRatio) || '9:16';
+        const model = normalizeDirectorVideoBatchModel(
+          next.videoBatchModel || videoBatchModel || 'minimax-h3-multi',
+        );
+        const nextAspect = normalizeDirectorVideoBatchAspect(model, locked);
+        next = {
+          ...next,
+          phase: 'videos',
+          mvAspectRatio: locked,
+          videoBatchAspectRatio: nextAspect,
+          videoBatchModel: model.includes('minimax') ? model : 'minimax-h3-multi',
+          shots: (next.shots || []).map((shot) => {
+            if (!shouldAutoSyncDirectorFinalPrompt(shot['最终提示词'])) return shot;
+            const videoPrompt = resolveDirectorShotVideoPromptForGen(shot, { lipsync: false });
+            if (!videoPrompt) return shot;
+            return { ...shot, 最终提示词: videoPrompt };
+          }),
+        };
+      }
+      if (isDramaMode && phase === 'story') {
+        next = setDirectorPhase(next, 'analyze');
       }
       if (
         isMvMode &&
@@ -6944,6 +11415,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           ...next,
           mvAspectRatio: locked,
           videoBatchAspectRatio: nextAspect,
+          videoBatchLipsyncModel: resolveDirectorMvLipsyncModel(next.videoBatchLipsyncModel),
           shots: (next.shots || []).map((shot, rowIndex) => {
             const shotNo = String(shot['镜号'] || rowIndex + 1);
             const sb = getDirectorShotStoryboard(next, shotNo);
@@ -6957,25 +11429,116 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               range.startSec,
               range.endSec,
             );
-            const lipsync = resolveDirectorShotPreferLipsync(shot, sb, {
-              hasHumanVoice: hasVoice,
-              packText: packs[rowIndex]?.text || String(shot['对白旁白'] || ''),
-              audioStartSec: range.startSec,
-              songDurationSec: songDur,
-              closeUpFramingOn: next.mvCloseUpFraming !== false,
-            });
-            const videoPrompt = composeDirectorShotVideoPrompt(shot, { lipsync });
+            const lipsync = resolveDirectorMvForceLipsyncOn(
+              true,
+              resolveDirectorShotPreferLipsync(shot, sb, {
+                hasHumanVoice: hasVoice,
+                packText: packs[rowIndex]?.text || String(shot['对白旁白'] || ''),
+                audioStartSec: range.startSec,
+                songDurationSec: songDur,
+                closeUpFramingOn: next.mvCloseUpFraming !== false,
+              }),
+            );
+            // 进入视频步：只填空/占位；保留分镜步已写好的最终提示词（用户可继续改）
+            if (!shouldAutoSyncDirectorFinalPrompt(shot['最终提示词'])) return shot;
+            const videoPrompt = resolveDirectorShotVideoPromptForGen(shot, { lipsync });
             if (!videoPrompt) return shot;
             return { ...shot, 最终提示词: videoPrompt };
           }),
         };
       }
-      startTransition(() => {
-        patch(next);
-      });
+      // 用户点步骤/下一步：同步 patch，避免 startTransition 在负载下像「点了没反应」
+      patch(next);
+      // 短剧 V2：顶栏切步时同步 Domain phase（内容面板读 session.meta.phase）
+      if (isDramaMode) {
+        const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        if (domain) {
+          const raw = String(next.phase || 'analyze');
+          let domainPhase =
+            raw === 'ingest' || raw === 'split'
+              ? 'ingest'
+              : raw === 'episodes' || raw === 'episode_pick' || raw === 'select'
+                ? 'episodes'
+                : raw === 'visual' || raw === 'visual_tuning' || raw === 'visualTuning'
+                  ? 'visual'
+                  : raw === 'story' || raw === 'analyze'
+                    ? 'analyze'
+                    : raw === 'bible' || raw === 'assets'
+                      ? 'assets'
+                      : raw === 'board' ||
+                          raw === 'shots' ||
+                          raw === 'prompts' ||
+                          raw === 'storyboards' ||
+                          raw === 'videos'
+                        ? 'board'
+                        : raw === 'review' || raw === 'preview'
+                          ? 'review'
+                          : 'ingest';
+          let nextDomain = setDramaSessionPhase(domain, domainPhase);
+          // 用户阶段门禁：未确认则回退
+          const targetUser = domainPhaseToUserPhase(domainPhase);
+          const gate = canEnterDramaUserPhase(domain, targetUser);
+          if (!gate.ok) {
+            void showAlert(gate.reason);
+            domainPhase = preferredDomainPhaseForUserPhase(gate.fallback, domain);
+            nextDomain = setDramaSessionPhase(domain, domainPhase);
+            next = setDirectorPhase(next, domainPhase as DirectorPhase);
+            patch(next);
+          }
+          if (domainPhase === 'board' && !isDramaAssetsConfirmed(nextDomain)) {
+            nextDomain = confirmDramaAssets(nextDomain);
+          }
+          if (domainPhase === 'board' || domainPhase === 'review') {
+            nextDomain = refreshDramaContinuity(nextDomain);
+          }
+          if (domainPhase === 'board') nextDomain = refreshDramaPackages(nextDomain);
+          if (domainPhase === 'review') nextDomain = refreshDramaReviews(nextDomain);
+          dataRef.current?.onUpdate?.({
+            directorDomain: createEmptyDramaSession(nextDomain),
+          });
+        }
+      }
     },
-    [isMvMode, patch, videoBatchModel],
+    [isDramaMode, isMvMode, patch, videoBatchModel, showAlert],
   );
+
+  /** 是否已有可作卡拉OK底片的成片（镜内 / 合成缓存 / 用户上传） */
+  const hasDirectorKaraokeVideoSource = useCallback((st: DirectorPipelineState) => {
+    const d = dataRef.current as DirectorNodeData | undefined;
+    if (String(d?.karaokeComposedVideoUrl || '').trim()) return true;
+    if (String(d?.karaokeProject?.videoUrl || '').trim()) return true;
+    return (st.shots || []).some((s, i) => {
+      const no = String(s['镜号'] || i + 1);
+      const sb = getDirectorShotStoryboard(st, no);
+      return !!String(sb.videoUrl || '').trim() || sb.videoStatus === 'ready';
+    });
+  }, []);
+
+  /**
+   * 进入第 8 步：无成片时明确确认（勿静默）；仍允许进入调歌词。
+   * 有歌词+音频才放行，否则 alert。
+   */
+  const goMvKaraokePhase = useCallback(async () => {
+    const cur = directorStateRef.current;
+    const lyrics = String(cur.mvMusic?.lyrics || '').trim();
+    const audio = String(cur.mvMusic?.url || '').trim();
+    if (!lyrics || !audio) {
+      showAlert(tt.karaokeNeedMusicLyrics);
+      return;
+    }
+    if (!hasDirectorKaraokeVideoSource(cur)) {
+      const ok = await showConfirm(tt.confirmEnterKaraokeWithoutVideos);
+      if (!ok) return;
+    }
+    goDirectorPhase('karaoke');
+  }, [
+    goDirectorPhase,
+    hasDirectorKaraokeVideoSource,
+    showAlert,
+    showConfirm,
+    tt.confirmEnterKaraokeWithoutVideos,
+    tt.karaokeNeedMusicLyrics,
+  ]);
 
   const phaseBtn = (
     phase: DirectorPhase,
@@ -7028,20 +11591,18 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   })();
 
   const goMvCastPhase = useCallback(() => {
-    const next = ensureDirectorMvLeadSlots(setDirectorPhase(directorStateRef.current, 'cast'));
+    let next = setDirectorPhase(directorStateRef.current, 'cast');
+    next = applyAutoDirectorMvCastPlan(next);
     patch(next);
   }, [patch]);
 
   const goMvStoryPhase = useCallback(() => {
-    const cur = ensureDirectorMvLeadSlots(directorStateRef.current);
-    const plan = normalizeDirectorMvCastPlan(cur.mvCastPlan);
-    if ((cur.assets.characters || []).length < plan.leadCount) {
-      showAlert(tt.castNeedLeads);
-      return;
-    }
-    patch(setDirectorPhase(cur, 'story'));
-  }, [patch, showAlert, tt.castNeedLeads]);
+    patch(setDirectorPhase(directorStateRef.current, 'story'));
+  }, [patch]);
 
+  const goMvStylePhase = useCallback(() => {
+    patch(setDirectorPhase(directorStateRef.current, 'style'));
+  }, [patch]);
   const syncMvCastFromScript = useCallback(
     (mode: 'fill' | 'replace' = 'replace') => {
       let next = syncDirectorMvCastFromScript(directorStateRef.current, mode);
@@ -7068,10 +11629,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       0,
       steps.findIndex((s) => s.phase === state.phase),
     );
+    const stepFs = isNodeFullscreen ? Math.max(13, fsSmall) : fsChrome;
+    const badgeFs = isNodeFullscreen ? Math.max(12, fsChrome) : fsChrome;
     return (
       <div className="director-keep-visible w-full min-w-0">
         <div
-          className={`nowheel flex w-full items-stretch gap-0 overflow-x-auto rounded-2xl border px-1 py-1.5 ${
+          className={`nowheel flex w-full items-center gap-0 overflow-x-auto rounded-2xl border px-1 py-1.5 ${
             isDarkMode ? 'border-white/10 bg-white/[0.04]' : 'border-gray-200 bg-gray-100'
           }`}
         >
@@ -7093,10 +11656,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                       ? 'hover:bg-white/[0.04]'
                       : 'hover:bg-gray-200/70'
                 }`}
-                onClick={() => goDirectorPhase(s.phase)}
+                onClick={() => {
+                  if (s.phase === 'karaoke') {
+                    void goMvKaraokePhase();
+                    return;
+                  }
+                  goDirectorPhase(s.phase);
+                }}
               >
                 <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-semibold tabular-nums ${
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-semibold tabular-nums leading-none ${
                     activeStep
                       ? 'bg-sky-500 text-white shadow-sm shadow-sky-500/30'
                       : past
@@ -7107,7 +11676,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           ? 'bg-white/10 text-white/50'
                           : 'bg-gray-200/90 text-gray-500'
                   }`}
-                  style={{ fontSize: fsChrome }}
+                  style={{ fontSize: badgeFs }}
                 >
                   {past && !activeStep ? <Check className="w-3 h-3" strokeWidth={2.5} /> : i + 1}
                 </span>
@@ -7121,7 +11690,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         ? 'text-white/85'
                         : 'text-gray-900'
                   }`}
-                  style={{ fontSize: fsChrome }}
+                  style={{ fontSize: stepFs }}
                 >
                   {s.label}
                 </span>
@@ -7133,14 +11702,547 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
   };
 
+  const renderDramaStudioV2 = () => {
+    const domainSession =
+      (data?.directorDomain as DramaDirectorSession | null | undefined) || null;
+    const missingAssetImages = (() => {
+      if (!domainSession?.bible) return 0;
+      const b = domainSession.bible;
+      return (
+        b.characters.filter((c) => !String(c.imageUrl || '').trim()).length +
+        b.scenes.filter((s) => !String(s.imageUrl || '').trim()).length +
+        b.props.filter((p) => !String(p.imageUrl || '').trim()).length +
+        b.creatures.filter((c) => !String(c.imageUrl || '').trim()).length
+      );
+    })();
+    const unitPrice = formatYuanbaoLabel(1);
+    const batchPrice =
+      missingAssetImages > 0 ? formatYuanbaoLabel(missingAssetImages) : unitPrice;
+    const missingVoices = (domainSession?.bible?.voices || []).filter(
+      (v) => !String(v.sample_url || '').trim(),
+    ).length;
+    const unitVoiceYuan = getAudioDisplayPrice(DOUBAO_SEED_AUDIO_MODEL_ID, cloudMap);
+    const batchVoiceYuan = getAudioDisplayPrice(
+      DOUBAO_SEED_AUDIO_MODEL_ID,
+      cloudMap,
+      Math.max(1, missingVoices),
+    );
+    const voiceCredits = (y: number) =>
+      locale === 'en' ? `${y} ${tt.creditsSuffix}` : `${y}${tt.creditsSuffix}`;
+    const unitVoicePriceLabel =
+      unitVoiceYuan == null
+        ? null
+        : locale === 'en'
+          ? `Doubao Audio 1.0 · ${voiceCredits(unitVoiceYuan)}`
+          : `豆包音频 1.0 · ${voiceCredits(unitVoiceYuan)}`;
+    const batchVoicePriceLabel =
+      unitVoiceYuan == null
+        ? null
+        : missingVoices > 1 && batchVoiceYuan != null
+          ? locale === 'en'
+            ? `Doubao Audio 1.0 · ${missingVoices} clips · ${voiceCredits(batchVoiceYuan)}`
+            : `豆包音频 1.0 · ${missingVoices}条 · ${voiceCredits(batchVoiceYuan)}`
+          : unitVoicePriceLabel;
+
+    return (
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ zoom: fontSizePx / DIRECTOR_FONT_DEFAULT }}
+    >
+    <DramaStudioHost
+      projectId={data?.projectId}
+      pipeline={state}
+      session={domainSession}
+      isDark={isDarkMode}
+      busy={
+        (!!busyAction && busyAction !== 'images' && busyAction !== 'storyboards') ||
+        !!state.isGenerating ||
+        !!data?.isGenerating
+      }
+      chatModel={String(state.chatModel || '')}
+      chatModelSelectSlot={renderChatModelSelect({
+        variant: 'plain',
+        menuPlacement: 'up',
+        disabled: isDirectorHardBusy,
+      })}
+      imageGenToolbarSlot={renderImageGenControls({ compact: true })}
+      unitImagePriceLabel={unitPrice}
+      unitChatPriceLabel={
+        chatRunYuanbao != null
+          ? locale === 'en'
+            ? `${chatRunYuanbao} ${tt.creditsSuffix}`
+            : `${chatRunYuanbao}${tt.creditsSuffix}`
+          : null
+      }
+      batchImagePriceLabel={batchPrice}
+      onSessionChange={(next) => {
+        const cur = dataRef.current;
+        if (cur) dataRef.current = { ...cur, directorDomain: next };
+        dataRef.current?.onUpdate?.({ directorDomain: next });
+      }}
+      onPipelinePatch={(next) => patch(next)}
+      runChat={runChat}
+      onSpawnVideos={(opts) => {
+        const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        if (domain?.shots?.length) {
+          const projected = projectDramaSessionToPipeline(domain, directorStateRef.current);
+          const cur = dataRef.current;
+          if (cur) {
+            dataRef.current = { ...cur, directorDomain: domain, director: projected };
+          }
+          patch(projected);
+        }
+        const requestedNos = (opts?.shotNos || []).map((n) => String(n || '').trim()).filter(Boolean);
+        void Promise.resolve(data?.onSpawnVideos?.(opts)).then((result) => {
+          const spawned = Number((result as { spawned?: number } | void)?.spawned || 0);
+          if (spawned > 0) return;
+          // 未真正建出视频任务：只撤本批镜号的绿条，禁止清空其它镜并行进度
+          const nos = requestedNos.length > 0 ? requestedNos : [];
+          if (!nos.length) return;
+          for (const no of nos) markVideoGenProgress(no, false);
+          const cur = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+          if (!cur?.shots?.length) return;
+          const noSet = new Set(nos);
+          dataRef.current?.onUpdate?.({
+            directorDomain: createEmptyDramaSession({
+              ...cur,
+              shots: cur.shots.map((s) =>
+                noSet.has(String(s.shot_no || '').trim()) &&
+                String(s.video_status || '').trim() === 'generating'
+                  ? {
+                      ...s,
+                      video_status: String(s.video_url || '').trim() ? 'ready' : 'pending',
+                    }
+                  : s,
+              ),
+            }),
+          });
+        });
+      }}
+      getShotVideoPriceLabel={(durationSec, opts) => {
+        const model = String(opts?.model || '').trim();
+        const priced = videoGenYuanbaoForShot({
+          preferLipsync: opts?.preferLipsync ?? model.includes('audio'),
+          durationSec,
+          model: model || undefined,
+        });
+        return priced?.label || null;
+      }}
+      videoGeneratingIds={videoGenProgressIds}
+      onMarkVideoGenerating={markVideoGenProgress}
+      onAbandonVideoWait={abandonVideoWait}
+      showAlert={(msg) => {
+        void showAlert(msg);
+      }}
+      canPickFromCanvas={!!data?.onPickImageFromCanvas}
+      onGenerateAssetImage={(kind, assetId) => {
+        const asset = ensureDramaPipelineAsset(kind, assetId);
+        if (!asset) {
+          void showAlert(tt.generateFailed);
+          return;
+        }
+        // 无云端价：只提示登录，不进入 generating、不入队
+        if (imageGenYuanbao(1) == null) {
+          void showAlert(tt.otsPriceRequired);
+          return;
+        }
+        // 先标 Domain generating + 即时绿条，再入队（避免对账空窗把进度抹掉）
+        markImageGenProgress(asset.id, true);
+        syncDomainAssetImage(assetId, { status: 'generating' });
+        generateOneAsset(asset);
+      }}
+      onUploadAssetImage={(kind, assetId, file) => {
+        void (async () => {
+          ensureDramaPipelineAsset(kind, assetId);
+          try {
+            const reader = new FileReader();
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              reader.onload = () => resolve(String(reader.result || ''));
+              reader.onerror = () => reject(new Error('read failed'));
+              reader.readAsDataURL(file);
+            });
+            applyAssetImage(assetId, dataUrl);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'upload failed';
+            if (findDirectorAssetById(directorStateRef.current.assets, assetId)) {
+              patch(
+                updateDirectorAsset(directorStateRef.current, assetId, {
+                  status: 'error',
+                  error: msg,
+                }),
+              );
+            }
+            syncDomainAssetImage(assetId, { status: 'error', error: msg });
+          }
+        })();
+      }}
+      onPickAssetFromCanvas={(kind, assetId) => {
+        ensureDramaPipelineAsset(kind, assetId);
+        void pickAssetFromCanvas(assetId);
+      }}
+      onClearAssetImage={(_kind, assetId) => {
+        clearAssetImage(assetId);
+      }}
+      assetGeneratingIds={{ ...imageGenProgressIds, ...voiceGenProgressIds }}
+      unitVoicePriceLabel={unitVoicePriceLabel}
+      batchVoicePriceLabel={batchVoicePriceLabel}
+      canPickVoiceFromCanvas={!!data?.onPickAudioFromCanvas}
+      onGenerateVoice={(voiceId) => startVoiceSampleGens([voiceId])}
+      onGenerateVoices={(voiceIds) => startVoiceSampleGens(voiceIds)}
+      onUploadVoice={(voiceId, file) => {
+        void (async () => {
+          try {
+            const reader = new FileReader();
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              reader.onload = () => resolve(String(reader.result || ''));
+              reader.onerror = () => reject(new Error('read failed'));
+              reader.readAsDataURL(file);
+            });
+            syncDomainVoiceSample(voiceId, {
+              sampleUrl: dataUrl,
+              status: 'ready',
+            });
+          } catch (e) {
+            syncDomainVoiceSample(voiceId, {
+              status: 'error',
+              error: e instanceof Error ? e.message : 'upload failed',
+            });
+          }
+        })();
+      }}
+      onPickVoiceFromCanvas={(voiceId) => {
+        void (async () => {
+          if (!data?.onPickAudioFromCanvas) return;
+          if (isNodeFullscreen) setIsNodeFullscreen(false);
+          try {
+            const picked = await data.onPickAudioFromCanvas();
+            const url = String(picked?.url || '').trim();
+            if (!url) return;
+            syncDomainVoiceSample(voiceId, {
+              sampleUrl: url,
+              status: 'ready',
+            });
+          } catch (e) {
+            syncDomainVoiceSample(voiceId, {
+              status: 'error',
+              error: e instanceof Error ? e.message : tt.generateFailed,
+            });
+          }
+        })();
+      }}
+      onVideosToSplice={handleVideosToSpliceClick}
+      onGenerateShotAudio={(shotId) => {
+        void (async () => {
+          const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+          if (!domain) {
+            void showAlert(tt.generateFailed);
+            return;
+          }
+          const shot = domain.shots.find((s) => s.shot_id === shotId);
+          if (!shot) {
+            void showAlert(tt.generateFailed);
+            return;
+          }
+          if (!dramaShotNeedsAudioContent(shot)) {
+            void showAlert(
+              locale === 'en'
+                ? 'Add dialogue or SFX for this shot first'
+                : '请先为本镜填写对白或环境音效',
+            );
+            return;
+          }
+          if (String(shot.audio_status || '') === 'generating') {
+            void showAlert(locale === 'en' ? 'Shot audio is generating' : '本镜声音正在生成中');
+            return;
+          }
+          if (!window.electronAPI?.invokeAI) {
+            void showAlert(tt.generateFailed);
+            return;
+          }
+          const refs = collectDramaShotVoiceRefUrls(domain, shot, 3);
+          const hasDlg = (shot.dialogue || []).some((d) => String(d.text || '').trim());
+          if (hasDlg && refs.length === 0) {
+            void showAlert(
+              locale === 'en'
+                ? 'Dialogue needs character reference voices — generate voice samples in Assets first'
+                : '本镜有对白但角色尚无参考音：请先在「素材准备」为角色生成/上传试听音',
+            );
+            return;
+          }
+          const text = buildDramaShotDoubaoAudioPrompt(domain, shot, {
+            refNames: refs.map((r) => r.character_name),
+          });
+          const audioNodeId = directorShotAudioNodeId(id, shotId);
+          ensureDirectorShotAudioStatusListener();
+          shotAudioStartedAtRef.current[shotId] = Date.now();
+          const generatingDomain = createEmptyDramaSession({
+            ...domain,
+            shots: domain.shots.map((s) =>
+              s.shot_id === shotId
+                ? { ...s, audio_status: 'generating', audio_error: '' }
+                : s,
+            ),
+          });
+          {
+            const cur = dataRef.current;
+            if (cur) dataRef.current = { ...cur, directorDomain: generatingDomain };
+            dataRef.current?.onUpdate?.({ directorDomain: generatingDomain });
+          }
+          const applyShotAudio = (nextStatus: {
+            audio_url?: string;
+            audio_status: string;
+            audio_error?: string;
+          }) => {
+            delete shotAudioStartedAtRef.current[shotId];
+            const latest =
+              (dataRef.current?.directorDomain as DramaDirectorSession | null) || domain;
+            const next = createEmptyDramaSession({
+              ...latest,
+              shots: latest.shots.map((s) =>
+                s.shot_id === shotId
+                  ? {
+                      ...s,
+                      ...(nextStatus.audio_url !== undefined
+                        ? { audio_url: nextStatus.audio_url }
+                        : {}),
+                      audio_status: nextStatus.audio_status,
+                      audio_error: nextStatus.audio_error || '',
+                    }
+                  : s,
+              ),
+            });
+            const cur = dataRef.current;
+            if (cur) dataRef.current = { ...cur, directorDomain: next };
+            dataRef.current?.onUpdate?.({ directorDomain: next });
+          };
+          // 先挂 waiter，再 invoke：避免 SUCCESS 经 IPC 迟到或 effect 重建时漏接
+          const resultP = waitDirectorShotAudioResult(audioNodeId, DIRECTOR_SHOT_AUDIO_WAIT_MS);
+          try {
+            await window.electronAPI.invokeAI({
+              modelId: 'audio',
+              nodeId: audioNodeId,
+              input: {
+                model: DOUBAO_SEED_AUDIO_MODEL_ID,
+                text,
+                enable_base64_output: false,
+                english_normalization: false,
+                speechRate: 0,
+                loudnessRate: 100,
+                pitch: 0,
+                doubaoFormat: 'mp3',
+                doubaoSampleRate: '24000',
+                ...(refs.length
+                  ? {
+                      doubaoAudioUrls: refs.map((r) => r.sample_url),
+                      referenceAudioUrl: refs[0].sample_url,
+                    }
+                  : {}),
+                projectId: data?.projectId || undefined,
+                nodeTitle: `导演本镜声音-镜${shot.shot_no || ''}`,
+              },
+            });
+          } catch (e) {
+            // ERROR 通常已走 status 通道；若 waiter 仍在等，用异常兜底
+            const pending = directorShotAudioWaiters.get(audioNodeId);
+            if (pending) {
+              directorShotAudioWaiters.delete(audioNodeId);
+              pending.resolve({
+                ok: false,
+                error: e instanceof Error ? e.message : tt.generateFailed,
+              });
+            }
+          }
+          const result = await resultP;
+          if (result.ok) {
+            applyShotAudio({
+              audio_url: result.audioUrl,
+              audio_status: 'ready',
+              audio_error: '',
+            });
+          } else if (result.error === 'abandoned') {
+            // 用户已点「放弃生成」，本地态由 abandonShotAudioWait 清掉
+          } else {
+            applyShotAudio({
+              audio_status: 'error',
+              audio_error:
+                result.error === 'empty-shot-audio' ? tt.generateFailed : result.error,
+            });
+            if (result.error && result.error !== 'empty-shot-audio') {
+              void showAlert(result.error);
+            }
+          }
+        })();
+      }}
+      onAbandonShotAudio={abandonShotAudioWait}
+    />
+    </div>
+    );
+  };
+
   const renderPhaseButtons = () =>
-    isMvMode ? (
+    isDramaMode ? (
+      <div className="flex items-center gap-3 w-full min-w-0">
+        <div className="flex-1 min-w-0">
+          {(() => {
+            const domain =
+              (data?.directorDomain as DramaDirectorSession | null | undefined) || null;
+            const activeUser: DramaUserPhase = domain
+              ? domainPhaseToUserPhase(domain.meta.phase)
+              : 'script';
+            const steps = DRAMA_USER_PHASES.map((up) => ({
+              userPhase: up,
+              label: DRAMA_USER_PHASE_LABELS[up],
+              sub: DRAMA_USER_PHASE_SUB[up],
+              done: domain ? isDramaUserPhaseDone(domain, up) : false,
+            }));
+            const activeIdx = Math.max(
+              0,
+              steps.findIndex((s) => s.userPhase === activeUser),
+            );
+            const stepFs = isNodeFullscreen ? Math.max(13, fsSmall) : fsChrome;
+            const badgeFs = isNodeFullscreen ? Math.max(12, fsChrome) : fsChrome;
+            const statusText = (() => {
+              if (!domain) return '待确认剧本分析';
+              const up = activeUser;
+              if (up === 'final') return '';
+              if (up === 'board')
+                return Number(domain.meta.board_confirmed_at || 0) > 0
+                  ? '导演表已确认'
+                  : '待确认导演表';
+              if (up === 'assets')
+                return Number(domain.meta.assets_confirmed_at || 0) > 0
+                  ? '素材已确认'
+                  : '待确认素材';
+              return domain.meta.analyze_confirmed || domain.bible.confirmed_at
+                ? '分析已确认'
+                : '待确认剧本分析';
+            })();
+            return (
+              <div className="director-keep-visible flex w-full min-w-0 items-center gap-3">
+                <div
+                  className={`nowheel flex min-w-0 flex-1 items-center gap-0 overflow-x-auto rounded-2xl border px-1 py-1.5 ${
+                    isDarkMode ? 'border-white/10 bg-white/[0.04]' : 'border-gray-200 bg-gray-100'
+                  }`}
+                >
+                  {steps.map((s, i) => {
+                    const activeStep = s.userPhase === activeUser;
+                    const past = i < activeIdx || (s.done && !activeStep);
+                    return (
+                      <button
+                        key={s.userPhase}
+                        type="button"
+                        title={`${s.label}${s.sub ? ` · ${s.sub}` : ''}`}
+                        aria-current={activeStep ? 'step' : undefined}
+                        className={`nodrag min-w-0 flex-1 flex items-center justify-center gap-1.5 px-1 py-1.5 rounded-xl text-center transition-colors ${
+                          activeStep
+                            ? isDarkMode
+                              ? 'bg-sky-500/20'
+                              : 'bg-sky-100/90'
+                            : isDarkMode
+                              ? 'hover:bg-white/[0.04]'
+                              : 'hover:bg-gray-200/70'
+                        }`}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const sess =
+                            (dataRef.current?.directorDomain as DramaDirectorSession | null) ||
+                            null;
+                          if (!sess) {
+                            goDirectorPhase(
+                              s.userPhase === 'board'
+                                ? 'board'
+                                : s.userPhase === 'assets'
+                                  ? 'assets'
+                                  : s.userPhase === 'final'
+                                    ? 'review'
+                                    : 'analyze',
+                            );
+                            return;
+                          }
+                          const gate = canEnterDramaUserPhase(sess, s.userPhase);
+                          if (!gate.ok) {
+                            void showAlert(gate.reason);
+                            const fb = preferredDomainPhaseForUserPhase(gate.fallback, sess);
+                            goDirectorPhase(fb as DirectorPhase);
+                            return;
+                          }
+                          const domainPhase = preferredDomainPhaseForUserPhase(
+                            s.userPhase,
+                            sess,
+                          );
+                          goDirectorPhase(domainPhase as DirectorPhase);
+                        }}
+                      >
+                        <span
+                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full font-semibold tabular-nums leading-none ${
+                            activeStep
+                              ? 'bg-sky-500 text-white shadow-sm shadow-sky-500/30'
+                              : past
+                                ? isDarkMode
+                                  ? 'bg-emerald-500/85 text-white'
+                                  : 'bg-emerald-500 text-white'
+                                : isDarkMode
+                                  ? 'bg-white/10 text-white/50'
+                                  : 'bg-gray-200/90 text-gray-500'
+                          }`}
+                          style={{ fontSize: badgeFs }}
+                        >
+                          {past && !activeStep ? (
+                            <Check className="w-3 h-3" strokeWidth={2.5} />
+                          ) : (
+                            i + 1
+                          )}
+                        </span>
+                        <span
+                          className={`min-w-0 font-medium leading-tight truncate ${
+                            activeStep
+                              ? isDarkMode
+                                ? 'text-sky-200'
+                                : 'text-sky-600'
+                              : isDarkMode
+                                ? 'text-white/85'
+                                : 'text-gray-900'
+                          }`}
+                          style={{ fontSize: stepFs }}
+                        >
+                          {s.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {statusText ? (
+                  <div
+                    className={`shrink-0 max-w-[12rem] text-right leading-snug ${
+                      isDarkMode ? 'text-white/55' : 'text-gray-500'
+                    }`}
+                    style={{ fontSize: isNodeFullscreen ? Math.max(12, fsSmall) : fsChrome }}
+                  >
+                    {statusText}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+    ) : isMvMode ? (
       renderMvPhaseStepper([
         {
           phase: 'music',
           label: tt.phaseMusic,
           sub: tt.phaseMusicSub,
           done: !!String(state.mvMusic?.url || '').trim() || !!String(state.mvMusic?.moodHint || '').trim(),
+        },
+        {
+          phase: 'story',
+          label: tt.phaseStory,
+          sub: tt.phaseStorySub,
+          done:
+            !!String(state.scriptText || '').trim() ||
+            directorMvScriptSectionsHaveContent(mvScriptSections) ||
+            !!String(state.mvStoryOutline || '').trim(),
         },
         {
           phase: 'style',
@@ -7153,15 +12255,6 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           label: tt.phaseCast,
           sub: tt.phaseCastSub,
           done: mvCastReady > 0,
-        },
-        {
-          phase: 'story',
-          label: tt.phaseStory,
-          sub: tt.phaseStorySub,
-          done:
-            !!String(state.scriptText || '').trim() ||
-            directorMvScriptSectionsHaveContent(mvScriptSections) ||
-            !!String(state.mvStoryAnalysis?.summary || '').trim(),
         },
         {
           phase: 'assets',
@@ -7187,12 +12280,21 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               return !!String(sb.videoUrl || '').trim() || sb.videoStatus === 'ready';
             }),
         },
+        {
+          phase: 'karaoke',
+          label: tt.phaseKaraoke,
+          sub: tt.phaseKaraokeSub,
+          // 仅烧录完成算「完成」；有成片 URL 只表示可编辑，不应显示勾却像已做完
+          done: !!String(
+            (data as DirectorNodeData | undefined)?.karaokeBurnedVideoUrl || '',
+          ).trim(),
+        },
       ])
     ) : (
       <>
         {phaseBtn(
           'shots',
-          `1. ${tt.phaseShots}`,
+          `1. ${tt.dramaConfirmShots}`,
           fillDirectorI18n(tt.shotsReady, { n: state.shots.length }),
           state.phase === 'shots',
           state.shots.length > 0,
@@ -7246,7 +12348,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       : 'bg-gray-100 text-gray-800 border border-gray-200 focus:ring-gray-400/40'
   }`;
 
-  const MV_AUDIO_MAX_BYTES = 30 * 1024 * 1024;
+  const MV_AUDIO_MAX_BYTES = 80 * 1024 * 1024;
   const MV_AUDIO_MAX_SEC = 6 * 60;
   const isAllowedMvAudioFile = (file: File) => {
     const name = String(file.name || '').toLowerCase();
@@ -7288,10 +12390,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
       const prev = directorStateRef.current;
       const titleFromOpt = String(opts?.title || '').trim();
+      // 歌曲名：仅空时用文件名自动填；已有手填内容不覆盖（勿 trim 写入，避免干扰 IME）
+      const prevSongTitle = String(prev.mvMusic?.songTitle || '');
+      const fillSongTitle = !prevSongTitle.trim() && !!titleFromOpt;
       patch(
         patchDirectorMvMusic(prev, {
           url,
           title: String(prev.mvMusic?.title || '').trim() || titleFromOpt || prev.mvMusic?.title || '',
+          ...(fillSongTitle ? { songTitle: titleFromOpt } : {}),
           durationSec: durationSec > 0 ? durationSec : prev.mvMusic?.durationSec || 0,
           summary:
             String(prev.mvMusic?.summary || '').trim() ||
@@ -7302,6 +12408,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           lyricSegmentsStatus: 'idle',
           lyricSegmentsError: '',
           lyricSegmentsSourceUrl: '',
+          lyricAsrWords: [],
         }),
       );
     },
@@ -7442,10 +12549,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             return (
               <div
                 key={`lyric-pack-${pi}-${startSec.toFixed(2)}-${endSec.toFixed(2)}`}
-                className={`relative rounded-lg border px-1.5 py-1 h-full min-h-[96px] flex flex-col ${
+                className={`relative min-w-0 overflow-hidden rounded-lg border px-1.5 py-1 h-full min-h-[96px] flex flex-col ${
                   isDarkMode ? 'border-white/10 bg-white/[0.04]' : 'border-gray-200 bg-gray-100'
                 }`}
-                style={DIRECTOR_MV_TABLE_ROW_CV}
               >
                 <button
                   type="button"
@@ -7532,10 +12638,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
     const renderMusicAnalysisCards = () => (
       <div className="shrink-0 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-        <div
-          className={analysisCardCls}
-          style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-        >
+        <div className={analysisCardCls}>
           <div className={`mb-1.5 font-medium ${titleClsLocal}`} style={{ fontSize: fsMusic }}>
             {tt.storyAnalyzeTitle}
           </div>
@@ -7551,10 +12654,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             <div className="mt-2 flex flex-wrap gap-1.5">{renderMusicTag(storyGenre, `g-${storyGenre}`)}</div>
           ) : null}
         </div>
-        <div
-          className={analysisCardCls}
-          style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-        >
+        <div className={analysisCardCls}>
           <div className={`mb-1.5 font-medium ${titleClsLocal}`} style={{ fontSize: fsMusic }}>
             {tt.storyStyleTitle}
           </div>
@@ -7606,12 +12706,27 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               : btnPrimary('!px-4 !py-2', 'sound')
           } disabled:opacity-50`}
           style={{ fontSize: fsMusic }}
-          disabled={!hasAudio || extractingLyrics || (!!busyAction && !analyzing)}
-          title={analyzing ? tt.musicJobCancel : `${tt.lyricTimelineDetect} · ${musicAnalyzeCostLabel}`}
+          disabled={
+            !hasAudio ||
+            extractingLyrics ||
+            (!!busyAction && !analyzing) ||
+            (!analyzing && musicAnalyzeCostLabel == null)
+          }
+          title={
+            analyzing
+              ? tt.musicJobCancel
+              : musicAnalyzeCostLabel == null
+                ? tt.otsPriceRequired
+                : `${tt.lyricTimelineDetect} · ${musicAnalyzeCostLabel}`
+          }
           onClick={(e) => {
             e.stopPropagation();
             if (analyzing) {
               cancelMusicJob();
+              return;
+            }
+            if (musicAnalyzeCostLabel == null) {
+              void showAlert(tt.otsPriceRequired);
               return;
             }
             void handleMvMusicAnalyze();
@@ -7637,7 +12752,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             </div>
             {hasAudio ? (
               <div className={`nodrag nopan relative rounded-2xl ${softPanel} px-2 py-2`}>
-                <div className="absolute top-2 right-2 z-[1] flex items-center gap-0.5">
+                <div className="absolute top-2 right-2 z-20 flex items-center gap-0.5">
                   <button
                     type="button"
                     className={`nodrag p-1 rounded-full ${
@@ -7661,15 +12776,23 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         : 'text-gray-400 hover:text-rose-600 hover:bg-gray-200/70'
                     }`}
                     title={tt.musicClearAudio}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
+                      e.preventDefault();
                       e.stopPropagation();
-                      patch(
-                        patchDirectorMvMusic(directorStateRef.current, {
-                          url: '',
-                          durationSec: 0,
-                          sourceNodeId: '',
-                        }),
-                      );
+                      const next = patchDirectorMvMusic(directorStateRef.current, {
+                        url: '',
+                        durationSec: 0,
+                        sourceNodeId: '',
+                      });
+                      directorStateRef.current = next;
+                      dataRef.current?.onUpdate?.({
+                        director: next,
+                        title: next.title,
+                        isGenerating: next.isGenerating,
+                        error: next.error || undefined,
+                        unlinkIncomingAudio: true,
+                      });
                     }}
                   >
                     <X className="w-3.5 h-3.5" strokeWidth={2.4} />
@@ -7679,6 +12802,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   audioUrl={musicUrl}
                   isDarkMode={isDarkMode}
                   title={
+                    String(state.mvMusic?.songTitle || '').trim() ||
                     String(state.mvMusic?.title || '').trim() ||
                     (locale === 'en' ? 'Audio' : '音频')
                   }
@@ -7736,6 +12860,97 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             )}
           </div>
 
+          {/* 曲名 / 作词 / 作曲：位于「第二步：填入歌词」上方 */}
+          <div className="shrink-0 flex flex-col gap-1.5">
+            <label className="flex flex-col gap-0.5">
+              <span className={`${bodyGray}`} style={{ fontSize: Math.max(10, fsMusic - 1) }}>
+                {tt.musicSongTitle}
+              </span>
+              <input
+                type="text"
+                className={`nodrag nopan nowheel w-full rounded-xl border-0 px-3 py-1.5 outline-none focus:ring-1 ${
+                  isDarkMode
+                    ? 'bg-white/[0.04] text-white/85 placeholder:text-white/25 focus:ring-sky-400/30'
+                    : 'bg-gray-100 text-gray-800 placeholder:text-gray-400 focus:ring-sky-300/50'
+                }`}
+                style={{ fontSize: fsMusic }}
+                placeholder={tt.musicSongTitlePlaceholder}
+                value={state.mvMusic?.songTitle || ''}
+                onChange={(e) =>
+                  patch(
+                    patchDirectorMvMusic(directorStateRef.current, {
+                      songTitle: e.target.value,
+                    }),
+                  )
+                }
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+              />
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className={`${bodyGray}`} style={{ fontSize: Math.max(10, fsMusic - 1) }}>
+                {tt.musicLyricist}
+              </span>
+              <input
+                type="text"
+                className={`nodrag nopan nowheel w-full rounded-xl border-0 px-3 py-1.5 outline-none focus:ring-1 ${
+                  isDarkMode
+                    ? 'bg-white/[0.04] text-white/85 placeholder:text-white/25 focus:ring-sky-400/30'
+                    : 'bg-gray-100 text-gray-800 placeholder:text-gray-400 focus:ring-sky-300/50'
+                }`}
+                style={{ fontSize: fsMusic }}
+                placeholder={tt.musicCreditDefault}
+                value={state.mvMusic?.lyricist || ''}
+                onChange={(e) =>
+                  patch(
+                    patchDirectorMvMusic(directorStateRef.current, {
+                      lyricist: e.target.value,
+                    }),
+                  )
+                }
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+              />
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className={`${bodyGray}`} style={{ fontSize: Math.max(10, fsMusic - 1) }}>
+                {tt.musicComposer}
+              </span>
+              <input
+                type="text"
+                className={`nodrag nopan nowheel w-full rounded-xl border-0 px-3 py-1.5 outline-none focus:ring-1 ${
+                  isDarkMode
+                    ? 'bg-white/[0.04] text-white/85 placeholder:text-white/25 focus:ring-sky-400/30'
+                    : 'bg-gray-100 text-gray-800 placeholder:text-gray-400 focus:ring-sky-300/50'
+                }`}
+                style={{ fontSize: fsMusic }}
+                placeholder={tt.musicCreditDefault}
+                value={state.mvMusic?.composer || ''}
+                onChange={(e) =>
+                  patch(
+                    patchDirectorMvMusic(directorStateRef.current, {
+                      composer: e.target.value,
+                    }),
+                  )
+                }
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+              />
+            </label>
+          </div>
+
           <div className="flex-1 min-h-0 flex flex-col gap-2.5">
             <div className="flex items-center justify-between gap-2 shrink-0">
               <div className={`font-medium min-w-0 ${titleClsLocal}`} style={{ fontSize: fsMusic }}>
@@ -7769,19 +12984,100 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 {extractingLyrics ? tt.musicJobCancel : tt.musicLyricsStripMeta}
               </button>
             </div>
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <span className={`mr-0.5 ${bodyGray}`} style={{ fontSize: fsMusic }}>
+                {tt.musicAsrLanguage}
+              </span>
+              {KARAOKE_ASR_LANGUAGE_OPTIONS.map((key) => {
+                const label =
+                  key === 'zh'
+                    ? tt.musicAsrLanguageZh
+                    : key === 'yue'
+                      ? tt.musicAsrLanguageYue
+                      : tt.musicAsrLanguageAuto;
+                const current = normalizeKaraokeAsrLanguage(state.mvMusic?.asrLanguage);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`nodrag nopan rounded-full px-2.5 py-0.5 font-medium transition-colors ${
+                      current === key
+                        ? isDarkMode
+                          ? 'bg-violet-500/30 text-violet-100 ring-1 ring-violet-400/40'
+                          : 'bg-violet-100 text-violet-800 ring-1 ring-violet-300'
+                        : isDarkMode
+                          ? 'bg-white/[0.06] text-white/65 hover:bg-white/[0.1]'
+                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                    style={{ fontSize: fsMusic }}
+                    disabled={!!busyAction}
+                    title={label}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      patch(
+                        patchDirectorMvMusic(directorStateRef.current, {
+                          asrLanguage: key as KaraokeAsrLanguage,
+                        }),
+                      );
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className={`${bodyGray} leading-relaxed shrink-0`} style={{ fontSize: Math.max(10, fsMusic - 1) }}>
+              {tt.musicAsrLanguageHint}
+            </p>
+            {normalizeKaraokeAsrLanguage(state.mvMusic?.asrLanguage) === 'yue' ? (
+              <p
+                className={`leading-relaxed shrink-0 ${
+                  isDarkMode ? 'text-amber-200/80' : 'text-amber-800/90'
+                }`}
+                style={{ fontSize: Math.max(10, fsMusic - 1) }}
+              >
+                {tt.musicAsrLanguageYueTip}
+              </p>
+            ) : null}
             <textarea
-              className={`nodrag nowheel w-full flex-1 min-h-0 resize-none rounded-2xl border-0 px-3 py-2.5 outline-none focus:ring-1 ${
+              className={`nodrag nopan nowheel w-full flex-1 min-h-0 resize-none rounded-2xl border-0 px-3 py-2.5 outline-none focus:ring-1 ${
                 isDarkMode
                   ? 'bg-white/[0.04] text-white/85 placeholder:text-white/25 focus:ring-sky-400/30'
                   : 'bg-gray-100 text-gray-800 placeholder:text-gray-400 focus:ring-sky-300/50'
               } ${scrollCls}`}
               style={{ fontSize: fsMusic }}
               placeholder=""
-              value={state.mvMusic?.lyrics || ''}
-              onChange={(e) =>
-                patch(patchDirectorMvMusic(directorStateRef.current, { lyrics: e.target.value }))
-              }
+              value={mvLyricsDraft}
+              onFocus={() => {
+                mvLyricsFocusedRef.current = true;
+              }}
+              onCompositionStart={() => {
+                mvLyricsComposingRef.current = true;
+              }}
+              onCompositionEnd={(e) => {
+                mvLyricsComposingRef.current = false;
+                setMvLyricsDraft(e.currentTarget.value);
+              }}
+              onChange={(e) => {
+                setMvLyricsDraft(e.target.value);
+              }}
+              onBlur={(e) => {
+                mvLyricsFocusedRef.current = false;
+                mvLyricsComposingRef.current = false;
+                // 冒号形角色标记 / 普通歌词：半角 `:` → 全角 `：`（括号形仍半角括号；LRC 时间戳除外）
+                const v = normalizeKaraokeRoleMarkersInText(e.currentTarget.value);
+                setMvLyricsDraft(v);
+                syncKaraokeFromStep1Lyrics(v);
+                commitStep1LyricsToKaraokeLines();
+              }}
               onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              // 仅 stopPropagation 防 React Flow 吞键；勿 preventDefault，否则 IME 切不了/组不了字
+              onKeyDown={(e) => e.stopPropagation()}
+              onKeyUp={(e) => e.stopPropagation()}
+              onWheel={(e) => e.stopPropagation()}
             />
           </div>
         </div>
@@ -7837,9 +13133,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             </div>
             <div className="flex items-center gap-1.5">
               {renderChatModelSelect({
-                disabled: !hasAudio || !!busyAction || analyzing || extractingLyrics,
-                /** 底栏旁：菜单上拉，避免被面板 overflow 挡住 */
-                menuPlacement: 'up',
+                // 模型选择不依赖第一步曲名/作词/作曲或是否已上传；仅任务进行中禁用
+                disabled: !!busyAction || analyzing || extractingLyrics,
+                /** portal 菜单：自动上下展开，避免强制上拉被视口裁成只剩一项 */
+                menuPlacement: 'auto',
               })}
               {renderMusicAnalyzeButton()}
               {packs.length > 0 ? (
@@ -7934,10 +13231,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     setBusyAction('extract-lyrics');
     try {
       // fun-asr 支持带 BGM：整曲直送云端（不再下 Whisper / 不强依赖 Demucs）
+      const asrLang = karaokeAsrLanguageToApiParam(cur.mvMusic?.asrLanguage);
       const result = await window.electronAPI.transcribeSpeechSegmentsFromAudioUrl(
         data?.projectId || undefined,
         musicUrl,
-        'zh',
+        asrLang,
       );
       if (!isMusicJobAlive(gen)) return;
       const cleaned = formatDirectorLyricsFromAsr(result?.text, result?.segments);
@@ -7950,7 +13248,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     } catch (e) {
       if (!isMusicJobAlive(gen) || isMusicJobAbortError(e)) return;
       const msg = e instanceof Error ? e.message : String(e || '');
-      showAlert(msg || tt.musicLyricsExtractFailed);
+      if (!(await promptAsrAuthOrBalance(e))) {
+        showAlert(msg || tt.musicLyricsExtractFailed);
+      }
     } finally {
       if (isMusicJobAlive(gen)) setBusyAction(null);
     }
@@ -7962,6 +13262,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     isMusicJobAbortError,
     isMusicJobAlive,
     patch,
+    promptAsrAuthOrBalance,
     showAlert,
     tt.lyricTimelineNeedEngine,
     tt.musicLyricsExtractFailed,
@@ -7997,12 +13298,40 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
         // fun-asr 支持带 BGM 整曲歌唱识别：优先整曲直送云端（Demucs 仍可供其它入口使用）
         setLyricTimelineProgress(tt.lyricTimelineRunningTranscribe);
+        const asrLang = karaokeAsrLanguageToApiParam(
+          directorStateRef.current.mvMusic?.asrLanguage,
+        );
         const result = await window.electronAPI.transcribeSpeechSegmentsFromAudioUrl(
           data?.projectId || undefined,
           musicUrl,
-          'zh',
+          asrLang,
         );
         if (!isMusicJobAlive(gen)) return false;
+        {
+          const costN = Math.round(Number(result?.cost));
+          if (result?.charged === false || !Number.isFinite(costN) || costN < 1) {
+            showAlert(
+              '未扣费：云端未返回 charged/cost。请上传含计费的 FC 包（demo/aliyun-fc-init-user/nexflow-fc.zip）后重试。',
+            );
+            return false;
+          }
+        }
+        const lyricAsrWords = (result?.segments || []).flatMap((s) => {
+          const words = Array.isArray(s?.words) ? s.words : [];
+          return words
+            .map((w) => {
+              const text = String(w?.text || '').trim();
+              if (!text) return null;
+              const startSec = Number(w?.startSec) || 0;
+              const endSec = Number(w?.endSec) || startSec;
+              return {
+                text,
+                startSec,
+                endSec: endSec >= startSec ? endSec : startSec,
+              };
+            })
+            .filter((w): w is { text: string; startSec: number; endSec: number } => !!w);
+        });
         const rawSegs = (result?.segments || []).map((s, i) => ({
           id: `w-${i}`,
           text: String(s.text || '').trim(),
@@ -8059,6 +13388,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           lyricSegmentsStatus: 'ready',
           lyricSegmentsError: '',
           lyricSegmentsSourceUrl: musicUrl,
+          // 字级锚点供卡拉OK；切镜仍只用句级 lyricSegments
+          lyricAsrWords,
         });
         if ((next.shots || []).length > 0 && packs.length > 0) {
           next = syncDirectorShotsToLyricTimeline(next);
@@ -8078,7 +13409,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             lyricSegmentsError: msg,
           }),
         );
-        showAlert(msg);
+        if (!(await promptAsrAuthOrBalance(e))) {
+          showAlert(msg);
+        }
         return false;
       } finally {
         if (isMusicJobAlive(gen)) {
@@ -8095,6 +13428,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       isMusicJobAbortError,
       isMusicJobAlive,
       patch,
+      promptAsrAuthOrBalance,
       showAlert,
       tt.lyricTimelineEmpty,
       tt.lyricTimelineFailed,
@@ -8230,6 +13564,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         lyricSegmentsStatus: 'idle',
         lyricSegmentsError: '',
         lyricSegmentsSourceUrl: '',
+        lyricAsrWords: [],
       }),
     );
   }, [patch]);
@@ -8262,18 +13597,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     [patch],
   );
 
-  /** 一次完成：仅生成剧本（歌曲分析沿用音乐步结果，不在此重复分析） */
-  const handleMvStoryOneShot = useCallback(async () => {
-    let cur0 = ensureDirectorMvLeadSlots(directorStateRef.current);
-    if (cur0.mvScriptUseReferenceGen === false) {
-      showAlert(tt.storyManualHint);
-      return;
-    }
-    const plan = normalizeDirectorMvCastPlan(cur0.mvCastPlan);
-    if ((cur0.assets.characters || []).length < plan.leadCount) {
-      showAlert(tt.castNeedLeads);
-      return;
-    }
+  /** 生成可确认的故事大纲 */
+  const handleMvStoryOutline = useCallback(async () => {
+    let cur0 = directorStateRef.current;
     const lyrics = String(cur0.mvMusic?.lyrics || '').trim();
     const title = String(cur0.mvMusic?.title || '').trim();
     if (!lyrics && !title) {
@@ -8288,94 +13614,503 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       showAlert(tt.storyNeedMusicAnalysis);
       return;
     }
-    // 音乐步摘要若未写入 mvStoryAnalysis，先回填到上方卡片
-    if (!String(cur0.mvStoryAnalysis?.summary || '').trim()) {
-      const musicSummary = String(cur0.mvMusic?.summary || '').trim();
-      const moodParts = String(cur0.mvMusic?.moodHint || '')
+    if (busyAction || cur0.isGenerating || data?.isGenerating) return;
+    // 故事聊天只用本地 busyAction，勿抬 isGenerating（会打穿 Workspace/autosave 导致整节点卡顿）
+    let prep = cur0;
+    let needPrepPatch = false;
+    if (!String(prep.mvStoryAnalysis?.summary || '').trim()) {
+      const musicSummary = String(prep.mvMusic?.summary || '').trim();
+      const moodParts = String(prep.mvMusic?.moodHint || '')
         .split(/[·•|,，/]/)
         .map((s) => s.trim())
         .filter(Boolean);
-      cur0 = patchDirectorMvStoryAnalysis(cur0, {
-        summary: musicSummary || cur0.mvStoryAnalysis?.summary,
-        ...(moodParts.length && !(cur0.mvStoryAnalysis?.emotions || []).length
+      prep = patchDirectorMvStoryAnalysis(prep, {
+        summary: musicSummary || prep.mvStoryAnalysis?.summary,
+        ...(moodParts.length && !(prep.mvStoryAnalysis?.emotions || []).length
           ? { emotions: moodParts.slice(0, 4), keywords: moodParts.slice(4) }
           : {}),
       });
-      patch(cur0);
+      needPrepPatch = true;
     }
-    if (busyAction || cur0.isGenerating || data?.isGenerating) return;
-    setBusyAction('story-script');
-    patch({ ...cur0, isGenerating: true, error: '', phase: 'story' });
-    const notes = String(directorStateRef.current.mvScriptReference || '').trim();
+    if (prep.error || prep.phase !== 'story') {
+      prep = { ...prep, error: '', phase: 'story' };
+      needPrepPatch = true;
+    }
+    setBusyAction('story-outline');
+    if (needPrepPatch) patch(prep);
+    clearDirectorChatTextStash(directorPhaseChatKey(id));
+    const useRefNotes = directorStateRef.current.mvScriptUseReferenceGen !== false;
+    const notes = useRefNotes
+      ? String(directorStateRef.current.mvScriptReference || '').trim()
+      : '';
     try {
       const cur = directorStateRef.current;
-      const { systemPrompt, userPrompt } = buildDirectorMvScriptMessages(cur, notes);
+      const { systemPrompt, userPrompt } = buildDirectorMvStoryOutlineMessages(cur, notes);
       const chatModel = String(cur.chatModel || '').trim();
       const isTerra = chatModel === LLM_CHAT_MODEL_GPT56_TERRA;
-      // Terra / 长剧本：提高上限，避免推理占额度后正文为空或截断；Terra 额外要求 JSON object
-      const text = await runChat(systemPrompt, userPrompt, {
-        max_tokens: isTerra ? 16384 : 8192,
-        temperature: 0.7,
-        ...(isTerra ? { response_format: { type: 'json_object' } } : {}),
+      const isRegen = !!String(cur.mvStoryOutline || '').trim();
+      const text = await runDirectorChatWithRetry(systemPrompt, userPrompt, {
+        // 目标约 280–480 字；压低 max_tokens 缩短尾延迟，降低触顶 FC 180s
+        max_tokens: isTerra ? 1200 : 900,
+        temperature: isRegen ? 0.92 : 0.65,
+        retries: 1,
       });
-      if (!String(text || '').trim()) {
+      const raw = String(text || '').trim();
+      if (!raw) {
         throw new Error('模型返回为空（网络或上游未返回正文），请重试');
       }
-      const normalized = normalizeDirectorMvScriptResult(text);
-      if (!normalized.ok) {
-        console.warn('[DirectorNode] MV 剧本解析失败', {
-          model: chatModel,
-          error: normalized.error,
-          textLen: String(text || '').length,
-          preview: String(text || '').slice(0, 240),
-        });
-        throw new Error(normalized.error || tt.storyScriptFailed);
+      if (!applyMvStoryOutlineFromChat(raw)) {
+        throw new Error(tt.storyOutlineFailed);
       }
-      // 强制剧情表行数 = 音频 lyric pack / 可算片段数（LLM 可能 ±N 漂移）
-      const clipCount = resolveDirectorMvAudioClipCount(cur);
-      const sections =
-        clipCount > 0
-          ? alignDirectorMvScriptSectionsToClipCount(normalized.sections, clipCount)
-          : normalized.sections;
-      const script = composeDirectorMvScriptText(sections) || normalized.script;
-      let next = {
-        ...directorStateRef.current,
-        scriptText: script,
-      };
-      next = patchDirectorMvStoryAnalysis(next, {
-        scriptKeywords: normalized.scriptKeywords,
-        sections,
+      requestAnimationFrame(() => {
+        document
+          .querySelector('[data-director-story-toolbar="1"]')
+          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       });
-      next = syncDirectorMvCastFromScript(next, 'fill');
-      next = ensureDirectorMvLeadSlots(next);
-      patch({ ...next, isGenerating: false, error: '' });
     } catch (e) {
-      const rawMsg = e instanceof Error ? e.message : String(e || '');
-      const isNetwork =
-        /ETIMEDOUT|ECONNREFUSED|ENOTFOUND|timeout|网络|连接|DNS|fetch failed|Failed to fetch|NX_AUTH|登录/i.test(
-          rawMsg,
-        );
-      const isParse = /无法解析|剧本正文为空|非合法 JSON|被截断/i.test(rawMsg);
-      const msg = isNetwork
-        ? `剧本生成失败（网络/上游）：${rawMsg || tt.storyScriptFailed}`
-        : isParse
-          ? rawMsg
-          : rawMsg || tt.storyScriptFailed;
+      const currentGen = chatGenRef.current;
+      const currentReqId = `director-chat-${id}-${currentGen}`;
+      const stashed = consumeStashedDirectorChatText(directorPhaseChatKey(id), currentReqId);
+      if (stashed && applyMvStoryOutlineFromChat(stashed)) {
+        return;
+      }
+      if (!mountedRef.current) return;
+      if (isDirectorChatAbortError(e)) {
+        patch({ ...directorStateRef.current, isGenerating: false, error: '' });
+        return;
+      }
+      const msg = isDirectorChatTimeoutError(e)
+        ? tt.storyLlmTimeout
+        : formatCloudLlmUserError(
+            e instanceof Error && e.message ? e.message : tt.storyOutlineFailed,
+          );
       patch({ ...directorStateRef.current, isGenerating: false, error: msg });
-      showAlert(msg);
+      // 关掉可能盖住弹窗的超高 z 悬停层，避免「确定」点不到
+      setPromptHover(null);
+      setPromptPreview(null);
+      setImagePreview(null);
+      setVideoPreview(null);
+      window.setTimeout(() => {
+        void showAlert(msg);
+      }, 0);
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    applyMvStoryOutlineFromChat,
+    busyAction,
+    data?.isGenerating,
+    id,
+    isDirectorChatAbortError,
+    isDirectorChatTimeoutError,
+    patch,
+    runDirectorChatWithRetry,
+    showAlert,
+    tt.storyLlmTimeout,
+    tt.storyNeedLyricsOrTitle,
+    tt.storyNeedMusicAnalysis,
+    tt.storyOutlineFailed,
+  ]);
+
+  /** 生成剧本：有故事即可，无需单独点「确认故事」 */
+  const handleMvStoryOneShot = useCallback(async () => {
+    let cur0 = directorStateRef.current;
+    const lyrics = String(cur0.mvMusic?.lyrics || '').trim();
+    const title = String(cur0.mvMusic?.title || '').trim();
+    if (!lyrics && !title) {
+      showAlert(tt.storyNeedLyricsOrTitle);
+      return;
+    }
+    const hasMusicAnalysis =
+      !!String(cur0.mvStoryAnalysis?.summary || '').trim() ||
+      !!String(cur0.mvMusic?.summary || '').trim() ||
+      !!String(cur0.mvMusic?.moodHint || '').trim();
+    if (!hasMusicAnalysis) {
+      showAlert(tt.storyNeedMusicAnalysis);
+      return;
+    }
+    const outline = String(cur0.mvStoryOutline || '').trim();
+    if (!outline) {
+      showAlert(tt.storyNeedOutline);
+      return;
+    }
+    if (busyAction || cur0.isGenerating || data?.isGenerating) return;
+    // 剧本聊天只用 busyAction；开场合并为最多一次 patch，避免连点触发多次画布更新
+    let prep = cur0;
+    let needPrepPatch = false;
+    if (!prep.mvStoryOutlineConfirmed) {
+      prep = patchDirectorMvScriptInput(prep, {
+        mvStoryOutline: outline,
+        mvStoryOutlineConfirmed: true,
+      });
+      needPrepPatch = true;
+    }
+    if (!String(prep.mvStoryAnalysis?.summary || '').trim()) {
+      const musicSummary = String(prep.mvMusic?.summary || '').trim();
+      const moodParts = String(prep.mvMusic?.moodHint || '')
+        .split(/[·•|,，/]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      prep = patchDirectorMvStoryAnalysis(prep, {
+        summary: musicSummary || prep.mvStoryAnalysis?.summary,
+        ...(moodParts.length && !(prep.mvStoryAnalysis?.emotions || []).length
+          ? { emotions: moodParts.slice(0, 4), keywords: moodParts.slice(4) }
+          : {}),
+      });
+      needPrepPatch = true;
+    }
+    if (prep.error || prep.phase !== 'story') {
+      prep = { ...prep, error: '', phase: 'story' };
+      needPrepPatch = true;
+    }
+    setBusyAction('story-script');
+    if (needPrepPatch) patch(prep);
+    clearDirectorChatTextStash(directorPhaseChatKey(id));
+    // 大段数分批：批次更小更快；中途超时保留已生成部分
+    try {
+      const cur = directorStateRef.current;
+      const chatModel = String(cur.chatModel || '').trim();
+      const isTerra = chatModel === LLM_CHAT_MODEL_GPT56_TERRA;
+      const clipCount = resolveDirectorMvAudioClipCount(cur);
+      const totalSeg = Math.max(6, clipCount || 10);
+      // 4o 等非 terra：小批次更容易在 FC 180s 内跑完，减少首包截断/502
+      const CHUNK = isTerra
+        ? totalSeg >= 28
+          ? 8
+          : totalSeg >= 18
+            ? 10
+            : 12
+        : totalSeg >= 28
+          ? 6
+          : 8;
+      const tokensForBatch = (batchLen: number) => {
+        const n = Math.max(4, batchLen);
+        if (isTerra) {
+          if (n <= 8) return 2560;
+          if (n <= 12) return 3584;
+          return 4608;
+        }
+        if (n <= 6) return 2048;
+        if (n <= 8) return 2560;
+        return 3584;
+      };
+
+      const emptyScriptSections = () => ({
+        plot: '',
+        worldView: '',
+        relationships: '',
+        characters: '',
+        scenes: '',
+        props: '',
+      });
+
+      const parseScriptBatchText = (raw: string) => {
+        const normalized = normalizeDirectorMvScriptResult(raw);
+        let rows =
+          (normalized.ok ? parseDirectorMvPlotBeatTable(normalized.sections.plot || '') : null) ||
+          parseDirectorMvPlotBeatTable(String(raw || '')) ||
+          [];
+        rows = rows.map((r, i) => ({ ...r, no: String(i + 1) }));
+        return { normalized, rows };
+      };
+
+      const commitPartial = (
+        baseSections: {
+          plot: string;
+          worldView: string;
+          relationships: string;
+          characters: string;
+          scenes: string;
+          props: string;
+        },
+        rows: NonNullable<ReturnType<typeof parseDirectorMvPlotBeatTable>>,
+        keywords: string[],
+        opts?: { syncCast?: boolean },
+      ) => {
+        let sections = {
+          ...baseSections,
+          plot: formatDirectorMvPlotBeatTable(rows.map((r, i) => ({ ...r, no: String(i + 1) }))),
+        };
+        sections =
+          totalSeg > 0 ? alignDirectorMvScriptSectionsToClipCount(sections, totalSeg) : sections;
+        const script = composeDirectorMvScriptText(sections);
+        let next = {
+          ...directorStateRef.current,
+          scriptText: script,
+          isGenerating: false,
+          error: '',
+        };
+        next = patchDirectorMvStoryAnalysis(next, {
+          scriptKeywords: keywords,
+          sections,
+        });
+        if (opts?.syncCast !== false) {
+          next = applyAutoDirectorMvCastPlan(next);
+        }
+        if ((next.shots || []).length > 0) {
+          next = bumpDirectorScriptContentRevision(next);
+        }
+        // 大剧本写回延后，避免阻塞「取消」按钮与工具栏
+        startTransition(() => {
+          patch(next);
+        });
+      };
+
+      const firstTo = Math.min(CHUNK, totalSeg);
+      const isRegenScript = !!String(
+        cur.scriptText || cur.mvStoryAnalysis?.sections?.plot || '',
+      ).trim();
+
+      const runFirstScriptBatch = async (batchTo: number, useJson: boolean) => {
+        const { systemPrompt, userPrompt } = buildDirectorMvScriptMessages(
+          directorStateRef.current,
+          undefined,
+          {
+            batchFrom: 1,
+            batchTo,
+            totalSegments: totalSeg,
+          },
+        );
+        const text = await runDirectorChatWithRetry(systemPrompt, userPrompt, {
+          max_tokens: tokensForBatch(batchTo),
+          temperature: isRegenScript ? 0.88 : 0.65,
+          ...(useJson ? { response_format: { type: 'json_object' } } : {}),
+          retries: 1,
+        });
+        return parseScriptBatchText(String(text || ''));
+      };
+
+      let normalized: ReturnType<typeof normalizeDirectorMvScriptResult> | null = null;
+      let plotRows: NonNullable<ReturnType<typeof parseDirectorMvPlotBeatTable>> = [];
+      let firstErr: unknown = null;
+      try {
+        const r = await runFirstScriptBatch(firstTo, true);
+        normalized = r.normalized.ok ? r.normalized : r.normalized;
+        plotRows = r.rows;
+      } catch (e) {
+        firstErr = e;
+        if (isDirectorChatAbortError(e) && !isDirectorChatTimeoutError(e)) throw e;
+        const currentReqId = `director-chat-${id}-${chatGenRef.current}`;
+        const stashed = consumeStashedDirectorChatText(directorPhaseChatKey(id), currentReqId);
+        if (stashed) {
+          const r = parseScriptBatchText(stashed);
+          plotRows = r.rows;
+          if (r.normalized.ok) normalized = r.normalized;
+        }
+      }
+      if (plotRows.length < 2) {
+        if (isCloudRateLimitError(firstErr)) {
+          await new Promise((r) => setTimeout(r, 16_000));
+          if (!mountedRef.current) throw firstErr;
+        }
+        const retryTo = Math.min(6, totalSeg);
+        try {
+          const r = await runFirstScriptBatch(retryTo, false);
+          if (r.rows.length > plotRows.length || (r.normalized.ok && r.rows.length >= 2)) {
+            plotRows = r.rows;
+            if (r.normalized.ok) normalized = r.normalized;
+          }
+        } catch (e2) {
+          if (isDirectorChatAbortError(e2) && !isDirectorChatTimeoutError(e2)) throw e2;
+          const currentReqId = `director-chat-${id}-${chatGenRef.current}`;
+          const stashed = consumeStashedDirectorChatText(directorPhaseChatKey(id), currentReqId);
+          if (stashed) {
+            const r = parseScriptBatchText(stashed);
+            if (r.rows.length > plotRows.length) {
+              plotRows = r.rows;
+              if (r.normalized.ok) normalized = r.normalized;
+            }
+          }
+          if (plotRows.length < 2) {
+            if (firstErr) throw firstErr;
+            throw e2;
+          }
+        }
+      }
+      if (!normalized?.ok) {
+        if (plotRows.length >= 2) {
+          const sections = {
+            ...emptyScriptSections(),
+            plot: formatDirectorMvPlotBeatTable(plotRows),
+          };
+          normalized = {
+            ok: true,
+            script: composeDirectorMvScriptText(sections),
+            scriptKeywords: [],
+            sections,
+            rawJson: '',
+          };
+        } else {
+          console.warn('[DirectorNode] MV 剧本解析失败', {
+            model: chatModel,
+            error: normalized?.error,
+            textLen: plotRows.length,
+          });
+          throw new Error(normalized?.error || tt.storyScriptFailed);
+        }
+      }
+      if (!normalized || !normalized.ok) {
+        throw new Error(tt.storyScriptFailed);
+      }
+
+      plotRows = plotRows.map((r, i) => ({ ...r, no: String(i + 1) }));
+
+      let guard = 0;
+      while (plotRows.length < totalSeg && guard < 10) {
+        guard += 1;
+        const batchFrom = plotRows.length + 1;
+        const batchTo = Math.min(totalSeg, plotRows.length + CHUNK);
+        const priorTail = formatDirectorMvPlotBeatTable(plotRows.slice(-3));
+        const sceneNames = String(normalized.sections.scenes || '')
+          .split(/\n+/)
+          .map((line) => String(line || '').split(/[:：]/)[0]?.trim())
+          .filter(Boolean)
+          .slice(0, 8)
+          .join('、');
+        const cont = buildDirectorMvScriptPlotContinueMessages(directorStateRef.current, {
+          batchFrom,
+          batchTo,
+          totalSegments: totalSeg,
+          priorPlotTail: priorTail,
+          sceneNames,
+        });
+        let contText = '';
+        try {
+          contText = await runDirectorChatWithRetry(cont.systemPrompt, cont.userPrompt, {
+            max_tokens: tokensForBatch(batchTo - batchFrom + 1),
+            temperature: 0.6,
+            response_format: { type: 'json_object' },
+            retries: 1,
+          });
+        } catch (contErr) {
+          if (
+            (isDirectorChatTimeoutError(contErr) || isDirectorChatAbortError(contErr)) &&
+            plotRows.length >= 2
+          ) {
+            commitPartial(normalized.sections, plotRows, normalized.scriptKeywords || []);
+            forceClearVoiceModalLock();
+            setPromptHover(null);
+            setPromptPreview(null);
+            const soft = `已生成 ${plotRows.length}/${totalSeg} 段后中断，已写入现有剧情表。可再点「生成剧本」或切「长镜」减段。`;
+            window.setTimeout(() => {
+              void showAlert(soft, { stackZClass: 'z-[2147483646]' });
+            }, 0);
+            return;
+          }
+          throw contErr;
+        }
+        const contNorm = normalizeDirectorMvScriptResult(contText);
+        const more =
+          (contNorm.ok ? parseDirectorMvPlotBeatTable(contNorm.sections.plot || '') : null) ||
+          (() => {
+            try {
+              const raw = String(contText || '').trim();
+              const j = JSON.parse(raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''));
+              const plot = j?.plot;
+              if (Array.isArray(plot)) {
+                return parseDirectorMvPlotBeatTable(JSON.stringify(plot));
+              }
+              if (typeof plot === 'string') return parseDirectorMvPlotBeatTable(plot);
+            } catch {
+              /* ignore */
+            }
+            return null;
+          })();
+        if (!more?.length) {
+          if (plotRows.length >= 2) {
+            commitPartial(normalized.sections, plotRows, normalized.scriptKeywords || []);
+            forceClearVoiceModalLock();
+            setPromptHover(null);
+            const soft = `续写未返回新行（已有 ${plotRows.length}/${totalSeg}），已保存现有剧情表。请重试或切「长镜」。`;
+            window.setTimeout(() => {
+              void showAlert(soft, { stackZClass: 'z-[2147483646]' });
+            }, 0);
+            return;
+          }
+          throw new Error(
+            `剧情表续写失败（已有 ${plotRows.length}/${totalSeg} 段）。请重试；或先切「长镜」减少片段数`,
+          );
+        }
+        const before = plotRows.length;
+        for (const row of more) {
+          if (plotRows.length >= totalSeg) break;
+          plotRows.push({ ...row, no: String(plotRows.length + 1) });
+        }
+        if (plotRows.length <= before) {
+          throw new Error(
+            `剧情表续写无新增行（已有 ${plotRows.length}/${totalSeg}）。请重试或切「长镜」减段`,
+          );
+        }
+      }
+
+      if (plotRows.length < Math.max(3, Math.ceil(totalSeg * 0.55))) {
+        if (plotRows.length >= 2) {
+          commitPartial(normalized.sections, plotRows, normalized.scriptKeywords || []);
+          forceClearVoiceModalLock();
+          const soft = `已写入 ${plotRows.length}/${totalSeg} 段（未写满）。可再点「生成剧本」续写，或切「长镜」减段。`;
+          window.setTimeout(() => {
+            void showAlert(soft, { stackZClass: 'z-[2147483646]' });
+          }, 0);
+          return;
+        }
+        throw new Error(
+          `剧情表仅 ${plotRows.length} 行，目标 ${totalSeg} 段。请重试；段数很多时可先切「长镜」减少片段数`,
+        );
+      }
+
+      commitPartial(normalized.sections, plotRows, normalized.scriptKeywords || []);
+    } catch (e) {
+      if (isDirectorChatAbortError(e)) {
+        forceClearVoiceModalLock();
+        patch({ ...directorStateRef.current, isGenerating: false, error: '' });
+        return;
+      }
+      if (isDirectorChatTimeoutError(e)) {
+        const msg = tt.storyLlmTimeout;
+        forceClearVoiceModalLock();
+        patch({ ...directorStateRef.current, isGenerating: false, error: msg });
+        setPromptHover(null);
+        setPromptPreview(null);
+        setImagePreview(null);
+        setVideoPreview(null);
+        window.setTimeout(() => {
+          void showAlert(msg, { stackZClass: 'z-[2147483646]' });
+        }, 0);
+        return;
+      }
+      const rawMsg = e instanceof Error ? e.message : String(e || '');
+      const msg = isCloudRateLimitError(e)
+        ? formatCloudLlmUserError(e)
+        : /ETIMEDOUT|ECONNREFUSED|ENOTFOUND|timeout|网络|连接|DNS|fetch failed|Failed to fetch|NX_AUTH|登录/i.test(
+              rawMsg,
+            )
+          ? `剧本生成失败（网络/上游）：${rawMsg || tt.storyScriptFailed}`
+          : /无法解析|剧本正文为空|非合法 JSON|被截断/i.test(rawMsg)
+            ? rawMsg
+            : formatCloudLlmUserError(rawMsg || tt.storyScriptFailed);
+      forceClearVoiceModalLock();
+      patch({ ...directorStateRef.current, isGenerating: false, error: msg });
+      setPromptHover(null);
+      setPromptPreview(null);
+      window.setTimeout(() => {
+        void showAlert(msg, { stackZClass: 'z-[2147483646]' });
+      }, 0);
     } finally {
       setBusyAction(null);
     }
   }, [
     busyAction,
     data?.isGenerating,
+    id,
+    isDirectorChatAbortError,
+    isDirectorChatTimeoutError,
     patch,
-    runChat,
+    runDirectorChatWithRetry,
     showAlert,
-    tt.castNeedLeads,
-    tt.storyManualHint,
+    tt.storyLlmTimeout,
     tt.storyNeedLyricsOrTitle,
     tt.storyNeedMusicAnalysis,
+    tt.storyNeedOutline,
     tt.storyScriptFailed,
   ]);
 
@@ -8390,6 +14125,145 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       {label}
     </span>
   );
+
+  const handleDramaStoryOneShot = useCallback(async () => {
+    let cur0 = ensureDirectorMvLeadSlots(directorStateRef.current);
+    const source = String(cur0.mvScriptReference || cur0.scriptText || '').trim();
+    if (!source) {
+      showAlert(tt.dramaStoryNeedSource);
+      return;
+    }
+    if (busyAction || cur0.isGenerating || data?.isGenerating) return;
+    setBusyAction('story-script');
+    // 保留原始剧本草稿；勿抬 isGenerating，避免整画布重渲卡顿
+    const prep = {
+      ...cur0,
+      mvScriptReference: String(cur0.mvScriptReference || '').trim() || source,
+      error: '',
+      phase: 'story' as const,
+    };
+    if (
+      prep.mvScriptReference !== cur0.mvScriptReference ||
+      prep.error !== cur0.error ||
+      prep.phase !== cur0.phase
+    ) {
+      patch(prep);
+    }
+    try {
+      const cur = directorStateRef.current;
+      const { systemPrompt, userPrompt } = buildDirectorDramaScriptMessages(cur, source, 12);
+      const chatModel = String(cur.chatModel || '').trim();
+      const isTerra = chatModel === LLM_CHAT_MODEL_GPT56_TERRA;
+      const text = await runDirectorChatWithRetry(systemPrompt, userPrompt, {
+        max_tokens: isTerra ? 16384 : 12288,
+        temperature: 0.7,
+        ...(isTerra ? { response_format: { type: 'json_object' } } : {}),
+        retries: 1,
+      });
+      if (!String(text || '').trim()) {
+        throw new Error('模型返回为空（网络或上游未返回正文），请重试');
+      }
+      const normalized = normalizeDirectorMvScriptResult(text);
+      if (!normalized.ok) {
+        throw new Error(normalized.error || tt.storyScriptFailed);
+      }
+      let next = applyDirectorDramaScriptResult(directorStateRef.current, normalized);
+      next = ensureDirectorDramaShotsFromScript(next, {
+        keepPhase: true,
+        preferExistingShots: !!(normalized.shots && normalized.shots.length > 0),
+      });
+      next = syncDirectorMvScenesFromScript(next, 'fill');
+      next = {
+        ...next,
+        mvScriptReference: String(next.mvScriptReference || '').trim() || source,
+        isGenerating: false,
+        error: '',
+        // 留在「剧本解析」步，直接展示分析结果分镜表
+        phase: 'story',
+      };
+      patch(next);
+    } catch (e) {
+      if (isDirectorChatAbortError(e)) {
+        patch({ ...directorStateRef.current, isGenerating: false, error: '' });
+        return;
+      }
+      const msg = isDirectorChatTimeoutError(e)
+        ? tt.storyLlmTimeout
+        : formatCloudLlmUserError(
+            e instanceof Error && e.message ? e.message : tt.storyScriptFailed,
+          );
+      patch({ ...directorStateRef.current, isGenerating: false, error: msg });
+      showAlert(msg);
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    busyAction,
+    data?.isGenerating,
+    isDirectorChatAbortError,
+    isDirectorChatTimeoutError,
+    patch,
+    runDirectorChatWithRetry,
+    showAlert,
+    tt.dramaStoryNeedSource,
+    tt.storyLlmTimeout,
+    tt.storyScriptFailed,
+  ]);
+
+  const renderDramaStoryPanel = () => {
+    const linked = absorbedScript;
+    const draft = String(state.mvScriptReference || '').trim();
+    const source = draft || linked;
+    const shotN = (state.shots || []).length;
+    const hasShotTable = shotN > 0;
+    // 已有分析结果：只展示分镜表（脚本编辑与分析入口在顶栏）
+    if (hasShotTable) {
+      return (
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden px-0.5">
+          {renderShotsConfirmPanel({
+            includeGenerateBar: true,
+            forceShow: true,
+            className: 'flex flex-col flex-1 min-h-0 gap-1',
+            tableScrollClass: 'nowheel flex-1 min-h-0 overflow-auto custom-scrollbar-dark',
+          })}
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-hidden px-0.5">
+        <DirectorStoryReferenceVoiceField
+          value={source}
+          onChange={(v) => {
+            patch({
+              ...directorStateRef.current,
+              mvScriptReference: v,
+              scriptText: directorMvScriptSectionsHaveContent(
+                directorStateRef.current.mvStoryAnalysis?.sections,
+              )
+                ? directorStateRef.current.scriptText
+                : v || linked,
+            });
+          }}
+          isDarkMode={isDarkMode}
+          placeholder={tt.dramaStorySourcePlaceholder}
+          textareaClassName={`nodrag nowheel w-full flex-1 min-h-[10rem] resize-none rounded-lg border px-2.5 py-2 text-[12px] outline-none ${
+            isDarkMode
+              ? 'border-white/12 bg-black/35 text-white/90 placeholder:text-white/35'
+              : 'border-gray-300 bg-white text-gray-900 placeholder:text-gray-400'
+          }`}
+          minHeightPx={160}
+          rows={8}
+          labels={{
+            voiceStart: tt.aiReviseFinalPromptVoiceStart,
+            voiceStop: tt.aiReviseFinalPromptVoiceStop,
+            voiceBusy: tt.aiReviseFinalPromptVoiceBusy,
+            micDenied: tt.aiReviseFinalPromptMicDenied,
+          }}
+          onError={showAlert}
+        />
+      </div>
+    );
+  };
 
   const renderMvStoryPanel = () => {
     const analysis = state.mvStoryAnalysis;
@@ -8409,10 +14283,26 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           : [];
     const keywords = analysis?.keywords || [];
     const scriptKeywords = analysis?.scriptKeywords || [];
-    const writing = busyAction === 'story-script' || busyAction === 'story-oneshot';
-    const oneShotBusy = writing || !!state.isGenerating;
-    const oneShotLabel = writing ? tt.storyWriting : tt.storyGenerateScriptBtn;
+    const writingOutline = busyAction === 'story-outline';
+    const writingScript = busyAction === 'story-script' || busyAction === 'story-oneshot';
+    const storyOutline = String(
+      storyOutlineLocal != null ? storyOutlineLocal : state.mvStoryOutline || '',
+    );
+    const storyOutlineConfirmed = !!state.mvStoryOutlineConfirmed;
+    const hasStoryOutline = !!storyOutline.trim();
     const useRefGen = state.mvScriptUseReferenceGen !== false;
+    const toggleStoryRefGen = () => {
+      const cur = directorStateRef.current;
+      const nextOn = !(cur.mvScriptUseReferenceGen !== false);
+      // 同步 patch：勿用 startTransition（剧本步重渲染时会被推迟，看起来像「点不动」）
+      // 顺带清掉卡住的 isGenerating，避免开关能动但故事按钮仍灰
+      patch(
+        patchDirectorMvScriptInput(
+          { ...cur, isGenerating: false },
+          { mvScriptUseReferenceGen: nextOn },
+        ),
+      );
+    };
     const scriptReference = String(state.mvScriptReference || '');
     const storedSections = normalizeDirectorMvScriptSections(analysis?.sections);
     const scriptSections: DirectorMvScriptSections = directorMvScriptSectionsHaveContent(storedSections)
@@ -8483,12 +14373,24 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       el.style.height = `${Math.max(minHeightPx, el.scrollHeight)}px`;
     };
     return (
-      <div className="flex flex-col shrink-0 gap-3">
-        <div className="shrink-0 relative z-[40] overflow-visible flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-4 flex-wrap shrink-0">
+      <div className="flex flex-col flex-1 min-h-0 gap-3">
+        <div
+          data-director-story-toolbar="1"
+          className={`shrink-0 sticky top-0 z-20 relative overflow-visible flex items-center justify-between gap-2 flex-wrap rounded-xl px-1 py-1.5 -mx-0.5 ${
+            writingOutline || writingScript
+              ? isDarkMode
+                ? 'bg-zinc-950'
+                : 'bg-gray-100'
+              : isDarkMode
+                ? 'bg-zinc-950/95 backdrop-blur-sm'
+                : 'bg-gray-100/95 backdrop-blur-sm'
+          }`}
+        >
+          <div className="relative z-30 pointer-events-auto flex items-center gap-4 flex-wrap shrink-0">
           <div
-            className="nodrag nopan inline-flex items-center gap-2 select-none shrink-0"
+            className="nodrag nopan pointer-events-auto inline-flex items-center gap-2 select-none shrink-0"
             onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
             title={useRefGen ? tt.storyRefGenOnHint : tt.storyManualHint}
           >
             <button
@@ -8496,7 +14398,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               role="switch"
               aria-checked={useRefGen}
               aria-label={tt.storyRefGenSwitchLabel}
-              className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 ${
+              className={`nodrag nopan relative z-30 pointer-events-auto h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 ${
                 useRefGen
                   ? isDarkMode
                     ? 'bg-sky-500/85'
@@ -8505,119 +14407,133 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     ? 'bg-white/20'
                     : 'bg-gray-300'
               }`}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+              }}
+              onMouseDown={(e) => {
+                // 用 mousedown 切换，避免 RF / 重渲染下 click 丢失
+                e.preventDefault();
+                e.stopPropagation();
+                toggleStoryRefGen();
+              }}
               onClick={(e) => {
                 e.stopPropagation();
-                patch(
-                  patchDirectorMvScriptInput(directorStateRef.current, {
-                    mvScriptUseReferenceGen: !useRefGen,
-                  }),
-                );
               }}
             >
               <span
-                className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                className={`pointer-events-none absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
                   useRefGen ? 'translate-x-4' : 'translate-x-0'
                 }`}
               />
             </button>
             <button
               type="button"
-              className={`nodrag font-medium ${bodyCls} cursor-pointer bg-transparent border-0 p-0 text-left`}
+              className={`nodrag nopan pointer-events-auto font-medium ${bodyCls} cursor-pointer bg-transparent border-0 p-0 text-left`}
               style={{ fontSize: fsChrome }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                toggleStoryRefGen();
+              }}
               onClick={(e) => {
                 e.stopPropagation();
-                patch(
-                  patchDirectorMvScriptInput(directorStateRef.current, {
-                    mvScriptUseReferenceGen: !useRefGen,
-                  }),
-                );
               }}
             >
               {tt.storyRefGenSwitchLabel}
             </button>
           </div>
           {renderCloseUpFramingSwitch()}
+          {renderShotChangePaceSelect({ compact: true })}
           </div>
           <div className="relative z-[40] flex items-center gap-2 shrink-0 overflow-visible ml-auto">
             {renderChatModelSelect()}
-            {useRefGen ? (
-              <div className="relative z-[40] flex items-center gap-1.5 shrink-0 overflow-visible">
-                <div
-                  className="relative overflow-visible"
-                  onMouseEnter={() => {
-                    setPriceHoverKey('story-oneshot');
-                  }}
-                  onMouseLeave={() => setPriceHoverKey((k) => (k === 'story-oneshot' ? null : k))}
-                >
-                  {priceHoverKey === 'story-oneshot' ? (
-                    <span
-                      className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`}
-                      title={tt.priceTooltip}
-                    >
-                      {formatChatYuanbaoLabel()}
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`nodrag nopan inline-flex items-center ${btnPrimary('!px-2.5 !py-1', 'operators')} disabled:opacity-50`}
-                    style={{ fontSize: fsChrome }}
-                    disabled={!!busyAction || !!state.isGenerating || !!data?.isGenerating}
+            <div className="relative z-[40] flex items-center gap-1.5 shrink-0 overflow-visible">
+              <div
+                className="relative overflow-visible"
+                onMouseEnter={() => {
+                  setPriceHoverKey('story-outline');
+                }}
+                onMouseLeave={() => setPriceHoverKey((k) => (k === 'story-outline' ? null : k))}
+              >
+                {priceHoverKey === 'story-outline' ? (
+                  <span
+                    className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`}
                     title={tt.priceTooltip}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleMvStoryOneShot();
-                    }}
                   >
-                    {oneShotBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" /> : null}
-                    {oneShotLabel}
-                  </button>
-                </div>
+                    {formatChatYuanbaoLabel()}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className={`nodrag nopan inline-flex items-center ${btnPrimary('!px-2.5 !py-1', 'operators')} disabled:opacity-50`}
+                  style={{ fontSize: fsChrome }}
+                  disabled={writingOutline ? false : isStoryToolbarBusy}
+                  title={writingOutline ? tt.storyCancelChatHint : tt.priceTooltip}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (writingOutline) {
+                      cancelDirectorChat('user');
+                      return;
+                    }
+                    void handleMvStoryOutline();
+                  }}
+                >
+                  {writingOutline ? <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" /> : null}
+                  {writingOutline ? tt.musicJobCancel : tt.storyGenerateOutlineBtn}
+                </button>
               </div>
-            ) : null}
+              <div
+                className="relative overflow-visible"
+                onMouseEnter={() => {
+                  setPriceHoverKey('story-oneshot');
+                }}
+                onMouseLeave={() => setPriceHoverKey((k) => (k === 'story-oneshot' ? null : k))}
+              >
+                {priceHoverKey === 'story-oneshot' ? (
+                  <span
+                    className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`}
+                    title={tt.priceTooltip}
+                  >
+                    {formatChatYuanbaoLabel()}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className={`nodrag nopan inline-flex items-center ${btnPrimary('!px-2.5 !py-1', 'operators')} disabled:opacity-50`}
+                  style={{ fontSize: fsChrome }}
+                  disabled={
+                    writingScript
+                      ? false
+                      : isStoryToolbarBusy || !hasStoryOutline
+                  }
+                  title={
+                    writingScript
+                      ? tt.storyCancelChatHint
+                      : !hasStoryOutline
+                        ? tt.storyNeedOutline
+                        : tt.priceTooltip
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (writingScript) {
+                      cancelDirectorChat('user');
+                      return;
+                    }
+                    void handleMvStoryOneShot();
+                  }}
+                >
+                  {writingScript ? <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" /> : null}
+                  {writingScript ? tt.musicJobCancel : tt.storyGenerateScriptBtn}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
-        {useRefGen ? (
-          <div
-            className={`flex flex-col shrink-0 gap-1.5 ${cardCls}`}
-            style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-          >
-            <p className={`leading-relaxed ${mutedCls}`} style={{ fontSize: fsChrome }}>
-              {tt.storyRefGenOnHint}
-            </p>
-            <div className={`font-medium ${bodyCls}`} style={{ fontSize: fsChrome }}>
-              {tt.storyReferenceLabel}
-            </div>
-            <textarea
-              className={sectionInputCls}
-              style={{ fontSize: fsChrome, minHeight: 72 }}
-              rows={3}
-              value={scriptReference}
-              placeholder={tt.storyReferencePlaceholder}
-              onPointerDown={(e) => e.stopPropagation()}
-              onChange={(e) => {
-                patch(
-                  patchDirectorMvScriptInput(directorStateRef.current, {
-                    mvScriptReference: e.target.value,
-                  }),
-                );
-              }}
-              ref={(el) => growStoryTextarea(el, 72)}
-              onInput={(e) => growStoryTextarea(e.currentTarget, 72)}
-            />
-          </div>
-        ) : (
-          <p className={`leading-relaxed shrink-0 ${mutedCls}`} style={{ fontSize: fsChrome }}>
-            {tt.storyManualHint}
-          </p>
-        )}
-
-        <div className="flex flex-col shrink-0 gap-3">
+        <div className={`flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 pr-0.5 ${scrollCls}`}>
         <div className="shrink-0 grid grid-cols-1 md:grid-cols-2 gap-2.5">
-          <div
-            className={cardCls}
-            style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-          >
+          <div className={cardCls}>
             <div className={`mb-1.5 font-medium ${bodyCls}`} style={{ fontSize: fsSmall }}>
               {tt.storyAnalyzeTitle}
             </div>
@@ -8634,10 +14550,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             ) : null}
           </div>
 
-          <div
-            className={cardCls}
-            style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-          >
+          <div className={cardCls}>
             <div className={`mb-1.5 font-medium ${bodyCls}`} style={{ fontSize: fsSmall }}>
               {tt.storyStyleTitle}
             </div>
@@ -8668,16 +14581,232 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           </div>
         </div>
 
-        <div
-          className={`flex flex-col shrink-0 gap-2.5 ${cardCls}`}
-          style={{ backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)' }}
-        >
+        {useRefGen ? (
+          <div className={`flex flex-col shrink-0 gap-1.5 ${cardCls}`}>
+            <DirectorStoryReferenceVoiceField
+              value={scriptReference}
+              onChange={(v) => {
+                patch(
+                  patchDirectorMvScriptInput(directorStateRef.current, {
+                    mvScriptReference: v,
+                  }),
+                );
+              }}
+              isDarkMode={isDarkMode}
+              placeholder={tt.storyReferencePlaceholder}
+              textareaClassName={sectionInputCls}
+              textareaStyle={{ fontSize: fsChrome }}
+              minHeightPx={72}
+              rows={3}
+              label={
+                <div className={`font-medium ${bodyCls}`} style={{ fontSize: fsChrome }}>
+                  {tt.storyReferenceLabel}
+                </div>
+              }
+              labels={{
+                voiceStart: tt.aiReviseFinalPromptVoiceStart,
+                voiceStop: tt.aiReviseFinalPromptVoiceStop,
+                voiceBusy: tt.aiReviseFinalPromptVoiceBusy,
+                micDenied: tt.aiReviseFinalPromptMicDenied,
+              }}
+              onError={showAlert}
+              enabled={useRefGen}
+            />
+          </div>
+        ) : null}
+
+        <div className={`relative flex flex-col shrink-0 gap-1.5 ${cardCls}`}>
+          {writingOutline ? (
+            <div
+              className={`absolute inset-0 z-20 flex items-center justify-center rounded-2xl ${
+                isDarkMode ? 'bg-zinc-950/70' : 'bg-white/75'
+              }`}
+            >
+              <div className={`inline-flex items-center gap-2 font-medium ${bodyCls}`} style={{ fontSize: fsSmall }}>
+                <Loader2 className={`w-4 h-4 animate-spin ${accentSpin}`} />
+                {tt.storyOutlineWriting}
+              </div>
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className={`font-medium ${bodyCls}`} style={{ fontSize: fsChrome }}>
+                {tt.storyOutlineTitle}
+              </div>
+              <span
+                className={`inline-flex items-center rounded-md px-2 py-0.5 ${
+                  hasStoryOutline
+                    ? isDarkMode
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : 'bg-emerald-50 text-emerald-700'
+                    : isDarkMode
+                      ? 'bg-white/10 text-white/55'
+                      : 'bg-gray-100 text-gray-500'
+                }`}
+                style={{ fontSize: fsChrome }}
+              >
+                {hasStoryOutline ? tt.storyOutlineReadyBadge : tt.storyOutlineEmptyBadge}
+              </span>
+            </div>
+            {hasStoryOutline ? (
+              <button
+                type="button"
+                className={`nodrag nopan shrink-0 rounded-md px-2 py-0.5 ${
+                  isDarkMode
+                    ? 'bg-white/10 text-white/85 hover:bg-white/16'
+                    : 'bg-gray-200/80 text-gray-800 hover:bg-gray-300'
+                }`}
+                style={{ fontSize: fsChrome }}
+                onMouseDown={(e) => {
+                  // 用 mousedown 切换，避免 textarea blur 与 click 打架导致反复挂载卡死
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (storyOutlineEditing) {
+                    setStoryOutlineEditing(false);
+                    return;
+                  }
+                  setStoryOutlineEditing(true);
+                  requestAnimationFrame(() => {
+                    const el = storyOutlineTextareaRef.current;
+                    if (!el) return;
+                    el.focus();
+                    const len = el.value.length;
+                    try {
+                      el.setSelectionRange(len, len);
+                    } catch {
+                      /* ignore */
+                    }
+                  });
+                }}
+              >
+                {storyOutlineEditing
+                  ? locale === 'en'
+                    ? 'Done'
+                    : '完成'
+                  : locale === 'en'
+                    ? 'Edit'
+                    : '编辑'}
+              </button>
+            ) : null}
+          </div>
+          <div
+            className="nodrag nopan relative z-[50] flex flex-wrap items-center gap-2 overflow-visible"
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {(
+              [
+                {
+                  key: 'genre' as const,
+                  label: tt.storyPrefsGenreLabel,
+                  value: String(state.mvStoryGenreType || ''),
+                  options: DIRECTOR_MV_STORY_GENRE_TYPES,
+                  patchKey: 'mvStoryGenreType' as const,
+                },
+                {
+                  key: 'tone' as const,
+                  label: tt.storyPrefsToneLabel,
+                  value: String(state.mvStoryToneStyle || ''),
+                  options: DIRECTOR_MV_STORY_TONE_STYLES,
+                  patchKey: 'mvStoryToneStyle' as const,
+                },
+                {
+                  key: 'ending' as const,
+                  label: tt.storyPrefsEndingLabel,
+                  value: String(state.mvStoryEndingType || ''),
+                  options: DIRECTOR_MV_STORY_ENDING_TYPES,
+                  patchKey: 'mvStoryEndingType' as const,
+                },
+              ] as const
+            ).map((sel) => (
+              <div
+                key={sel.key}
+                className={`nodrag nopan inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 ${
+                  isDarkMode ? 'bg-black/20' : 'bg-white/70'
+                }`}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <span className={`shrink-0 ${mutedCls}`} style={{ fontSize: Math.max(10, fsChrome - 1) }}>
+                  {sel.label}
+                </span>
+                <PanelOptionDropdown
+                  value={sel.value}
+                  options={[
+                    { value: '', label: tt.storyPrefsAutoOption },
+                    ...sel.options.map((opt) => ({ value: opt, label: opt })),
+                  ]}
+                  onChange={(v) => {
+                    patch(
+                      patchDirectorMvScriptInput(directorStateRef.current, {
+                        [sel.patchKey]: v,
+                      }),
+                    );
+                  }}
+                  isDarkMode={isDarkMode}
+                  title={sel.label}
+                  minWidthPx={96}
+                  menuPlacement="down"
+                  className={
+                    isDarkMode
+                      ? '!bg-zinc-900 !text-white/90 !border-white/15'
+                      : '!bg-white !text-gray-800 !border-gray-200'
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          {hasStoryOutline && !storyOutlineEditing ? (
+            <div
+              className={`nodrag rounded-xl border px-1 py-1 max-h-[min(42vh,480px)] overflow-y-auto ${scrollCls} ${
+                isDarkMode ? 'border-white/10 bg-black/20' : 'border-gray-200 bg-gray-100'
+              }`}
+              style={{ fontSize: fsChrome }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <MvStoryOutlineColoredView text={storyOutline} isDarkMode={isDarkMode} />
+            </div>
+          ) : (
+            <textarea
+              ref={(el) => {
+                storyOutlineTextareaRef.current = el;
+              }}
+              className={`${sectionInputCls} max-h-[min(42vh,480px)] !overflow-y-auto`}
+              style={{ fontSize: fsChrome, minHeight: 120, height: 220, resize: 'vertical' }}
+              rows={8}
+              value={storyOutline}
+              placeholder={tt.storyOutlinePlaceholder}
+              onPointerDown={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const v = e.target.value;
+                setStoryOutlineLocal(v);
+                patch(
+                  patchDirectorMvScriptInput(directorStateRef.current, {
+                    mvStoryOutline: v,
+                  }),
+                );
+              }}
+            />
+          )}
+        </div>
+
+        <div className="flex flex-col shrink-0 gap-3">
+        <div className={`relative flex flex-col shrink-0 gap-2.5 ${cardCls}`}>
           <div className="shrink-0 flex items-center justify-between gap-2">
             <span className={`font-medium ${bodyCls}`} style={{ fontSize: fsSmall }}>
               {tt.phaseStory}
             </span>
+            {writingScript ? (
+              <span className={`inline-flex items-center gap-1.5 ${mutedCls}`} style={{ fontSize: fsChrome }}>
+                <Loader2 className={`w-3.5 h-3.5 animate-spin ${accentSpin}`} />
+                {tt.storyScriptWriting}
+              </span>
+            ) : null}
           </div>
-          {scriptKeywords.length ? (
+          {scriptKeywords.length && !writingScript ? (
             <div className="shrink-0 flex flex-col gap-1">
               <div className={`opacity-70 ${mutedCls}`} style={{ fontSize: fsChrome }}>
                 {tt.storyScriptKeywordsLabel}
@@ -8688,7 +14817,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             </div>
           ) : null}
           <div className="flex flex-col gap-3 shrink-0">
-            {sectionDefs.map((sec) => {
+            {writingScript ? (
+              <div
+                className={`rounded-xl border px-3 py-10 text-center ${mutedCls} ${
+                  isDarkMode ? 'border-white/10 bg-black/20' : 'border-gray-200 bg-gray-50'
+                }`}
+                style={{ fontSize: fsChrome }}
+              >
+                {tt.storyScriptWriting}
+              </div>
+            ) : (
+            sectionDefs.map((sec) => {
               if (sec.key === 'plot') {
                 const plotRows = parseDirectorMvPlotBeatTable(scriptSections.plot || '');
                 const beatStats = plotRows ? countDirectorMvPlotBeatsWithCast(plotRows) : null;
@@ -8718,6 +14857,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   tt.storyPlotBeatColAngle,
                   tt.storyPlotBeatColFocal,
                   tt.storyPlotBeatColAction,
+                  tt.storyPlotBeatColLipsyncAction,
                   tt.storyPlotBeatColMood,
                 ] as const;
                 const keys: Array<keyof DirectorMvPlotBeatRow> = [
@@ -8730,20 +14870,22 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   'angle',
                   'focal',
                   'action',
+                  'lipsyncAction',
                   'mood',
                 ];
-                /** 大致均分；「动作与画面」略宽 */
+                /** 大致均分；动作与对口型动作略宽 */
                 const colPct: Record<keyof DirectorMvPlotBeatRow, string> = {
-                  no: '5%',
-                  section: '8%',
-                  vocal: '8%',
-                  castType: '8%',
-                  scene: '9%',
-                  cast: '8%',
-                  angle: '9%',
-                  focal: '8%',
-                  action: '22%',
-                  mood: '7%',
+                  no: '4%',
+                  section: '7%',
+                  vocal: '7%',
+                  castType: '7%',
+                  scene: '8%',
+                  cast: '7%',
+                  angle: '8%',
+                  focal: '7%',
+                  action: '16%',
+                  lipsyncAction: '16%',
+                  mood: '6%',
                 };
                 const colStyle = (k: keyof DirectorMvPlotBeatRow): React.CSSProperties => ({
                   width: colPct[k],
@@ -8978,8 +15120,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   />
                 </div>
               );
-            })}
+            })
+            )}
           </div>
+        </div>
         </div>
         </div>
       </div>
@@ -9053,10 +15197,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const uploadOpen = !!(asset && sourceMenuAssetId === asset.id);
       const interactive = enabled && !!asset;
       const priceKey = asset ? `cast-gen-${asset.id}` : `cast-gen-slot-${slot}`;
+      const isCastGenBusy =
+        !!asset &&
+        (asset.status === 'generating' || !!imageGenProgressIds[asset.id]);
 
       return (
         <div
-          className={`flex flex-col flex-1 min-h-0 rounded-xl border px-2.5 py-2 gap-1.5 ${
+          className={`relative z-[1] flex flex-col flex-1 min-h-0 rounded-xl border px-2.5 py-2 gap-1.5 ${
+            uploadOpen && !isCastGenBusy ? 'overflow-visible' : 'overflow-hidden'
+          } ${
             enabled
               ? isDarkMode
                 ? 'border-white/15 bg-white/[0.04]'
@@ -9156,9 +15305,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   );
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
               />
+              <div className="relative flex-1 min-h-0 flex flex-col">
               <textarea
-                className={`nodrag nowheel flex-1 min-h-0 w-full resize-none rounded-lg px-1.5 py-1 leading-snug outline-none ${mutedCls} ${scrollCls} ${
+                className={`nodrag nowheel flex-1 min-h-0 w-full resize-none rounded-lg px-1.5 py-1 pr-6 leading-snug outline-none ${mutedCls} ${scrollCls} ${
                   isDarkMode ? 'bg-black/25' : 'bg-gray-100'
                 }`}
                 style={{ fontSize: fsChrome }}
@@ -9174,10 +15326,37 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   );
                 }}
                 onPointerDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+                onKeyUp={(e) => e.stopPropagation()}
               />
-              <div className="shrink-0 flex items-center gap-1 flex-nowrap">
+              {interactive && String(asset?.prompt || '').length > 0 ? (
+                <button
+                  type="button"
+                  className={`nodrag absolute top-1 right-1 z-[2] rounded p-0.5 ${
+                    isDarkMode
+                      ? 'text-white/40 hover:text-rose-300 hover:bg-white/10'
+                      : 'text-gray-400 hover:text-rose-600 hover:bg-black/5'
+                  }`}
+                  title={tt.castClearPrompt}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!asset) return;
+                    patch(
+                      updateDirectorAsset(directorStateRef.current, asset.id, {
+                        prompt: '',
+                      }),
+                    );
+                  }}
+                >
+                  <X className="w-3.5 h-3.5" strokeWidth={2.4} />
+                </button>
+              ) : null}
+              </div>
+              <div className="shrink-0 flex items-center gap-1 flex-nowrap min-w-0">
                 {interactive ? (
-                  <div className="shrink-0">
+                  <div className="shrink-0 min-w-0">
                     {renderImageGenControls({ compact: true, kind: 'character' })}
                   </div>
                 ) : null}
@@ -9189,25 +15368,30 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   {interactive ? renderYuanbaoHoverTip(priceKey, 1) : null}
                   <button
                     type="button"
-                    className={`nodrag ${btnPrimary('!px-2 !py-0.5 !h-auto !min-h-0', sectionScratch('character'))}`}
+                    className={`nodrag inline-flex items-center gap-1 ${btnPrimary('!px-2 !py-0.5 !h-auto !min-h-0', sectionScratch('character'))}`}
                     style={{ fontSize: fsChrome }}
-                    disabled={!interactive || asset?.status === 'generating' || isDirectorHardBusy}
+                    disabled={!interactive || isCastGenBusy || isDirectorHardBusy}
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (!asset) return;
+                      if (!asset || isCastGenBusy) return;
                       setCastArtworkPickAssetId(asset.id);
                       generateOneAsset(asset);
                     }}
                   >
-                    {tt.generateThis}
+                    {isCastGenBusy ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin inline shrink-0" />
+                    ) : null}
+                    {isCastGenBusy ? tt.generating : tt.generateThis}
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* 已选形象（9:16，更大）+ 点击弹出上传 */}
+            {/* 已选形象（9:16，更大）+ 点击弹出上传；菜单 portal 到 body 避免 overflow 裁切 */}
             <div
-              className="relative shrink-0 h-full min-h-0 aspect-[9/16] w-auto max-w-[26%] min-w-[132px]"
+              className={`relative shrink-0 h-full min-h-0 aspect-[9/16] w-auto max-w-[26%] min-w-[132px] overflow-visible ${
+                uploadOpen ? 'z-[60]' : 'z-[1]'
+              }`}
               ref={uploadOpen ? sourceMenuRef : undefined}
             >
               <button
@@ -9257,75 +15441,80 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     <Plus className="w-4 h-4" strokeWidth={2.5} />
                   </span>
                 ) : null}
-                {asset?.status === 'generating' ? (
-                  <div
-                    className={`absolute inset-0 z-[1] flex items-center justify-center ${
-                      isDarkMode ? 'bg-black/55' : 'bg-gray-200/80'
-                    }`}
-                  >
-                    <Loader2 className={`w-5 h-5 animate-spin ${accentSpin}`} />
-                  </div>
-                ) : null}
+                {renderDirectorThumbProgress({
+                  visible: isCastGenBusy,
+                  message: tt.generatingCharacter,
+                  borderRadius: 12,
+                })}
               </button>
-              {uploadOpen && asset ? (
-                <div
-                  className={`nodrag absolute left-1/2 -translate-x-1/2 bottom-[calc(100%+6px)] z-40 min-w-[9.5rem] overflow-hidden rounded-lg border py-1 shadow-xl ${
-                    isDarkMode
-                      ? 'bg-zinc-900 border-white/15 text-white/90'
-                      : 'bg-gray-100 border-gray-200 text-gray-800'
-                  }`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {data?.onPickImageFromCanvas ? (
-                    <button
-                      type="button"
-                      className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
-                        isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+              {uploadOpen && asset && sourceMenuFixedStyle
+                ? createPortal(
+                    <div
+                      ref={sourceMenuPortalRef}
+                      className={`nodrag nopan fixed z-[100050] min-w-[9.5rem] overflow-visible rounded-lg border py-1 shadow-xl ${
+                        isDarkMode
+                          ? 'bg-zinc-900 border-white/15 text-white/90'
+                          : 'bg-gray-100 border-gray-200 text-gray-800'
                       }`}
-                      onClick={() => {
-                        setSourceMenuAssetId(null);
-                        void pickAssetFromCanvas(asset.id);
+                      style={{
+                        left: sourceMenuFixedStyle.left,
+                        bottom: sourceMenuFixedStyle.bottom,
+                        minWidth: sourceMenuFixedStyle.minWidth,
                       }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <MousePointerClick className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                      {tt.pickFromCanvas}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
-                      isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                    }`}
-                    onClick={() => {
-                      setSourceMenuAssetId(null);
-                      onUploadClick(asset.id);
-                    }}
-                  >
-                    <Upload className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    {tt.uploadLocal}
-                  </button>
-                  {asset.imageUrl ? (
-                    <button
-                      type="button"
-                      className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
-                        isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                      }`}
-                      onClick={() => {
-                        setSourceMenuAssetId(null);
-                        setImagePreview({ url: asset.imageUrl!, name: asset.name || '' });
-                      }}
-                    >
-                      <ZoomIn className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                      {tt.viewImage}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
+                      {data?.onPickImageFromCanvas ? (
+                        <button
+                          type="button"
+                          className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={() => {
+                            setSourceMenuAssetId(null);
+                            void pickAssetFromCanvas(asset.id);
+                          }}
+                        >
+                          <MousePointerClick className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          {tt.pickFromCanvas}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                          isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                        }`}
+                        onClick={() => {
+                          setSourceMenuAssetId(null);
+                          onUploadClick(asset.id);
+                        }}
+                      >
+                        <Upload className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                        {tt.uploadLocal}
+                      </button>
+                      {asset.imageUrl ? (
+                        <button
+                          type="button"
+                          className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                          }`}
+                          onClick={() => {
+                            setSourceMenuAssetId(null);
+                            setImagePreview({ url: asset.imageUrl!, name: asset.name || '' });
+                          }}
+                        >
+                          <ZoomIn className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          {tt.viewImage}
+                        </button>
+                      ) : null}
+                    </div>,
+                    document.body,
+                  )
+                : null}
             </div>
 
             <div
-              className={`nexflow-cast-look-rail flex-1 min-w-0 min-h-0 flex gap-2.5 overflow-x-auto overflow-y-hidden items-center px-1 py-2 nowheel ${scrollCls}`}
+              className={`nexflow-cast-look-rail flex-1 min-w-0 min-h-0 flex gap-2.5 overflow-x-auto overflow-y-visible items-center px-1 py-2 nowheel ${scrollCls}`}
             >
               {presets.map((preset) => {
                 const url = directorCastArtworkImageUrl(preset.imageFile);
@@ -9391,8 +15580,23 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       );
     };
 
+    const comboId = directorMvCastPlanComboId(plan);
+    const comboLabel =
+      comboId === 'solo-female'
+        ? tt.castComboSoloFemale
+        : comboId === 'solo-male'
+          ? tt.castComboSoloMale
+          : comboId === 'duo-ff'
+            ? tt.castComboDuoFf
+            : comboId === 'duo-mm'
+              ? tt.castComboDuoMm
+              : tt.castComboDuoMf;
+
     return (
-      <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-hidden">
+      <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-visible">
+        <div className={`shrink-0 ${mutedCls}`} style={{ fontSize: fsChrome }}>
+          {fillDirectorI18n(tt.castAutoOpenedHint, { combo: comboLabel })}
+        </div>
         {scriptCharCount > 0 ? (
           <div className="shrink-0 flex items-center justify-between gap-2 flex-wrap">
             <span className={`min-w-0 ${bodyCls}`} style={{ fontSize: fsChrome }}>
@@ -9423,7 +15627,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             {tt.castEmptyHint}
           </div>
         ) : (
-          <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-hidden">
+          <div className="flex flex-col flex-1 min-h-0 gap-2 overflow-visible">
             {renderLeadCastSection(1)}
             {renderLeadCastSection(2)}
           </div>
@@ -9440,6 +15644,42 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     const labelCls = isDarkMode ? 'text-white/50' : 'text-gray-500';
     return (
       <div className="shrink-0 relative z-[50] overflow-visible flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5 w-full">
+        <div className="nodrag inline-flex items-center" title={tt.videoSkillModelHint}>
+          {renderChatModelSelect({ variant: 'plain', menuPlacement: 'down' })}
+        </div>
+        <button
+          type="button"
+          className={`nodrag inline-flex items-center justify-center gap-1 ${btnPrimary('!px-2.5 !py-1 !h-auto')} disabled:opacity-50`}
+          style={{ fontSize: fsChrome }}
+          disabled={!!busyAction || state.shots.length === 0}
+          title={tt.videoRebuildPromptFromScriptHint}
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleRebuildAllShotPromptsFromScript();
+          }}
+        >
+          {tt.videoRebuildPromptFromScriptBatch}
+        </button>
+        <button
+          type="button"
+          className={`nodrag inline-flex items-center justify-center gap-1 ${btnPrimary('!px-2.5 !py-1 !h-auto')} disabled:opacity-50`}
+          style={{ fontSize: fsChrome }}
+          disabled={!!busyAction || optimizingShotNos.length > 0 || state.shots.length === 0}
+          title={tt.videoOptimizePromptBatch}
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleOptimizeVideoPrompts();
+          }}
+        >
+          {busyAction === 'optimize-prompts' ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          ) : null}
+          {busyAction === 'optimize-prompts' && videoSkillRewriteHint
+            ? videoSkillRewriteHint
+            : tt.videoOptimizePromptBatch}
+        </button>
+        {!DIRECTOR_MV_FORCE_H3_LIPSYNC ? (
+          <>
         <label className="nodrag inline-flex items-center gap-1.5" title={tt.videoBatchModelLabel}>
           <span className={labelCls} style={{ fontSize: fsSmall }}>
             {tt.videoBatchModelLabel}
@@ -9521,6 +15761,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             </span>
           )}
         </label>
+          </>
+        ) : null}
 
         <label
           className="nodrag inline-flex items-center gap-1.5"
@@ -9529,6 +15771,19 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           <span className={labelCls} style={{ fontSize: fsSmall }}>
             {tt.videoBatchLipsyncModelLabel}
           </span>
+          {DIRECTOR_MV_FORCE_H3_LIPSYNC ? (
+            <span
+              className={modelSelectCls}
+              style={{ fontSize: fsChrome }}
+              title={
+                DIRECTOR_VIDEO_LIPSYNC_MODELS.find(
+                  (m) => m.value === DIRECTOR_VIDEO_MINIMAX_LIPSYNC_MODEL,
+                )?.title
+              }
+            >
+              {directorVideoBatchModelLabel(DIRECTOR_VIDEO_MINIMAX_LIPSYNC_MODEL)}
+            </span>
+          ) : (
           <select
             className={modelSelectCls}
             style={{ fontSize: fsChrome }}
@@ -9551,6 +15806,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               </option>
             ))}
           </select>
+          )}
         </label>
 
         <label
@@ -9599,6 +15855,64 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           )}
         </label>
 
+        <div
+          className="nodrag nopan inline-flex items-center gap-1.5 select-none shrink-0"
+          onPointerDown={(e) => e.stopPropagation()}
+          title={tt.videoHoverSoundHint}
+        >
+          <button
+            type="button"
+            role="switch"
+            aria-checked={videoHoverSoundOn}
+            aria-label={tt.videoHoverSoundLabel}
+            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 ${
+              videoHoverSoundOn
+                ? isDarkMode
+                  ? 'bg-emerald-500/90'
+                  : 'bg-emerald-600'
+                : isDarkMode
+                  ? 'bg-white/20'
+                  : 'bg-gray-300'
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setVideoHoverSoundOn((on) => {
+                const next = !on;
+                if (!next) pauseShotThumbVideos();
+                return next;
+              });
+            }}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                videoHoverSoundOn ? 'translate-x-4' : 'translate-x-0'
+              }`}
+            />
+          </button>
+          {videoHoverSoundOn ? (
+            <Volume2 className={`w-3.5 h-3.5 shrink-0 ${bodyCls}`} />
+          ) : (
+            <VolumeX className={`w-3.5 h-3.5 shrink-0 ${mutedCls}`} />
+          )}
+          <button
+            type="button"
+            className={`nodrag font-medium cursor-pointer bg-transparent border-0 p-0 text-left ${
+              videoHoverSoundOn ? bodyCls : mutedCls
+            }`}
+            style={{ fontSize: fsChrome }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setVideoHoverSoundOn((on) => {
+                const next = !on;
+                if (!next) pauseShotThumbVideos();
+                return next;
+              });
+            }}
+          >
+            {tt.videoHoverSoundLabel}
+          </button>
+        </div>
+
         <span
           className="relative inline-flex shrink-0 overflow-visible"
           onMouseEnter={() => setPriceHoverKey('batch-videos-toolbar')}
@@ -9618,6 +15932,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               void handleSpawnVideosClick();
             }}
           >
+            {busyAction === 'videos' ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+            ) : null}
             {tt.batchSpawnVideos}
           </button>
         </span>
@@ -9625,25 +15942,747 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
   };
 
+  /** 组装 / 打开卡拉OK编辑器种子（复用歌曲音频+歌词，可带成片 URL） */
+  const buildKaraokeSeed = useCallback(
+    (videoUrlOverride?: string): KaraokeProject | null => {
+      const music = directorStateRef.current.mvMusic;
+      const lyrics = String(music?.lyrics || '').trim();
+      const audio = String(music?.url || '').trim();
+      if (!lyrics || !audio) return null;
+      const base = karaokeProjectFromDirectorState(directorStateRef.current);
+      const prev = (dataRef.current as DirectorNodeData | undefined)?.karaokeProject;
+      const audioUrl =
+        String(base.audioUrl || prev?.audioUrl || music?.url || '').trim() || undefined;
+      const videoUrl =
+        String(
+          videoUrlOverride || prev?.videoUrl || base.videoUrl || '',
+        ).trim() || undefined;
+      if (prev && Array.isArray(prev.lines) && prev.lines.length > 0) {
+        const prevChars = prev.lines.reduce(
+          (n, l) => n + (l.instrumental ? 0 : (l.chars?.length || 0)),
+          0,
+        );
+        // 仅当上次已有可用字级时复用；空 lines/无 chars 时用导演台最新歌词重建
+        if (prevChars > 0) {
+          const lyrics =
+            String(music?.lyrics || prev.lyrics || base.lyrics || '').trim() || base.lyrics;
+          // 第1步歌词若已改：打开编辑器时按行 remap，保持字级时间与正文一致
+          const lyricLines = lyrics
+            .replace(/\r\n/g, '\n')
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          let li = 0;
+          const lines = prev.lines.map((line) => {
+            if (line.instrumental) return line;
+            const nextText = lyricLines[li++];
+            if (nextText == null) return line;
+            const prevText =
+              String(line.text || '').trim() ||
+              (line.chars || []).map((c) => c.text).join('');
+            if (prevText === nextText) return line;
+            return remapKaraokeLineText(line, nextText);
+          });
+          return {
+            ...base,
+            audioUrl,
+            videoUrl,
+            audioSource: resolveKaraokeAudioSource({
+              audioSource: prev.audioSource || base.audioSource,
+              audioUrl,
+              videoUrl,
+            }),
+            lyrics,
+            songTitle: String(music?.songTitle || '').trim(),
+            lyricist: String(music?.lyricist || '').trim(),
+            composer: String(music?.composer || '').trim(),
+            previewOpeningCredits: prev.previewOpeningCredits !== false,
+            globalOffsetSec: Number(prev.globalOffsetSec) || 0,
+            lines,
+            timingSource: prev.timingSource || base.timingSource,
+            style: {
+              ...(prev.style || base.style || {}),
+              indicator: {
+                ...((prev.style || base.style)?.indicator || {}),
+                enabled: false,
+              },
+              countdown: {
+                ...DEFAULT_KARAOKE_STYLE.countdown,
+                ...((prev.style || base.style)?.countdown || {}),
+                enabled: false,
+              },
+            },
+            asrWords: prev.asrWords || base.asrWords,
+            asrLanguage: normalizeKaraokeAsrLanguage(
+              prev.asrLanguage || music?.asrLanguage || base.asrLanguage,
+            ),
+          };
+        }
+      }
+      return {
+        ...base,
+        audioUrl,
+        videoUrl,
+        audioSource: resolveKaraokeAudioSource({
+          audioSource: prev?.audioSource || base.audioSource,
+          audioUrl,
+          videoUrl,
+        }),
+        songTitle: String(music?.songTitle || '').trim(),
+        lyricist: String(music?.lyricist || '').trim(),
+        composer: String(music?.composer || '').trim(),
+        previewOpeningCredits: prev?.previewOpeningCredits !== false,
+        style: {
+          ...(prev?.style || base.style || {}),
+          indicator: {
+            ...((prev?.style || base.style)?.indicator || {}),
+            enabled: false,
+          },
+          countdown: {
+            ...DEFAULT_KARAOKE_STYLE.countdown,
+            ...((prev?.style || base.style)?.countdown || {}),
+            enabled: false,
+          },
+        },
+        globalOffsetSec: Number(prev?.globalOffsetSec) || base.globalOffsetSec || 0,
+        asrLanguage: normalizeKaraokeAsrLanguage(
+          prev?.asrLanguage || music?.asrLanguage || base.asrLanguage,
+        ),
+      };
+    },
+    [],
+  );
+
+  const persistKaraokeProject = useCallback(
+    (next: KaraokeProject, extra?: Partial<DirectorNodeData>) => {
+      if (extra && Object.prototype.hasOwnProperty.call(extra, 'karaokeVideoSource')) {
+        karaokeVideoSourceRef.current = extra.karaokeVideoSource;
+      }
+      setKaraokeSeed(next);
+      karaokeSeedRef.current = next;
+      const curMusic = directorStateRef.current.mvMusic;
+      const nextLang = normalizeKaraokeAsrLanguage(next.asrLanguage);
+      const curLang = normalizeKaraokeAsrLanguage(curMusic?.asrLanguage);
+      const lyricsFromLines = lyricsTextFromKaraokeLines(next.lines);
+      const nextLyrics = String(next.lyrics || lyricsFromLines || '').trim();
+      const curLyrics = String(curMusic?.lyrics || '').trim();
+      const musicPatch: {
+        asrLanguage?: KaraokeAsrLanguage;
+        lyrics?: string;
+        lyricSegments?: NonNullable<typeof curMusic>['lyricSegments'];
+      } = {};
+      if (nextLang !== curLang) musicPatch.asrLanguage = nextLang;
+      if (nextLyrics && nextLyrics !== curLyrics) musicPatch.lyrics = nextLyrics;
+      // 同步人声段文案（按可唱行顺序对齐非间奏段），保持第1步/切镜同源
+      const segs = Array.isArray(curMusic?.lyricSegments) ? curMusic.lyricSegments : [];
+      if (segs.length > 0 && Array.isArray(next.lines) && next.lines.length > 0) {
+        const singable = next.lines.filter((l) => !l.instrumental);
+        let si = 0;
+        let changed = false;
+        const synced = segs.map((seg) => {
+          if (seg.instrumental) return seg;
+          const line = singable[si++];
+          if (!line) return seg;
+          const text =
+            String(line.text || '').trim() ||
+            (line.chars || []).map((c) => c.text).join('');
+          if (!text || text === String(seg.text || '').trim()) return seg;
+          changed = true;
+          return { ...seg, text };
+        });
+        if (changed) musicPatch.lyricSegments = synced;
+      }
+      if (Object.keys(musicPatch).length > 0) {
+        patch(patchDirectorMvMusic(directorStateRef.current, musicPatch));
+      }
+      dataRef.current?.onUpdate?.({ karaokeProject: next, ...extra } as Partial<DirectorNodeData>);
+    },
+    [patch],
+  );
+
+  /** 第1步歌词改写 → 同步 karaokeProject.lyrics（编辑中用本地草稿，失焦再调用；不 remap 字级） */
+  const syncKaraokeFromStep1Lyrics = useCallback(
+    (lyricsRaw: string) => {
+      const lyrics = normalizeKaraokeRoleMarkersInText(String(lyricsRaw || ''));
+      patch(patchDirectorMvMusic(directorStateRef.current, { lyrics }));
+      const prev =
+        karaokeSeed ||
+        (dataRef.current as DirectorNodeData | undefined)?.karaokeProject;
+      if (!prev) return;
+      if (String(prev.lyrics || '') === lyrics) return;
+      const next = { ...prev, lyrics, updatedAt: Date.now() };
+      setKaraokeSeed(next);
+      dataRef.current?.onUpdate?.({ karaokeProject: next } as Partial<DirectorNodeData>);
+    },
+    [karaokeSeed, patch],
+  );
+
+  /** 第1步失焦：按行 remap karaoke 字级，与歌词正文对齐 */
+  const commitStep1LyricsToKaraokeLines = useCallback(() => {
+    const lyrics = normalizeKaraokeRoleMarkersInText(
+      String(directorStateRef.current.mvMusic?.lyrics || ''),
+    );
+    const prev =
+      karaokeSeed ||
+      (dataRef.current as DirectorNodeData | undefined)?.karaokeProject;
+    if (!prev || !Array.isArray(prev.lines) || prev.lines.length === 0) return;
+    const lyricLines = lyrics
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((s) => s.trim());
+    // 保留空行与可唱行下标对齐（与 lyricsTextFromKaraokeLines 一致）；勿 filter(Boolean)
+    let li = 0;
+    let changed = false;
+    const lines = prev.lines.map((line) => {
+      if (line.instrumental) return line;
+      const nextText = lyricLines[li++];
+      if (nextText == null) return line;
+      const prevText =
+        String(line.text || '').trim() ||
+        (line.chars || []).map((c) => c.text).join('');
+      if (prevText === nextText) return line;
+      changed = true;
+      return remapKaraokeLineText(line, nextText);
+    });
+    if (!changed && String(prev.lyrics || '') === lyrics) return;
+    const next: KaraokeProject = {
+      ...prev,
+      lyrics,
+      lines,
+      updatedAt: Date.now(),
+    };
+    setKaraokeSeed(next);
+    dataRef.current?.onUpdate?.({ karaokeProject: next } as Partial<DirectorNodeData>);
+  }, [karaokeSeed]);
+
+  /** 解析可用合成成片：优先缓存，必要时才导出剪辑轨 */
+  const resolveKaraokeComposedVideoUrl = useCallback(
+    async (opts?: { forceExport?: boolean }): Promise<string | null> => {
+      const d = dataRef.current as DirectorNodeData | undefined;
+      const cached = String(d?.karaokeComposedVideoUrl || '').trim();
+      if (cached && !opts?.forceExport) return cached;
+      if (!d?.onResolveKaraokeMvVideo) return cached || null;
+      try {
+        const url = String((await d.onResolveKaraokeMvVideo()) || '').trim();
+        if (url && url !== cached) {
+          // 仅缓存合成 URL，不覆盖用户本地成片
+          d.onUpdate?.({ karaokeComposedVideoUrl: url } as Partial<DirectorNodeData>);
+        }
+        return url || cached || null;
+      } catch {
+        return cached || null;
+      }
+    },
+    [],
+  );
+
+  /** 将合成成片写入 karaoke 状态（不覆盖用户已上传的本地成片，除非 force） */
+  const applyComposedKaraokeVideo = useCallback(
+    async (opts?: { forceExport?: boolean; forceOverwriteUser?: boolean; silent?: boolean }) => {
+      const d = dataRef.current as DirectorNodeData | undefined;
+      const source = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+      const curUrl = String(
+        karaokeSeedRef.current?.videoUrl ||
+          karaokeSeed?.videoUrl ||
+          d?.karaokeProject?.videoUrl ||
+          '',
+      ).trim();
+      if (source === 'user' && curUrl && !opts?.forceOverwriteUser) {
+        return curUrl;
+      }
+      const url = String((await resolveKaraokeComposedVideoUrl(opts)) || '').trim();
+      if (!url) {
+        if (!opts?.silent) showAlert(tt.karaokeImportComposeFailed);
+        return null;
+      }
+      // 导出期间用户可能已上传本地成片
+      const sourceAfter = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+      const curAfter = String(
+        karaokeSeedRef.current?.videoUrl || d?.karaokeProject?.videoUrl || '',
+      ).trim();
+      if (sourceAfter === 'user' && curAfter && !opts?.forceOverwriteUser) {
+        // 仅缓存合成 URL，不覆盖预览
+        if (url !== String(d?.karaokeComposedVideoUrl || '').trim()) {
+          d?.onUpdate?.({ karaokeComposedVideoUrl: url } as Partial<DirectorNodeData>);
+        }
+        return curAfter;
+      }
+      const seed =
+        buildKaraokeSeed(url) ||
+        karaokeProjectFromDirectorState(directorStateRef.current, url);
+      persistKaraokeProject(
+        { ...seed, videoUrl: url, updatedAt: Date.now() },
+        {
+          karaokeComposedVideoUrl: url,
+          karaokeVideoSource: 'composed',
+        },
+      );
+      return url;
+    },
+    [
+      buildKaraokeSeed,
+      karaokeSeed?.videoUrl,
+      persistKaraokeProject,
+      resolveKaraokeComposedVideoUrl,
+      showAlert,
+      tt.karaokeImportComposeFailed,
+    ],
+  );
+
+  const importKaraokeFromCompose = useCallback(async () => {
+    if (!data?.onResolveKaraokeMvVideo && !String(data?.karaokeComposedVideoUrl || '').trim()) {
+      showAlert(tt.karaokeImportComposeFailed);
+      return;
+    }
+    setBusyAction('karaoke-import');
+    try {
+      // 用户显式「导入合成成片」：强制从剪辑轨再导出一次
+      const url = await applyComposedKaraokeVideo({
+        forceExport: !!data?.onResolveKaraokeMvVideo,
+        forceOverwriteUser: true,
+        silent: false,
+      });
+      if (!url) return;
+    } catch (e) {
+      console.warn('[DirectorNode] 导入合成成片失败', e);
+      showAlert(tt.karaokeImportComposeFailed);
+    } finally {
+      setBusyAction(null);
+    }
+  }, [
+    applyComposedKaraokeVideo,
+    data?.karaokeComposedVideoUrl,
+    data?.onResolveKaraokeMvVideo,
+    showAlert,
+    tt.karaokeImportComposeFailed,
+  ]);
+
+  const KARAOKE_VIDEO_MAX_BYTES = 800 * 1024 * 1024;
+  /** 无本地 path 时才走 buffer IPC；大文件走整包 buffer 会卡死/OOM，故设更低阈值 */
+  const KARAOKE_VIDEO_BUFFER_FALLBACK_MAX_BYTES = 80 * 1024 * 1024;
+
+  /** 每次打开选文件前清空 value，保证同文件 / 再次选择也能触发 change */
+  const onPickKaraokeVideoClick = useCallback(() => {
+    const input = karaokeVideoUploadInputRef.current;
+    if (!input) return;
+    input.value = '';
+    input.click();
+  }, []);
+
+  const clearKaraokeVideo = useCallback(() => {
+    const d = dataRef.current as DirectorNodeData | undefined;
+    const prevProj =
+      karaokeSeedRef.current ||
+      karaokeSeed ||
+      d?.karaokeProject ||
+      null;
+    const prevUrl = String(prevProj?.videoUrl || '').trim();
+    const prevSource = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+    if (prevUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(prevUrl);
+      } catch {
+        /* ignore */
+      }
+    }
+    const base =
+      prevProj ||
+      karaokeProjectFromDirectorState(directorStateRef.current);
+    const composed = String(d?.karaokeComposedVideoUrl || '').trim();
+    // 清除本地上传后回退到合成成片；若当前已是合成成片则清空预览
+    if (composed && prevSource === 'user') {
+      persistKaraokeProject(
+        { ...base, videoUrl: composed, updatedAt: Date.now() },
+        {
+          karaokeBurnedVideoUrl: undefined,
+          karaokeVideoSource: 'composed',
+          karaokeComposedVideoUrl: composed,
+        },
+      );
+      return;
+    }
+    persistKaraokeProject(
+      { ...base, videoUrl: undefined, updatedAt: Date.now() },
+      {
+        karaokeBurnedVideoUrl: undefined,
+        karaokeVideoSource: undefined,
+      },
+    );
+  }, [karaokeSeed, persistKaraokeProject]);
+
+  const onUploadKaraokeVideoFile = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      if (file.size > KARAOKE_VIDEO_MAX_BYTES) {
+        showAlert(tt.karaokeUploadVideoTooLarge);
+        return;
+      }
+      const api = window.electronAPI;
+      const projectId = data?.projectId || undefined;
+      const filePath = String((file as File & { path?: string }).path || '').trim();
+      const prevUrl = String(
+        karaokeSeedRef.current?.videoUrl ||
+          karaokeSeed?.videoUrl ||
+          (dataRef.current as DirectorNodeData | undefined)?.karaokeProject?.videoUrl ||
+          '',
+      ).trim();
+      setBusyAction('karaoke-upload');
+      let videoUrl = '';
+      // 大成片优先按路径复制进项目 assets，避免 arrayBuffer + IPC 整包传输卡死
+      if (filePath && api?.createVideoLocalResourceFromFile) {
+        try {
+          const r = await api.createVideoLocalResourceFromFile(projectId, filePath);
+          videoUrl = String(r?.originalUrl || '').trim();
+        } catch (e) {
+          console.warn('[DirectorNode] createVideoLocalResourceFromFile 失败', e);
+        }
+      }
+      if (!videoUrl && filePath && api?.copyFileToProjectAssets) {
+        try {
+          const { savedPath } = await api.copyFileToProjectAssets(projectId, filePath);
+          videoUrl = `local-resource://${savedPath}`;
+        } catch (e) {
+          console.warn('[DirectorNode] copyFileToProjectAssets 失败', e);
+        }
+      }
+      if (
+        !videoUrl &&
+        !filePath &&
+        file.size <= KARAOKE_VIDEO_BUFFER_FALLBACK_MAX_BYTES &&
+        api?.saveDroppedFileBufferToProjectAssets
+      ) {
+        try {
+          const buffer = await file.arrayBuffer();
+          const { savedPath } = await api.saveDroppedFileBufferToProjectAssets(
+            projectId,
+            file.name || 'karaoke-mv.mp4',
+            buffer,
+          );
+          videoUrl = `local-resource://${savedPath}`;
+        } catch (e) {
+          console.warn('[DirectorNode] 上传卡拉OK成片 buffer 失败', e);
+        }
+      }
+      if (!videoUrl) {
+        try {
+          videoUrl = URL.createObjectURL(file);
+        } catch {
+          setBusyAction(null);
+          showAlert(tt.karaokeUploadVideoFailed);
+          return;
+        }
+      }
+      try {
+        if (prevUrl.startsWith('blob:') && prevUrl !== videoUrl) {
+          try {
+            URL.revokeObjectURL(prevUrl);
+          } catch {
+            /* ignore */
+          }
+        }
+        // 优先复用当前编辑器工程（保留字级/样式），仅替换成片 URL
+        const prevProj =
+          karaokeSeedRef.current ||
+          karaokeSeed ||
+          (dataRef.current as DirectorNodeData | undefined)?.karaokeProject;
+        const seed = prevProj
+          ? {
+              ...prevProj,
+              videoUrl,
+              audioSource: resolveKaraokeAudioSource({
+                ...prevProj,
+                videoUrl,
+              }),
+              updatedAt: Date.now(),
+            }
+          : buildKaraokeSeed(videoUrl) ||
+            karaokeProjectFromDirectorState(directorStateRef.current, videoUrl);
+        // 显式替换成片；旧烧录结果作废；保留合成成片缓存以便清除后回退
+        // 先写 source ref，避免同帧 composed effect 用旧 dataRef 打回合成片
+        karaokeVideoSourceRef.current = 'user';
+        persistKaraokeProject(
+          { ...seed, videoUrl, updatedAt: Date.now() },
+          { karaokeBurnedVideoUrl: undefined, karaokeVideoSource: 'user' },
+        );
+      } finally {
+        setBusyAction(null);
+      }
+    },
+    [
+      buildKaraokeSeed,
+      data?.projectId,
+      karaokeSeed,
+      persistKaraokeProject,
+      showAlert,
+      tt.karaokeUploadVideoFailed,
+      tt.karaokeUploadVideoTooLarge,
+    ],
+  );
+
+  /** 进入第 8 步：优先用户成片，否则自动带入合成成片 */
+  useEffect(() => {
+    if (!karaokePanelActive) return;
+    const d = dataRef.current as DirectorNodeData | undefined;
+    const source = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+    const composed = String(d?.karaokeComposedVideoUrl || '').trim();
+    const cur = String(d?.karaokeProject?.videoUrl || '').trim();
+    let videoUrl = '';
+    if (source === 'user' && cur) videoUrl = cur;
+    else if (composed) videoUrl = composed;
+    else if (cur) videoUrl = cur;
+
+    const seed = buildKaraokeSeed(videoUrl || undefined);
+    if (seed) {
+      setKaraokeSeed(seed);
+      karaokeSeedRef.current = seed;
+      setKaraokeOpen(false);
+      // 已有合成成片缓存时写入工程，避免空白要用户再点「导入」
+      if (videoUrl && composed && source !== 'user') {
+        const needBind =
+          String(d?.karaokeProject?.videoUrl || '').trim() !== videoUrl ||
+          d?.karaokeVideoSource !== 'composed' ||
+          String(d?.karaokeComposedVideoUrl || '').trim() !== composed;
+        if (needBind) {
+          persistKaraokeProject(
+            { ...seed, videoUrl, updatedAt: Date.now() },
+            {
+              karaokeComposedVideoUrl: composed,
+              karaokeVideoSource: 'composed',
+            },
+          );
+        }
+      }
+    }
+
+    // 尚无成片：仅当已有合成缓存或已关联剪辑轨时才后台导出。
+    // 全失败/无成片时勿静默 resolve→previewToSplice（会抢焦点，像「下一步没反应」）
+    const linkedSplice = String(directorStateRef.current.linkedSpliceNodeId || '').trim();
+    if (
+      !videoUrl &&
+      seed &&
+      d?.onResolveKaraokeMvVideo &&
+      (composed || linkedSplice)
+    ) {
+      let cancelled = false;
+      setBusyAction((prev) => prev || 'karaoke-import');
+      void (async () => {
+        try {
+          await applyComposedKaraokeVideo({ silent: true });
+        } finally {
+          if (!cancelled) {
+            setBusyAction((prev) => (prev === 'karaoke-import' ? null : prev));
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+    // 仅在切入第 8 步时灌入；异步合成完成由 composedVideoUrlProp effect 承接
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 避免 seed 回写反复重建编辑器
+  }, [karaokePanelActive]);
+
+  /**
+   * 第 7 步剪辑轨导出完成后（异步写入 karaokeComposedVideoUrl）：
+   * 若第 8 步已打开且未指定本地成片，自动采用新合成成片。
+   * 注意：切勿把 karaokeSeed.videoUrl 放进 deps —— 用户上传会改 seed，
+   * 而 data.karaokeVideoSource 尚未回写时会被误判为「非 user」从而打回合成片。
+   */
+  const composedVideoUrlProp = String(
+    (data as DirectorNodeData | undefined)?.karaokeComposedVideoUrl || '',
+  ).trim();
+  useEffect(() => {
+    if (!karaokePanelActive || !composedVideoUrlProp) return;
+    if (karaokeVideoSourceRef.current === 'user') return;
+    const d = dataRef.current as DirectorNodeData | undefined;
+    if (d?.karaokeVideoSource === 'user') return;
+    // 以本地 seed 为准：Workspace 异步写入后须灌入编辑器
+    const seedUrl = String(karaokeSeedRef.current?.videoUrl || '').trim();
+    if (seedUrl === composedVideoUrlProp) return;
+    const seed =
+      buildKaraokeSeed(composedVideoUrlProp) ||
+      karaokeProjectFromDirectorState(directorStateRef.current, composedVideoUrlProp);
+    persistKaraokeProject(
+      { ...seed, videoUrl: composedVideoUrlProp, updatedAt: Date.now() },
+      {
+        karaokeComposedVideoUrl: composedVideoUrlProp,
+        karaokeVideoSource: 'composed',
+      },
+    );
+  }, [
+    karaokePanelActive,
+    composedVideoUrlProp,
+    buildKaraokeSeed,
+    persistKaraokeProject,
+  ]);
+
+  useEffect(() => {
+    if (!karaokePanelActive) setKaraokeEditorBusy('idle');
+  }, [karaokePanelActive]);
+
+  /** 第8步：直接嵌入卡拉OK编辑器（不再显示成片来源中间页） */
+  const renderMvKaraokePanel = () => {
+    const lyrics = String(state.mvMusic?.lyrics || '').trim();
+    const audio = String(state.mvMusic?.url || '').trim();
+    if (!lyrics || !audio) {
+      return (
+        <div
+          className={`flex flex-1 min-h-0 items-center justify-center px-4 text-center ${
+            isDarkMode ? 'text-white/55' : 'text-gray-500'
+          }`}
+          style={{ fontSize: fsSmall }}
+        >
+          {tt.karaokeNeedMusicLyrics}
+        </div>
+      );
+    }
+    if (!karaokeSeed) {
+      return (
+        <div
+          className={`flex flex-1 min-h-0 items-center justify-center gap-2 ${
+            isDarkMode ? 'text-white/55' : 'text-gray-500'
+          }`}
+          style={{ fontSize: fsSmall }}
+        >
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {tt.karaokeSubtitles}
+        </div>
+      );
+    }
+    const videoBusy: 'upload' | 'import' | null =
+      busyAction === 'karaoke-upload'
+        ? 'upload'
+        : busyAction === 'karaoke-import'
+          ? 'import'
+          : null;
+    return (
+      <KaraokeSubtitleEditor
+        open
+        variant="embedded"
+        hideClose
+        hideFooterActions
+        actionsRef={karaokeEditorActionsRef}
+        onBusyChange={setKaraokeEditorBusy}
+        onClose={() => {
+          goDirectorPhase('videos');
+        }}
+        projectId={data?.projectId}
+        initialProject={karaokeSeed}
+        entryLabel={tt.karaokeSubtitles}
+        onProjectChange={(p) => {
+          const d = dataRef.current as DirectorNodeData | undefined;
+          const nextUrl = String(p.videoUrl || '').trim();
+          const prevUrl = String(d?.karaokeProject?.videoUrl || karaokeSeed?.videoUrl || '').trim();
+          const extra: Partial<DirectorNodeData> = {};
+          const source = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+          // 编辑器自动 resolve 写入的成片 → 记为合成来源并缓存
+          if (
+            nextUrl &&
+            nextUrl !== prevUrl &&
+            source !== 'user' &&
+            (nextUrl === String(d?.karaokeComposedVideoUrl || '').trim() || !prevUrl)
+          ) {
+            extra.karaokeComposedVideoUrl = nextUrl;
+            extra.karaokeVideoSource = 'composed';
+          }
+          persistKaraokeProject(p, extra);
+        }}
+        resolveVideoUrl={
+          data?.onResolveKaraokeMvVideo || composedVideoUrlProp
+            ? async () => resolveKaraokeComposedVideoUrl()
+            : undefined
+        }
+        onPickLocalVideo={onPickKaraokeVideoClick}
+        onImportComposeVideo={
+          data?.onResolveKaraokeMvVideo || composedVideoUrlProp
+            ? () => {
+                void importKaraokeFromCompose();
+              }
+            : undefined
+        }
+        onClearVideo={clearKaraokeVideo}
+        videoSourceBusy={videoBusy}
+        onBurned={(result) => {
+          const burnedUrl = String(result.originalUrl || '').trim();
+          const add = data?.onAddVideoClipNodes;
+          data?.onUpdate?.({
+            karaokeProject: result.karaokeProject,
+            karaokeBurnedVideoUrl: burnedUrl || undefined,
+          } as Partial<DirectorNodeData>);
+          if (!add) {
+            showAlert(result.originalUrl);
+            return;
+          }
+          const newId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const w = 420;
+          const h = 236;
+          const storeState = store.getState();
+          const self = storeState.nodeInternals.get(id);
+          const originX =
+            (self?.positionAbsolute?.x ?? self?.position?.x ?? 0) + (self?.width ?? sizeW) + 48;
+          const originY = self?.positionAbsolute?.y ?? self?.position?.y ?? 0;
+          add({
+            nodes: [
+              {
+                id: newId,
+                type: 'video',
+                position: { x: originX, y: originY },
+                data: {
+                  width: w,
+                  height: h,
+                  label: tt.karaokeSubtitles,
+                  title: tt.karaokeSubtitles,
+                  outputVideo: result.originalUrl,
+                  localPath: result.originalPath,
+                  preserveExportLayout: true,
+                  exportedMediaClip: true,
+                  karaokeProject: result.karaokeProject,
+                  videoAsset: {
+                    poster: result.posterUrl,
+                    width: result.width,
+                    height: result.height,
+                  },
+                },
+                style: { width: w, height: h },
+                selected: true,
+              },
+            ],
+            edges: [
+              {
+                id: `e-${id}-${newId}-karaoke`,
+                source: id,
+                sourceHandle: 'output',
+                target: newId,
+                targetHandle: 'input',
+              },
+            ],
+          });
+        }}
+      />
+    );
+  };
+
   /** 第7步：视频生成表（列宽/音频/对口型/成片交互对齐分镜生成表） */
   const renderMvVideosPanel = (opts?: { maxHeightClass?: string; panelActive?: boolean }) => {
     const maxH = opts?.maxHeightClass || '';
     const panelActive = opts?.panelActive !== false;
-    // 与分镜确认表一致：参考图用场景格高度，成片用分镜图尺寸
-    const refThumbH = SHOTS_CONFIRM_REF_CELL_H;
-    const refThumbW = Math.round(refThumbH * (16 / 9));
+    // 视频步参考分镜图拉满原「图+下方按钮」区域；画布选择/电脑上传改为悬停浮层
     const videoThumbH = SHOTS_CONFIRM_SB_THUMB_PX;
     const videoThumbW = Math.round(videoThumbH * (16 / 9));
     const videoEmptyH = Math.round(videoThumbH * 0.85);
+    const refThumbH = videoThumbH;
+    const refThumbW = Math.round(refThumbH * (16 / 9));
     const actionFs = Math.max(10, fsChrome - 1);
     const actionSecondaryCls = isDarkMode
-      ? 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white/[0.06] text-white/75 ring-white/12 hover:bg-white/[0.1] hover:text-white/95 disabled:opacity-40'
-      : 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-gray-100 text-gray-600 ring-gray-200 hover:bg-gray-200 hover:text-gray-800 disabled:opacity-40';
+      ? 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white/[0.1] text-white/90 ring-white/20 hover:bg-white/[0.16] hover:text-white disabled:opacity-40'
+      : 'nodrag inline-flex w-full items-center justify-center gap-1 rounded-md px-1.5 py-0.5 ring-1 whitespace-nowrap font-medium bg-white text-gray-800 ring-gray-300 hover:bg-sky-50 hover:text-sky-800 hover:ring-sky-300 disabled:opacity-40';
     const videoCols = [
-      { key: '镜号', width: '48px', label: tt.colShotNo },
+      { key: '镜号', width: '56px', label: tt.colShotNo },
       { key: '时长', width: '44px', label: tt.colDuration },
       { key: '最终提示词', width: '168px', label: tt.colFinalPrompt },
-      { key: '__ref_sb__', width: '108px', label: tt.colRefStoryboard },
+      { key: '__ref_sb__', width: `${refThumbW + 8}px`, label: tt.colRefStoryboard },
+      { key: '__cast__', width: '112px', label: tt.colShotCast },
       { key: '__lens__', width: '52px', label: tt.colAngleFocal },
       { key: '__audio__', width: '220px', label: tt.colShotAudio },
       { key: '__lipsync__', width: '88px', label: tt.colLipsync },
@@ -9652,6 +16691,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
     return (
       <div className="flex flex-col flex-1 min-h-0 gap-2">
+        {renderScriptStaleBanner()}
         {renderMvVideoGenToolbar()}
         <DirectorShotTableVirtual
           count={state.shots.length}
@@ -9661,7 +16701,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         >
           {({ virtualItems, paddingTop, paddingBottom, measureElement }) => (
           <table className="w-full table-fixed border-collapse" style={{ fontSize: fsSmall }}>
-            <thead className={`sticky top-0 z-10 backdrop-blur-sm ${tableHeadBg}`}>
+            <thead className={`sticky top-0 z-10 ${tableHeadBg}`}>
               <tr className={`border-b ${cellBorder} ${mutedCls}`}>
                 {videoCols.map((c) => (
                   <th
@@ -9683,10 +16723,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 const shotNo = String(shot['镜号'] || rowIndex + 1);
                 const sb = getDirectorShotStoryboard(state, shotNo);
                 const sbUrl = String(sb?.imageUrl || '').trim();
+                const sbVersions = listDirectorShotStoryboardImages(sb);
                 const videoUrl = String(sb?.videoUrl || '').trim();
+                const videoVersions = listDirectorShotVideos(sb);
                 const videoStatus = sb?.videoStatus || (videoUrl ? 'ready' : 'pending');
-                const videoGenerating = videoStatus === 'generating';
-                const finalVal = resolveShotFinalPrompt(shot);
+                const videoGenerating =
+                  videoStatus === 'generating' || !!videoGenProgressIds[String(shotNo).trim()];
+                const promptVersions = getRepairedShotPromptVersions(shot, rowIndex, sb);
+                const rowUnseen = !!(sb?.promptOptimizedUnseen || sb?.videoUnseen);
+                const finalVal = promptVersions.active || resolveShotFinalPrompt(shot);
                 const movePrompt = String(shot['运镜'] || '').trim();
                 const audioRange = shotMusicRanges[rowIndex] || {
                   startSec: 0,
@@ -9724,6 +16769,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     ? tt.regenerateStoryboard
                     : tt.generateThisStoryboard;
                 const unmuted = !!shotVideoUnmuted[shotNo];
+                const playWithSound = videoHoverSoundOn || unmuted;
                 const angle = String(shot['镜头角度'] || '').trim();
                 const focal = String(shot['焦距'] || '').trim();
                 const priced = videoGenYuanbaoForShot({
@@ -9742,73 +16788,437 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     key={`video-row-${shotNo}`}
                     ref={measureElement}
                     data-index={rowIndex}
-                    className={`${rowHover} border-b ${cellBorder}`}
-                    style={DIRECTOR_MV_TABLE_ROW_CV}
+                    className={`${
+                      rowUnseen ? shotRowUnseenHighlightCls : rowHover
+                    } border-b ${cellBorder}`}
+                    style={
+                      rowUnseen || !isNodeFullscreen
+                        ? undefined
+                        : DIRECTOR_MV_TABLE_ROW_CV
+                    }
+                    {...bindShotRowUnseenAck(shotNo, rowUnseen)}
                   >
                     <td className={`px-1 py-2 align-middle text-center border-t ${cellBorder}`}>
-                      <div className="flex items-center justify-center">
-                        <span
-                          className={`inline-flex h-7 w-7 items-center justify-center rounded-full ring-1 tabular-nums text-[11px] font-medium ${
-                            isDarkMode ? 'ring-white/25 text-white/85' : 'ring-gray-300 text-gray-800'
-                          }`}
-                        >
-                          {String(shotNo).padStart(2, '0')}
-                        </span>
-                      </div>
+                      {renderShotNoCellContent(shotNo, rowIndex)}
                     </td>
                     <td
                       className={`px-1 py-2 align-middle text-center tabular-nums border-t ${cellBorder} ${mutedCls}`}
                       style={{ fontSize: fsSmall }}
                     >
-                      {durationCell}
+                      {editing?.row === rowIndex && editing?.col === '时长' ? (
+                        <input
+                          className={`nodrag nowheel w-full max-w-[3.25rem] mx-auto bg-transparent ring-1 rounded px-1 py-0.5 outline-none text-center ${
+                            isDarkMode
+                              ? 'ring-blue-500/40 text-white/90'
+                              : 'ring-blue-400/50 text-gray-900'
+                          }`}
+                          style={{ fontSize: fsSmall }}
+                          autoFocus
+                          defaultValue={
+                            String(shot['时长'] || '').trim() ||
+                            `${Math.round(analyzedDurSec)}s`
+                          }
+                          placeholder="5s"
+                          onBlur={(e) => {
+                            const raw = e.target.value.trim();
+                            const sec = parseDirectorShotDurationSec(raw, 0);
+                            const nextDur =
+                              sec > 0 ? `${Math.round(sec)}s` : raw ? raw : '';
+                            const latest = directorStateRef.current;
+                            let next = updateDirectorShotCell(
+                              latest,
+                              rowIndex,
+                              '时长',
+                              nextDur,
+                            );
+                            if (sec > 0) {
+                              const range = shotMusicRanges[rowIndex] || {
+                                startSec: 0,
+                                endSec: sec,
+                                durationSec: sec,
+                              };
+                              const startSec = Math.max(0, Number(range.startSec) || 0);
+                              const endSec = startSec + sec;
+                              next = updateDirectorShotStoryboard(next, shotNo, {
+                                audioStartSec: startSec,
+                                audioEndSec: endSec,
+                                songClipUrl: '',
+                                songClipSourceUrl: '',
+                                songClipStartSec: startSec,
+                                songClipEndSec: endSec,
+                              });
+                            }
+                            patch(next);
+                            setEditing(null);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') setEditing(null);
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              (e.currentTarget as HTMLInputElement).blur();
+                            }
+                          }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <div
+                          className="nodrag cursor-text min-h-[18px]"
+                          title={`${tt.colDuration} · 双击修改`}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            setEditingAudioRow(null);
+                            setEditing({ row: rowIndex, col: '时长' });
+                          }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
+                          {durationCell}
+                        </div>
+                      )}
                     </td>
                     <td className={`px-1.5 py-1.5 align-middle text-left border-t ${cellBorder}`}>
-                      <div
-                        className={`nodrag cursor-text whitespace-pre-wrap break-words min-h-[18px] text-left line-clamp-4 ${bodyCls}`}
-                        title={finalVal || undefined}
-                        onDoubleClick={() => openFinalPromptEdit(rowIndex, finalVal)}
-                        onClick={() => openFinalPromptEdit(rowIndex, finalVal)}
-                      >
-                        {finalVal ? (
-                          highlightDescription(finalVal, allAssets, isDarkMode)
-                        ) : (
-                          <span className={mutedCls}>{tt.pendingPrompt}</span>
-                        )}
+                      <div className="flex flex-col items-stretch gap-1 min-w-0">
+                        {renderFinalPromptHoverCell({
+                          text: finalVal,
+                          editText: promptVersions.original || resolveShotFinalPrompt(shot),
+                          shotNo,
+                          rowIndex,
+                        })}
                       </div>
                     </td>
-                    <td className={`p-1 align-middle border-t ${cellBorder}`}>
+                    <td className={`p-1 align-middle border-t relative overflow-visible ${cellBorder}`}>
+                      {(() => {
+                        const actionFsLocal = Math.max(9, fsChrome - 2);
+                        const refSbHoverBtnCls = isDarkMode
+                          ? 'nodrag inline-flex flex-1 min-w-0 items-center justify-center gap-0.5 rounded-none first:rounded-tl-md last:rounded-tr-md px-1 py-0.5 ring-1 ring-inset whitespace-nowrap font-medium bg-black/70 text-white/95 ring-white/25 hover:bg-black/85 hover:text-white backdrop-blur-[2px]'
+                          : 'nodrag inline-flex flex-1 min-w-0 items-center justify-center gap-0.5 rounded-none first:rounded-tl-md last:rounded-tr-md px-1 py-0.5 ring-1 ring-inset whitespace-nowrap font-medium bg-white/92 text-gray-800 ring-gray-300 hover:bg-sky-50 hover:text-sky-800 hover:ring-sky-300 shadow-sm';
+                        const renderRefSbHoverActions = () => (
+                          <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex w-full opacity-0 transition-opacity group-hover/sbf:pointer-events-auto group-hover/sbf:opacity-100">
+                            {data?.onPickImageFromCanvas ? (
+                              <button
+                                type="button"
+                                className={refSbHoverBtnCls}
+                                style={{ fontSize: actionFsLocal }}
+                                title={tt.pickFromCanvas}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void pickStoryboardFromCanvas(shotNo);
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <MousePointerClick className="w-2.5 h-2.5 shrink-0 opacity-90" />
+                                {tt.pickFromCanvas}
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className={refSbHoverBtnCls}
+                              style={{ fontSize: actionFsLocal }}
+                              title={tt.uploadLocal}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onUploadStoryboardClick(shotNo);
+                              }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              <Upload className="w-2.5 h-2.5 shrink-0 opacity-90" />
+                              {tt.uploadLocal}
+                            </button>
+                          </div>
+                        );
+                        return (
                       <div
-                        className="relative w-full flex items-center justify-center"
+                        className="relative w-full flex items-center justify-center overflow-visible"
                         style={{ height: refThumbH }}
+                        data-director-picker-keep="sb"
+                        onMouseEnter={() => openSbVersionPicker(shotNo, sbVersions.length)}
+                        onMouseLeave={() => scheduleCloseSbVersionPicker(shotNo)}
                       >
                         {sbUrl ? (
-                          <DirectorAspectThumbButton
-                            frame="storyboard"
-                            url={sbUrl}
-                            alt={`镜${shotNo}`}
-                            title={`${tt.viewImage}: ${tt.colRefStoryboard} ${shotNo}`}
-                            maxH={refThumbH}
-                            maxW={refThumbW}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setImagePreview({ url: sbUrl, name: `镜${shotNo}` });
-                            }}
-                          />
+                          <>
+                            <div className="relative inline-flex max-w-full group/sbf overflow-hidden rounded-lg">
+                              <DirectorAspectThumbButton
+                                frame="storyboard"
+                                url={sbUrl}
+                                alt={`镜${shotNo}`}
+                                title={
+                                  sbVersions.length > 1
+                                    ? tt.storyboardPickVersion
+                                    : `${tt.viewImage}: ${tt.colRefStoryboard} ${shotNo}`
+                                }
+                                maxH={refThumbH}
+                                maxW={refThumbW}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (sbVersions.length > 1) {
+                                    openSbVersionPicker(shotNo, sbVersions.length);
+                                  } else {
+                                    setImagePreview({ url: sbUrl, name: `镜${shotNo}` });
+                                  }
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              />
+                              {sbVersions.length > 1 ? (
+                                <span
+                                  className={`pointer-events-none absolute left-1 bottom-1 z-20 rounded px-1 font-medium tabular-nums ${
+                                    isDarkMode
+                                      ? 'bg-black/70 text-white/90'
+                                      : 'bg-gray-100/95 text-gray-700 shadow'
+                                  }`}
+                                  style={{ fontSize: 10 }}
+                                >
+                                  {sbVersions.length}
+                                </span>
+                              ) : null}
+                              {renderRefSbHoverActions()}
+                            </div>
+                            {renderSbVersionPopover(shotNo, sbVersions, sbUrl)}
+                          </>
                         ) : (
                           <div
-                            className={`rounded-lg flex items-center justify-center shrink-0 ${mutedCls} ${softPanel}`}
+                            className={`relative group/sbf w-full rounded-lg overflow-hidden ring-1 ring-dashed ${
+                              isDarkMode
+                                ? 'ring-white/25 bg-black/25 text-white/45'
+                                : 'ring-gray-300 bg-gray-100 text-gray-400'
+                            }`}
                             style={{
                               aspectRatio: '16 / 9',
                               height: refThumbH,
                               maxWidth: '100%',
-                              fontSize: 10,
                             }}
                           >
-                            —
+                            <button
+                              type="button"
+                              className="nodrag absolute inset-0 flex flex-col items-center justify-center gap-0.5"
+                              style={{ fontSize: 10 }}
+                              title={tt.uploadLocal}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onUploadStoryboardClick(shotNo);
+                              }}
+                              onPointerDown={(e) => e.stopPropagation()}
+                            >
+                              <Plus className="w-4 h-4" strokeWidth={2} />
+                              <span className="px-1 text-center leading-tight">{tt.colRefStoryboard}</span>
+                            </button>
+                            {renderRefSbHoverActions()}
                           </div>
                         )}
                       </div>
+                        );
+                      })()}
                     </td>
+                    {(() => {
+                      const orderedRefs = orderedAssetsWithImages;
+                      const boundIdx = getShotBoundRefIndices(shot, orderedRefs, rowIndex);
+                      const castAssets = boundIdx
+                        .map((i) => orderedRefs[i])
+                        .filter((a) => a?.kind === 'character');
+                      const availableCast = (state.assets.characters || []).filter((a) =>
+                        String(a?.imageUrl || '').trim(),
+                      );
+                      const selectedIds = castAssets
+                        .map((a) => String(a?.id || '').trim())
+                        .filter(Boolean);
+                      const thumbs = castAssets
+                        .map((a) => ({
+                          id: String(a?.id || '').trim(),
+                          url: String(a?.imageUrl || '').trim(),
+                          name: String(a?.name || '').trim(),
+                        }))
+                        .filter((x) => x.url);
+                      const castNamesFromAssets = thumbs
+                        .map((t) => t.name)
+                        .filter(Boolean)
+                        .join('、');
+                      const castLabelFallback = String(shot['出场人物'] || '')
+                        .trim()
+                        .replace(/^—+$/, '');
+                      const castNames = castNamesFromAssets || castLabelFallback;
+                      const pickerOpen = castPickerShotNo === shotNo;
+                      const castThumbH = Math.round(refThumbH * 0.92);
+                      const toggleCastId = (assetId: string) => {
+                        const id = String(assetId || '').trim();
+                        if (!id) return;
+                        const next = selectedIds.includes(id)
+                          ? selectedIds.filter((x) => x !== id)
+                          : [...selectedIds, id].slice(0, 2);
+                        applyShotCastAssetIds(shotNo, rowIndex, next);
+                      };
+                      return (
+                        <td className={`p-1 align-middle border-t overflow-visible ${cellBorder}`}>
+                          <div
+                            className="relative w-full flex flex-col items-center justify-center gap-0.5 overflow-visible"
+                            style={{ minHeight: refThumbH }}
+                          >
+                            {thumbs.length > 0 ? (
+                              <div className="flex items-center justify-center gap-1 max-w-full">
+                                {thumbs.map((t) => (
+                                  <div
+                                    key={`${t.id}-${t.url}`}
+                                    className="relative shrink-0"
+                                    data-director-picker-keep="cast"
+                                  >
+                                    <DirectorAspectThumbButton
+                                      frame="cast"
+                                      maxH={castThumbH}
+                                      maxW={Math.round(castThumbH * (9 / 16))}
+                                      url={t.url}
+                                      alt={t.name || tt.characters}
+                                      title={
+                                        pickerOpen
+                                          ? `${tt.viewImage}: ${t.name || tt.characters}`
+                                          : tt.castReplaceShot
+                                      }
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (pickerOpen) {
+                                          setImagePreview({
+                                            url: t.url,
+                                            name: t.name || tt.characters,
+                                          });
+                                          return;
+                                        }
+                                        setScenePickerShotNo(null);
+                                        setSbSourceMenuShotNo(null);
+                                        setSbPickerShotNo(null);
+                                        setCastPickerShotNo(shotNo);
+                                      }}
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                className={`nodrag flex flex-col items-center justify-center gap-0.5 rounded-lg ring-1 ring-dashed px-0.5 ${
+                                  isDarkMode
+                                    ? 'ring-white/25 bg-black/25 text-white/40 hover:bg-white/[0.06]'
+                                    : 'ring-gray-300 bg-gray-100 text-gray-400 hover:bg-gray-200/70'
+                                }`}
+                                style={{
+                                  height: castThumbH,
+                                  width: Math.round(castThumbH * (9 / 16)),
+                                }}
+                                title={
+                                  availableCast.length
+                                    ? tt.castPickForShot
+                                    : tt.castEmptyShotHint
+                                }
+                                disabled={availableCast.length === 0}
+                                data-director-picker-keep="cast"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!availableCast.length) return;
+                                  setScenePickerShotNo(null);
+                                  setSbSourceMenuShotNo(null);
+                                  setSbPickerShotNo(null);
+                                  setCastPickerShotNo(pickerOpen ? null : shotNo);
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <Plus className="w-4 h-4 opacity-70" />
+                                {castLabelFallback ? (
+                                  <User className="w-3 h-3 opacity-60" />
+                                ) : null}
+                              </button>
+                            )}
+                            <div
+                              className={`w-full truncate text-center ${
+                                castNames ? bodyCls : mutedCls
+                              }`}
+                              style={{ fontSize: Math.max(10, fsChrome - 1) }}
+                              title={castNames || tt.castEmptyShotHint}
+                            >
+                              {castNames || '—'}
+                            </div>
+                            {pickerOpen ? (
+                              <div
+                                data-director-picker-keep="cast"
+                                className={`absolute left-0 top-full z-40 mt-1 min-w-[168px] rounded-lg border p-1.5 shadow-lg ${
+                                  isDarkMode
+                                    ? 'border-white/15 bg-zinc-950'
+                                    : 'border-gray-200 bg-gray-100'
+                                }`}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                <div
+                                  className={`px-1 pb-1 ${mutedCls}`}
+                                  style={{ fontSize: Math.max(10, fsChrome - 1) }}
+                                >
+                                  {tt.castPickForShot}
+                                  {availableCast.length >= 2 ? ' · ≤2' : ''}
+                                </div>
+                                <button
+                                  type="button"
+                                  className={`nodrag w-full flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left mb-0.5 ${
+                                    selectedIds.length === 0
+                                      ? isDarkMode
+                                        ? 'bg-emerald-500/25 text-emerald-100'
+                                        : 'bg-emerald-100 text-emerald-900'
+                                      : isDarkMode
+                                        ? 'hover:bg-white/8 text-white/85'
+                                        : 'hover:bg-gray-200/70 text-gray-800'
+                                  }`}
+                                  style={{ fontSize: fsChrome }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    applyShotCastAssetIds(shotNo, rowIndex, []);
+                                    setCastPickerShotNo(null);
+                                  }}
+                                >
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {tt.castEmptyShotOption}
+                                  </span>
+                                  {selectedIds.length === 0 ? (
+                                    <Check className="w-3.5 h-3.5 shrink-0" />
+                                  ) : null}
+                                </button>
+                                {availableCast.map((a) => {
+                                  const id = String(a.id || '').trim();
+                                  const aUrl = String(a.imageUrl || '').trim();
+                                  const aName = String(a.name || '').trim() || tt.characters;
+                                  const on = selectedIds.includes(id);
+                                  return (
+                                    <button
+                                      key={id}
+                                      type="button"
+                                      className={`nodrag w-full flex items-center gap-1.5 rounded-md px-1.5 py-1 text-left ${
+                                        on
+                                          ? isDarkMode
+                                            ? 'bg-sky-500/25 text-sky-100'
+                                            : 'bg-sky-100 text-sky-900'
+                                          : isDarkMode
+                                            ? 'hover:bg-white/8 text-white/85'
+                                            : 'hover:bg-gray-200/70 text-gray-800'
+                                      }`}
+                                      style={{ fontSize: fsChrome }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleCastId(id);
+                                      }}
+                                    >
+                                      {aUrl ? (
+                                        <img
+                                          src={aUrl}
+                                          alt=""
+                                          className="w-6 h-6 rounded object-cover shrink-0"
+                                        />
+                                      ) : (
+                                        <span className="w-6 h-6 rounded bg-black/20 shrink-0" />
+                                      )}
+                                      <span className="min-w-0 flex-1 truncate">{aName}</span>
+                                      {on ? <Check className="w-3.5 h-3.5 shrink-0" /> : null}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                        </td>
+                      );
+                    })()}
                     <td className={`px-1 py-1.5 align-middle border-t ${cellBorder}`}>
                       <div className="flex flex-col items-center justify-center text-center gap-0.5 min-w-0">
                         <div className={`truncate w-full ${bodyCls}`} title={angle || undefined}>
@@ -9836,12 +17246,67 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         <div className="w-full flex justify-center [&>button]:w-full">
                           {renderShotLipsyncToggle(shotNo, lipsyncOn, lipsyncPriority, lipsyncFaceFar)}
                         </div>
+                        {(() => {
+                          if (!lipsyncOn) return null;
+                          const orderedRefs = orderedAssetsWithImages;
+                          const boundIdx = getShotBoundRefIndices(shot, orderedRefs, rowIndex);
+                          const names = boundIdx
+                            .map((i) => orderedRefs[i])
+                            .filter((a) => a?.kind === 'character')
+                            .map((a) => String(a?.name || '').trim())
+                            .filter(Boolean);
+                          const label = names[0] || String(shot['出场人物'] || '').trim();
+                          if (!label || label === '—') return null;
+                          return (
+                            <div
+                              className={`w-full truncate text-center ${mutedCls}`}
+                              style={{ fontSize: Math.max(10, fsChrome - 1) }}
+                              title={fillDirectorI18n(tt.lipsyncCastSubject, { name: label })}
+                            >
+                              {fillDirectorI18n(tt.lipsyncCastSubject, { name: label })}
+                            </div>
+                          );
+                        })()}
+                        <button
+                          type="button"
+                          className={`${actionSecondaryCls} disabled:opacity-50`}
+                          style={{ fontSize: actionFs }}
+                          disabled={!!busyAction}
+                          title={tt.videoRebuildPromptFromScriptHint}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRebuildShotPromptFromScript(rowIndex);
+                          }}
+                        >
+                          {tt.videoRebuildPromptFromScript}
+                        </button>
+                        <button
+                          type="button"
+                          className={`${actionSecondaryCls} disabled:opacity-50`}
+                          style={{ fontSize: actionFs }}
+                          disabled={
+                            busyAction === 'videos' ||
+                            busyAction === 'optimize-prompts' ||
+                            optimizingShotNos.includes(shotNo) ||
+                            !String(shot['最终提示词'] || shot['画面描述'] || '').trim()
+                          }
+                          title={tt.videoOptimizePrompt}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleOptimizeVideoPrompts([shotNo]);
+                          }}
+                        >
+                          {optimizingShotNos.includes(shotNo) ? (
+                            <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                          ) : null}
+                          {tt.videoOptimizePrompt}
+                        </button>
                         <span className="relative inline-flex w-full">
                           <button
                             type="button"
                             className={`nodrag ${btnPrimary('!px-1.5 !py-0.5 rounded-md w-full', 'events')} disabled:opacity-50`}
                             style={{ fontSize: actionFs }}
-                            disabled={genDisabled}
+                            disabled={genDisabled || optimizingShotNos.includes(shotNo)}
                             title={
                               !sbUrl
                                 ? tt.needStoryboardsFirst
@@ -9902,9 +17367,57 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                       </div>
                     </td>
                     <td className={`p-1 align-middle border-t ${cellBorder}`}>
+                      {(() => {
+                        const dropActive = shotVideoDropShotNo === shotNo;
+                        const dropRing = dropActive
+                          ? isDarkMode
+                            ? 'ring-2 ring-sky-400 bg-sky-500/15'
+                            : 'ring-2 ring-sky-400 bg-sky-50'
+                          : '';
+                        const bindShotVideoDrop = {
+                          onDragEnter: (e: React.DragEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setShotVideoDropShotNo(shotNo);
+                          },
+                          onDragOver: (e: React.DragEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            try {
+                              e.dataTransfer.dropEffect = 'copy';
+                            } catch {
+                              /* ignore */
+                            }
+                            setShotVideoDropShotNo(shotNo);
+                          },
+                          onDragLeave: (e: React.DragEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const related = e.relatedTarget as Node | null;
+                            if (related && e.currentTarget.contains(related)) return;
+                            setShotVideoDropShotNo((cur) => (cur === shotNo ? null : cur));
+                          },
+                          onDrop: (e: React.DragEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setShotVideoDropShotNo(null);
+                            const file = e.dataTransfer?.files?.[0] || null;
+                            void onUploadShotVideoFile(file, shotNo);
+                          },
+                        };
+                        const openShotVideoPicker = (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          onUploadShotVideoClick(shotNo);
+                        };
+                        return (
                       <div
-                        className="relative w-full flex items-center justify-center"
+                        className={`relative w-full flex items-center justify-center rounded-lg transition-colors overflow-visible ${dropRing}`}
                         style={{ minHeight: videoThumbH }}
+                        title={tt.shotVideoDropHint}
+                        data-director-picker-keep="video"
+                        onMouseEnter={() => openVideoVersionPicker(shotNo, videoVersions.length)}
+                        onMouseLeave={() => scheduleCloseVideoVersionPicker(shotNo)}
+                        {...bindShotVideoDrop}
                       >
                         {videoUrl ? (
                           <div
@@ -9912,8 +17425,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             onMouseEnter={(e) => {
                               if (!panelActive || videoPreviewOpenRef.current || videoGenerating) return;
                               const v = e.currentTarget.querySelector('video');
-                              if (!v) return;
+                              if (!(v instanceof HTMLVideoElement)) return;
+                              pauseShotThumbVideos(v);
                               v.loop = true;
+                              v.muted = !playWithSound;
                               void v.play().catch(() => undefined);
                             }}
                             onMouseLeave={(e) => {
@@ -9929,15 +17444,43 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           >
                             <video
                               src={toElectronVideoElementSrc(videoUrl) || videoUrl}
+                              data-director-shot-video=""
+                              data-director-shot-no={shotNo}
                               className="nodrag max-h-full rounded-lg object-contain bg-black/40 ring-1 ring-transparent group-hover/vidf:ring-blue-500/70"
                               style={{ maxHeight: videoThumbH, maxWidth: videoThumbW }}
-                              muted={!unmuted}
+                              muted={!playWithSound}
                               loop
                               playsInline
                               preload={panelActive ? 'metadata' : 'none'}
                               poster={sbUrl || undefined}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                // 多版本：点主成片打开选择；放大镜单独负责预览
+                                if (videoVersions.length > 1) {
+                                  openVideoVersionPicker(shotNo, videoVersions.length);
+                                }
+                              }}
                               onPointerDown={(e) => e.stopPropagation()}
                             />
+                            {videoVersions.length > 1 ? (
+                              <button
+                                type="button"
+                                className={`nodrag absolute left-1 bottom-1 z-20 rounded px-1 font-medium tabular-nums ${
+                                  isDarkMode
+                                    ? 'bg-black/70 text-white/90 ring-1 ring-white/20 hover:bg-black/85'
+                                    : 'bg-gray-100/95 text-gray-700 shadow ring-1 ring-gray-300 hover:bg-white'
+                                }`}
+                                style={{ fontSize: 10 }}
+                                title={tt.videoPickVersion}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openVideoVersionPicker(shotNo, videoVersions.length);
+                                }}
+                                onPointerDown={(e) => e.stopPropagation()}
+                              >
+                                {videoVersions.length}
+                              </button>
+                            ) : null}
                             {renderDirectorThumbProgress({
                               visible: videoGenerating,
                               message: tt.generatingVideo,
@@ -9950,7 +17493,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                   ? 'bg-black/70 text-white/90 ring-1 ring-white/20'
                                   : 'bg-gray-100/95 text-gray-700 ring-1 ring-gray-300 shadow'
                               }`}
-                              title={unmuted ? tt.videoMute : tt.videoUnmute}
+                              title={playWithSound ? tt.videoMute : tt.videoUnmute}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setShotVideoUnmuted((prev) => ({
@@ -9960,7 +17503,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               }}
                               onPointerDown={(e) => e.stopPropagation()}
                             >
-                              {unmuted ? (
+                              {playWithSound ? (
                                 <Volume2 className="w-3.5 h-3.5" />
                               ) : (
                                 <VolumeX className="w-3.5 h-3.5" />
@@ -9988,6 +17531,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                   }
                                 }
                                 pauseShotThumbVideos();
+                                // 始终放大当前主成片，不打开版本选择
                                 openVideoPreview(videoUrl, `${tt.colShotVideo} ${shotNo}`);
                               }}
                               onPointerDown={(e) => e.stopPropagation()}
@@ -10017,6 +17561,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               <Download className="w-3.5 h-3.5" />
                             </button>
                             ) : null}
+                            {renderVideoVersionPopover(shotNo, videoVersions, videoUrl)}
                           </div>
                         ) : videoGenerating ? (
                           <div
@@ -10037,11 +17582,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             })}
                           </div>
                         ) : videoStatus === 'error' ? (
-                          <div
-                            className={`rounded-lg flex flex-col items-center justify-center gap-1 px-2 text-center ring-1 ring-dashed ${
+                          <button
+                            type="button"
+                            className={`nodrag rounded-lg flex flex-col items-center justify-center gap-1 px-2 text-center ring-1 ring-dashed cursor-pointer ${
                               isDarkMode
-                                ? 'ring-red-400/40 bg-red-500/10 text-red-200/90'
-                                : 'ring-red-300 bg-red-50 text-red-700'
+                                ? 'ring-red-400/40 bg-red-500/10 text-red-200/90 hover:bg-red-500/15'
+                                : 'ring-red-300 bg-red-50 text-red-700 hover:bg-red-100'
                             }`}
                             style={{
                               aspectRatio: '16 / 9',
@@ -10049,27 +17595,39 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               maxWidth: '100%',
                               fontSize: 10,
                             }}
-                            title={String(sb?.videoError || tt.generateFailed)}
+                            title={
+                              String(sb?.videoError || tt.generateFailed) +
+                              '\n' +
+                              tt.shotVideoDropHint
+                            }
+                            onClick={openShotVideoPicker}
+                            onPointerDown={(e) => e.stopPropagation()}
                           >
                             {tt.generateFailed}
-                          </div>
+                          </button>
                         ) : (
-                          <div
-                            className={`flex items-center justify-center rounded-lg ring-1 ring-dashed ${
+                          <button
+                            type="button"
+                            className={`nodrag flex items-center justify-center rounded-lg ring-1 ring-dashed cursor-pointer ${
                               isDarkMode
-                                ? 'ring-white/25 bg-black/30 text-white/45'
-                                : 'ring-gray-300 bg-gray-100 text-gray-400'
+                                ? 'ring-white/25 bg-black/30 text-white/45 hover:bg-black/40 hover:text-white/70'
+                                : 'ring-gray-300 bg-gray-100 text-gray-400 hover:bg-gray-200 hover:text-gray-600'
                             }`}
                             style={{
                               aspectRatio: '16 / 9',
                               height: videoEmptyH,
                               maxWidth: '100%',
                             }}
+                            title={tt.shotVideoDropHint}
+                            onClick={openShotVideoPicker}
+                            onPointerDown={(e) => e.stopPropagation()}
                           >
                             <Plus className="w-4 h-4" strokeWidth={2} />
-                          </div>
+                          </button>
                         )}
                       </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 );
@@ -10088,30 +17646,317 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
   };
 
-  const handleVideosToSpliceClick = () => {
-    const wasFullscreen = isNodeFullscreen;
-    if (wasFullscreen) setIsNodeFullscreen(false);
-    // 退出全屏后再入轨，便于画布用一键归位动画对准剪辑模块
-    window.setTimeout(() => {
-      data?.onVideosToSplice?.();
-    }, wasFullscreen ? 120 : 0);
-  };
-
   const colLabel = (key: DirectorShotColumnKey) => {
     const map: Record<DirectorShotColumnKey, string> = {
+      场号: tt.colSceneNo,
+      内外景: tt.colIntExt,
+      日夜: tt.colDayNight,
+      地点: tt.colLocation,
+      出场人物: tt.colCastOn,
       镜号: tt.colShotNo,
       时长: tt.colDuration,
-      画面描述: tt.colDesc,
-      镜头角度: tt.colAngle,
+      画面描述: isDramaMode ? tt.colAction : tt.colDesc,
+      镜头角度: isDramaMode ? tt.colAngleCamera : tt.colAngle,
       焦距: tt.colFocal,
       景别: tt.colShotSize,
-      光影氛围: tt.colLighting,
-      对白旁白: tt.colDialogue,
+      光影氛围: isDramaMode ? tt.colMood : tt.colLighting,
+      对白旁白: isDramaMode ? tt.colDialogueSpeaker : tt.colDialogue,
       音效: tt.colSfx,
       运镜: tt.colCamera,
+      制作备注: tt.colProdNotes,
+      连贯性: tt.colContinuity,
+      参考图绑定: tt.colRefBind,
       最终提示词: tt.colFinalPrompt,
     };
     return map[key];
+  };
+
+  const renderDramaAssetCard = (asset: DirectorAsset, kind: DirectorAssetKind) => {
+    const emptyLabel =
+      kind === 'character'
+        ? tt.dramaGenerateOrUploadCharacter
+        : kind === 'scene'
+          ? tt.dramaGenerateOrUploadScene
+          : kind === 'prop'
+            ? tt.dramaGenerateOrUploadProp
+            : tt.dramaGenerateOrUploadCreature;
+    const menuOpen = sourceMenuAssetId === asset.id;
+    const cardW = kind === 'character' || kind === 'creature' ? 'w-[14rem]' : 'w-[16rem]';
+    const imageAspect = kind === 'character' || kind === 'creature' ? 'aspect-[3/4]' : 'aspect-[16/10]';
+    return (
+      <div
+        key={asset.id}
+        className={`nodrag shrink-0 ${cardW} flex flex-col rounded-xl overflow-hidden ring-1 ${
+          isDarkMode ? 'bg-white/[0.04] ring-white/10' : 'bg-white ring-gray-200'
+        }`}
+      >
+        <div
+          className={`relative w-full ${imageAspect} flex items-center justify-center ${
+            isDarkMode ? 'bg-zinc-950/70' : 'bg-gray-100'
+          }`}
+        >
+          {asset.imageUrl ? (
+            <button
+              type="button"
+              className="nodrag absolute inset-0 flex items-center justify-center p-1.5 cursor-zoom-in"
+              title={tt.viewImage}
+              onClick={() => setImagePreview({ url: asset.imageUrl!, name: asset.name || '' })}
+            >
+              <img
+                src={asset.imageUrl}
+                alt={asset.name}
+                className="max-w-full max-h-full object-contain"
+                draggable={false}
+              />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`nodrag absolute inset-0 flex flex-col items-center justify-center gap-1 px-2 text-center ${mutedCls}`}
+              style={{ fontSize: fsChrome }}
+              disabled={asset.status === 'generating' || isDirectorHardBusy}
+              onClick={() => generateOneAsset(asset)}
+            >
+              {emptyLabel}
+            </button>
+          )}
+          {renderDirectorThumbProgress({
+            visible: asset.status === 'generating' || !!imageGenProgressIds[asset.id],
+            message: kind === 'scene' ? tt.generatingScene : tt.generating,
+            borderRadius: 12,
+          })}
+          <div className="absolute top-1 right-1 z-[60]" ref={menuOpen ? sourceMenuRef : undefined}>
+            <button
+              type="button"
+              className={`nodrag rounded-md p-1 ${
+                isDarkMode ? 'bg-black/45 text-white/80 hover:bg-black/65' : 'bg-white/90 text-gray-700 hover:bg-white'
+              }`}
+              title={tt.sourceMenuTitle}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSourceMenuAssetId((cur) => (cur === asset.id ? null : asset.id));
+              }}
+            >
+              <MoreHorizontal className="w-3.5 h-3.5" />
+            </button>
+            {menuOpen ? (
+              <div
+                className={`nodrag absolute top-[calc(100%+4px)] right-0 z-40 min-w-[8.5rem] overflow-hidden rounded-lg border py-1 shadow-xl ${
+                  isDarkMode
+                    ? 'bg-zinc-900 border-white/15 text-white/90'
+                    : 'bg-white border-gray-200 text-gray-800'
+                }`}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
+                    isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                  }`}
+                  disabled={asset.status === 'generating' || isDirectorHardBusy}
+                  onClick={() => {
+                    setSourceMenuAssetId(null);
+                    generateOneAsset(asset);
+                  }}
+                >
+                  {tt.generateThis}
+                </button>
+                <button
+                  type="button"
+                  className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
+                    isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                  }`}
+                  onClick={() => {
+                    setSourceMenuAssetId(null);
+                    onUploadClick(asset.id);
+                  }}
+                >
+                  <Upload className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                  {tt.uploadLocal}
+                </button>
+                {data?.onPickImageFromCanvas ? (
+                  <button
+                    type="button"
+                    className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
+                      isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                    }`}
+                    onClick={() => {
+                      setSourceMenuAssetId(null);
+                      void pickAssetFromCanvas(asset.id);
+                    }}
+                  >
+                    <MousePointerClick className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    {tt.pickFromCanvas}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className={`nodrag flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-rose-400 ${
+                    isDarkMode ? 'hover:bg-white/10' : 'hover:bg-rose-50'
+                  }`}
+                  onClick={() => {
+                    setSourceMenuAssetId(null);
+                    imageGenQueueRef.current = imageGenQueueRef.current.filter((a) => a.id !== asset.id);
+                    imageGenInFlightRef.current.delete(asset.id);
+                    patch(removeDirectorAsset(directorStateRef.current, asset.id));
+                  }}
+                >
+                  {tt.deleteAsset}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="px-2.5 py-2 flex flex-col gap-1 min-h-[4rem]">
+          <input
+            className={`nodrag w-full bg-transparent font-semibold outline-none truncate ${titleCls}`}
+            style={{ fontSize: fsSmall }}
+            value={asset.name}
+            onChange={(e) =>
+              patch(updateDirectorAsset(directorStateRef.current, asset.id, { name: e.target.value }))
+            }
+          />
+          <textarea
+            className={`nodrag nowheel w-full min-h-[3rem] max-h-[5rem] resize-none bg-transparent leading-snug outline-none ${mutedCls} ${scrollCls}`}
+            style={{ fontSize: Math.max(10, fsChrome - 1) }}
+            value={asset.prompt}
+            rows={3}
+            title={tt.viewPrompt}
+            onMouseEnter={(e) => {
+              const p = String(asset.prompt || '').trim();
+              if (p) openPromptHover(p, e, `${asset.name || tt.scenes} · ${tt.colFinalPrompt}`);
+            }}
+            onMouseLeave={scheduleClosePromptHover}
+            onChange={(e) =>
+              patch(updateDirectorAsset(directorStateRef.current, asset.id, { prompt: e.target.value }))
+            }
+          />
+        </div>
+      </div>
+    );
+  };
+
+  /** 短剧准备资产：参考经典布局——全局风格 + 角色/场景/道具/生物同时展示（窗口/全屏共用） */
+  const renderDramaAssetsPanel = () => {
+    const sections = [
+      ['characters', tt.characters, 'character', tt.generateAllCharacters] as const,
+      ['scenes', tt.scenes, 'scene', tt.generateAllScenes] as const,
+      ['props', tt.props, 'prop', tt.generateAllProps] as const,
+      ['creatures', tt.creatures, 'creature', tt.generateAllCreatures] as const,
+    ] as const;
+    const missingAll = allAssets.filter((a) => !String(a.imageUrl || '').trim()).length;
+    const tipQtyAll = Math.max(1, missingAll > 0 ? missingAll : allAssets.length || 1);
+    return (
+      <div className="flex flex-col flex-1 min-h-0 gap-3 overflow-hidden px-0.5">
+        <div className="shrink-0 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className={`text-[11px] font-medium ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+              {tt.globalStyleLabel}
+            </div>
+            <div className="relative z-[50] flex items-center gap-2 flex-wrap justify-end overflow-visible">
+              {renderImageGenControls({ compact: true, kind: 'character' })}
+              <div
+                className="relative overflow-visible"
+                onMouseEnter={() => setPriceHoverKey('drama-all-gen')}
+                onMouseLeave={() => setPriceHoverKey((k) => (k === 'drama-all-gen' ? null : k))}
+              >
+                {renderYuanbaoHoverTip('drama-all-gen', tipQtyAll)}
+                <button
+                  type="button"
+                  className={`nodrag ${btnPrimary('!px-2.5 !py-1', 'motion')} disabled:opacity-50`}
+                  style={{ fontSize: fsChrome }}
+                  disabled={isDirectorHardBusy || allAssets.length === 0}
+                  title={tt.oneClickGenerateAssets}
+                  onClick={() =>
+                    enqueueAssetImages(allAssets, {
+                      onlyMissing: true,
+                      maxParallel: IMAGE_GEN_MAX_PARALLEL_DEFAULT,
+                    })
+                  }
+                >
+                  {busyAction === 'images' ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" />
+                  ) : null}
+                  {tt.oneClickGenerateAssets}
+                </button>
+              </div>
+            </div>
+          </div>
+          <textarea
+            className={`nodrag nowheel w-full min-h-[4.5rem] max-h-[7rem] resize-y rounded-lg border px-2.5 py-2 text-[12px] outline-none ${
+              isDarkMode
+                ? 'border-white/12 bg-black/35 text-white/90'
+                : 'border-gray-300 bg-white text-gray-900'
+            }`}
+            value={String(state.globalStyle || '')}
+            placeholder={tt.globalStylePlaceholder}
+            onChange={(e) =>
+              patch({
+                ...directorStateRef.current,
+                globalStyle: e.target.value,
+                stylePresetId: 'custom',
+              })
+            }
+          />
+        </div>
+        <div className={`nowheel flex-1 min-h-0 overflow-y-auto space-y-4 pr-0.5 ${scrollCls}`}>
+          {sections.map(([key, label, kind, genLabel]) => {
+            const list = state.assets[key] || [];
+            const missingN = list.filter((a) => !String(a.imageUrl || '').trim()).length;
+            const tipQty = Math.max(1, missingN > 0 ? missingN : list.length || 1);
+            const tipKey = `drama-sec-${kind}`;
+            return (
+              <div key={key} className={sectionShell(kind)}>
+                <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                  <div className={`font-semibold ${sectionTitleCls(kind)}`} style={{ fontSize: fsBody }}>
+                    {label} ({list.length})
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                    <div
+                      className="relative overflow-visible"
+                      onMouseEnter={() => setPriceHoverKey(tipKey)}
+                      onMouseLeave={() => setPriceHoverKey((k) => (k === tipKey ? null : k))}
+                    >
+                      {renderYuanbaoHoverTip(tipKey, tipQty)}
+                      <button
+                        type="button"
+                        className={`nodrag ${btnPrimary('!px-2 !py-1 !h-auto', sectionScratch(kind))} disabled:opacity-40`}
+                        style={{ fontSize: fsChrome }}
+                        disabled={isDirectorHardBusy || list.length === 0}
+                        title={genLabel}
+                        onClick={() => generateCategory(kind)}
+                      >
+                        {genLabel}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className={`flex items-stretch gap-3 overflow-x-auto pb-1.5 ${scrollCls}`}>
+                  {list.map((asset) => renderDramaAssetCard(asset, kind))}
+                  <button
+                    type="button"
+                    className={`nodrag shrink-0 ${
+                      kind === 'character' || kind === 'creature'
+                        ? 'w-[14rem] min-h-[16rem]'
+                        : 'w-[16rem] min-h-[12rem]'
+                    } rounded-xl border border-dashed flex flex-col items-center justify-center gap-1.5 transition-colors ${
+                      isDarkMode
+                        ? 'border-white/20 text-white/45 hover:border-white/40 hover:text-white/70 hover:bg-white/[0.04]'
+                        : 'border-gray-300 text-gray-500 hover:border-gray-400 hover:text-gray-700 hover:bg-gray-50'
+                    }`}
+                    style={{ fontSize: fsChrome }}
+                    onClick={() => addAsset(kind)}
+                  >
+                    <Plus className="w-5 h-5" />
+                    {tt.dramaAddNew}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   const renderAssetCard = (
@@ -10172,6 +18017,18 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           } resize-none bg-transparent leading-relaxed outline-none ${mutedCls} ${scrollCls}`}
           style={{ fontSize: compact ? fsChrome : fsSmall }}
           value={asset.prompt}
+          title={tt.viewPrompt}
+          onMouseEnter={(e) => {
+            const p = String(asset.prompt || '').trim();
+            if (p) {
+              openPromptHover(
+                p,
+                e,
+                `${asset.name || (kind === 'scene' ? tt.scenes : tt.characters)} · ${tt.colFinalPrompt}`,
+              );
+            }
+          }}
+          onMouseLeave={scheduleClosePromptHover}
           onChange={(e) =>
             patch(updateDirectorAsset(directorStateRef.current, asset.id, { prompt: e.target.value }))
           }
@@ -10197,7 +18054,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       </div>
       {/* 右：照片 */}
       <div
-        className={`relative min-w-0 flex items-center justify-center ${
+        className={`relative min-w-0 overflow-hidden flex items-center justify-center ${
           isDarkMode ? 'bg-zinc-950/50' : 'bg-gradient-to-b from-gray-100 to-gray-200'
         }`}
         style={{ minHeight: cardMinH }}
@@ -10222,19 +18079,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             {!opts?.castPick ? <div className="mt-1 opacity-80">{tt.sourceMenuTitle}</div> : null}
           </div>
         )}
-        {asset.status === 'generating' && (
-          <div
-            className={`absolute inset-0 z-[1] flex flex-col items-center justify-center gap-1 ${
-              isDarkMode ? 'bg-black/55' : 'bg-gray-200/80'
-            }`}
-          >
-            <Loader2 className={`w-5 h-5 animate-spin ${accentSpin}`} />
-            <span className={isDarkMode ? 'text-sky-200/90' : 'text-blue-700'} style={{ fontSize: fsChrome }}>
-              {tt.generating}
-            </span>
-          </div>
-        )}
-        <div className="absolute bottom-1.5 right-1.5 z-[2] flex items-end gap-1 max-w-[96%] flex-wrap justify-end overflow-visible">
+        {renderDirectorThumbProgress({
+          visible: asset.status === 'generating' || !!imageGenProgressIds[asset.id],
+          message: kind === 'scene' ? tt.generatingScene : tt.generating,
+          borderRadius: 8,
+        })}
+        <div className="absolute bottom-1.5 right-1.5 z-[60] flex items-end gap-1 max-w-[96%] flex-wrap justify-end overflow-visible">
           {renderImageGenControls({ compact: true, kind })}
           <div
             className="relative overflow-visible"
@@ -10355,6 +18205,54 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const primaryFooter = () => {
     // 底部只保留「下一步」主操作；回退请用顶部步骤条切换
+    // 短剧：剧本解析 → 分镜导演 → 生成视频
+    if (isDramaMode) {
+      if (state.phase === 'story') {
+        return null;
+      }
+      const dramaUserPhase = domainPhaseToUserPhase(
+        (data?.directorDomain as DramaDirectorSession | null)?.meta.phase || state.phase,
+      );
+      const dramaShotCount =
+        ((data?.directorDomain as DramaDirectorSession | null)?.shots || []).length ||
+        state.shots.length;
+      if (dramaUserPhase === 'assets' || state.phase === 'assets') {
+        return (
+          <div className="flex flex-col items-stretch gap-2 w-full max-w-[52rem]">
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <button
+                type="button"
+                className={`nodrag ${btnPrimary('', 'motion')} disabled:opacity-50`}
+                style={{ fontSize: fsChrome }}
+                disabled={!!busyAction || dramaShotCount === 0}
+                onClick={() => goDirectorPhase('videos')}
+              >
+                {tt.dramaNextVideos}
+              </button>
+            </div>
+          </div>
+        );
+      }
+      if (state.phase === 'videos') {
+        return (
+          <div className="flex flex-col items-center gap-1.5 w-full">
+            {renderVideoBatchOptions()}
+            <div className="flex items-center gap-2 flex-wrap justify-center">
+              <button
+                type="button"
+                className={`nodrag ${btnPrimary('', 'motion')} disabled:opacity-50`}
+                style={{ fontSize: fsSmall }}
+                disabled={state.shots.length === 0 || !!busyAction}
+                onClick={() => void handleSpawnVideosClick()}
+              >
+                {tt.batchGenerateVideosToolbar}
+              </button>
+            </div>
+          </div>
+        );
+      }
+      return null;
+    }
     if (isMvMode) {
       if (state.phase === 'music') {
         const { current } = mvMusicGuide;
@@ -10370,13 +18268,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             </button>
           );
         }
-        // 分析入口在右侧中间；底部「下一步：风格选择」主按钮（图二蓝渐变胶囊）
+        // 分析入口在右侧中间；底部「下一步：写剧本」
         return (
           <button
             type="button"
             className={`nodrag ${btnPrimary('', 'sound')} disabled:opacity-50`}
             style={{ fontSize: fsChrome }}
-            onClick={() => patch(setDirectorPhase(directorStateRef.current, 'style'))}
+            onClick={() => goMvStoryPhase()}
+          >
+            {tt.nextStory}
+          </button>
+        );
+      }
+      if (state.phase === 'story') {
+        return (
+          <button
+            type="button"
+            className={`nodrag ${btnPrimary('', 'motion')} disabled:opacity-50`}
+            style={{ fontSize: fsSmall }}
+            onClick={() => goMvStylePhase()}
           >
             {tt.nextStyle}
           </button>
@@ -10400,18 +18310,6 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             type="button"
             className={`nodrag ${btnPrimary('', 'operators')} disabled:opacity-50`}
             style={{ fontSize: fsSmall }}
-            onClick={() => goMvStoryPhase()}
-          >
-            {tt.nextStoryAfterCast}
-          </button>
-        );
-      }
-      if (state.phase === 'story') {
-        return (
-          <button
-            type="button"
-            className={`nodrag ${btnPrimary('', 'motion')} disabled:opacity-50`}
-            style={{ fontSize: fsSmall }}
             onClick={() => goMvScenesPhase()}
           >
             {tt.nextMvScenes}
@@ -10419,19 +18317,97 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         );
       }
       if (state.phase === 'videos') {
+        const hasReadyVideos = (state.shots || []).some((s, i) => {
+          const no = String(s['镜号'] || i + 1);
+          const sb = getDirectorShotStoryboard(state, no);
+          return !!String(sb.videoUrl || '').trim() || sb.videoStatus === 'ready';
+        });
         return (
-          <button
-            type="button"
-            className={`nodrag ${btnPrimary('', 'sensing')} disabled:opacity-50`}
-            style={{ fontSize: fsSmall }}
-            disabled={storyboardsProg.ready === 0}
-            title={
-              storyboardsProg.ready === 0 ? tt.needStoryboardsFirst : tt.previewVideosToSplice
-            }
-            onClick={handleVideosToSpliceClick}
-          >
-            {tt.previewVideosToSplice}
-          </button>
+          <div className="flex items-center gap-2 flex-wrap justify-center">
+            {renderPreviewToSpliceButton({ fontSize: fsSmall, mode: 'videos', hasReadyVideos })}
+            <button
+              type="button"
+              className={`nodrag ${btnPrimary('', 'sound')} disabled:opacity-50`}
+              style={{ fontSize: fsSmall }}
+              onClick={() => {
+                void goMvKaraokePhase();
+              }}
+            >
+              {tt.nextKaraoke}
+            </button>
+          </div>
+        );
+      }
+      if (state.phase === 'karaoke') {
+        const busyAny = karaokeEditorBusy !== 'idle';
+        const asrLabel = formatFileTranscribeYuanbaoLabel();
+        return (
+          <div className="flex items-center gap-2 flex-wrap justify-center">
+            {karaokeEditorBusy === 'burn' ? (
+              <button
+                type="button"
+                className={`nodrag ${btnSecondary('', 'sound')} disabled:opacity-50`}
+                style={{ fontSize: fsSmall }}
+                onClick={() => karaokeEditorActionsRef.current?.cancel()}
+                title={ktt.closeCancelsBurn}
+              >
+                {ktt.cancel}
+              </button>
+            ) : null}
+            <div
+              className="relative z-[40] overflow-visible"
+              onMouseEnter={() => !busyAny && setPriceHoverKey('footer-karaoke-timing')}
+              onMouseLeave={() =>
+                setPriceHoverKey((k) => (k === 'footer-karaoke-timing' ? null : k))
+              }
+            >
+              {!busyAny && priceHoverKey === 'footer-karaoke-timing' ? (
+                <span
+                  className={`${yuanbaoHoverTipCls} translate-y-0 opacity-100`}
+                  title={ktt.generateTimingPriceTitle}
+                >
+                  {asrLabel}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className={nexflowOrangePillBtnClass}
+                style={{ fontSize: fsSmall, background: nexflowOrangePillBtnBg }}
+                disabled={busyAny || !karaokeSeed}
+                onClick={() => karaokeEditorActionsRef.current?.generateTiming()}
+                title={
+                  karaokeEditorBusy === 'timing' || karaokeEditorBusy === 'asr'
+                    ? undefined
+                    : ktt.generateTiming
+                }
+              >
+                {karaokeEditorBusy === 'timing' || karaokeEditorBusy === 'asr' ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    {ktt.generating}
+                  </span>
+                ) : (
+                  ktt.generateTiming
+                )}
+              </button>
+            </div>
+            <button
+              type="button"
+              className={`nodrag ${btnPrimary('', 'sound')} disabled:opacity-50`}
+              style={{ fontSize: fsSmall }}
+              disabled={busyAny || !karaokeSeed}
+              onClick={() => karaokeEditorActionsRef.current?.burn()}
+            >
+              {karaokeEditorBusy === 'burn' ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  {ktt.burning}
+                </span>
+              ) : (
+                ktt.burnToNode
+              )}
+            </button>
+          </div>
         );
       }
     }
@@ -10463,7 +18439,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           onClick={() => void handleExtractAssets()}
         >
           {busyAction === 'assets' ? <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" /> : null}
-          {tt.step2PrepareAssets}
+          {isDramaMode ? tt.nextPrepareAssets : tt.step2PrepareAssets}
         </button>
       );
     }
@@ -10727,7 +18703,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     </div>
   );
 
-  const hangPrimary = (
+  const primaryFooterNode = primaryFooter();
+  const hangPrimary = primaryFooterNode ? (
     <div
       className="director-node-chrome director-primary-footer nodrag nopan absolute z-[55] pointer-events-auto flex items-center justify-center gap-2"
       style={{
@@ -10740,16 +18717,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {primaryFooter()}
+      {primaryFooterNode}
     </div>
-  );
+  ) : null;
 
   return (
     <div
       ref={nodeRef}
       className={`custom-node-container nexflow-director-node group relative overflow-visible rounded-2xl flex flex-col ${
         isDarkMode ? 'nexflow-glass-panel' : 'apple-panel-light'
-      } ${
+      } ${karaokePanelActive ? 'nexflow-director--karaoke-solid' : ''} ${
         selected
           ? isDarkMode
             ? 'ring-2 ring-green-400/80'
@@ -10794,6 +18771,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         }}
       />
       <input
+        ref={styleRefUploadInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0] || null;
+          e.target.value = '';
+          void onUploadStyleRefFile(f);
+        }}
+      />
+      <input
         ref={sbUploadInputRef}
         type="file"
         accept="image/*"
@@ -10833,16 +18821,60 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         <div className="flex items-center gap-2 min-w-0">
           <Clapperboard className={`w-5 h-5 shrink-0 ${accentSpin}`} />
           <span className={`font-semibold truncate ${titleCls}`} style={{ fontSize: fsBody }}>
-            {state.title || tt.directorTitle}
+            {dramaHeaderTitle || state.title || tt.directorTitle}
           </span>
           {renderModeToggle()}
-          {!isMvMode ? renderScriptChip() : null}
+          {!isWizardMode ? renderScriptChip() : null}
           {(busyAction || state.isGenerating || data?.isGenerating) && (
             <Loader2 className={`w-4 h-4 animate-spin ${accentSpin}`} />
           )}
         </div>
         <div className="shrink-0 flex items-center gap-2">
-          {!isMvMode ? (
+          {isDramaMode ? (
+            state.phase === 'story' ? (
+                <>
+                  {renderChatModelSelect({ variant: 'plain', menuPlacement: 'down' })}
+                  <button
+                    type="button"
+                    className={`nodrag ${btnSecondary('!px-2 !py-1', 'operators')} disabled:opacity-50`}
+                    style={{ fontSize: fsChrome }}
+                    disabled={
+                      busyAction === 'story-script'
+                        ? false
+                        : !!busyAction ||
+                          !String(state.mvScriptReference || state.scriptText || '').trim()
+                    }
+                    title={
+                      busyAction === 'story-script' ? tt.storyCancelChatHint : tt.dramaAnalyzeBtn
+                    }
+                    onClick={() => {
+                      if (busyAction === 'story-script') {
+                        cancelDirectorChat('user');
+                        return;
+                      }
+                      void handleDramaStoryOneShot();
+                    }}
+                  >
+                    {busyAction === 'story-script' ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5 inline mr-1 opacity-80" />
+                    )}
+                    {busyAction === 'story-script' ? tt.musicJobCancel : tt.dramaAnalyzeBtn}
+                  </button>
+                  {state.shots.length > 0 ? (
+                    <button
+                      type="button"
+                      className={`nodrag ${btnSecondary('!px-2 !py-1', 'motion')} disabled:opacity-50`}
+                      style={{ fontSize: fsChrome }}
+                      onClick={() => goDirectorPhase('assets')}
+                    >
+                      {tt.dramaNextAssets}
+                    </button>
+                  ) : null}
+                </>
+            ) : null
+          ) : !isMvMode ? (
             <span className={mutedCls} style={{ fontSize: fsChrome }}>
               {tt.afterPartialHint}
             </span>
@@ -10866,16 +18898,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 state.phase === 'style' ||
                 state.phase === 'cast' ||
                 state.phase === 'shots' ||
-                state.phase === 'videos'
+                state.phase === 'videos' ||
+                state.phase === 'karaoke'
               ? 'overflow-hidden'
               : 'overflow-y-auto nowheel custom-scrollbar-dark'
             : 'overflow-hidden'
         }`}
       >
-        {!isMvMode ? (
-          <div className="shrink-0 overflow-visible py-0.5">{renderStylePicker()}</div>
-        ) : null}
-
         <div className="director-keep-visible shrink-0">
           {renderPhaseButtons()}
         </div>
@@ -10892,9 +18921,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             {renderStylePicker()}
           </div>
         )}
-        {isMvMode && state.phase === 'story' && renderMvStoryPanel()}
+        {isMvMode && state.phase === 'story' && (
+          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">{renderMvStoryPanel()}</div>
+        )}
+        {isDramaMode ? (
+          <div className="director-keep-visible mb-1 flex flex-1 min-h-0 flex-col overflow-hidden">
+            {renderDramaStudioV2()}
+          </div>
+        ) : null}
         {isMvMode && state.phase === 'cast' && (
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">{renderMvCastPanel()}</div>
+          <div className="flex flex-col flex-1 min-h-0 overflow-visible">{renderMvCastPanel()}</div>
         )}
         {videosPanelActive ? (
           <div
@@ -10905,6 +18941,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           </div>
         ) : null}
 
+        {karaokePanelActive && !isNodeFullscreen ? (
+          <div className="flex flex-col flex-1 min-h-0 h-full overflow-hidden">
+            {renderMvKaraokePanel()}
+          </div>
+        ) : null}
+
         {shotsPanelActive
           ? renderShotsConfirmPanel({
               className: 'flex flex-col flex-1 min-h-0 gap-1',
@@ -10912,7 +18954,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           : null}
 
 
-        {state.phase === 'assets' && (
+        {state.phase === 'assets' && !isDramaMode ? (
           <div className="flex flex-col flex-1 min-h-0 gap-3">
             <div className="flex items-center justify-between gap-2 shrink-0 w-full min-w-0">
               <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
@@ -10924,7 +18966,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   ] as const
                 )
                   .filter(([stepId]) => {
-                    if (!isMvMode) return true;
+                    if (!isWizardMode) return true;
                     // MV：角色在选角完成；不生成道具，只做场景九宫格
                     return stepId === 'scenes';
                   })
@@ -10932,7 +18974,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   const active =
                     (state.assetsStep || 'characters') === stepId ||
                     (!state.assetsStep && stepId === 'characters') ||
-                    (isMvMode && stepId === 'scenes');
+                    (isWizardMode && stepId === 'scenes');
                   return (
                     <button
                       key={stepId}
@@ -10949,11 +18991,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                       style={{ fontSize: fsChrome }}
                       onClick={() => patch(setDirectorAssetsStep(state, stepId))}
                     >
-                      {isMvMode && stepId === 'scenes' ? tt.phaseMvScenes : label}
+                      {isWizardMode && stepId === 'scenes' ? tt.phaseMvScenes : label}
                     </button>
                   );
                 })}
-                {isMvMode ? (
+                {isWizardMode ? (
                   <button
                     type="button"
                     className={`nodrag ${btnSecondary('!px-2.5 !py-1', 'motion')}`}
@@ -10968,7 +19010,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   </button>
                 ) : null}
               </div>
-                {isMvMode ? (
+                {isWizardMode ? (
                 <div className="shrink-0 relative z-[50] overflow-visible flex items-center justify-end">
                   {renderSceneOneClickGenerate()}
                 </div>
@@ -10979,7 +19021,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 const step: DirectorAssetsStep =
                   state.assetsStep === 'scenes' || state.assetsStep === 'props'
                     ? state.assetsStep
-                    : isMvMode
+                    : isWizardMode
                       ? 'scenes'
                       : 'characters';
                 const sections = (
@@ -11053,7 +19095,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               })()}
             </div>
           </div>
-        )}
+        ) : null}
 
         {!isMvMode && state.phase === 'prompts' && (
           <div className={`nowheel flex-1 min-h-0 overflow-auto ${scrollCls}`}>
@@ -11078,39 +19120,42 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         {val ? (
                           <div className="flex flex-col gap-1.5 items-start">
                             {(() => {
-                              const refs = getOrderedAssetsWithImages(state);
-                              const indices = extractSeedanceImageMentionIndices(val);
-                              if (indices.length === 0) return null;
+                              const items = resolveDirectorShotRefItems({
+                                prompt: val,
+                                styleUrl: directorStyleRefForFilter,
+                                libraryAssets: getOrderedAssetsWithImages(state),
+                              }).filter((it) => it.url && !it.url.startsWith('ref://'));
+                              if (items.length === 0) return null;
                               return (
                                 <div className="flex flex-wrap gap-1">
-                                  {indices.map((n) => {
-                                    const url = String(refs[n - 1]?.imageUrl || '').trim();
+                                  {items.map((it) => {
+                                    const url = String(it.url || '').trim();
                                     if (!url) {
                                       return (
                                         <span
-                                          key={`shot-ref-${rowIndex}-${n}`}
+                                          key={`shot-ref-${rowIndex}-${it.n}`}
                                           className={`text-[10px] px-1 rounded ${mutedCls}`}
                                         >
-                                          @{n}?
+                                          @{it.n}?
                                         </span>
                                       );
                                     }
                                     return (
                                       <button
-                                        key={`shot-ref-${rowIndex}-${n}`}
+                                        key={`shot-ref-${rowIndex}-${it.n}`}
                                         type="button"
                                         className="nodrag w-8 h-8 rounded overflow-hidden ring-1 ring-sky-400/40"
-                                        title={`@图片${n} · 第${n}张${refs[n - 1]?.name ? ` · ${refs[n - 1].name}` : ''}${refs[n - 1] ? ` · ${inferDirectorAssetGender(refs[n - 1])}` : ''}`}
+                                        title={`@图片${it.n} · 第${it.n}张 · ${it.name}${it.gender ? ` · ${it.gender}` : ''}`}
                                         onClick={() =>
                                           setImagePreview({
                                             url,
-                                            name: refs[n - 1]?.name || `图片${n}`,
+                                            name: it.name || `图片${it.n}`,
                                           })
                                         }
                                       >
                                         <img
                                           src={url}
-                                          alt={`@图片${n}`}
+                                          alt={`@图片${it.n}`}
                                           className="w-full h-full object-cover"
                                           draggable={false}
                                         />
@@ -11123,7 +19168,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             <button
                               type="button"
                               className={`director-keep-visible nodrag ${linkCls}`}
-                              onClick={() => setPromptPreview(val)}
+                              onClick={() => {
+                                  setPromptPreviewShotNo(null);
+                                  setPromptPreview(val);
+                                }}
                             >
                               {tt.viewPrompt}
                             </button>
@@ -11170,7 +19218,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                           <button
                             type="button"
                             className={`director-keep-visible nodrag ${linkCls}`}
-                            onClick={() => setPromptPreview(val)}
+                            onClick={() => {
+                                  setPromptPreviewShotNo(null);
+                                  setPromptPreview(val);
+                                }}
                           >
                             {tt.viewPrompt}
                           </button>
@@ -11264,7 +19315,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       </div>
       )}
 
-      {!isNodeFullscreen && hangPrimary}
+      {!isNodeFullscreen ? hangPrimary : null}
 
       {libraryPick &&
         typeof document !== 'undefined' &&
@@ -11482,6 +19533,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       )}
 
       {editing?.col === '最终提示词' &&
+        !isMvMode &&
         typeof document !== 'undefined' &&
         createPortal(
           <div
@@ -11507,11 +19559,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               onPointerDown={(e) => e.stopPropagation()}
               role="dialog"
               aria-modal="true"
-              aria-label={tt.colFinalPrompt}
+              aria-label={isMvMode ? tt.videoPromptOriginal : tt.colFinalPrompt}
             >
               <div className="flex justify-between items-center mb-3 shrink-0 gap-3">
                 <div className={`text-lg font-semibold ${titleCls}`}>
-                  {tt.colFinalPrompt}
+                  {isMvMode ? tt.videoPromptOriginal : tt.colFinalPrompt}
                   <span className={`ml-2 font-normal tabular-nums ${mutedCls}`} style={{ fontSize: fsChrome }}>
                     {String(
                       state.shots[editing.row]?.['镜号'] || editing.row + 1,
@@ -11689,6 +19741,114 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           document.body,
         )}
 
+      {promptHover != null &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={promptHoverPanelRef}
+            className="fixed pointer-events-auto"
+            style={{
+              left: promptHover.x,
+              top: promptHover.y,
+              width: promptHover.width,
+              maxHeight: typeof window !== 'undefined' ? window.innerHeight - 32 : undefined,
+              overflow: 'visible',
+              zIndex: 100055,
+              isolation: 'isolate',
+            }}
+            onMouseEnter={clearPromptHoverLeaveTimer}
+            onMouseLeave={scheduleClosePromptHover}
+            onPointerDown={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+            data-director-prompt-hover="1"
+          >
+            <div
+              className={`flex w-full flex-col rounded-2xl border ${
+                isDarkMode ? 'border-white/20 text-white' : 'border-gray-200 text-gray-900'
+              }`}
+              style={{
+                backgroundColor: isDarkMode ? '#09090b' : '#ffffff',
+                boxShadow: isDarkMode
+                  ? '0 24px 64px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,255,255,0.08)'
+                  : '0 24px 64px rgba(0,0,0,0.18)',
+              }}
+            >
+              <div
+                className={`shrink-0 flex items-center justify-between gap-2 border-b px-4 py-2.5 ${
+                  isDarkMode ? 'border-white/10' : 'border-gray-100'
+                }`}
+                style={{ backgroundColor: isDarkMode ? '#09090b' : '#ffffff' }}
+              >
+                <div className="text-sm font-semibold truncate">
+                  {promptHover.title || tt.colFinalPrompt}
+                </div>
+                <button
+                  type="button"
+                  className={`nodrag shrink-0 rounded-md px-1.5 py-0.5 text-[11px] ${
+                    isDarkMode
+                      ? 'text-white/55 hover:bg-white/10 hover:text-white/90'
+                      : 'text-gray-500 hover:bg-gray-100 hover:text-gray-800'
+                  }`}
+                  title={tt.viewPrompt}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const shotNo = promptHover.shotNo;
+                    if (shotNo && isMvMode) {
+                      const rowIndex = directorStateRef.current.shots.findIndex(
+                        (s, i) => String(s['镜号'] || i + 1) === String(shotNo),
+                      );
+                      if (rowIndex >= 0) {
+                        const hoverShot = directorStateRef.current.shots[rowIndex];
+                        const versions = getDirectorShotPromptVersions(
+                          hoverShot,
+                          getDirectorShotStoryboard(directorStateRef.current, shotNo),
+                        );
+                        setPromptHover(null);
+                        openFinalPromptEdit(
+                          rowIndex,
+                          versions.original || resolveShotFinalPrompt(hoverShot) || promptHover.text,
+                        );
+                        return;
+                      }
+                    }
+                    setPromptPreview(promptHover.text);
+                    setPromptPreviewShotNo(promptHover.shotNo || null);
+                    setPromptHover(null);
+                  }}
+                >
+                  {tt.viewPrompt}
+                </button>
+              </div>
+              <div
+                className="p-4"
+                style={{
+                  backgroundColor: isDarkMode ? '#09090b' : '#ffffff',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      typeof window !== 'undefined' && promptHover.text.length > 1100
+                        ? 12.5
+                        : typeof window !== 'undefined' && promptHover.text.length > 700
+                          ? 13
+                          : 14,
+                  }}
+                >
+                  {renderDirectorFinalPromptStructured(
+                    promptHover.text,
+                    isDarkMode,
+                    allAssets,
+                    1,
+                    directorStyleRefForFilter,
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
       {promptPreview != null &&
         typeof document !== 'undefined' &&
         createPortal(
@@ -11698,93 +19858,456 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             }`}
             onPointerDown={(e) => {
               e.stopPropagation();
-              if (e.target === e.currentTarget) setPromptPreview(null);
+              if (e.target === e.currentTarget) closePromptPreviewModal();
             }}
             onMouseDown={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                closePromptPreviewModal();
+              }
+            }}
           >
             <div
-              className={`w-full max-w-4xl max-h-[min(85vh,820px)] flex flex-col rounded-2xl p-5 shadow-2xl ring-1 ${
+              className={`w-full ${promptPreviewShotNo ? 'max-w-6xl' : 'max-w-4xl'} max-h-[min(85vh,820px)] flex flex-col rounded-2xl p-5 shadow-2xl ring-1 ${
                 isDarkMode ? 'bg-zinc-900 ring-white/15' : 'bg-gray-100 ring-gray-200'
               }`}
               onPointerDown={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
             >
               <div className="flex justify-between items-center mb-3 shrink-0 gap-3">
-                <div className={`text-lg font-semibold ${titleCls}`}>{tt.colFinalPrompt}</div>
+                <div className={`text-lg font-semibold ${titleCls}`}>
+                  {promptPreviewShotNo
+                    ? `${tt.colFinalPrompt} · ${tt.colShotNo} ${String(promptPreviewShotNo).padStart(2, '0')}`
+                    : tt.colFinalPrompt}
+                </div>
                 <button
                   type="button"
                   className={`nodrag p-1.5 rounded-lg ${mutedCls} hover:opacity-100 ${
                     isDarkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                   }`}
-                  onClick={() => setPromptPreview(null)}
+                  disabled={busyAction === 'revise-final-prompt'}
+                  onClick={() => closePromptPreviewModal()}
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
               {(() => {
-                const refs = getOrderedAssetsWithImages(state);
-                const indices = extractSeedanceImageMentionIndices(promptPreview || '');
-                if (indices.length === 0) return null;
-                return (
-                  <div className="mb-3 flex flex-wrap gap-2 shrink-0">
-                    {indices.map((n) => {
-                      const asset = refs[n - 1];
-                      const url = String(asset?.imageUrl || '').trim();
-                      const kindLabel =
-                        asset?.kind === 'character'
-                          ? tt.characters
-                          : asset?.kind === 'scene'
-                            ? tt.scenes
-                            : asset?.kind === 'prop'
-                              ? tt.props
-                              : '';
-                      const label = `@图片${n} · 第${n}张${asset?.name ? ` · ${asset.name}` : ''}${asset ? ` · ${inferDirectorAssetGender(asset)}` : ''}`;
-                      return (
-                        <div
-                          key={`preview-ref-${n}`}
-                          className={`inline-flex items-center gap-1.5 rounded-lg border pr-2 py-0.5 pl-0.5 text-xs font-medium ${
+                const previewShot = promptPreviewShotNo
+                  ? state.shots.find(
+                      (s, i) => String(s['镜号'] || i + 1) === String(promptPreviewShotNo),
+                    )
+                  : undefined;
+                const previewRowIndex = promptPreviewShotNo
+                  ? state.shots.findIndex(
+                      (s, i) => String(s['镜号'] || i + 1) === String(promptPreviewShotNo),
+                    )
+                  : -1;
+                const previewVersions = promptPreviewShotNo
+                  ? getRepairedShotPromptVersions(
+                      previewShot || {},
+                      Math.max(0, previewRowIndex),
+                      getDirectorShotStoryboard(state, promptPreviewShotNo),
+                    )
+                  : null;
+                const originalText = String(
+                  (previewRowIndex >= 0 && finalPromptEditRowRef.current === previewRowIndex
+                    ? finalPromptDraft
+                    : null) ||
+                    previewVersions?.original ||
+                    promptPreview ||
+                    '',
+                ).trim();
+                const optimizedText = String(previewVersions?.optimized || '').trim();
+                const showDual = !!promptPreviewShotNo;
+                const canEditOriginal = showDual && previewRowIndex >= 0;
+                const activeText = showDual
+                  ? promptPreviewTab === 'optimized' && optimizedText
+                    ? optimizedText
+                    : canEditOriginal
+                      ? String(finalPromptDraft || originalText).trim()
+                      : originalText
+                  : String(promptPreview || '').trim();
+                const items = resolveDirectorShotRefItems({
+                  prompt: activeText,
+                  styleUrl: directorStyleRefForFilter,
+                  libraryAssets: getOrderedAssetsWithImages(state),
+                }).filter((it) => {
+                  if (!it.url || it.url.startsWith('ref://')) return false;
+                  if (isDirectorLtxSingleImageModel(state.videoBatchModel)) {
+                    return it.role === 'storyboard';
+                  }
+                  return true;
+                });
+                const paneCls = (active: boolean) =>
+                  `relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl transition-shadow ${
+                    active
+                      ? isDarkMode
+                        ? 'ring-2 ring-emerald-400/90 bg-emerald-500/[0.07] shadow-[0_0_0_1px_rgba(52,211,153,0.35)]'
+                        : 'ring-2 ring-emerald-500/80 bg-emerald-50/70 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]'
+                      : isDarkMode
+                        ? 'ring-1 ring-white/10 bg-black/20'
+                        : 'ring-1 ring-gray-200 bg-white'
+                  }`;
+                const renderOriginalAiBar =
+                  canEditOriginal ? (
+                    <div
+                      className={`shrink-0 flex flex-wrap items-center gap-2 border-t px-2.5 py-2 ${
+                        isDarkMode ? 'border-white/10' : 'border-gray-200'
+                      }`}
+                    >
+                      {renderChatModelSelect({
+                        variant: 'plain',
+                        menuPlacement: 'up',
+                        disabled:
+                          !!busyAction ||
+                          !!state.isGenerating ||
+                          !!data?.isGenerating ||
+                          isDirectorHardBusy,
+                      })}
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5 basis-[180px]">
+                        <input
+                          type="text"
+                          className={`nodrag nowheel min-w-0 flex-1 rounded-lg px-2.5 py-1.5 outline-none ring-1 ${
                             isDarkMode
-                              ? 'bg-sky-500/15 border-sky-400/35 text-sky-100'
-                              : 'bg-sky-50 border-sky-200 text-sky-800'
+                              ? 'bg-white/[0.04] ring-white/12 text-white/85 placeholder:text-white/35'
+                              : 'bg-white ring-gray-200 text-gray-800 placeholder:text-gray-400'
                           }`}
-                          title={kindLabel ? `${kindLabel} · ${label}` : label}
+                          style={{ fontSize: Math.max(12, fsSmall) }}
+                          value={finalPromptOpinion}
+                          placeholder={tt.aiReviseFinalPromptOpinionPlaceholder}
+                          disabled={
+                            busyAction === 'revise-final-prompt' ||
+                            isFinalPromptOpinionDictationActive ||
+                            finalPromptOpinionMicBusy
+                          }
+                          onChange={(e) => setFinalPromptOpinion(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              void handleAiReviseFinalPrompt(previewRowIndex);
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          {...finalPromptOpinionMicPointerHandlers}
+                          disabled={
+                            finalPromptOpinionMicStopping || busyAction === 'revise-final-prompt'
+                          }
+                          style={
+                            finalPromptOpinionDictationStatus === 'listening' ||
+                            finalPromptOpinionDictationStatus === 'connecting'
+                              ? micLevelCssVars(finalPromptOpinionDictationLevel)
+                              : undefined
+                          }
+                          className={`nexflow-voice-mic-btn nodrag nopan relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border select-none ${
+                            finalPromptOpinionDictationStatus === 'connecting'
+                              ? 'connecting'
+                              : finalPromptOpinionDictationStatus === 'listening'
+                                ? 'listening'
+                                : ''
+                          } ${
+                            finalPromptOpinionMicStopping
+                              ? isDarkMode
+                                ? 'cursor-wait border-white/25 bg-white/5 text-white/75'
+                                : 'cursor-wait border-gray-300 bg-white/90 text-gray-600'
+                              : isDarkMode
+                                ? 'border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
+                                : 'border-gray-300 bg-white/90 text-gray-600 hover:bg-gray-100'
+                          }`}
+                          title={
+                            finalPromptOpinionMicBusy
+                              ? tt.aiReviseFinalPromptVoiceBusy
+                              : isFinalPromptOpinionDictationActive
+                                ? tt.aiReviseFinalPromptVoiceStop
+                                : tt.aiReviseFinalPromptVoiceStart
+                          }
+                          aria-label={
+                            finalPromptOpinionMicBusy
+                              ? tt.aiReviseFinalPromptVoiceBusy
+                              : isFinalPromptOpinionDictationActive
+                                ? tt.aiReviseFinalPromptVoiceStop
+                                : tt.aiReviseFinalPromptVoiceStart
+                          }
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {url ? (
-                            <button
-                              type="button"
-                              className="nodrag w-10 h-10 rounded-md overflow-hidden shrink-0"
-                              onClick={() =>
-                                setImagePreview({ url, name: asset?.name || `图片${n}` })
-                              }
-                            >
-                              <img
-                                src={url}
-                                alt={label}
-                                className="w-full h-full object-cover"
-                                draggable={false}
-                              />
-                            </button>
-                          ) : (
-                            <span
-                              className={`w-10 h-10 rounded-md shrink-0 flex items-center justify-center ${
-                                isDarkMode ? 'bg-white/10' : 'bg-gray-100'
-                              }`}
-                            >
-                              ?
-                            </span>
-                          )}
-                          <span className="max-w-[140px] truncate">{label}</span>
-                        </div>
-                      );
-                    })}
+                          <VoiceMicGlyph
+                            busy={finalPromptOpinionMicBusy}
+                            active={finalPromptOpinionDictationStatus === 'listening'}
+                            level={finalPromptOpinionDictationLevel}
+                          />
+                        </button>
+                      </div>
+                      <div
+                        className="relative overflow-visible"
+                        onMouseEnter={() => setPriceHoverKey(`revise-final-preview-${previewRowIndex}`)}
+                        onMouseLeave={() =>
+                          setPriceHoverKey((k) =>
+                            k === `revise-final-preview-${previewRowIndex}` ? null : k,
+                          )
+                        }
+                      >
+                        {renderChatYuanbaoHoverTip(`revise-final-preview-${previewRowIndex}`)}
+                        <button
+                          type="button"
+                          className={`nodrag inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 ring-1 whitespace-nowrap font-medium disabled:opacity-40 ${
+                            isDarkMode
+                              ? 'bg-sky-500/25 text-sky-100 ring-sky-400/40 hover:bg-sky-500/35'
+                              : 'bg-gray-800 text-white ring-gray-700 hover:bg-gray-900'
+                          }`}
+                          style={{ fontSize: fsChrome }}
+                          disabled={
+                            !!busyAction ||
+                            !!state.isGenerating ||
+                            !!data?.isGenerating ||
+                            !String(finalPromptOpinion || '').trim() ||
+                            isFinalPromptOpinionDictationActive ||
+                            finalPromptOpinionMicBusy
+                          }
+                          title={tt.priceTooltip}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleAiReviseFinalPrompt(previewRowIndex);
+                          }}
+                        >
+                          {busyAction === 'revise-final-prompt' ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : null}
+                          {busyAction === 'revise-final-prompt'
+                            ? tt.aiReviseFinalPromptBusy
+                            : tt.aiReviseFinalPrompt}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null;
+                const renderPane = (opts: {
+                  kind: 'original' | 'optimized';
+                  title: string;
+                  text: string;
+                  empty?: string;
+                  active: boolean;
+                }) => (
+                  <div className={paneCls(opts.active)}>
+                    {opts.active ? (
+                      <span
+                        className={`pointer-events-none absolute right-2 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-full shadow-sm ${
+                          isDarkMode
+                            ? 'bg-emerald-500 text-white ring-1 ring-emerald-300/50'
+                            : 'bg-emerald-500 text-white ring-1 ring-emerald-600/30'
+                        }`}
+                        title={
+                          opts.kind === 'optimized'
+                            ? tt.videoPromptUsingOptimized
+                            : tt.videoPromptUsingOriginal
+                        }
+                        aria-label={
+                          opts.kind === 'optimized'
+                            ? tt.videoPromptUsingOptimized
+                            : tt.videoPromptUsingOriginal
+                        }
+                      >
+                        <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                      </span>
+                    ) : null}
+                    <div
+                      className={`flex items-center justify-between gap-2 border-b px-3 py-2 ${
+                        opts.active
+                          ? isDarkMode
+                            ? 'border-emerald-400/25'
+                            : 'border-emerald-200'
+                          : isDarkMode
+                            ? 'border-white/10'
+                            : 'border-gray-100'
+                      }`}
+                    >
+                      <div className={`text-sm font-semibold ${titleCls}`}>{opts.title}</div>
+                      <div className="flex items-center gap-1.5 pr-7">
+                        {opts.kind === 'optimized' && promptPreviewShotNo ? (
+                          <button
+                            type="button"
+                            className={`nodrag rounded-md px-2 py-0.5 text-[11px] ${btnSecondary('!px-2 !py-0.5', 'events')} disabled:opacity-50`}
+                            disabled={
+                              busyAction === 'videos' ||
+                              busyAction === 'optimize-prompts' ||
+                              optimizingShotNos.includes(promptPreviewShotNo)
+                            }
+                            onClick={() => void handleOptimizeVideoPrompts([promptPreviewShotNo])}
+                          >
+                            {optimizingShotNos.includes(promptPreviewShotNo)
+                              ? tt.videoOptimizePromptBusy
+                              : tt.videoOptimizePrompt}
+                          </button>
+                        ) : null}
+                        {!opts.active && (opts.text || opts.kind === 'original') ? (
+                          <button
+                            type="button"
+                            className={`nodrag inline-flex h-6 w-6 items-center justify-center rounded-full ring-1 ${
+                              isDarkMode
+                                ? 'text-white/45 ring-white/20 hover:bg-white/10 hover:text-emerald-300 hover:ring-emerald-400/40'
+                                : 'text-gray-400 ring-gray-300 hover:bg-emerald-50 hover:text-emerald-600 hover:ring-emerald-300'
+                            }`}
+                            disabled={opts.kind === 'optimized' && !opts.text}
+                            title={
+                              opts.kind === 'optimized'
+                                ? tt.videoPromptUseOptimized
+                                : tt.videoPromptUseOriginal
+                            }
+                            aria-label={
+                              opts.kind === 'optimized'
+                                ? tt.videoPromptUseOptimized
+                                : tt.videoPromptUseOriginal
+                            }
+                            onClick={() => {
+                              if (!promptPreviewShotNo) return;
+                              setShotPromptUseOptimized(
+                                promptPreviewShotNo,
+                                opts.kind === 'optimized',
+                              );
+                              setPromptPreviewTab(opts.kind);
+                            }}
+                          >
+                            <Check className="w-3.5 h-3.5" strokeWidth={2.5} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    {opts.kind === 'original' && canEditOriginal ? (
+                      <>
+                        <textarea
+                          className={`nodrag nowheel flex-1 min-h-[200px] w-full resize-none px-3 py-2.5 leading-relaxed outline-none ${
+                            isDarkMode
+                              ? 'bg-transparent text-white/90 placeholder:text-white/35'
+                              : 'bg-transparent text-gray-900 placeholder:text-gray-400'
+                          } ${scrollCls}`}
+                          style={{ fontSize: Math.max(14, fsBody - 1) }}
+                          value={finalPromptDraft}
+                          disabled={busyAction === 'revise-final-prompt'}
+                          placeholder={tt.pendingPrompt}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setFinalPromptDraft(value);
+                            setPromptPreview(value);
+                            scheduleFinalPromptPersist(previewRowIndex, value);
+                          }}
+                        />
+                        {renderOriginalAiBar}
+                      </>
+                    ) : (
+                      <div className={`nowheel flex-1 min-h-0 overflow-auto p-3 ${scrollCls}`}>
+                        {opts.text ? (
+                          renderDirectorFinalPromptStructured(
+                            opts.text,
+                            isDarkMode,
+                            allAssets,
+                            1,
+                            directorStyleRefForFilter,
+                          )
+                        ) : (
+                          <div className={mutedCls}>{opts.empty || tt.videoPromptNoOptimized}</div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
+                return (
+                  <>
+                    {items.length > 0 ? (
+                      <div className="mb-3 flex flex-wrap gap-2 shrink-0">
+                        {items.map((it) => {
+                          const url = String(it.url || '').trim();
+                          const kindLabel =
+                            it.role === 'style'
+                              ? '风格'
+                              : it.role === 'storyboard'
+                                ? '分镜'
+                                : it.role === 'character'
+                                  ? tt.characters
+                                  : it.role === 'scene'
+                                    ? tt.scenes
+                                    : it.role === 'prop'
+                                      ? tt.props
+                                      : it.role === 'creature'
+                                        ? tt.creatures
+                                        : '';
+                          const label = `@图片${it.n} · 第${it.n}张 · ${it.name}${it.gender ? ` · ${it.gender}` : ''}`;
+                          return (
+                            <div
+                              key={`preview-ref-${it.n}`}
+                              className={`inline-flex items-center gap-1.5 rounded-lg border pr-2 py-0.5 pl-0.5 text-xs font-medium ${
+                                isDarkMode
+                                  ? 'bg-sky-500/15 border-sky-400/35 text-sky-100'
+                                  : 'bg-sky-50 border-sky-200 text-sky-800'
+                              }`}
+                              title={kindLabel ? `${kindLabel} · ${label}` : label}
+                            >
+                              {url ? (
+                                <button
+                                  type="button"
+                                  className="nodrag w-10 h-10 rounded-md overflow-hidden shrink-0"
+                                  onClick={() =>
+                                    setImagePreview({ url, name: it.name || `图片${it.n}` })
+                                  }
+                                >
+                                  <img
+                                    src={url}
+                                    alt={label}
+                                    className="w-full h-full object-cover"
+                                    draggable={false}
+                                  />
+                                </button>
+                              ) : (
+                                <span
+                                  className={`w-10 h-10 rounded-md shrink-0 flex items-center justify-center ${
+                                    isDarkMode ? 'bg-white/10' : 'bg-gray-100'
+                                  }`}
+                                >
+                                  ?
+                                </span>
+                              )}
+                              <span className="max-w-[140px] truncate">{label}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {showDual ? (
+                      <div
+                        className="grid grid-cols-1 md:grid-cols-2 gap-3 flex-1 min-h-0"
+                        style={{ fontSize: Math.max(14, fsBody - 1) }}
+                      >
+                        {renderPane({
+                          kind: 'original',
+                          title: tt.videoPromptOriginal,
+                          text: String(finalPromptDraft || originalText).trim(),
+                          active: !previewVersions?.useOptimized,
+                        })}
+                        {renderPane({
+                          kind: 'optimized',
+                          title: tt.videoPromptOptimized,
+                          text: optimizedText,
+                          empty: tt.videoPromptNoOptimized,
+                          active: !!previewVersions?.useOptimized,
+                        })}
+                      </div>
+                    ) : (
+                      <div
+                        className={`nowheel flex-1 min-h-0 overflow-auto ${scrollCls}`}
+                        style={{ fontSize: Math.max(15, fsBody) }}
+                      >
+                        {renderDirectorFinalPromptStructured(
+                          promptPreview,
+                          isDarkMode,
+                          allAssets,
+                          1,
+                          directorStyleRefForFilter,
+                        )}
+                      </div>
+                    )}
+                  </>
+                );
               })()}
-              <div
-                className={`nowheel flex-1 min-h-0 overflow-auto whitespace-pre-wrap break-words leading-relaxed ${scrollCls} ${bodyCls}`}
-                style={{ fontSize: Math.max(18, fsBody + 2) }}
-              >
-                {promptPreview}
-              </div>
             </div>
           </div>,
           document.body,
@@ -11903,12 +20426,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         >
           <div
             className={`flex-1 min-h-0 px-4 py-3 custom-scrollbar-dark ${
-              isMvMode &&
-              (state.phase === 'shots' ||
-                state.phase === 'music' ||
-                state.phase === 'style' ||
-                state.phase === 'cast' ||
-                state.phase === 'videos')
+              (isMvMode &&
+                (state.phase === 'shots' ||
+                  state.phase === 'music' ||
+                  state.phase === 'style' ||
+                  state.phase === 'story' ||
+                  state.phase === 'cast' ||
+                  state.phase === 'videos' ||
+                  state.phase === 'karaoke')) ||
+              isDramaMode
                 ? 'flex flex-col overflow-hidden'
                 : 'overflow-auto'
             }`}
@@ -11916,15 +20442,35 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             <div className="flex items-center justify-between gap-2 mb-3 shrink-0">
               <div className="flex items-center gap-2 min-w-0">
                 <Clapperboard className={`w-5 h-5 shrink-0 ${accentSpin}`} />
-                <span className={`font-semibold truncate ${titleCls}`}>{state.title || tt.directorTitle}</span>
+                <span className={`font-semibold truncate ${titleCls}`}>{dramaHeaderTitle || state.title || tt.directorTitle}</span>
                 {renderModeToggle()}
-                {!isMvMode ? renderScriptChip() : null}
+                {!isWizardMode ? renderScriptChip() : null}
               </div>
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   e.preventDefault();
+                  setPromptHover(null);
+                  if (promptPreview != null && busyAction !== 'revise-final-prompt') {
+                    closePromptPreviewModal();
+                  } else {
+                    setPromptPreview(null);
+                  }
+                  setImagePreview(null);
+                  setLibraryPick(null);
+                  setBatchOpen(false);
+                  setStylePromptEditId(null);
+                  setCastPickerShotNo(null);
+                  setScenePickerShotNo(null);
+                  setSbSourceMenuShotNo(null);
+                  setSbPickerShotNo(null);
+                  if (editing != null && busyAction !== 'revise-final-prompt') {
+                    if (editing.col === '最终提示词') closeFinalPromptEdit();
+                    else setEditing(null);
+                  }
+                  videoPreviewOpenRef.current = false;
+                  setVideoPreview(null);
                   setIsNodeFullscreen(false);
                 }}
                 className={`nodrag nopan shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
@@ -11940,9 +20486,6 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   Esc
                 </span>
               </button>
-            </div>
-            <div className="mb-3 overflow-visible py-0.5 shrink-0">
-              {!isMvMode ? renderStylePicker() : null}
             </div>
             <div className="director-keep-visible flex items-start justify-between gap-2 mb-3 shrink-0">
               <div className="flex-1 min-w-0">{renderPhaseButtons()}</div>
@@ -11964,10 +20507,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               </div>
             )}
             {isMvMode && state.phase === 'story' && (
-              <div className="mb-3">{renderMvStoryPanel()}</div>
+              <div className="mb-3 flex flex-col flex-1 min-h-0 overflow-hidden">
+                {renderMvStoryPanel()}
+              </div>
             )}
+            {isDramaMode ? (
+              <div className="director-keep-visible mb-3 flex flex-col flex-1 min-h-0 overflow-hidden">
+                {renderDramaStudioV2()}
+              </div>
+            ) : null}
             {isMvMode && state.phase === 'cast' && (
-              <div className="flex flex-col flex-1 min-h-0 overflow-hidden">{renderMvCastPanel()}</div>
+              <div className="flex flex-col flex-1 min-h-0 overflow-visible">{renderMvCastPanel()}</div>
             )}
             {videosPanelActive ? (
               <div
@@ -11980,7 +20530,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 })}
               </div>
             ) : null}
-            {(!isMvMode && (state.phase === 'shots' || state.phase === 'prompts')) ? (
+            {karaokePanelActive ? (
+              <div className="mb-3 flex flex-col flex-1 min-h-0 h-full overflow-hidden">
+                {renderMvKaraokePanel()}
+              </div>
+            ) : null}
+            {/* 旧剧本模式分镜表已下线；短剧/MV 使用上方 shotsPanelActive 确认面板 */}
+            {false && (!isMvMode && (state.phase === 'shots' || state.phase === 'prompts')) ? (
               <div className={`overflow-auto max-h-[calc(100vh-280px)] ${scrollCls}`}>                <table className="w-full border-collapse" style={{ fontSize: fsSmall }}>
                   <thead className={`sticky top-0 z-10 ${tableHeadBg}`}>
                     <tr className={mutedCls}>
@@ -12256,9 +20812,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                       type="button"
                                       className={`nodrag ${btnPrimary('', 'events')} disabled:opacity-50 shrink-0`}
                                       style={{ fontSize: fsChrome }}
-                                      disabled={sbGenerating || !val}
+                                      disabled={!val || isDirectorHardBusy}
                                       onMouseEnter={() =>
-                                        !sbGenerating &&
                                         !!val &&
                                         setPriceHoverKey(`sb-fs-${shotNo}`)
                                       }
@@ -12327,7 +20882,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                             : 'border-gray-200 bg-gray-100 text-gray-800'
                                         }`}
                                         style={{ fontSize: Math.max(10, fsChrome - 1) }}
-                                        onClick={() => setPromptPreview(val)}
+                                        onClick={() => {
+                                  setPromptPreviewShotNo(null);
+                                  setPromptPreview(val);
+                                }}
                                       >
                                         <div className={`mb-1 font-medium ${mutedCls}`}>
                                           {tt.colFinalPrompt}
@@ -12354,7 +20912,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                 <button
                                   type="button"
                                   className={`director-keep-visible nodrag ${linkCls} text-left whitespace-pre-wrap line-clamp-3`}
-                                  onClick={() => setPromptPreview(val)}
+                                  onClick={() => {
+                                  setPromptPreviewShotNo(null);
+                                  setPromptPreview(val);
+                                }}
                                 >
                                   {tt.viewPrompt}
                                 </button>
@@ -12369,8 +20930,42 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   </tbody>
                 </table>
               </div>
-            ) : state.phase === 'assets' ? (
-              <div className="flex flex-col gap-3 max-h-[calc(100vh-280px)]">
+            ) : state.phase === 'assets' && !isDramaMode ? (
+              <div className="flex flex-col gap-3 max-h-[calc(100vh-220px)] min-h-0">
+                {!isWizardMode ? (
+                  <div className="shrink-0 flex items-center gap-1.5 flex-wrap">
+                    {(
+                      [
+                        ['characters', tt.assetsStepCharacters] as const,
+                        ['scenes', tt.assetsStepScenes] as const,
+                        ['props', tt.assetsStepProps] as const,
+                      ] as const
+                    ).map(([stepId, label]) => {
+                      const active =
+                        (state.assetsStep || 'characters') === stepId ||
+                        (!state.assetsStep && stepId === 'characters');
+                      return (
+                        <button
+                          key={stepId}
+                          type="button"
+                          className={`nodrag rounded-full px-2.5 py-1 font-medium transition-colors ${
+                            active
+                              ? isDarkMode
+                                ? 'bg-sky-500/25 text-sky-100 ring-1 ring-sky-400/40'
+                                : 'bg-gray-200 text-gray-800 ring-1 ring-gray-400/70'
+                              : isDarkMode
+                                ? 'text-white/45 hover:bg-white/[0.06]'
+                                : 'text-gray-500 hover:bg-gray-100'
+                          }`}
+                          style={{ fontSize: fsChrome }}
+                          onClick={() => patch(setDirectorAssetsStep(state, stepId))}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
                 {(() => {
                   const step: DirectorAssetsStep =
                     state.assetsStep === 'scenes' || state.assetsStep === 'props'
@@ -12387,7 +20982,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   )
                     .filter(([key]) => key === step)
                     .map(([key, label, kind]) => (
-                      <div key={key} className={`flex flex-col min-h-0 gap-2 ${sectionShell(kind)}`}>
+                      <div key={key} className={`flex flex-col min-h-0 flex-1 gap-2 ${sectionShell(kind)}`}>
                         {/* 标题+一键生成放在滚动区外，避免 tip 被 overflow 裁切 */}
                         <div className="shrink-0 relative z-[50] overflow-visible flex items-center justify-between mb-0 gap-2">
                           <div className={`font-semibold ${sectionTitleCls(kind)}`} style={{ fontSize: fsBody }}>
@@ -12395,11 +20990,34 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                               ? tt.phaseMvScenes
                               : `${label} (${state.assets[key].length})`}
                           </div>
-                          {isMvMode && kind === 'scene' ? (
-                            <div className="shrink-0 relative z-[50] overflow-visible flex items-center justify-end">
-                              {renderSceneOneClickGenerate()}
-                            </div>
-                          ) : null}
+                          <div className="shrink-0 relative z-[50] overflow-visible flex items-center justify-end gap-2 flex-wrap">
+                            {isMvMode && kind === 'scene' ? renderSceneOneClickGenerate() : null}
+                            {!isMvMode ? (
+                              <>
+                                {renderImageGenControls({ compact: true, kind })}
+                                <button
+                                  type="button"
+                                  className={`nodrag flex items-center gap-0.5 ${
+                                    isDarkMode ? 'text-white/45 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+                                  }`}
+                                  style={{ fontSize: fsChrome }}
+                                  onClick={() => addAsset(kind)}
+                                >
+                                  <Plus className="w-3.5 h-3.5" />
+                                  {tt.addAsset}
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`nodrag ${btnPrimary('!px-2 !py-1', sectionScratch(kind))} disabled:opacity-40`}
+                                  style={{ fontSize: fsChrome }}
+                                  disabled={isDirectorHardBusy || state.assets[key].length === 0}
+                                  onClick={() => generateCategory(kind)}
+                                >
+                                  {tt.generateCategory}
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
                         </div>
                         <div className={`nowheel flex-1 min-h-0 overflow-y-auto space-y-2 ${scrollCls}`}>
                           {isMvMode && kind === 'scene' ? (
@@ -12480,11 +21098,134 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             }`}
           >
             {state.phase === 'shots' ? renderShotsGenerateBar() : null}
-            <div className="flex items-center justify-center gap-2">{primaryFooter()}</div>
+            {primaryFooterNode ? (
+              <div className="flex items-center justify-center gap-2">{primaryFooterNode}</div>
+            ) : null}
           </div>
         </div>,
         document.body,
       )}
+      {karaokeOpen && karaokeSeed && !karaokePanelActive ? (
+        <KaraokeSubtitleEditor
+          open={karaokeOpen}
+          onClose={() => {
+            setKaraokeOpen(false);
+            setKaraokeSeed(null);
+          }}
+          projectId={data?.projectId}
+          initialProject={karaokeSeed}
+          entryLabel={tt.karaokeSubtitles}
+          onProjectChange={(p) => {
+            const d = dataRef.current as DirectorNodeData | undefined;
+            const nextUrl = String(p.videoUrl || '').trim();
+            const prevUrl = String(d?.karaokeProject?.videoUrl || karaokeSeed?.videoUrl || '').trim();
+            const extra: Partial<DirectorNodeData> = {};
+            const source = karaokeVideoSourceRef.current ?? d?.karaokeVideoSource;
+            if (
+              nextUrl &&
+              nextUrl !== prevUrl &&
+              source !== 'user' &&
+              (nextUrl === String(d?.karaokeComposedVideoUrl || '').trim() || !prevUrl)
+            ) {
+              extra.karaokeComposedVideoUrl = nextUrl;
+              extra.karaokeVideoSource = 'composed';
+            }
+            persistKaraokeProject(p, extra);
+          }}
+          resolveVideoUrl={
+            data?.onResolveKaraokeMvVideo || composedVideoUrlProp
+              ? async () => resolveKaraokeComposedVideoUrl()
+              : undefined
+          }
+          onPickLocalVideo={onPickKaraokeVideoClick}
+          onImportComposeVideo={
+            data?.onResolveKaraokeMvVideo || composedVideoUrlProp
+              ? () => {
+                  void importKaraokeFromCompose();
+                }
+              : undefined
+          }
+          onClearVideo={clearKaraokeVideo}
+          videoSourceBusy={
+            busyAction === 'karaoke-upload'
+              ? 'upload'
+              : busyAction === 'karaoke-import'
+                ? 'import'
+                : null
+          }
+          onBurned={(result) => {
+            const burnedUrl = String(result.originalUrl || '').trim();
+            const add = data?.onAddVideoClipNodes;
+            data?.onUpdate?.({
+              karaokeProject: result.karaokeProject,
+              karaokeBurnedVideoUrl: burnedUrl || undefined,
+            } as Partial<DirectorNodeData>);
+            if (!add) {
+              showAlert(result.originalUrl);
+              return;
+            }
+            const newId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const w = 420;
+            const h = 236;
+            const storeState = store.getState();
+            const self = storeState.nodeInternals.get(id);
+            const originX = (self?.positionAbsolute?.x ?? self?.position?.x ?? 0) + (self?.width ?? sizeW) + 48;
+            const originY = self?.positionAbsolute?.y ?? self?.position?.y ?? 0;
+            add({
+              nodes: [
+                {
+                  id: newId,
+                  type: 'video',
+                  position: { x: originX, y: originY },
+                  data: {
+                    width: w,
+                    height: h,
+                    label: tt.karaokeSubtitles,
+                    title: tt.karaokeSubtitles,
+                    outputVideo: result.originalUrl,
+                    localPath: result.originalPath,
+                    preserveExportLayout: true,
+                    exportedMediaClip: true,
+                    karaokeProject: result.karaokeProject,
+                    videoAsset: {
+                      poster: result.posterUrl,
+                      width: result.width,
+                      height: result.height,
+                    },
+                  },
+                  style: { width: w, height: h },
+                  selected: true,
+                },
+              ],
+              edges: [
+                {
+                  id: `e-${id}-${newId}-karaoke`,
+                  source: id,
+                  sourceHandle: 'output',
+                  target: newId,
+                  targetHandle: 'input',
+                },
+              ],
+            });
+          }}
+        />
+      ) : null}
+      {typeof document !== 'undefined'
+        ? createPortal(
+            <input
+              ref={karaokeVideoUploadInputRef}
+              type="file"
+              accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                e.target.value = '';
+                void onUploadKaraokeVideoFile(f);
+              }}
+            />,
+            document.body,
+          )
+        : null}
     </div>
   );
 };

@@ -156,7 +156,15 @@ export function extractJsonObject(text: unknown): unknown | null {
   const arrayStart = candidate.indexOf('[');
   const arrayEnd = candidate.lastIndexOf(']');
   if (arrayStart >= 0 && arrayEnd > arrayStart) {
-    return unwrapParsed(tryParse(candidate.slice(arrayStart, arrayEnd + 1)));
+    const arr = unwrapParsed(tryParse(candidate.slice(arrayStart, arrayEnd + 1)));
+    if (arr != null) return arr;
+  }
+
+  // 输出写到一半被截断：补齐引号/括号后再 parse，尽量保住已完整的 plot 行
+  const closed = closeTruncatedJsonObject(candidate);
+  if (closed) {
+    const parsedClosed = unwrapParsed(tryParse(closed));
+    if (parsedClosed != null) return parsedClosed;
   }
 
   // JSON.parse 失败时，尝试从半结构化文本捞剧本字段（含未转义换行）
@@ -164,6 +172,54 @@ export function extractJsonObject(text: unknown): unknown | null {
   if (loose) return loose;
 
   return null;
+}
+
+/** 截断 JSON 补闭合，便于捞出已写完的字段；补不上则返回 null */
+function closeTruncatedJsonObject(raw: string): string | null {
+  const s = String(raw || '');
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  const body = s.slice(start);
+  let inString = false;
+  let escape = false;
+  let braces = 0;
+  let brackets = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '{') braces += 1;
+    else if (ch === '}') braces -= 1;
+    else if (ch === '[') brackets += 1;
+    else if (ch === ']') brackets -= 1;
+  }
+  if (!inString && braces <= 0 && brackets <= 0) return null;
+  let out = body;
+  if (inString) out += '"';
+  out = out.replace(/,\s*$/, '');
+  while (brackets > 0) {
+    out += ']';
+    brackets -= 1;
+  }
+  while (braces > 0) {
+    out += '}';
+    braces -= 1;
+  }
+  return out;
 }
 
 /** 提取第一个花括号平衡的 JSON 对象子串（忽略字符串内括号） */
@@ -317,16 +373,41 @@ function toCellString(value: unknown): string {
 }
 
 const SHOT_FIELD_ALIASES: Record<string, keyof DirectorShot> = {
+  场号: '场号',
+  场次: '场号',
+  sceneNo: '场号',
+  sceneNumber: '场号',
+  内外景: '内外景',
+  intExt: '内外景',
+  interiorExterior: '内外景',
+  日夜: '日夜',
+  dayNight: '日夜',
+  地点: '地点',
+  场景: '地点',
+  location: '地点',
+  place: '地点',
+  出场人物: '出场人物',
+  出场角色: '出场人物',
+  cast: '出场人物',
+  characters: '出场人物',
   镜号: '镜号',
+  编号: '镜号',
   shot: '镜号',
   shotNo: '镜号',
   index: '镜号',
+  no: '镜号',
   时长: '时长',
   duration: '时长',
   画面描述: '画面描述',
+  画面动作: '画面描述',
+  内容描述: '画面描述',
   description: '画面描述',
   visual: '画面描述',
+  action: '画面描述',
   镜头角度: '镜头角度',
+  '机位/角度': '镜头角度',
+  机位角度: '镜头角度',
+  机位: '镜头角度',
   角度: '镜头角度',
   angle: '镜头角度',
   cameraAngle: '镜头角度',
@@ -336,15 +417,31 @@ const SHOT_FIELD_ALIASES: Record<string, keyof DirectorShot> = {
   景别: '景别',
   shotSize: '景别',
   光影氛围: '光影氛围',
+  光影背景: '光影氛围',
+  情绪: '光影氛围',
+  mood: '光影氛围',
   lighting: '光影氛围',
   对白旁白: '对白旁白',
   对白: '对白旁白',
   旁白: '对白旁白',
   dialogue: '对白旁白',
+  对口型动作: '对口型动作',
+  对口型: '对口型动作',
+  lipsyncAction: '对口型动作',
+  lipSyncAction: '对口型动作',
   音效: '音效',
   sfx: '音效',
   运镜: '运镜',
   camera: '运镜',
+  制作备注: '制作备注',
+  '服装/化妆/道具/特效备注': '制作备注',
+  服装化妆道具特效: '制作备注',
+  productionNotes: '制作备注',
+  连贯性: '连贯性',
+  continuity: '连贯性',
+  参考图绑定: '参考图绑定',
+  参考绑定: '参考图绑定',
+  refBind: '参考图绑定',
   最终提示词: '最终提示词',
   finalPrompt: '最终提示词',
   prompt: '最终提示词',
@@ -444,13 +541,16 @@ export function normalizeDirectorAssetsResult(text: unknown): NormalizeDirectorA
   const props = pickAssetArray(parsed, ['props', 'items', '道具']).map((r, i) =>
     normalizeAssetItem(r, 'prop', i),
   );
-  if (characters.length + scenes.length + props.length === 0) {
+  const creatures = pickAssetArray(parsed, ['creatures', 'beasts', 'pets', 'monsters', '生物', '宠物', '怪物']).map(
+    (r, i) => normalizeAssetItem(r, 'creature', i),
+  );
+  if (characters.length + scenes.length + props.length + creatures.length === 0) {
     return { ok: false, error: '未抽取到任何资产', rawJson };
   }
   return {
     ok: true,
     globalStyle: toCellString(parsed.globalStyle ?? parsed.style ?? parsed['全篇风格']),
-    assets: { characters, scenes, props },
+    assets: { characters, scenes, props, creatures },
     rawJson,
   };
 }
@@ -521,6 +621,8 @@ export type NormalizeDirectorMvScriptResult =
       script: string;
       scriptKeywords: string[];
       sections: DirectorMvScriptSections;
+      /** 短剧分析直接产出的镜头表（可选） */
+      shots?: DirectorShot[];
       rawJson: string;
     }
   | { ok: false; error: string; rawJson: string };
@@ -529,6 +631,15 @@ function canonicalizeDirectorMvPlotSection(sections: DirectorMvScriptSections): 
   const rows = parseDirectorMvPlotBeatTable(sections.plot);
   if (!rows?.length) return sections;
   return { ...sections, plot: formatDirectorMvPlotBeatTable(rows) };
+}
+
+function looksLikeDirectorMvScriptJsonDump(plain: string): boolean {
+  const s = String(plain || '').trim();
+  if (!s) return false;
+  if (/^```(?:json)?/i.test(s)) return true;
+  if (/"schemaVersion"\s*:/.test(s) && /"plot"\s*:/.test(s)) return true;
+  if (/"type"\s*:\s*"director-mv-script"/.test(s)) return true;
+  return false;
 }
 
 /** 兼容模型把剧本包在 data/result/sections 里，或 plot 用数组行 */
@@ -552,7 +663,9 @@ function unwrapDirectorMvScriptObject(parsed: unknown): Record<string, unknown> 
     parsed.scenes != null ||
     parsed.场景库 != null ||
     parsed.worldView != null ||
-    parsed.世界观 != null;
+    parsed.世界观 != null ||
+    parsed.shots != null ||
+    parsed.镜头 != null;
 
   if (isPlainObject(parsed.sections)) {
     const merged = { ...parsed, ...parsed.sections };
@@ -611,6 +724,8 @@ function plotArrayToBeatTable(raw: unknown): string {
     angle: toCellString(o.angle ?? o.镜头角度 ?? o.机位 ?? '—') || '—',
     focal: toCellString(o.focal ?? o.焦距 ?? o.焦段 ?? '—') || '—',
     action: toCellString(o.action ?? o.动作与画面 ?? o.动作 ?? o.画面 ?? '—') || '—',
+    lipsyncAction:
+      toCellString(o.lipsyncAction ?? o.对口型动作 ?? o.对口型表演 ?? o.开口动作 ?? '—') || '—',
     mood: toCellString(o.mood ?? o.情绪 ?? '—') || '—',
   }));
   return formatDirectorMvPlotBeatTable(rows);
@@ -625,6 +740,41 @@ function lookLikeTruncatedJson(raw: string): boolean {
   if (/```/.test(s) && !/```[\s\S]*```/.test(s)) return true;
   if (/"plot"\s*:\s*"/.test(s) && !/"worldView"|"世界观"|"characters"|"人物库"/.test(s)) return true;
   return false;
+}
+
+export type NormalizeDirectorMvStoryOutlineResult =
+  | { ok: true; story: string; rawJson: string }
+  | { ok: false; error: string; rawJson: string };
+
+/** 解析「故事大纲」生成结果 */
+export function normalizeDirectorMvStoryOutlineResult(
+  text: unknown,
+): NormalizeDirectorMvStoryOutlineResult {
+  const rawJson = coerceAssistantText(text);
+  if (!rawJson) {
+    return { ok: false, error: '模型返回为空，无法解析故事大纲', rawJson: '' };
+  }
+  let parsed = extractJsonObject(text);
+  if (isPlainObject(parsed)) {
+    const story = String(
+      parsed.story ?? parsed.故事 ?? parsed.outline ?? parsed.storyOutline ?? '',
+    ).trim();
+    if (story.length >= 40) {
+      return { ok: true, story, rawJson };
+    }
+  }
+  // 纯文本兜底
+  const plain = rawJson
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  if (plain.length >= 40 && !/"plot"\s*:/.test(plain) && !/段号\s*\|/.test(plain)) {
+    return { ok: true, story: plain, rawJson };
+  }
+  if (lookLikeTruncatedJson(rawJson)) {
+    return { ok: false, error: '故事大纲可能被截断，请重试', rawJson };
+  }
+  return { ok: false, error: '无法解析故事大纲 JSON', rawJson };
 }
 
 export function normalizeDirectorMvScriptResult(text: unknown): NormalizeDirectorMvScriptResult {
@@ -652,6 +802,51 @@ export function normalizeDirectorMvScriptResult(text: unknown): NormalizeDirecto
 
   if (!isPlainObject(parsed)) {
     const plain = rawJson;
+    if (lookLikeTruncatedJson(plain)) {
+      // 截断 JSON：仍尝试捞出已完整的 plot 行，能展示表格就当部分成功
+      const partialRows = parseDirectorMvPlotBeatTable(plain);
+      if (partialRows && partialRows.length >= 2) {
+        const sections = canonicalizeDirectorMvPlotSection({
+          plot: formatDirectorMvPlotBeatTable(partialRows),
+          worldView: '',
+          relationships: '',
+          characters: '',
+          scenes: '',
+          props: '',
+        });
+        return {
+          ok: true,
+          script: composeDirectorMvScriptText(sections),
+          scriptKeywords: [],
+          sections,
+          rawJson: plain,
+        };
+      }
+      return {
+        ok: false,
+        error: '无法解析 MV 剧本：模型输出疑似被截断，请重试或换用更大上下文的模型',
+        rawJson: plain,
+      };
+    }
+    // 整段 JSON 被当正文：先规范成表，禁止把 ```json 原文塞进剧情规划
+    if (looksLikeDirectorMvScriptJsonDump(plain)) {
+      const sections = canonicalizeDirectorMvPlotSection(parseDirectorMvScriptSectionsFromText(plain));
+      const plotRows = parseDirectorMvPlotBeatTable(sections.plot || '');
+      if (plotRows && plotRows.length >= 2) {
+        return {
+          ok: true,
+          script: composeDirectorMvScriptText(sections) || plain,
+          scriptKeywords: [],
+          sections,
+          rawJson: plain,
+        };
+      }
+      return {
+        ok: false,
+        error: '无法解析 MV 剧本 JSON（剧情表缺失或截断），请重试',
+        rawJson: plain,
+      };
+    }
     // 含明细表或分节标题时，按纯文本剧本接受
     if (
       plain.length > 40 ||
@@ -660,17 +855,27 @@ export function normalizeDirectorMvScriptResult(text: unknown): NormalizeDirecto
       plain.includes('|')
     ) {
       const sections = canonicalizeDirectorMvPlotSection(parseDirectorMvScriptSectionsFromText(plain));
+      const plotRows = parseDirectorMvPlotBeatTable(sections.plot || '');
+      // 残表（仅 1～2 行）多半是截断，勿当成功
+      if (plotRows && plotRows.length === 1 && /段号\s*\|/.test(plain)) {
+        return {
+          ok: false,
+          error: '剧情表行数过少（输出可能被截断），请重试',
+          rawJson: plain,
+        };
+      }
+      // 若正文其实是 JSON dump 却没被识别，避免写成「表格区显示代码」
+      if (!plotRows && looksLikeDirectorMvScriptJsonDump(sections.plot || plain)) {
+        return {
+          ok: false,
+          error: '无法解析 MV 剧本：请重试生成',
+          rawJson: plain,
+        };
+      }
       const script = composeDirectorMvScriptText(sections) || plain;
       if (script.trim()) {
         return { ok: true, script, scriptKeywords: [], sections, rawJson: plain };
       }
-    }
-    if (lookLikeTruncatedJson(plain)) {
-      return {
-        ok: false,
-        error: '无法解析 MV 剧本：模型输出疑似被截断，请重试或换用更大上下文的模型',
-        rawJson: plain,
-      };
     }
     const preview = plain.replace(/\s+/g, ' ').slice(0, 120);
     return {
@@ -710,8 +915,21 @@ export function normalizeDirectorMvScriptResult(text: unknown): NormalizeDirecto
       ? (parsed.剧本关键词 as unknown[]).map((x) => toCellString(x)).filter(Boolean)
       : [];
 
+  const shotRows = pickShotArray(parsed);
+  const shots =
+    shotRows.length > 0
+      ? shotRows.slice(0, 60).map((row, i) => {
+          const shot = normalizeShot(row, i);
+          // 分析步不写最终提示词（留给「合成提示词」）
+          if (!String(shot['最终提示词'] || '').trim() || /^待生成/.test(shot['最终提示词'])) {
+            shot['最终提示词'] = '';
+          }
+          return shot;
+        })
+      : undefined;
+
   const script = composeDirectorMvScriptText(sections) || legacyScript;
-  if (!script) {
+  if (!script && !(shots && shots.length > 0)) {
     if (lookLikeTruncatedJson(rawJson)) {
       return {
         ok: false,
@@ -721,11 +939,20 @@ export function normalizeDirectorMvScriptResult(text: unknown): NormalizeDirecto
     }
     return { ok: false, error: '剧本正文为空', rawJson };
   }
+  const plotRows = parseDirectorMvPlotBeatTable(sections.plot || '');
+  if (plotRows && plotRows.length === 1 && lookLikeTruncatedJson(rawJson)) {
+    return {
+      ok: false,
+      error: '剧情表行数过少（输出疑似被截断），请重试或换更大上下文模型',
+      rawJson,
+    };
+  }
   return {
     ok: true,
-    script,
+    script: script || composeDirectorMvScriptText(sections) || '短剧剧本',
     scriptKeywords,
     sections,
+    ...(shots && shots.length > 0 ? { shots } : {}),
     rawJson,
   };
 }

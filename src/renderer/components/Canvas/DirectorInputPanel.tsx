@@ -112,7 +112,7 @@ const DirectorInputPanel: React.FC<DirectorInputPanelProps> = ({
         ],
         stream: false,
         projectId: projectId || undefined,
-        nodeTitle: '导演',
+        nodeTitle: 'MV导演',
       });
     } catch (e) {
       setBusy(false);

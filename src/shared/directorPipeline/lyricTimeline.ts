@@ -556,10 +556,22 @@ export function splitUserLyricLines(raw: string): string[] {
 }
 
 function normalizeLyricMatchText(s: string): string {
+  // 先去掉角色标记（(男)/男： 等，全半角括号/冒号），避免残留「男」「女」「合」干扰对齐
   return String(s || '')
+    .replace(/(?:[（(]\s*[男女合]\s*[）)]|[男女合]\s*[：:])/g, '')
     .toLowerCase()
     .replace(/\s+/g, '')
     .replace(/[，。！？、…·\-—~～"'“”‘’（）()【】\[\]《》<>]/g, '');
+}
+
+/**
+ * 是否为「纯语气/和声」文本（啊/哦/啦/嗯…）。
+ * 仅整段都是这类字才为 true；正式歌词里夹带的「啊」不会命中。
+ */
+export function isLyricFillerParticleOnlyText(text: string | undefined | null): boolean {
+  const t = normalizeLyricMatchText(String(text || ''));
+  if (!t) return false;
+  return /^[啊哦喔噢呃嗯唔嘿哈呵嗨呀哟欸啦哩咯哇哼唷]+$/.test(t);
 }
 
 /** 粗粒度相似：公共字符占比 */
@@ -615,29 +627,42 @@ export function calibrateLyricSegmentsWithUserLyrics(
     return coverSongWithLyricSegments(out, songDur || end);
   }
 
-  // 1) 顺序贪婪：把每行歌词挂到最相近的识别段
+  // 1) 顺序匹配：相似度够才挂到识别段；失败不推进 vPtr、不占用该段（留给后面真匹配行）
   type Assign = { lineIdx: number; vocalIdx: number; score: number };
   const assigns: Assign[] = [];
+  const unmatchedLineIdxs: number[] = [];
   let vPtr = 0;
+  const MATCH_MIN = 0.2;
   for (let li = 0; li < lines.length; li++) {
-    let bestJ = Math.min(vPtr, vocals.length - 1);
+    if (vPtr >= vocals.length) {
+      unmatchedLineIdxs.push(li);
+      continue;
+    }
+    const lineIsFiller = isLyricFillerParticleOnlyText(lines[li]);
+    let bestJ = -1;
     let bestScore = -1;
-    const searchEnd = Math.min(vocals.length, vPtr + 3);
+    // 局部搜索：从当前指针起看若干段，避免一条贪心链把后面全拖偏
+    const searchEnd = Math.min(vocals.length, vPtr + 5);
     for (let j = vPtr; j < searchEnd; j++) {
+      // 用户行不是纯语气词时，跳过 ASR 纯「啊/啦/哦」和声段，避免误挂
+      if (!lineIsFiller && isLyricFillerParticleOnlyText(vocals[j].text)) continue;
       const sc = lyricTextSimilarity(lines[li], vocals[j].text);
-      const orderBonus = j === vPtr ? 0.08 : 0;
+      const orderBonus = j === vPtr ? 0.06 : 0;
       if (sc + orderBonus > bestScore) {
         bestScore = sc + orderBonus;
         bestJ = j;
       }
     }
-    // 识别文本太差时仍按顺序推进
-    if (bestScore < 0.12) bestJ = Math.min(vPtr, vocals.length - 1);
+    if (bestJ < 0 || bestScore < MATCH_MIN) {
+      // 漏句：不挂锚点、不吃掉后续识别段
+      unmatchedLineIdxs.push(li);
+      continue;
+    }
     assigns.push({ lineIdx: li, vocalIdx: bestJ, score: bestScore });
-    vPtr = Math.min(vocals.length - 1, bestJ + (bestScore >= 0.2 ? 1 : 0));
+    vPtr = Math.min(vocals.length, bestJ + 1);
   }
 
-  // 2) 按 vocalIdx 分组行，在该识别段时间窗内按字数切开
+  // 2) 按 vocalIdx 分组：在识别段时间窗内按字数切开 → lineTiming
   const byVocal = new Map<number, number[]>();
   for (const a of assigns) {
     const arr = byVocal.get(a.vocalIdx) || [];
@@ -645,53 +670,101 @@ export function calibrateLyricSegmentsWithUserLyrics(
     byVocal.set(a.vocalIdx, arr);
   }
 
-  const calibratedVocals: DirectorMvLyricSegment[] = [];
-  for (let vi = 0; vi < vocals.length; vi++) {
+  const lineTiming = new Map<number, { startSec: number; endSec: number; text: string }>();
+  for (const [vi, group] of byVocal) {
     const v = vocals[vi];
-    const lineIdxs = byVocal.get(vi);
-    if (!lineIdxs || lineIdxs.length === 0) {
-      // 未被歌词点名的识别段：保留原文本作锚点
-      calibratedVocals.push({ ...v });
-      continue;
-    }
-    const parts = lineIdxs.map((i) => lines[i]);
-    const totalChars = parts.reduce((a, t) => a + Math.max(1, t.length), 0);
+    const parts = group.map((i) => lines[i]);
+    const totalChars = parts.reduce((acc, t) => acc + Math.max(1, t.length), 0) || 1;
     const span = Math.max(0.2, v.endSec - v.startSec);
     let cursor = v.startSec;
-    for (let pi = 0; pi < parts.length; pi++) {
-      const share = Math.max(1, parts[pi].length) / totalChars;
-      const dur = pi === parts.length - 1 ? v.endSec - cursor : Math.max(0.25, span * share);
+    for (let gi = 0; gi < group.length; gi++) {
+      const share = Math.max(1, parts[gi].length) / totalChars;
+      const dur = gi === group.length - 1 ? v.endSec - cursor : Math.max(0.25, span * share);
       const startSec = cursor;
-      const endSec = pi === parts.length - 1 ? v.endSec : Math.min(v.endSec, cursor + dur);
-      calibratedVocals.push({
-        id: newSegId(3000 + vi * 20 + pi),
-        text: parts[pi],
-        startSec,
-        endSec,
-      });
+      const endSec = gi === group.length - 1 ? v.endSec : Math.min(v.endSec, cursor + dur);
+      lineTiming.set(group[gi], { startSec, endSec, text: lines[group[gi]] });
       cursor = endSec;
     }
   }
 
-  // 未分配到的歌词行：接在末段人声后均分剩余人声空隙（少见）
-  const usedLines = new Set(assigns.map((a) => a.lineIdx));
-  const unused = lines.map((t, i) => ({ t, i })).filter((x) => !usedLines.has(x.i));
-  if (unused.length > 0 && calibratedVocals.length > 0) {
-    const last = calibratedVocals[calibratedVocals.length - 1];
-    const pad = 0.45;
-    for (let i = 0; i < unused.length; i++) {
-      const startSec = last.endSec + i * pad;
-      calibratedVocals.push({
-        id: newSegId(4000 + i),
-        text: unused[i].t,
-        startSec,
-        endSec: startSec + pad,
-      });
+  // 3) 漏句：插在前后已匹配行之间（按字数均分空隙），不追加到末尾硬挤、不抢后续锚点
+  {
+    let ui = 0;
+    while (ui < unmatchedLineIdxs.length) {
+      const block: number[] = [];
+      let expect = unmatchedLineIdxs[ui];
+      while (ui < unmatchedLineIdxs.length && unmatchedLineIdxs[ui] === expect) {
+        block.push(unmatchedLineIdxs[ui]);
+        ui += 1;
+        expect += 1;
+      }
+      const first = block[0];
+      const last = block[block.length - 1];
+      let prevEnd = 0;
+      for (let p = first - 1; p >= 0; p--) {
+        const t = lineTiming.get(p);
+        if (t) {
+          prevEnd = t.endSec;
+          break;
+        }
+      }
+      let nextStart =
+        songDur > 0
+          ? songDur
+          : Math.max(...vocals.map((v) => v.endSec), prevEnd + 0.5 * block.length);
+      for (let n = last + 1; n < lines.length; n++) {
+        const t = lineTiming.get(n);
+        if (t) {
+          nextStart = t.startSec;
+          break;
+        }
+      }
+      if (nextStart <= prevEnd) nextStart = prevEnd + 0.45 * block.length;
+      const totalChars = block.reduce((a, i) => a + Math.max(1, lines[i].length), 0) || 1;
+      const span = Math.max(0.2 * block.length, nextStart - prevEnd);
+      let cursor = prevEnd;
+      for (let bi = 0; bi < block.length; bi++) {
+        const li = block[bi];
+        const share = Math.max(1, lines[li].length) / totalChars;
+        const dur =
+          bi === block.length - 1 ? Math.max(0.2, nextStart - cursor) : Math.max(0.2, span * share);
+        const startSec = cursor;
+        const endSec =
+          bi === block.length - 1
+            ? Math.max(startSec + 0.05, nextStart)
+            : Math.min(nextStart, cursor + dur);
+        lineTiming.set(li, { startSec, endSec, text: lines[li] });
+        cursor = endSec;
+      }
     }
   }
 
-  calibratedVocals.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
-  return coverSongWithLyricSegments(calibratedVocals, songDur || covered[covered.length - 1]?.endSec || 0);
+  const rebuilt: DirectorMvLyricSegment[] = [];
+  for (let li = 0; li < lines.length; li++) {
+    const t = lineTiming.get(li);
+    if (!t) continue;
+    rebuilt.push({
+      id: newSegId(5000 + li),
+      text: t.text,
+      startSec: t.startSec,
+      endSec: t.endSec,
+    });
+  }
+  // 未被歌词占用的识别段：仅保留为间奏时间锚，不展示 ASR 原文
+  // （否则中段「啦啦啦」和声会被当成字幕行；用户歌词里写了的语气词已在上方挂载）
+  const usedVocal = new Set(assigns.map((a) => a.vocalIdx));
+  for (let vi = 0; vi < vocals.length; vi++) {
+    if (usedVocal.has(vi)) continue;
+    const v = vocals[vi];
+    rebuilt.push({
+      ...v,
+      text: '',
+      instrumental: true,
+    });
+  }
+
+  rebuilt.sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+  return coverSongWithLyricSegments(rebuilt, songDur || rebuilt[rebuilt.length - 1]?.endSec || 0);
 }
 
 /** 短镜：两句人声之间间隔超过该秒数则拆成两段（不跨大间隔硬并） */
@@ -1228,8 +1301,35 @@ export function stripDirectorSingingPerformanceFromText(text: string | undefined
   return t;
 }
 
+/** 空镜：放在提示词最开头（H3 前段权重大） */
+export const DIRECTOR_EMPTY_SHOT_FRONT_BANNER =
+  '严禁出现任何人、人脸、人形、人物剪影、人形雕像，无人类痕迹。画面内不存在任何类似人形的物体，无疑似人形阴影。No people, no faces, no bodies, no silhouettes, no statues, no human-like shapes or shadows.';
+
+/** 空镜负面兜底（H3 无独立负面框时写入正文首段） */
+export const DIRECTOR_EMPTY_SHOT_NEGATIVE_LINE =
+  '不要出现：人，人类，人物，人脸，剪影，人形，人影，雕像，石像，尸体，流浪者，幸存者，游客。Negative: people, human, person, face, silhouette, statue, corpse, wanderer, survivor, tourist.';
+
+/** 空镜：写入视频节点 negativePrompt（万相等有独立负面框的模型） */
+export const DIRECTOR_EMPTY_SHOT_NEGATIVE_PROMPT =
+  '人，人类，人物，人脸，剪影，人形，人影，雕像，石像，尸体，流浪者，幸存者，游客, people, human, person, face, silhouette, statue, corpse, wanderer, survivor, tourist, extra, crowd, animal, character, text, subtitle, caption, label, UI, watermark, logo, unrealistic color shift, over-saturation, style drift, CGI remake, warm golden hour, purple haze, cold blue mood';
+
+/** 有人镜：节点 negativePrompt（H3 仍以正文为准；万相等可用） */
+export const DIRECTOR_MV_SCENE_NEGATIVE_PROMPT =
+  'extra, crowd, tourist, text, subtitle, caption, label, UI, watermark, logo, unrealistic color shift, over-saturation, style drift, CGI remake, warm golden hour, purple haze, cold blue mood, orange sunlight';
+
+/** 空镜：每个 [Shot N]/[镜头N] 后重复 */
+export const DIRECTOR_EMPTY_SHOT_BEAT_LOCK =
+  'Empty frame: no people, no faces, no bodies, no silhouettes, no extras, no statues, no human-like objects or shadows. 严禁任何人、人脸、人形、雕像与疑似人形阴影。';
+
+export const DIRECTOR_EMPTY_SHOT_NO_PEOPLE_GUARD =
+  '本镜为空镜：严禁任何人、人脸、人形、人物剪影、人形雕像、尸体、路人；画面内不存在任何类似人形的物体或疑似人形阴影；仅环境与静物。画风跟第1张分镜图画面，不要改成三维CG。';
+
 export const DIRECTOR_INSTRUMENTAL_NO_SING_GUARD =
-  '本镜为前奏/间奏/尾奏或无人声：禁止拿麦克风、对口型演唱、开麦演出；可空镜建置，或人物背影/侧影、行走、第三视角跟拍、写真等沉默表演';
+  '本镜为前奏/间奏/尾奏或无人声：禁止开口、禁止说话、禁止拿麦克风、禁止对口型演唱、禁止开麦演出；人物须闭嘴沉默；无人声≠无人、无主角≠无人：可空镜建置，也可主角沉默戏，或路人/群众奔逃过场；画面禁止出现任何歌词/台词/字幕';
+
+/** 空镜 + 无人声：只禁人出镜，不要写成「也可以有路人」 */
+export const DIRECTOR_INSTRUMENTAL_EMPTY_SHOT_GUARD =
+  '本镜为空镜且为前奏/间奏/尾奏或无人声：严禁任何人、人脸、人形、雕像、疑似人形阴影出镜；禁止开口、拿麦克风、对口型；画面禁止歌词字幕。';
 
 /** 按镜头包角色清洗无人声镜的画面/对白/最终提示，防止拿麦唱歌 */
 export function applyDirectorInstrumentalVisualGuards(
@@ -1243,9 +1343,14 @@ export function applyDirectorInstrumentalVisualGuards(
     const role = classifyDirectorMvPackAudioRole(packs, i);
     const roleZh = directorMvPackAudioRoleLabelZh(role);
     const desc = stripDirectorSingingPerformanceFromText(shot['画面描述']);
+    const empty = /空镜|无人物/.test(String(shot['画面描述'] || desc || ''));
+    const guard = empty
+      ? DIRECTOR_INSTRUMENTAL_EMPTY_SHOT_GUARD
+      : DIRECTOR_INSTRUMENTAL_NO_SING_GUARD;
     let final = stripDirectorSingingPerformanceFromText(shot['最终提示词']);
-    if (final && !/不拿麦克风|不对口型|无人声|前奏\/间奏/.test(final)) {
-      final = `${final}。${DIRECTOR_INSTRUMENTAL_NO_SING_GUARD}（${roleZh}）`;
+    final = String(final || '').replace(/无人声≠无人[^。]*。?/g, '').trim();
+    if (final && !/不拿麦克风|不对口型|无人声|前奏\/间奏|禁止开口|禁止任何人/.test(final)) {
+      final = `${final}。${guard}（${roleZh}）`;
     } else if (!final) {
       final = '';
     }

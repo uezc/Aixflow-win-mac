@@ -1,4 +1,4 @@
-/** 导演流水线全篇风格预设：贯穿镜头光影、资产图、最终提示词；可选风格参考图 */
+/** 导演流水线全篇风格预设：贯穿镜头光色、资产图、最终提示词；风格参考图只锁光色，画风固定真人写实 */
 
 export type DirectorStylePresetId =
   | 'custom'
@@ -29,6 +29,7 @@ export type DirectorStylePresetId =
   | 'jar_glow'
   | 'graffiti_tunnel'
   | 'city_railing'
+  | 'xianxia_snow'
   /** @deprecated 旧预设 id，加载时映射到新预设 */
   | 'jp_anime'
   | 'cn_guofeng'
@@ -73,9 +74,9 @@ export type DirectorStylePreset = {
 /** 旧预设 / 标签 → 当前系统预设（尽量近义） */
 const LEGACY_STYLE_PRESET_MAP: Record<string, DirectorStylePresetId> = {
   jp_anime: 'pink_sweet',
-  cn_guofeng: 'mansion_gold',
+  cn_guofeng: 'xianxia_snow',
   cg_render: 'neon_night',
-  cinematic: 'coastal_drive',
+  cinematic: 'industrial_mood',
   photoreal: 'meadow_breeze',
   watercolor: 'beach_sunset',
   cyberpunk: 'cyber_neon',
@@ -111,7 +112,7 @@ export const DIRECTOR_STYLE_PRESETS: readonly DirectorStylePreset[] = [
   },
   {
     id: 'urban_car',
-    labelZh: '都市夜景风',
+    labelZh: '都市车窗风',
     labelEn: 'Urban Night Car',
     imageFile: 'style-02-urban-car.png',
     prompt:
@@ -167,7 +168,7 @@ export const DIRECTOR_STYLE_PRESETS: readonly DirectorStylePreset[] = [
   },
   {
     id: 'leather_cool',
-    labelZh: '街头酷感风',
+    labelZh: '车内酷感风',
     labelEn: 'Leather Cool',
     imageFile: 'style-09-leather-cool.png',
     prompt:
@@ -207,11 +208,11 @@ export const DIRECTOR_STYLE_PRESETS: readonly DirectorStylePreset[] = [
   },
   {
     id: 'coastal_drive',
-    labelZh: '电影叙事风',
+    labelZh: '海岸车窗风',
     labelEn: 'Coastal Drive',
     imageFile: 'style-14-coastal-drive.png',
     prompt:
-      '电影叙事视觉风格：车窗框中框人像，海岸公路与山海远景，低饱和电影调色与浅景深，统一沉浸叙事氛围',
+      '海岸车窗视觉风格：车窗框中框人像，海岸公路与山海远景，低饱和电影调色与浅景深，统一沉浸车窗叙事氛围',
   },
   {
     id: 'vintage_sofa',
@@ -223,7 +224,7 @@ export const DIRECTOR_STYLE_PRESETS: readonly DirectorStylePreset[] = [
   },
   {
     id: 'window_gaze',
-    labelZh: '窗景沉思风',
+    labelZh: '车窗沉思风',
     labelEn: 'Window Gaze',
     imageFile: 'style-16-warm-room.png',
     prompt:
@@ -318,6 +319,15 @@ export const DIRECTOR_STYLE_PRESETS: readonly DirectorStylePreset[] = [
       '城市夜桥视觉风格：夜景栏杆侧颜人像，楼宇灯光与暖冷对比，沉静都市电影感，统一城市夜桥氛围',
   },
   {
+    id: 'xianxia_snow',
+    labelZh: '仙侠飞雪风',
+    labelEn: 'Xianxia Snow',
+    // 无专属参考图：选中后请上传古风/飞雪参考，或直接用下方文案约束生成
+    imageFile: '',
+    prompt:
+      '仙侠古风视觉风格：飞雪山河与断崖冰湖，素白仙袍与冷清眉眼，水墨电影感与浅景深，古典光影与绢帛材质；禁止汽车、公路、方向盘、车窗、摩天楼、霓虹等现代元素，统一仙侠虐恋氛围',
+  },
+  {
     id: 'custom',
     labelZh: '自定义',
     labelEn: 'Custom',
@@ -364,6 +374,35 @@ export function resolveDirectorStylePrompt(
     return stored || String(preset.prompt || '').trim();
   }
   return stored;
+}
+
+/** 当前选中的风格图名称（写入提示词，便于无图界面辨认） */
+export function resolveDirectorStylePictureLabel(
+  stylePresetId?: string | null,
+): string {
+  const preset = getDirectorStylePreset(stylePresetId);
+  if (preset.id === 'custom') return '自定义风格图';
+  return String(preset.labelZh || '').trim() || '自定义风格图';
+}
+
+/** 分镜 / 视频：风格图固定按参考图序号说，不写风格名称以免误导 */
+export function parseDirectorStylePictureIndex(
+  raw?: number | string | null,
+): number {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 1) {
+    return Math.floor(raw);
+  }
+  const s = String(raw || '').trim();
+  if (/^\d+$/.test(s)) return Math.max(1, parseInt(s, 10));
+  return 1;
+}
+
+/** 风格参考图：只锁光色；画风固定真人写实（写入分镜/视频提示词） */
+export function formatDirectorStyleFromRefImageHint(
+  stylePictureIndex?: number | string | null,
+): string {
+  const n = parseDirectorStylePictureIndex(stylePictureIndex);
+  return `光色参考第${n}张风格图；画风固定真人写实摄影（photorealistic），禁止插画/卡通/二次元/三维CG`;
 }
 
 /** 解析当前应使用的风格参考图 URL（状态优先，否则回落到预设图） */

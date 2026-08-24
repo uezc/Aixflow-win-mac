@@ -1,3 +1,8 @@
+import {
+  composeDramaCreatureDesignPrompt,
+  dramaCreaturePromptLooksHuman,
+} from '../directorDomain/extractCastFromScript.js';
+
 /** 场景资产内置后缀：九宫格空场景参考图（写入卡片展示文案） */
 export const DIRECTOR_SCENE_BUILTIN_SUFFIX =
   '无人物，无人脸，无肢体，无人影，空场景，九宫格图，不同的视角，九个宫格同等大小，宫格之间无间隙，画面内无任何文字';
@@ -150,7 +155,9 @@ export function buildDirectorSceneImagePrompt(opts: {
   const styleHint = String(opts.styleHint || '').trim();
   const chunks: string[] = [];
   if (styleHint) {
-    chunks.push(`画风必须严格对齐：${styleHint}`);
+    chunks.push(
+      `光色对齐：${styleHint}；画风固定真人写实摄影（photorealistic），禁止插画/卡通/二次元/三维CG`,
+    );
   }
   chunks.push(
     '【场景公式】年代/时代气质 + 地点 + 物品陈设（名称+位置+状态） + 材质 + 光线 + 无人物/无人脸/无肢体/无人影；仅环境与静物，禁止写手眼脸运镜表演。',
@@ -164,9 +171,9 @@ export function buildDirectorSceneImagePrompt(opts: {
   return chunks.join('\n\n');
 }
 
-/** 资产生图固定比例：角色竖版、场景横版（利于九宫格铺开）、道具方图 */
-export function directorAssetAspectRatio(kind: 'character' | 'scene' | 'prop' | string): string {
-  if (kind === 'character') return '9:16';
+/** 资产生图固定比例：角色/生物竖版、场景横版（利于九宫格铺开）、道具方图 */
+export function directorAssetAspectRatio(kind: 'character' | 'scene' | 'prop' | 'creature' | string): string {
+  if (kind === 'character' || kind === 'creature') return '9:16';
   if (kind === 'scene') return '16:9';
   return '1:1';
 }
@@ -211,7 +218,7 @@ export function sanitizeDirectorStyleHintForCharacter(styleHint: string | undefi
 
 /**
  * 角色生图：属性串 → 真人写实四宫格（隐藏后缀）。
- * 风格须作用在人物服装/肤色受光/发丝妆造与整体色调上（不只背景），
+ * 风格参考图只锁光色（肤色受光/服装色调），画风始终真人写实，
  * 不得改成插画或概念设定画风，也不得默认加墨镜等道具。
  */
 export function buildDirectorCharacterImagePrompt(opts: {
@@ -220,12 +227,25 @@ export function buildDirectorCharacterImagePrompt(opts: {
   styleHint?: string;
   /** male / female / 男 / 女 */
   gender?: string;
+  /** creature：生物四视图白底（布局同人物） */
+  subject?: 'character' | 'creature';
 }): string {
-  const userPart = stripDirectorAssetEmbeddedStyle(String(opts.prompt || opts.name || '').trim());
+  const isCreature = opts.subject === 'creature';
+  const rawUser = String(opts.prompt || opts.name || '').trim();
+  const userPart = stripDirectorAssetEmbeddedStyle(
+    isCreature
+      ? composeDramaCreatureDesignPrompt({
+          name: opts.name,
+          prompt: dramaCreaturePromptLooksHuman(rawUser) ? '' : rawUser,
+        })
+      : rawUser,
+  );
   const styleHint = sanitizeDirectorStyleHintForCharacter(opts.styleHint);
   const linked = DIRECTOR_CHARACTER_LINKED_PROMPT;
   const alreadySheet =
-    /四宫格真人写实|高清4视图展示|2×2\s*四宫格|2x2\s*character\s*reference/i.test(userPart);
+    /四宫格真人写实|高清4视图展示|2×2\s*四宫格|2x2\s*character\s*reference|生物四视图|creature\s*reference\s*sheet/i.test(
+      userPart,
+    );
   const userWantsSunglasses = /墨镜|太阳镜|sunglasses/i.test(userPart);
   const userWantsGuitar = /吉他|guitar/i.test(userPart);
   const userWantsMic = /麦克风|话筒|microphone|mic\b/i.test(userPart);
@@ -238,51 +258,96 @@ export function buildDirectorCharacterImagePrompt(opts: {
         : '';
 
   const chunks: string[] = [];
-  // 默认强制真人写实，再允许风格影响服饰/光色
-  chunks.push('人物必须为真人写实摄影（photorealistic real human），禁止插画、卡通、二次元与概念设定画风');
-  if (genderZh === '男') {
+  if (isCreature) {
+    chunks.push(
+      '生物必须为写实非人类动物（photorealistic non-human animal），禁止卡通、插画与扁平设定画风',
+      '【物种锁·硬性】禁止人类、人脸、人体、四肢直立的人物、外卖骑手、服装模特、背包少年；必须是四足/有翅/有鳞的动物本体',
+      '【生物四视图·硬性】2×2 四宫格参考图：左上正面全身、右上侧面全身、左下背面全身、右下头部特写；每格同等大小；宫格之间禁止间隙、分界线、黑白边；纯白背景 #FFFFFF；画面无文字',
+    );
+  } else {
+    chunks.push('人物必须为真人写实摄影（photorealistic real human），禁止插画、卡通、二次元与概念设定画风');
+  }
+  if (!isCreature && genderZh === '男') {
     chunks.push(
       '【性别锁·硬性】本角色必须是成年男性（cis male adult man），男性面部骨骼与体型，禁止生成女性、女装、中性偏女或双性别混杂外貌',
     );
-  } else if (genderZh === '女') {
+  } else if (!isCreature && genderZh === '女') {
     chunks.push(
       '【性别锁·硬性】本角色必须是成年女性（cis female adult woman），女性面部与体型，禁止生成男性或偏男外貌',
     );
   }
   if (styleHint) {
     chunks.push(
-      `【人物风格锁·硬性】人物必须对齐全片画风（不只背景）：服装造型与面料质感、肤色受光、发丝与妆造气质、整体色调均须贴合：${styleHint}。禁止人物像另一套片；不得照抄风格参考图里的墨镜/吉他/麦克风等未写进人物设定的道具；更不得把风格参考图里的人物性别套到本角色上。`,
+      isCreature
+        ? `【光色锁·硬性】生物材质受光与整体色调须贴合全片光色：${styleHint}。保持写实摄影，禁止插画风；纯白背景不变。`
+        : `【人物光色锁·硬性】肤色受光、发丝与服装色调须贴合全片光色：${styleHint}。画风必须保持真人写实，禁止把风格参考图的插画/卡通/CG风套到人物上；不得照抄风格参考图里的墨镜/吉他/麦克风等未写进人物设定的道具；更不得把风格参考图里的人物性别套到本角色上。`,
     );
   }
   if (userPart && !alreadySheet) chunks.push(userPart);
   else if (userPart && alreadySheet) chunks.push(userPart);
-  if (!alreadySheet) chunks.push(linked);
-  chunks.push(DIRECTOR_CHARACTER_FOUR_GRID_ENGLISH);
-  if (!userWantsSunglasses) {
-    chunks.push(
-      '人物设定未要求戴墨镜：禁止佩戴墨镜、太阳镜或严重遮挡五官的深色眼镜，双眼与五官须清晰可见',
-    );
+  if (!alreadySheet) {
+    if (isCreature) {
+      chunks.push(
+        'high-resolution 2x2 creature reference sheet, front full-body, side full-body, back full-body, head close-up, equal panels, no gaps, no borders, pure white background',
+      );
+    } else {
+      chunks.push(linked);
+      chunks.push(DIRECTOR_CHARACTER_FOUR_GRID_ENGLISH);
+    }
   }
-  if (!userWantsGuitar) {
-    chunks.push('人物设定未要求吉他：禁止手持或背着吉他等抢戏道具');
-  }
-  if (!userWantsMic) {
-    chunks.push('人物设定未要求麦克风：禁止手持麦克风或话筒');
+  if (!isCreature) {
+    if (!userWantsSunglasses) {
+      chunks.push(
+        '人物设定未要求戴墨镜：禁止佩戴墨镜、太阳镜或严重遮挡五官的深色眼镜，双眼与五官须清晰可见',
+      );
+    }
+    if (!userWantsGuitar) {
+      chunks.push('人物设定未要求吉他：禁止手持或背着吉他等抢戏道具');
+    }
+    if (!userWantsMic) {
+      chunks.push('人物设定未要求麦克风：禁止手持麦克风或话筒');
+    }
   }
   chunks.push(
-    '再次强调：必须真人写实；四宫格每格同等大小；宫格之间禁止任何间隙、分界线、黑白边；纯白背景；画面无文字。',
+    isCreature
+      ? '再次强调：必须是非人类动物，禁止画出人；四宫格每格同等大小；宫格之间禁止任何间隙、分界线、黑白边；纯白背景；画面无文字。'
+      : '再次强调：必须真人写实；四宫格每格同等大小；宫格之间禁止任何间隙、分界线、黑白边；纯白背景；画面无文字。',
   );
   return chunks.join('，');
 }
 
-/** 道具生图 */
+/**
+ * 道具生图必须链接的默认后缀（2×2 四宫格商品棚拍，白色背景）。
+ * 追加在中文描述之后，不写入卡片展示文案。
+ */
+export const DIRECTOR_PROP_LINKED_PROMPT =
+  '【道具四宫格】输出一张完整的 2×2 四宫格道具参考图（共四格）：左上正面、右上侧面、左下背面、右下材质/结构特写；同一件道具、同一材质、同一颜色与磨损；商品棚拍写实摄影，禁止卡通、插画、概念设定画风；统一纯白背景 #FFFFFF，干净简洁；四个宫格必须严格同等大小、等宽等高、整齐对齐成规整四宫格；宫格与宫格之间禁止出现任何间隙、空隙、黑边、白边、分隔线、分割线、沟槽或留白边框，四格必须紧密贴合拼成一张完整画面，不得露出底层背景色；画面内无任何文字、字幕、水印、logo、标题或数字标注；无人物、无手持环境、无桌面场景';
+
+export const DIRECTOR_PROP_FOUR_GRID_ENGLISH =
+  'Mandatory: one single image that is a clean 2x2 product reference sheet of the SAME prop. Studio product photography on seamless pure white #FFFFFF. Layout: top-left front, top-right side, bottom-left back, bottom-right material/detail close-up. All four cells MUST be exactly equal size, tightly packed with ZERO gaps, ZERO gutters, ZERO divider lines, ZERO black/white borders. Isolated object only — no environment, no room, no table, no floor, no hands, no people. Absolutely NO text, NO captions, NO labels, NO watermarks on the image.';
+
+/** 道具生图：白底 2×2 四视图（商品棚拍；禁止场景/地面/手持环境） */
 export function buildDirectorPropImagePrompt(opts: {
   name?: string;
   prompt?: string;
+  /** 道具通常忽略题材环境 hint，避免画出酒馆/峡谷等背景 */
   styleHint?: string;
 }): string {
-  return [opts.prompt || opts.name, opts.styleHint]
+  const base = [opts.name, opts.prompt]
     .map((s) => String(s || '').trim())
     .filter(Boolean)
     .join('，');
+  const alreadySheet = /道具四宫格|四宫格道具|2×2\s*四宫格|2x2\s*product\s*reference/i.test(base);
+  const chunks: string[] = [
+    '商品棚拍道具参考图',
+    '纯白背景 #FFFFFF',
+    'isolated object only, no environment, no room, no table, no floor, no hands',
+  ];
+  if (base) chunks.push(base);
+  if (!alreadySheet) {
+    chunks.push(DIRECTOR_PROP_LINKED_PROMPT);
+    chunks.push(DIRECTOR_PROP_FOUR_GRID_ENGLISH);
+  }
+  chunks.push('再次强调：必须纯白背景 #FFFFFF；四宫格每格同等大小；宫格之间禁止间隙、分界线、黑白边；无场景、无人物；画面无文字。');
+  return chunks.join('，');
 }

@@ -102,7 +102,7 @@ export function suppressDramaCharacter(
     cast_ids: (b.cast_ids || []).filter((cid) => cid !== id),
     characters: (b.characters || []).filter((n) => !isNameInSuppressedList(extra, String(n))),
   }));
-  return createEmptyDramaSession({
+  return {
     ...session,
     shots,
     scene_beats,
@@ -112,7 +112,7 @@ export function suppressDramaCharacter(
       voices,
       suppressed_character_names: suppressed,
     },
-  });
+  };
 }
 
 function findCharacterByLooseName(characters: DramaCharacter[], name: string): DramaCharacter | undefined {

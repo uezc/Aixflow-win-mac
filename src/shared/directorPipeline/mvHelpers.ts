@@ -228,6 +228,107 @@ export function buildDirectorMvVideoPreviewClips(
   return { videoClips, audioClips };
 }
 
+/**
+ * 短剧成片：按镜头表顺序首尾相接铺视频轨（跳过未出片），不绑原曲、不按 MV 乐句时间轴。
+ */
+export function buildDirectorDramaSequentialVideoClips(
+  state: DirectorPipelineState,
+  shotVideos: Array<{ shotNo: string; videoUrl: string; sourceNodeId?: string }>,
+): { videoClips: DirectorMvTimelineClip[]; audioClips: DirectorMvTimelineClip[] } {
+  const byNo = new Map<
+    string,
+    { shotNo: string; videoUrl: string; sourceNodeId?: string }
+  >();
+  for (const v of shotVideos) {
+    const shotNo = String(v.shotNo || '').trim();
+    const videoUrl = String(v.videoUrl || '').trim();
+    if (!shotNo || !videoUrl) continue;
+    byNo.set(normalizeDirectorShotNoKey(shotNo), {
+      shotNo,
+      videoUrl,
+      sourceNodeId: v.sourceNodeId,
+    });
+  }
+  const videoClips: DirectorMvTimelineClip[] = [];
+  let t = 0;
+  const shots = state.shots || [];
+  const used = new Set<string>();
+  shots.forEach((shot, i) => {
+    const shotNo = String(shot['镜号'] || i + 1).trim();
+    const key = normalizeDirectorShotNoKey(shotNo);
+    const hit = byNo.get(key);
+    if (!hit) return;
+    used.add(key);
+    const dur = parseDirectorShotDurationSec(shot['时长'], 5);
+    videoClips.push({
+      id: `dir-drama-vid-${shotNo}-${i}`,
+      type: 'video',
+      src: hit.videoUrl,
+      duration: dur,
+      startTime: t,
+      trimStart: 0,
+      trimEnd: dur,
+      lockTrim: true,
+      name: `镜${shotNo}`,
+      directorShotNo: shotNo,
+      sourceNodeId: hit.sourceNodeId || `director-video-${shotNo}`,
+    });
+    t += dur;
+  });
+  if (videoClips.length === 0 && byNo.size > 0) {
+    const ordered = [...byNo.values()].sort((a, b) => {
+      const na = Number(normalizeDirectorShotNoKey(a.shotNo));
+      const nb = Number(normalizeDirectorShotNoKey(b.shotNo));
+      if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+      return String(a.shotNo).localeCompare(String(b.shotNo), 'zh');
+    });
+    ordered.forEach((hit, i) => {
+      const dur = 5;
+      videoClips.push({
+        id: `dir-drama-vid-fallback-${hit.shotNo}-${i}`,
+        type: 'video',
+        src: hit.videoUrl,
+        duration: dur,
+        startTime: t,
+        trimStart: 0,
+        trimEnd: dur,
+        lockTrim: true,
+        name: `镜${hit.shotNo}`,
+        directorShotNo: hit.shotNo,
+        sourceNodeId: hit.sourceNodeId || `director-video-${hit.shotNo}`,
+      });
+      t += dur;
+    });
+  } else if (used.size < byNo.size) {
+    const leftovers = [...byNo.values()]
+      .filter((v) => !used.has(normalizeDirectorShotNoKey(v.shotNo)))
+      .sort((a, b) => {
+        const na = Number(normalizeDirectorShotNoKey(a.shotNo));
+        const nb = Number(normalizeDirectorShotNoKey(b.shotNo));
+        if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+        return String(a.shotNo).localeCompare(String(b.shotNo), 'zh');
+      });
+    leftovers.forEach((hit, i) => {
+      const dur = 5;
+      videoClips.push({
+        id: `dir-drama-vid-extra-${hit.shotNo}-${i}`,
+        type: 'video',
+        src: hit.videoUrl,
+        duration: dur,
+        startTime: t,
+        trimStart: 0,
+        trimEnd: dur,
+        lockTrim: true,
+        name: `镜${hit.shotNo}`,
+        directorShotNo: hit.shotNo,
+        sourceNodeId: hit.sourceNodeId || `director-video-${hit.shotNo}`,
+      });
+      t += dur;
+    });
+  }
+  return { videoClips, audioClips: [] };
+}
+
 /** 用已生成视频 URL 替换同镜号的图片占位（保留 startTime/duration/trim/lockTrim） */
 export function replaceDirectorMvPlaceholdersWithVideos(
   existingVideoClips: DirectorMvTimelineClip[],
@@ -289,7 +390,7 @@ export function buildMvShotsIntentText(state: DirectorPipelineState): string {
     packs.length > 0
       ? [
           `人声时间轴镜头包（共 ${packs.length} 镜；时长档 ${music?.clipLengthMode === 'short' ? '短镜严格 4/5/6s（含纯音乐；句间大间隔拆段）' : '长镜 10/15s'}，按歌词边界切满全曲；禁止改时长）：`,
-          '【音频-画面匹配】每镜已标注「有人声」或「前奏/间奏/尾奏/无人声」。无人声≠无人：禁止拿麦演唱/对口型/开麦。画面内容优先服从下方「每镜对应剧情段」。',
+          '【音频-画面匹配】每镜已标注「有人声」或「前奏/间奏/尾奏/无人声」。无人声≠无人、无主角≠无人：可有路人/群众；禁止拿麦演唱/对口型/开麦，并明确禁止开口、闭嘴沉默。有人声可对口型，但禁止把歌词/台词写进画面描述。画面内容优先服从下方「每镜对应剧情段」。',
           ...packs.map((p, i) => {
             const clock = (sec: number) => {
               const s = Math.max(0, Math.floor(sec));
