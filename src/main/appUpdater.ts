@@ -5,7 +5,8 @@ import { BrowserWindow, ipcMain, app } from 'electron';
 /** electron-updater 为 CJS；打包后主进程为 ESM 时不能用 `import { autoUpdater }`，须默认导入再解构 */
 import electronUpdater from 'electron-updater';
 import { getUpdaterFeedUrlForRegion, type ReleaseFeedRegion } from './config/ossConfig.js';
-import { prepareAndExitForUpdate } from './updateQuitHelper.js';
+import { store } from './services/store.js';
+import { prepareForUpdateInstall } from './updateQuitHelper.js';
 import { requestRendererPrepareForUpdate } from './updatePrepareIpc.js';
 
 const require = createRequire(import.meta.url);
@@ -91,7 +92,21 @@ let feedAndListenersReady = false;
 /** 当前 autoUpdater generic feed 区域：大陆默认 cn，失败可回退 hk */
 let activeReleaseFeedRegion: ReleaseFeedRegion = resolveInitialReleaseFeedRegion();
 
+function readStoredReleaseFeedRegion(): ReleaseFeedRegion | null {
+  try {
+    const v = String(store.get('nxReleaseFeedRegion') || '')
+      .trim()
+      .toLowerCase();
+    if (v === 'hk' || v === 'cn') return v;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function resolveInitialReleaseFeedRegion(): ReleaseFeedRegion {
+  const stored = readStoredReleaseFeedRegion();
+  if (stored) return stored;
   const env = String(process.env.NX_RELEASE_FEED_REGION || '').trim().toLowerCase();
   if (env === 'hk') return 'hk';
   if (env === 'cn') return 'cn';
@@ -104,22 +119,36 @@ function resolveInitialReleaseFeedRegion(): ReleaseFeedRegion {
   return 'hk';
 }
 
+function persistReleaseFeedRegion(region: ReleaseFeedRegion): void {
+  try {
+    store.set('nxReleaseFeedRegion', region);
+  } catch {
+    /* ignore */
+  }
+}
+
 function applyUpdaterFeed(region: ReleaseFeedRegion): void {
   activeReleaseFeedRegion = region;
+  if (!app.isPackaged) return;
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
   const platform = process.platform === 'darwin' ? 'darwin' : 'win32';
   const url = getUpdaterFeedUrlForRegion(region, platform);
   autoUpdater.setFeedURL({ provider: 'generic', url });
   console.log(`[autoUpdater] Release feed → ${region}: ${url}`);
 }
 
-/** 大陆用户：北京 feed 失败时回退香港（海外用户默认 hk，不回退 cn） */
+/** 所选线路失败时回退另一条（不改用户偏好；成功后保持回退源以便紧接着下载） */
 async function withReleaseFeedFallback<T>(fn: () => Promise<T>): Promise<T> {
+  const preferred = activeReleaseFeedRegion;
   try {
     return await fn();
   } catch (err) {
-    if (activeReleaseFeedRegion !== 'cn') throw err;
-    console.warn('[autoUpdater] 北京 Release feed 失败，回退香港 feed', err);
-    applyUpdaterFeed('hk');
+    const alt: ReleaseFeedRegion = preferred === 'cn' ? 'hk' : 'cn';
+    console.warn(
+      `[autoUpdater] ${preferred === 'cn' ? '北京' : '香港'} Release feed 失败，回退${alt === 'cn' ? '北京' : '香港'}`,
+      err,
+    );
+    applyUpdaterFeed(alt);
     return await fn();
   }
 }
@@ -463,14 +492,30 @@ function ensureUpdaterFeedAndListeners() {
   });
 }
 
-/** 下载完成后先退出应用，再由 autoInstallOnAppQuit 拉起安装器（避免 quitAndInstall 先启安装器导致「Aixflow 无法关闭」） */
+/**
+ * 下载完成后：先落盘/关窗/杀子进程释放文件锁，再 quitAndInstall。
+ *
+ * 为何不能只用 autoInstallOnAppQuit + app.exit(0)：
+ * electron-updater 在 quit 钩子里调用 install(true, false)，静默安装且不带 --force-run，
+ * 安装结束后不会重启应用，用户体感就是「更新后闪退」。
+ *
+ * 为何仍先 prepare 再 quitAndInstall：
+ * 若未关窗/未杀 ffmpeg 就拉起 NSIS，易触发「Aixflow 无法关闭」。
+ * Windows 使用 quitAndInstall(true, true)=/S + --force-run。
+ */
 async function scheduleUpdateInstallAfterAppQuit(): Promise<void> {
   if (updateInstallScheduled) return;
   updateInstallScheduled = true;
   sendToRenderer('app:update-installing');
   try {
     await requestRendererPrepareForUpdate();
-    await prepareAndExitForUpdate();
+    await prepareForUpdateInstall();
+    // 关窗后再装，降低文件锁冲突；true,true → 静默安装并强制安装后启动
+    if (process.platform === 'win32') {
+      autoUpdater.quitAndInstall(true, true);
+    } else {
+      autoUpdater.quitAndInstall();
+    }
   } catch (e: unknown) {
     updateInstallScheduled = false;
     console.error('[autoUpdater] scheduleUpdateInstallAfterAppQuit:', e);
@@ -551,6 +596,8 @@ export function registerAppUpdaterIpc() {
     }
     try {
       ensureUpdaterFeedAndListeners();
+      const preferred = readStoredReleaseFeedRegion() ?? activeReleaseFeedRegion;
+      applyUpdaterFeed(preferred);
       const result = await withReleaseFeedFallback(() => autoUpdater.checkForUpdates());
       if (result == null) {
         return {
@@ -633,5 +680,20 @@ export function registerAppUpdaterIpc() {
     resetDownloadRuntimeState();
     sendToRenderer('app:update-download-cancelled');
     return { success: true as const };
+  });
+
+  ipcMain.handle('app:get-release-feed-region', async () => {
+    const stored = readStoredReleaseFeedRegion();
+    return {
+      region: stored ?? activeReleaseFeedRegion,
+      active: activeReleaseFeedRegion,
+    };
+  });
+
+  ipcMain.handle('app:set-release-feed-region', async (_, regionRaw: 'cn' | 'hk') => {
+    const region: ReleaseFeedRegion = regionRaw === 'hk' ? 'hk' : 'cn';
+    persistReleaseFeedRegion(region);
+    applyUpdaterFeed(region);
+    return { ok: true as const, region };
   });
 }

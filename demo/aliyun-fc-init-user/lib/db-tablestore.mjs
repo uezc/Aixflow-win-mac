@@ -1677,6 +1677,22 @@ function gsiRowToTxListItem(row) {
 }
 
 function txTimeMs(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'object') {
+    if (typeof v.toNumber === 'function') {
+      try {
+        const n = v.toNumber();
+        if (Number.isFinite(n) && n > 0) return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+      } catch (_) {}
+    }
+    if (typeof v.toString === 'function') {
+      const s = v.toString();
+      if (/^-?\d+$/.test(s)) {
+        const n = Number(s);
+        if (Number.isFinite(n) && n > 0) return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
+      }
+    }
+  }
   const n = Number(v);
   if (Number.isFinite(n) && n > 0) return n < 1e12 ? Math.round(n * 1000) : Math.round(n);
   const p = Date.parse(String(v || ''));
@@ -1789,53 +1805,140 @@ async function hydrateTransactionRows(collected) {
 }
 
 /** 任务记录 */
+
 /**
- * 列出某用户最近流水（GSI idx_user_id，无全表扫描）。
+ * 列出某用户全部流水后按时间分页（GSI idx_user_id 全分区扫描）。
+ * 消费主键为 idem_<hash>，不能按主键截断再按时间排序，否则会漏掉新账单。
  *
- * - 按 limit 收缩各前缀扫描量；只对最终候选回表补全，避免数百次串行 getRow。
- * - 合并后保留少量非消费流水，再按时间取最近 limit 条。
+ * 排序前必须补齐 created_at（索引常未投影该列，否则会退化成哈希主键乱序）。
+ * 仅拉取 created_at 列 + 高并发；展示字段只对当前页全量回表。
+ *
+ * @param {string} userId
+ * @param {{ limit?: number, page?: number, maxScan?: number }} [opts]
+ * @returns {Promise<{ items: object[], page: number, pageSize: number, total: number, hasMore: boolean }>}
+ */
+export async function listTransactionsForUserPaged(userId, opts = {}) {
+  const uid = String(userId || '');
+  const pageSize = Math.min(50, Math.max(1, Number(opts.limit) || 30));
+  const page = Math.max(1, Math.floor(Number(opts.page) || 1));
+  const maxScan = Math.min(8000, Math.max(pageSize, Number(opts.maxScan) || 5000));
+  if (!uid) {
+    return { items: [], page, pageSize, total: 0, hasMore: false };
+  }
+
+  const t0 = Date.now();
+  const collected = await listAllGsiTransactionsForUser(uid, maxScan);
+  const tScan = Date.now();
+
+  const visible = collected.filter((row) => {
+    const txId = String(row?.tx_id || '');
+    const type = String(row?.type || '').toLowerCase();
+    return type !== 'alipay_trade_ref' && !txId.startsWith('alipay_trade_');
+  });
+
+  await hydrateTransactionCreatedAt(visible);
+  const tTs = Date.now();
+
+  visible.sort((a, b) => {
+    const dt = txTimeMs(b.created_at) - txTimeMs(a.created_at);
+    if (dt !== 0) return dt;
+    return String(b.tx_id || '').localeCompare(String(a.tx_id || ''));
+  });
+
+  const total = visible.length;
+  const start = (page - 1) * pageSize;
+  const pageRows = start >= total ? [] : visible.slice(start, start + pageSize);
+  await hydrateTransactionRows(pageRows);
+  const tDone = Date.now();
+  console.log(
+    `[listTransactionsForUserPaged] scan=${collected.length} visible=${total} page=${page}/${pageSize} ` +
+      `ms:scan=${tScan - t0} createdAt=${tTs - tScan} pageHydrate=${tDone - tTs} total=${tDone - t0}`,
+  );
+
+  return {
+    items: pageRows,
+    page,
+    pageSize,
+    total,
+    hasMore: start + pageRows.length < total,
+  };
+}
+
+/** 仅补全缺失/无效的 created_at，供全局按时间倒序 */
+async function hydrateTransactionCreatedAt(collected) {
+  const client = getClient();
+  const indices = [];
+  for (let i = 0; i < collected.length; i++) {
+    if (txTimeMs(collected[i]?.created_at) <= 0 && collected[i]?.tx_id) indices.push(i);
+  }
+  if (indices.length === 0) return;
+
+  const CONCURRENCY = 48;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < indices.length) {
+      const idx = indices[cursor++];
+      const row = collected[idx];
+      if (!row?.tx_id) continue;
+      try {
+        const gr = await client.getRow({
+          tableName: TX_TABLE,
+          primaryKey: txPrimaryKey(row.tx_id),
+          columnsToGet: ['created_at'],
+        });
+        if (!gr.row?.attributes?.length) continue;
+        const full = attrsToObj(gr.row.attributes);
+        if (txTimeMs(full.created_at) > 0) {
+          collected[idx] = { ...row, created_at: full.created_at };
+        }
+      } catch (e) {
+        console.warn('[hydrateTransactionCreatedAt]', row.tx_id, e?.message || e);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, indices.length) }, () => worker()));
+}
+
+/**
+ * 扫某用户在 idx_user_id 上的全部流水（按 sort key 全范围，非时间序）。
+ */
+async function listAllGsiTransactionsForUser(userId, maxRows = 5000) {
+  const uid = String(userId || '');
+  if (!uid || maxRows < 1) return [];
+
+  const skCol = TX_GSI_SK;
+  const collected = [];
+  let nextStart = [{ user_id: uid }, { [skCol]: TableStore.INF_MIN }];
+  const fixedEnd = [{ user_id: uid }, { [skCol]: TableStore.INF_MAX }];
+  let safety = 0;
+
+  while (collected.length < maxRows && safety < 80) {
+    safety += 1;
+    const res = await getRangeOnGlobalIndex(
+      TX_GSI_NAME,
+      nextStart,
+      fixedEnd,
+      Math.min(100, Math.max(maxRows - collected.length, 1)),
+      TableStore.Direction.FORWARD,
+    );
+    for (const row of res.rows || []) {
+      const item = gsiRowToTxListItem(row);
+      if (item) collected.push(item);
+    }
+    const nextPk = res.next_start_primary_key || res.nextStartPrimaryKey;
+    if (!nextPk) break;
+    nextStart = otsNextPkToShorthand(nextPk) ?? nextPk;
+  }
+  return collected;
+}
+
+/**
+ * 列出某用户最近流水（兼容旧调用：等价于第 1 页）。
  */
 export async function listRecentTransactionsForUser(userId, limit = 20) {
-  const uid = String(userId || '');
-  if (!uid) return [];
   const lim = Math.min(50, Math.max(1, Number(limit) || 20));
-
-  // 客户端账单只要最近 30 条：勿再扫 400 条消费 + 全量串行回表
-  const consumeCap = Math.min(60, Math.max(lim * 2, lim + 5));
-  const rechargeCap = Math.min(24, Math.max(8, lim));
-  const refundCap = Math.min(16, Math.max(8, Math.ceil(lim / 2)));
-  const welcomeCap = Math.min(8, 8);
-  const adjustCap = Math.min(16, Math.max(8, Math.ceil(lim / 2)));
-
-  const [adjustRows, rechargeRows, refundRows, welcomeRows, idemRows] = await Promise.all([
-    listGsiTxRangeForUser(uid, 'adjust_', 'idem_', adjustCap, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'recharge_', 'refund_', rechargeCap, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'refund_', 'welcome_', refundCap, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'welcome_', 'welcomf_', welcomeCap, TableStore.Direction.FORWARD),
-    listGsiTxRangeForUser(uid, 'idem_', 'recharge_', consumeCap, TableStore.Direction.BACKWARD),
-  ]);
-
-  const byId = new Map();
-  for (const row of [...adjustRows, ...rechargeRows, ...refundRows, ...welcomeRows, ...idemRows]) {
-    if (row?.tx_id) byId.set(row.tx_id, row);
-  }
-  const collected = [...byId.values()];
-  // 扫描量已收紧：整批并发回表即可（远少于旧版数百次串行 getRow）
-  await hydrateTransactionRows(collected);
-  collected.sort((a, b) => txTimeMs(b.created_at) - txTimeMs(a.created_at));
-
-  const nonConsume = collected.filter((r) => !isConsumeTxType(r.type));
-  const consume = collected.filter((r) => isConsumeTxType(r.type));
-
-  const out = new Map();
-  for (const row of nonConsume.slice(0, Math.min(12, lim))) out.set(row.tx_id, row);
-  for (const row of consume) {
-    out.set(row.tx_id, row);
-    if (out.size >= lim) break;
-  }
-  for (const row of nonConsume) out.set(row.tx_id, row);
-
-  return [...out.values()].sort((a, b) => txTimeMs(b.created_at) - txTimeMs(a.created_at)).slice(0, lim);
+  const result = await listTransactionsForUserPaged(userId, { limit: lim, page: 1 });
+  return result.items;
 }
 
 /**

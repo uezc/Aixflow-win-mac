@@ -10,6 +10,11 @@ export type DictationTargetAdapter = {
   setText: (text: string) => void;
   /** 元素仍在 DOM，且当前可写入 */
   isAvailable: () => boolean;
+  /**
+   * 听写结束时落盘（可选）。
+   * 大节点（如导演台）应在 setText 时只改 DOM，避免每字 patch；松手后由 FloatingDictationMic 调 commit。
+   */
+  commit?: () => void;
 };
 
 const adapters = new WeakMap<Element, DictationTargetAdapter>();
@@ -30,6 +35,30 @@ function createNativeFieldAdapter(el: HTMLInputElement | HTMLTextAreaElement): D
     },
     isAvailable: () => el.isConnected && !el.disabled && !el.readOnly,
   };
+}
+
+function isWorkspaceScoped(el: Element | null): boolean {
+  if (!el) return false;
+  return !!(
+    el.closest?.('[data-nexflow-workspace-root]') ||
+    el.closest?.('.react-flow') ||
+    el.closest?.('[data-nexflow-dictation-target]')
+  );
+}
+
+function isAutoDictationField(el: Element): el is HTMLInputElement | HTMLTextAreaElement {
+  if (el instanceof HTMLTextAreaElement) return !el.disabled && !el.readOnly;
+  if (!(el instanceof HTMLInputElement)) return false;
+  if (el.disabled || el.readOnly) return false;
+  const t = (el.type || 'text').toLowerCase();
+  return (
+    t === 'text' ||
+    t === 'search' ||
+    t === 'url' ||
+    t === 'email' ||
+    t === 'tel' ||
+    t === ''
+  );
 }
 
 function ensureFocusTracking(): void {
@@ -68,6 +97,16 @@ function resolveAdapterForElement(
       return { el: cur, adapter: ad };
     }
     cur = cur.parentElement;
+  }
+
+  // 工作区内任意文本输入框：点击后即可作为听写目标（无需逐个打标）
+  if (el && isAutoDictationField(el) && isWorkspaceScoped(el)) {
+    let ad = adapters.get(el);
+    if (!ad) {
+      ad = createNativeFieldAdapter(el);
+      adapters.set(el, ad);
+    }
+    return { el, adapter: ad };
   }
   return null;
 }

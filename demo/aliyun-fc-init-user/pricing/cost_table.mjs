@@ -123,8 +123,8 @@ export const AUDIO_MODEL_CNY = {
    * nx_model_config.base_price 语义为「元/分钟」，应填 2（勿再按 30 秒档填 1）。
    */
   'viapi-segment-video-body': 2.0,
-  /** 百炼 fun-asr 异步录音文件识别（按次；0.5 元 × yuanbao_rate10 ≈ 5 元宝） */
-  'fun-asr': 0.5,
+  /** 百炼 fun-asr 异步录音文件识别（按次；1 元 × yuanbao_rate10 ≈ 10 元宝） */
+  'fun-asr': 1,
   'rhart-song': 0.5,
   /** RunningHub 标准模型 SUNO v5.5（billingModelId 与节点 data.model 一致） */
   'rhart-song-v5.5': 0.5,
@@ -149,6 +149,68 @@ export const VIDEO_HAILUO_SEC_CNY = {
   6: 1.5,
   10: 3,
 };
+
+/**
+ * MiniMax-H3 文生/图生（RH ai-app：t2v=2085682347676102657，i2v=2085687129061019649）
+ * 仅 720P（megapixels 0.9）；占位：6s/10s 对齐海螺 VIDEO_HAILUO_SEC_CNY；
+ * 15s/20s 按相对 10s 线性外推（×1.5 / ×2）（官方 RH 单价未单独登记，后续可改）。
+ * modelIds: minimax-h3-t2v / minimax-h3-i2v；resolutionMinimaxH3=720p；durationMinimaxH3=6|10|15|20
+ *
+ * 全能参考（RH ai-app 2086289185186603010；旧 2085677798773051394）：时长节点 28/value；
+ * 计费对齐 H3 720P × 6/10/15/20（SKU: minimax-h3-multi-720p-{6|10|15|20}s）；OTS 需写入这 4 个 SKU。
+ * modelId: minimax-h3-multi；durationMinimaxH3=6|10|15|20
+ *
+ * 口型同步（RH ai-app 2086260808442531842）：工作流按参考音自动读时长（无时长节点）；
+ * 计费对齐 H3 720P × 6/10/15/20（SKU: minimax-h3-audio-720p-{6|10|15|20}s）；OTS 写 4 个 SKU，并删除旧 5s 行。
+ * modelId: minimax-h3-audio；durationMinimaxH3=6|10|15|20（由参考音时长向上取整映射）。
+ */
+export const VIDEO_MINIMAX_H3_CNY = {
+  '720p': { 6: 1.5, 10: 3, 15: 4.5, 20: 6 },
+};
+
+/** MiniMax-H3 文生/图生/全能参考可选时长（秒） */
+export const MINIMAX_H3_DURATION_SEC = [6, 10, 15, 20];
+/** MiniMax-H3 口型同步计费档（秒）；SKU 名仍为 minimax-h3-audio-720p-* */
+export const MINIMAX_H3_AUDIO_DURATION_SEC = [6, 10, 15, 20];
+
+/** @param {unknown} raw @param {number} [fallback] */
+export function normalizeMinimaxH3DurationSec(raw, fallback = 10) {
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if (MINIMAX_H3_DURATION_SEC.includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best = fallback;
+  let minDist = Infinity;
+  for (const v of MINIMAX_H3_DURATION_SEC) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+/**
+ * 参考音实际秒数 → 计费档：≥ 实际秒的最小档；>20 封顶 20；读不到保守 20。
+ * @param {unknown} actualSec
+ */
+export function mapMinimaxH3AudioBillingDurationSec(actualSec) {
+  const n = Number(actualSec);
+  if (!Number.isFinite(n) || n <= 0) return 20;
+  for (const t of MINIMAX_H3_AUDIO_DURATION_SEC) {
+    if (t >= n) return t;
+  }
+  return 20;
+}
+
+/** @param {unknown} raw @param {number} [fallback] */
+export function normalizeMinimaxH3AudioDurationSec(raw, fallback = 20) {
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if (MINIMAX_H3_AUDIO_DURATION_SEC.includes(n)) return n;
+  if (n === 5) return 6;
+  if (!Number.isFinite(n)) return fallback;
+  return mapMinimaxH3AudioBillingDurationSec(n);
+}
 
 /** 可灵 2.6-pro：秒 × 有声 */
 export const VIDEO_KLING_26_PRO_CNY = {
@@ -329,10 +391,15 @@ export const VIDEO_RHART_V31_PRO_CNY = {
   '4k': 1.4,
 };
 
-/** LTX2.3（首位帧）：分辨率 × 时长（秒） */
+/** LTX2.3（首位帧）：分辨率 720p|1080p|1920p × 时长（秒）；旧 4k 可读为 1920p */
 export const VIDEO_LTX23_START_END_CNY = {
   '720p': { 5: 1.2, 10: 2.4, 15: 3.6 },
   '1080p': { 5: 1.5, 10: 3, 15: 4.5 },
+  '1920p': { 5: 2.4, 10: 4.8, 15: 7.2 },
+  // 兼容旧存档 / 误配键
+  '720': { 5: 1.2, 10: 2.4, 15: 3.6 },
+  '1280': { 5: 1.5, 10: 3, 15: 4.5 },
+  '1920': { 5: 2.4, 10: 4.8, 15: 7.2 },
   '4k': { 5: 2.4, 10: 4.8, 15: 7.2 },
 };
 
@@ -352,6 +419,16 @@ export const VIDEO_WAN_26_FLASH_PER_SEC_CNY = {
 export const VIDEO_WAN_ANIMATE_CNY = {
   '720p': { 5: 1.2, 8: 1.5, 10: 1.9, 15: 2.6 },
   '1080p': { 5: 1.8, 8: 2.25, 10: 2.85, 15: 3.9 },
+};
+
+/**
+ * Wan animate2 视频换人：按原视频秒数 × 分辨率单价（¥/秒）。
+ * OTS nx_model_config 键：wan-animate-2-720p / wan-animate-2-1080p（写入每秒 base_price）。
+ * Quantity = max(1, ceil(原视频秒数))；本地表仅作参考，云端以 OTS 为准。
+ */
+export const VIDEO_WAN_ANIMATE_2_PER_SEC_CNY = {
+  '720p': 0, // 填写 ¥/秒
+  '1080p': 0, // 填写 ¥/秒
 };
 
 /** Seedance 2.0 Fast 多模态视频：无参考视频，分辨率 × 时长（秒）；720p ¥1/s，1080p ¥1.28/s */
@@ -409,6 +486,19 @@ export const VIDEO_FLAT_CNY = {
   '2082682378039943169': 0.15,
 };
 
+/**
+ * 视频超分放大（RH OpenAPI /rhart-video/video-upscaler）：
+ * 元/秒（RH 官方 0.14/0.21/0.35/0.56 × 1.5）；计费秒数 = max(floor(输入时长), 5)；
+ * OTS: rhart-video-upscaler-{720p|1080p|2k|4k}。
+ * Quantity = 计费秒数；Cost = base_price × multiplier × yuanbao_rate × Quantity。
+ */
+export const VIDEO_RHART_VIDEO_UPSCALER_CNY = {
+  '720p': 0.21,
+  '1080p': 0.315,
+  '2k': 0.525,
+  '4k': 0.84,
+};
+
 /** Veo 3.1 Pro 官方图生：秒 × 是否生成音频 */
 export const VIDEO_VEO_31_PRO_OFFICIAL_CNY = {
   4: { withAudio: 9.4, silent: 4.7 },
@@ -447,6 +537,9 @@ export function mergeVideoPriceDefaults(model, input = {}) {
     durationSeedance: '10',
     resolutionGeminiOmni: '720p',
     durationGeminiOmni: '6',
+    resolutionMinimaxH3: '720p',
+    durationMinimaxH3: '10',
+    targetResolution: '1080p',
     ...input,
     model: m,
   };
@@ -479,6 +572,9 @@ export function tryComputeRawVideoCny(merged) {
     durationSeedance = '10',
     resolutionGeminiOmni = '720p',
     durationGeminiOmni = '6',
+    resolutionMinimaxH3 = '720p',
+    durationMinimaxH3 = '10',
+    targetResolution = '1080p',
   } = merged;
 
   if (model === 'kling-video-o1-start-end') return null;
@@ -528,10 +624,14 @@ export function tryComputeRawVideoCny(merged) {
   } else if (model === 'rh-video-start-end') {
     const d = Number(duration) || 5;
     const key = d <= 5 ? 5 : d <= 10 ? 10 : 15;
-    if (resolutionRhartV31 === '720p') base = VIDEO_LTX23_START_END_CNY['720p'][key];
-    else if (resolutionRhartV31 === '1080p') base = VIDEO_LTX23_START_END_CNY['1080p'][key];
-    else if (resolutionRhartV31 === '4k') base = VIDEO_LTX23_START_END_CNY['4k'][key];
-    else base = VIDEO_LTX23_START_END_CNY['1080p'][key];
+    const r = String(resolutionRhartV31 || '').trim().toLowerCase();
+    const tier =
+      r === '720' || r === '720p'
+        ? '720p'
+        : r === '1920' || r === '1920p' || r === '4k' || r === '2160p'
+          ? '1920p'
+          : '1080p';
+    base = VIDEO_LTX23_START_END_CNY[tier]?.[key] ?? VIDEO_LTX23_START_END_CNY['1080p'][key];
   } else if (model === 'wan-2.6') {
     const d = Number(duration) || 10;
     if (resolutionWan26 === '720p') {
@@ -561,6 +661,18 @@ export function tryComputeRawVideoCny(merged) {
     const secNum = parseInt(clip, 10);
     const row = VIDEO_WAN_ANIMATE_CNY[resKey] || VIDEO_WAN_ANIMATE_CNY['720p'];
     base = row[secNum] ?? row[8];
+  } else if (model === 'wan-animate-2') {
+    const r = String(resolutionWanAnimate || '').trim().toLowerCase();
+    const resKey =
+      r === '1080p' || r === '1080' || r === '1920x1080' || r === '1080x1920' ? '1080p' : '720p';
+    const rawSec = Number(merged.mediaDurationSec ?? merged.duration ?? 0);
+    const secNum =
+      Number.isFinite(rawSec) && rawSec > 0
+        ? Math.max(1, Math.ceil(Math.min(rawSec, 10 * 60) - 1e-9))
+        : 1;
+    const rate =
+      VIDEO_WAN_ANIMATE_2_PER_SEC_CNY[resKey] ?? VIDEO_WAN_ANIMATE_2_PER_SEC_CNY['720p'];
+    base = rate * secNum;
   } else if (model === 'seedance-2.0-fast') {
     const r = String(resolutionSeedance || '').trim().toLowerCase();
     const resKey = r === '1080p' ? '1080p' : '720p';
@@ -590,7 +702,20 @@ export function tryComputeRawVideoCny(merged) {
   else if (model === 'ltx-2.3-t2v') base = VIDEO_FLAT_CNY['ltx-2.3-t2v'];
   else if (model === 'ltx-2.3-hdr-multi') base = VIDEO_FLAT_CNY['ltx-2.3-hdr-multi'];
   else if (model === 'ltx-2.3-msr-av') base = VIDEO_FLAT_CNY['ltx-2.3-msr-av'];
-  else if (model === 'sora-2-pro') base = VIDEO_FLAT_CNY['sora-2-pro'];
+  else if (model === 'minimax-h3-t2v' || model === 'minimax-h3-i2v' || model === 'minimax-h3-multi') {
+    const sec = normalizeMinimaxH3DurationSec(durationMinimaxH3, 10);
+    const row = VIDEO_MINIMAX_H3_CNY['720p'];
+    base = row[sec] ?? row[10];
+  } else if (model === 'minimax-h3-audio') {
+    const sec = normalizeMinimaxH3AudioDurationSec(durationMinimaxH3, 20);
+    const row = VIDEO_MINIMAX_H3_CNY['720p'];
+    base = row[sec] ?? row[20];
+  } else if (model === 'rhart-video-upscaler') {
+    const r = String(targetResolution || '').trim().toLowerCase();
+    const resKey =
+      r === '720p' || r === '1080p' || r === '2k' || r === '4k' ? r : '1080p';
+    base = VIDEO_RHART_VIDEO_UPSCALER_CNY[resKey] ?? VIDEO_RHART_VIDEO_UPSCALER_CNY['1080p'];
+  } else if (model === 'sora-2-pro') base = VIDEO_FLAT_CNY['sora-2-pro'];
   else if (Object.prototype.hasOwnProperty.call(VIDEO_FLAT_CNY, model)) {
     base = VIDEO_FLAT_CNY[model];
   } else if (model === 'rhart-v3.1-pro-official-i2v') {
@@ -668,6 +793,12 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
         for (const wanAnimateClipSec of wanAClip) {
           out.push({ model, input: { resolutionWanAnimate, wanAnimateClipSec } });
         }
+      }
+      continue;
+    }
+    if (model === 'wan-animate-2') {
+      for (const resolutionWanAnimate of ['720p', '1080p']) {
+        out.push({ model, input: { resolutionWanAnimate, mediaDurationSec: 1 } });
       }
       continue;
     }
@@ -787,6 +918,28 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
       }
       continue;
     }
+    if (model === 'minimax-h3-t2v' || model === 'minimax-h3-i2v' || model === 'minimax-h3-multi') {
+      for (const resolutionMinimaxH3 of ['720p']) {
+        for (const durationMinimaxH3 of ['6', '10', '15', '20']) {
+          out.push({ model, input: { resolutionMinimaxH3, durationMinimaxH3 } });
+        }
+      }
+      continue;
+    }
+    if (model === 'minimax-h3-audio') {
+      for (const resolutionMinimaxH3 of ['720p']) {
+        for (const durationMinimaxH3 of ['6', '10', '15', '20']) {
+          out.push({ model, input: { resolutionMinimaxH3, durationMinimaxH3 } });
+        }
+      }
+      continue;
+    }
+    if (model === 'rhart-video-upscaler') {
+      for (const targetResolution of ['720p', '1080p', '2k', '4k']) {
+        out.push({ model, input: { targetResolution } });
+      }
+      continue;
+    }
     out.push({ model, input: {} });
   }
   return out;
@@ -816,11 +969,17 @@ function buildVideoBillingSkuCnyTable() {
     'wan-2.6',
     'wan-2.6-flash',
     'wan-animate',
+    'wan-animate-2',
     'seedance-2.0-fast',
     'seedance-2.0-mini',
     'gemini-omni',
     'gemini-omni-flash',
     'rhart-v3.1-pro-official-i2v',
+    'minimax-h3-t2v',
+    'minimax-h3-i2v',
+    'minimax-h3-multi',
+    'minimax-h3-audio',
+    'rhart-video-upscaler',
   ];
 
   for (const { model, input } of enumerateRepresentativeVideoSkuInputs(bases)) {
@@ -868,11 +1027,17 @@ export const MODEL_INDEX = {
     'wan-2.6',
     'wan-2.6-flash',
     'wan-animate',
+    'wan-animate-2',
     'seedance-2.0-fast',
     'seedance-2.0-mini',
     'gemini-omni',
     'gemini-omni-flash',
     'rhart-v3.1-pro-official-i2v',
+    'minimax-h3-t2v',
+    'minimax-h3-i2v',
+    'minimax-h3-multi',
+    'minimax-h3-audio',
+    'rhart-video-upscaler',
   ],
   /** 视频复合计费 Key（自动生成，与 VIDEO_BILLING_SKU_CNY 同步） */
   videoBillingSku: Object.keys(VIDEO_BILLING_SKU_CNY).sort(),

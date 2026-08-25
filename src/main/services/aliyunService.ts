@@ -22,6 +22,7 @@ import { getFcBaseUrlForClient, getNxFcAxios } from './nxFcClient.js';
 import {
   beginFcGenerationActivity,
   endFcGenerationActivity,
+  isFcGenerationBusy,
   withFcRouteFailover,
 } from './nxFcRouteManager.js';
 
@@ -53,16 +54,31 @@ function isCloudTaskSyncForceDisabled(): boolean {
 }
 /** 鐧诲綍/娉ㄥ唽/楠岃瘉鐮?鍒锋柊浠ょ墝锛欶C 鍐峰惎鍔ㄦ垨璺ㄥ尯閾捐矾甯歌秴杩?10s锛岄伩鍏嶈鍒や负銆岀綉缁滆秴鏃躲€?*/
 const FC_AUTH_TIMEOUT_MS = 60_000;
+/** 生成占用 FC 时，后台 refresh 用短超时，避免再堵 60s */
+const FC_AUTH_TIMEOUT_BUSY_MS = 12_000;
 const FC_RETRY_COUNT = 3;
 const FC_RETRY_DELAY_MS = 1000;
 const STORE_KEY = 'cloudUser';
 const NX_LAST_LOGIN_EMAIL_KEY = 'nxLastLoginEmail';
+
+export function persistNxLastLoginEmail(email: string | null | undefined): void {
+  const t = String(email || '').trim().toLowerCase();
+  if (!t) return;
+  try {
+    (store as { set: (k: string, v: unknown) => void }).set(NX_LAST_LOGIN_EMAIL_KEY, t);
+  } catch {
+    // ignore
+  }
+}
+
 /** 每次启动强制手动登录：清空上次云端 JWT 会话（保留最近登录邮箱缓存） */
 (function clearCloudSessionOnAppStart() {
   try {
     const raw = (store as { get: (k: string) => unknown }).get(STORE_KEY);
     if (!raw || typeof raw !== 'object') return;
     const o = raw as Record<string, unknown>;
+    const sessionEmail = typeof o.nxEmail === 'string' ? o.nxEmail.trim().toLowerCase() : '';
+    if (sessionEmail) persistNxLastLoginEmail(sessionEmail);
     const hasToken =
       (typeof o.nxAccessToken === 'string' && o.nxAccessToken.trim() !== '') ||
       (typeof o.nxRefreshToken === 'string' && o.nxRefreshToken.trim() !== '');
@@ -92,7 +108,7 @@ export function getNxLastLoginEmail(): string | null {
   const s = getStoredState();
   const fromSession = typeof s.nxEmail === 'string' ? s.nxEmail.trim().toLowerCase() : '';
   if (fromSession) {
-    (store as { set: (k: string, v: unknown) => void }).set(NX_LAST_LOGIN_EMAIL_KEY, fromSession);
+    persistNxLastLoginEmail(fromSession);
     return fromSession;
   }
   return null;
@@ -201,6 +217,7 @@ export function setNxAuth(tokens: {
     ...(clearsAutoSessionLock ? { nxBlockAutoSession: false as const } : {}),
     status: 'success',
   });
+  if (tokens.email != null) persistNxLastLoginEmail(tokens.email);
 }
 
 export function clearNxAuth(): void {
@@ -218,18 +235,21 @@ export function clearNxAuth(): void {
   });
 }
 
-/** 浣跨敤 refresh_token 鎹㈡柊 access_token */
-export async function refreshNxAccessToken(): Promise<boolean> {
+/** 使用 refresh_token 换新 access_token */
+export async function refreshNxAccessToken(opts?: { force?: boolean }): Promise<boolean> {
+  // LLM 长请求占用 FC 时，后台 refresh 易超时并拖垮链路；仅 LLM 自身 401 用 force
+  if (!opts?.force && isFcGenerationBusy()) return false;
   if (getStoredState().nxBlockAutoSession) return false;
   if (isNxOfflineCloudSession()) return false;
   const base = getFcBaseUrl();
   const rt = getNxRefreshToken();
   if (!base || !rt || !getAliyunFcToken()) return false;
+  const timeoutMs = isFcGenerationBusy() ? FC_AUTH_TIMEOUT_BUSY_MS : FC_AUTH_TIMEOUT_MS;
   try {
     const { data } = await getNxFcAxios().post<Record<string, unknown>>(
       '/refresh',
       { refresh_token: rt },
-      { timeout: FC_AUTH_TIMEOUT_MS }
+      { timeout: timeoutMs }
     );
     const accessToken = typeof data.accessToken === 'string' ? data.accessToken : (data as { access_token?: string }).access_token;
     const refreshToken = typeof data.refreshToken === 'string' ? data.refreshToken : (data as { refresh_token?: string }).refresh_token;
@@ -436,6 +456,7 @@ function isFcAxiosNoResponseTimeout(e: unknown): boolean {
 }
 
 export async function nxCloudLogin(email: string, password: string): Promise<CloudUserState> {
+  persistNxLastLoginEmail(email);
   const base = getFcBaseUrl();
   if (!base) {
     if (allowOfflineCloudLoginWhenNoFcUrl()) {
@@ -548,6 +569,7 @@ export async function nxCloudLoginWithCode(
   email: string,
   code: string,
 ): Promise<CloudUserState & { isNewUser?: boolean }> {
+  persistNxLastLoginEmail(email);
   const base = getFcBaseUrl();
   if (!base) {
     if (allowOfflineCloudLoginWhenNoFcUrl()) {
@@ -600,6 +622,7 @@ export async function nxCloudLoginWithCode(
 }
 
 export async function nxCloudRegister(email: string, password: string, code: string): Promise<CloudUserState> {
+  persistNxLastLoginEmail(email);
   const base = getFcBaseUrl();
   if (!base) {
     if (allowOfflineCloudLoginWhenNoFcUrl()) {
@@ -938,20 +961,66 @@ function normalizeNxTransactionItem(raw: unknown): NxTransactionItem | null {
   };
 }
 
-/** 鎷夊彇鏈€杩戞祦姘达紙闇€ JWT锛孭OST /transactions锛?*/
-export async function nxCloudGetTransactions(limit = 20): Promise<NxTransactionItem[]> {
+/** 拉取流水分页（需 JWT，POST /transactions；body: limit, page） */
+export type NxTransactionsPage = {
+  items: NxTransactionItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+};
+
+export async function nxCloudGetTransactions(
+  limit = 30,
+  page = 1,
+): Promise<NxTransactionsPage> {
+  const pageSize = Math.min(50, Math.max(1, Number(limit) || 30));
+  const pageNo = Math.max(1, Math.floor(Number(page) || 1));
+  const empty: NxTransactionsPage = {
+    items: [],
+    page: pageNo,
+    pageSize,
+    total: 0,
+    hasMore: false,
+  };
   const base = getFcBaseUrl();
-  if (!base || !getNxAccessToken() || isNxOfflineCloudSession()) return [];
+  if (!base || !getNxAccessToken() || isNxOfflineCloudSession()) return empty;
+  // LLM/生成长请求进行中：跳过账单轮询，避免与 run-task 抢慢链路
+  if (isFcGenerationBusy()) return empty;
   try {
-    const { data } = await getNxFcAxios().post<{ items?: unknown[] }>(
+    const { data } = await getNxFcAxios().post<{
+      items?: unknown[];
+      page?: number;
+      pageSize?: number;
+      total?: number;
+      hasMore?: boolean;
+    }>(
       '/transactions',
-      { limit: Math.min(50, Math.max(1, limit)) },
-      { timeout: FC_LIST_QUERY_TIMEOUT_MS }
+      { limit: pageSize, page: pageNo },
+      // 账单需扫用户流水再分页，冷启动/数据多时易超默认 25s；生成中已跳过，此处保持上限
+      { timeout: Math.max(FC_LIST_QUERY_TIMEOUT_MS, 60_000) },
     );
-    const items = Array.isArray(data?.items) ? data.items : [];
-    return items.map((row) => normalizeNxTransactionItem(row)).filter((x): x is NxTransactionItem => x != null);
+    const items = (Array.isArray(data?.items) ? data.items : [])
+      .map((row) => normalizeNxTransactionItem(row))
+      .filter((x): x is NxTransactionItem => x != null);
+    const totalRaw = Number(data?.total);
+    const total = Number.isFinite(totalRaw) && totalRaw >= 0 ? totalRaw : items.length;
+    const hasMore =
+      typeof data?.hasMore === 'boolean'
+        ? data.hasMore
+        : pageNo * pageSize < total;
+    return {
+      items,
+      page: Number(data?.page) > 0 ? Math.floor(Number(data.page)) : pageNo,
+      pageSize: Number(data?.pageSize) > 0 ? Math.floor(Number(data.pageSize)) : pageSize,
+      total,
+      hasMore,
+    };
   } catch (e) {
     console.warn('[Aliyun] nxCloudGetTransactions failed:', formatAliyunLogError(e));
+    if (isFcAxiosNoResponseTimeout(e)) {
+      return empty;
+    }
     throw new Error(nxFcErrorToUserMessage(e));
   }
 }
@@ -961,6 +1030,7 @@ export async function nxCloudGetTasks(limit = 20): Promise<NxTaskItem[]> {
   if (NX_SKIP_CLOUD_TASK_SYNC || isCloudTaskSyncForceDisabled()) return [];
   const base = getFcBaseUrl();
   if (!base || !getNxAccessToken() || isNxOfflineCloudSession()) return [];
+  if (isFcGenerationBusy()) return [];
   if (nxCloudGetTasksInFlight) return nxCloudGetTasksInFlight as Promise<NxTaskItem[]>;
 
   nxCloudGetTasksInFlight = (async (): Promise<NxTaskItem[]> => {

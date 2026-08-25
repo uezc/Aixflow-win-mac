@@ -10,6 +10,13 @@ import {
   type CanvasShortcutRow,
   type CanvasShortcutSection,
 } from '../../utils/canvasShortcutsCatalog';
+import {
+  resetVoiceInputShortcut,
+  setVoiceShortcutRecording,
+  shortcutFromKeyboardEvent,
+  voiceInputShortcutToKeycaps,
+  writeVoiceInputShortcut,
+} from '../../utils/voiceInputShortcutPrefs';
 
 function Keycap({ label }: { label: string }) {
   return (
@@ -19,7 +26,22 @@ function Keycap({ label }: { label: string }) {
   );
 }
 
-function ShortcutKeys({ row }: { row: CanvasShortcutRow }) {
+function ShortcutKeys({
+  row,
+  recording,
+  recordingLabel,
+}: {
+  row: CanvasShortcutRow;
+  recording?: boolean;
+  recordingLabel?: string;
+}) {
+  if (recording) {
+    return (
+      <span className="shrink-0 animate-pulse text-[11px] text-sky-400">
+        {recordingLabel ?? '…'}
+      </span>
+    );
+  }
   if (row.keys.length === 0) {
     return (
       <span className="shrink-0 text-[11px] text-zinc-500">{row.hint ?? '—'}</span>
@@ -34,22 +56,85 @@ function ShortcutKeys({ row }: { row: CanvasShortcutRow }) {
   );
 }
 
-function ShortcutRowItem({ row }: { row: CanvasShortcutRow }) {
+function ShortcutRowItem({
+  row,
+  recording,
+  recordingLabel,
+  rebindHint,
+  onStartRebind,
+}: {
+  row: CanvasShortcutRow;
+  recording?: boolean;
+  recordingLabel?: string;
+  rebindHint?: string;
+  onStartRebind?: () => void;
+}) {
+  const interactive = !!row.customizable && !!onStartRebind;
   return (
-    <div className="flex items-center justify-between gap-3 py-[7px]">
-      <span className="min-w-0 text-[13px] leading-snug text-zinc-300">{row.label}</span>
-      <ShortcutKeys row={row} />
+    <div
+      className={`flex items-center justify-between gap-3 py-[7px] ${
+        interactive ? 'cursor-pointer rounded-md px-1 -mx-1 hover:bg-white/[0.04]' : ''
+      } ${recording ? 'bg-sky-500/10 ring-1 ring-sky-500/30 rounded-md px-1 -mx-1' : ''}`}
+      onClick={
+        interactive
+          ? (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onStartRebind();
+            }
+          : undefined
+      }
+      title={interactive ? rebindHint : undefined}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      onKeyDown={
+        interactive
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onStartRebind();
+              }
+            }
+          : undefined
+      }
+    >
+      <div className="min-w-0">
+        <span className="text-[13px] leading-snug text-zinc-300">{row.label}</span>
+        {interactive && !recording ? (
+          <span className="mt-0.5 block text-[10px] text-zinc-500">{rebindHint}</span>
+        ) : null}
+      </div>
+      <ShortcutKeys row={row} recording={recording} recordingLabel={recordingLabel} />
     </div>
   );
 }
 
-function ShortcutColumn({ section }: { section: CanvasShortcutSection }) {
+function ShortcutColumn({
+  section,
+  recordingRowId,
+  recordingLabel,
+  rebindHint,
+  onStartRebind,
+}: {
+  section: CanvasShortcutSection;
+  recordingRowId: string | null;
+  recordingLabel: string;
+  rebindHint: string;
+  onStartRebind: (rowId: string) => void;
+}) {
   return (
     <div className="min-w-0 flex-1">
       <h3 className="mb-1 text-[13px] font-medium text-sky-400/90">{section.title}</h3>
       <div className="flex flex-col">
         {section.rows.map((row) => (
-          <ShortcutRowItem key={row.id} row={row} />
+          <ShortcutRowItem
+            key={row.id}
+            row={row}
+            recording={recordingRowId === row.id}
+            recordingLabel={recordingLabel}
+            rebindHint={rebindHint}
+            onStartRebind={row.customizable ? () => onStartRebind(row.id) : undefined}
+          />
         ))}
       </div>
     </div>
@@ -108,27 +193,76 @@ const CanvasShortcutsPanel: React.FC<CanvasShortcutsPanelProps> = ({ open, onClo
   const defaultOps = useMemo(() => buildDefaultCanvasOperationRows(locale), [locale]);
   const [sections, setSections] = useState<CanvasShortcutSection[]>(defaultSections);
   const [opsRows, setOpsRows] = useState<CanvasShortcutOpRow[]>(defaultOps);
+  const [recordingRowId, setRecordingRowId] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setSections(defaultSections);
       setOpsRows(defaultOps);
+      setRecordingRowId(null);
+      setVoiceShortcutRecording(false);
     }
   }, [open, defaultSections, defaultOps]);
 
   useEffect(() => {
+    if (!open) {
+      setRecordingRowId(null);
+      setVoiceShortcutRecording(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
+
     const onKey = (e: KeyboardEvent) => {
+      if (recordingRowId === 'voice-input-hold') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+          setRecordingRowId(null);
+          setVoiceShortcutRecording(false);
+          return;
+        }
+        if (e.repeat) return;
+        const next = shortcutFromKeyboardEvent(e);
+        if (!next) return;
+        writeVoiceInputShortcut(next);
+        setSections((prev) =>
+          prev.map((sec) => ({
+            ...sec,
+            rows: sec.rows.map((row) =>
+              row.id === 'voice-input-hold'
+                ? { ...row, keys: voiceInputShortcutToKeycaps(next) }
+                : row,
+            ),
+          })),
+        );
+        setRecordingRowId(null);
+        setVoiceShortcutRecording(false);
+        void showAlert(t.voiceInputHoldSaved);
+        return;
+      }
+
       if (e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
       onClose();
     };
+
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [open, onClose]);
+  }, [open, onClose, recordingRowId, showAlert, t.voiceInputHoldSaved]);
+
+  const handleStartRebind = useCallback((rowId: string) => {
+    if (rowId !== 'voice-input-hold') return;
+    setRecordingRowId(rowId);
+    setVoiceShortcutRecording(true);
+  }, []);
 
   const handleRestore = useCallback(() => {
+    resetVoiceInputShortcut();
+    setRecordingRowId(null);
+    setVoiceShortcutRecording(false);
     setSections(buildDefaultCanvasShortcutSections(locale));
     setOpsRows(buildDefaultCanvasOperationRows(locale));
     void showAlert(t.restoreDefaultsDone);
@@ -139,7 +273,14 @@ const CanvasShortcutsPanel: React.FC<CanvasShortcutsPanelProps> = ({ open, onClo
   return createPortal(
     <div
       className="fixed inset-0 z-[100020] flex items-center justify-center bg-black/55 backdrop-blur-[2px]"
-      onClick={onClose}
+      onClick={() => {
+        if (recordingRowId) {
+          setRecordingRowId(null);
+          setVoiceShortcutRecording(false);
+          return;
+        }
+        onClose();
+      }}
       role="presentation"
     >
       <div
@@ -151,7 +292,14 @@ const CanvasShortcutsPanel: React.FC<CanvasShortcutsPanelProps> = ({ open, onClo
       >
         <div className="mb-4 flex gap-10">
           {sections.map((section) => (
-            <ShortcutColumn key={section.id} section={section} />
+            <ShortcutColumn
+              key={section.id}
+              section={section}
+              recordingRowId={recordingRowId}
+              recordingLabel={t.voiceInputHoldRecording}
+              rebindHint={t.voiceInputHoldClickToRebind}
+              onStartRebind={handleStartRebind}
+            />
           ))}
         </div>
 

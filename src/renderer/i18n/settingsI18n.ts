@@ -61,6 +61,12 @@ export type SettingsStrings = {
   regionRouteTitle: string;
   regionRouteChinaOptimized: string;
   regionRouteGlobal: string;
+  /** 窄顶栏缩写 */
+  regionRouteChinaOptimizedShort: string;
+  regionRouteGlobalShort: string;
+  updateFeedRouteTitle: string;
+  updateFeedRouteBeijing: string;
+  updateFeedRouteHongKong: string;
   placeholderPassword: string;
   login: string;
   loggingIn: string;
@@ -92,6 +98,9 @@ export type SettingsStrings = {
   redeem: string;
   redeeming: string;
   billListTitle: string;
+  billPagePrev: string;
+  billPageNext: string;
+  billPageStatus: (page: number, totalPages: number, total: number) => string;
   refresh: string;
   refreshing: string;
   txTime: string;
@@ -216,6 +225,11 @@ const zh: SettingsStrings = {
   regionRouteTitle: '云端与素材线路（中国优化：北京 FC + 北京 OSS；全球线路：香港 FC + 香港 OSS）',
   regionRouteChinaOptimized: '中国优化',
   regionRouteGlobal: '全球线路',
+  regionRouteChinaOptimizedShort: '中国',
+  regionRouteGlobalShort: '全球',
+  updateFeedRouteTitle: '软件更新下载线路（北京 OSS / 香港 OSS）',
+  updateFeedRouteBeijing: '北京线路',
+  updateFeedRouteHongKong: '香港线路',
   placeholderPassword: '请输入密码',
   login: '登录',
   loggingIn: '处理中…',
@@ -246,7 +260,10 @@ const zh: SettingsStrings = {
   redeemPlaceholder: '输入兑换码',
   redeem: '兑换',
   redeeming: '兑换中…',
-  billListTitle: '账单列表（最近 30 条，含充值/兑换）',
+  billListTitle: '账单列表（分页，含充值/兑换）',
+  billPagePrev: '上一页',
+  billPageNext: '下一页',
+  billPageStatus: (page, totalPages, total) => `第 ${page}/${totalPages} 页 · 共 ${total} 条`,
   refresh: '刷新',
   refreshing: '刷新中…',
   txTime: '时间',
@@ -365,6 +382,11 @@ const en: SettingsStrings = {
   regionRouteTitle: 'Cloud & media route (China: Beijing FC + OSS; Global: Hong Kong FC + OSS)',
   regionRouteChinaOptimized: 'China optimized',
   regionRouteGlobal: 'Global route',
+  regionRouteChinaOptimizedShort: 'CN',
+  regionRouteGlobalShort: 'Global',
+  updateFeedRouteTitle: 'App update download region (Beijing OSS / Hong Kong OSS)',
+  updateFeedRouteBeijing: 'Beijing',
+  updateFeedRouteHongKong: 'Hong Kong',
   placeholderPassword: 'Enter password',
   login: 'Sign in',
   loggingIn: 'Working…',
@@ -395,7 +417,10 @@ const en: SettingsStrings = {
   redeemPlaceholder: 'Enter redeem code',
   redeem: 'Redeem',
   redeeming: 'Redeeming…',
-  billListTitle: 'Transactions (last 30, incl. top-ups)',
+  billListTitle: 'Transactions (paginated, incl. top-ups)',
+  billPagePrev: 'Previous',
+  billPageNext: 'Next',
+  billPageStatus: (page, totalPages, total) => `Page ${page}/${totalPages} · ${total} total`,
   refresh: 'Refresh',
   refreshing: 'Refreshing…',
   txTime: 'Time',

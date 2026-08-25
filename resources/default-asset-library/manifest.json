@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "syncedAt": "2026-08-02T09:04:21.828Z",
+  "syncedAt": "2026-08-18T05:32:57.466Z",
   "sourceUserData": "C:\\Users\\Administrator\\AppData\\Roaming\\NEXFLOW",
   "characters": [
     {
@@ -368,6 +368,36 @@
       "resultTextureUrl": "character-3d/image3d-1785394356114-pb7sze3zz-tex.png",
       "localTexturePath": "character-3d/image3d-1785394356114-pb7sze3zz-tex.png",
       "createdAt": 1785394356132
+    },
+    {
+      "id": "character-1786183964328-7v8ryg5ry",
+      "nickname": "白露生",
+      "name": "白露生",
+      "avatar": "bundled-imports/021a3252a148035084e0.jpg",
+      "createdAt": 1786183964329,
+      "viewImages": [
+        "bundled-imports/021a3252a148035084e0.jpg",
+        "bundled-imports/97c648233be49e6bdf1a.jpg",
+        "bundled-imports/91e3432a19d0009e6165.jpg",
+        "bundled-imports/b3424969b6da8626475c.jpg"
+      ],
+      "voiceClip": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/be716ec5-49e3-4943-aee8-e6ab86cac292.mp3",
+      "imageDescription": "这张照片是一位年轻的东亚女性站在纯白色背景下的全身照片。她有一头齐肩的黑色直发，有刘海，皮肤白皙。这位女士穿着一件宽大的深酒红色长袍，长及脚踝。这款长袍采用柔软舒适的面料制成，并配有抽绳兜帽。长袍的袖子长而略显蓬松，大袖口末端有装饰性领带。长袍没有扣子，露出女人裸露的躯干和大腿上部。她双手叉腰站立，姿势微微驼背。灯光明亮均匀，投射出柔和的阴影。整体构图简单而简约，完全集中在女人和她的长袍上。该图像具有休闲轻松的氛围，没有其他物体或人在场。"
+    },
+    {
+      "id": "character-1786184029658-bdhv9grjn",
+      "nickname": "陆天养",
+      "name": "陆天养",
+      "avatar": "bundled-imports/c5b0b844c8c0517058f5.jpg",
+      "createdAt": 1786184029658,
+      "viewImages": [
+        "bundled-imports/c5b0b844c8c0517058f5.jpg",
+        "bundled-imports/507092f3cd710ed38d9f.jpg",
+        "bundled-imports/b7e5c48dddd2f3c1d024.jpg",
+        "bundled-imports/fa35f74a62976695d456.jpg"
+      ],
+      "voiceClip": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/9abd5bca-41ef-4583-99b4-75ae18779fcf.mp3",
+      "imageDescription": "这是一张年轻男子的照片，他留着侧分的黑色直发，穿着一件宽松的灰色 T 恤。衬衫上写着大写字母“YEO ZZZILENCK”，“YEO”一词下方是“3”和“3”、“3”和“3”、“3”和“3”。在“ZZZILENCK”一词下方，“YING”一词重复了三次。男子面色平静，直视镜头。背景为纯白色，该男子是图像中唯一的主题。"
     }
   ],
   "sceneLibrary": [

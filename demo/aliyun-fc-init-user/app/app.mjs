@@ -17,6 +17,7 @@ import {
   resolveRhRegionForQuery,
   rhAuthErrorMessage,
   forceOverseasByBillingOrPath,
+  buildRunningHubForwardUrl,
 } from './lib/runningHubTarget.mjs';
 import { resolveLlmUpstream, buildLlmChatPayload } from './lib/llmUpstream.mjs';
 
@@ -146,10 +147,10 @@ function extractModelIdFromForward(path, bodyObj) {
   return '';
 }
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-/** ?????????run-task ?????? */
-const RATE_LIMIT_MAX = 5;
+/** 单用户每分钟最多 run-task 次数。故事+分批剧本远超 5 次，过低会误伤成 RATE_LIMIT_EXCEEDED */
+const RATE_LIMIT_MAX = Math.max(5, parseInt(process.env.NX_RATE_LIMIT_MAX || '20', 10) || 20);
 const BLTCY_CHAT_URL = 'https://api.bltcy.ai/v1/chat/completions';
-const API_TIMEOUT_MS = 120000;
+const API_TIMEOUT_MS = 180000;
 const ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '30m';
 const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '7d';
 
@@ -506,12 +507,11 @@ function checkAlipayPaySecret(reqHeaders, body) {
 }
 
 function resolveForwardUrl(provider, path, rhTarget) {
-  const p = normalizeRhPath(path);
   if (provider === 'runninghub') {
-    const base = (rhTarget?.base || pickRunningHubTarget(path).base).replace(/\/$/, '');
-    return `${base}${p}`;
+    return buildRunningHubForwardUrl(path, rhTarget || pickRunningHubTarget(path));
   }
   if (provider === 'bltcy') {
+    const p = normalizeRhPath(path);
     const base = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
     return `${base}${p}`;
   }
@@ -2153,6 +2153,8 @@ async function handleRequest(req) {
       } catch (e) {
         console.warn('[billing] listModelConfig (asr file) skipped:', e?.message || e);
       }
+      /** Align with client getFileTranscribeDisplayPrice: at least 10 yuanbao per call */
+      const ASR_FILE_MIN_YUANBAO = 10;
       let cost;
       try {
         cost = getFinalPrice(ASR_FILE_BILLING_MODEL_ID, {
@@ -2162,10 +2164,14 @@ async function handleRequest(req) {
         });
       } catch (e) {
         if (isModelNotPricedError(e)) {
-          cost = 5;
+          cost = ASR_FILE_MIN_YUANBAO;
         } else {
           throw e;
         }
+      }
+      {
+        const n = Math.round(Number(cost));
+        cost = Number.isFinite(n) && n >= ASR_FILE_MIN_YUANBAO ? n : ASR_FILE_MIN_YUANBAO;
       }
       const billingTaskId = `asr_file_${crypto.randomUUID()}`;
       const billingUser = await dbModule.getUserById(userId);
@@ -2198,7 +2204,7 @@ async function handleRequest(req) {
             headers,
             body: JSON.stringify({
               error: 'BALANCE_INSUFFICIENT',
-              message: '?????????????????,
+              message: 'Yuanbao insufficient; please recharge before cloud ASR',
             }),
           };
         }
@@ -2206,7 +2212,17 @@ async function handleRequest(req) {
           return {
             statusCode: 403,
             headers,
-            body: JSON.stringify({ error: 'USER_FROZEN', message: '?????? }),
+            body: JSON.stringify({ error: 'USER_FROZEN', message: 'Account frozen' }),
+          };
+        }
+        if (msg === 'INVALID_AMOUNT') {
+          return {
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({
+              error: 'INVALID_AMOUNT',
+              message: 'Invalid ASR billing amount',
+            }),
           };
         }
         throw e;
@@ -2246,15 +2262,36 @@ async function handleRequest(req) {
       }
       try {
         const payload = JSON.parse(result.body || '{}');
+        const bal = Number(deductResult?.balance);
+        payload.charged = true;
         payload.cost = cost;
-        payload.balance = deductResult?.balance;
+        payload.balance = Number.isFinite(bal) ? bal : deductResult?.balance;
         payload.billingModelId = ASR_FILE_BILLING_MODEL_ID;
+        payload.billingTaskId = billingTaskId;
+        console.log(
+          `[asr/file-transcribe] charged=true cost=${cost} balance=${payload.balance} task=${billingTaskId}`,
+        );
         return {
           ...result,
           body: JSON.stringify(payload),
         };
       } catch {
-        return result;
+        const bal = Number(deductResult?.balance);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            ok: true,
+            text: '',
+            segments: [],
+            hasWordTimestamps: false,
+            charged: true,
+            cost,
+            balance: Number.isFinite(bal) ? bal : deductResult?.balance,
+            billingModelId: ASR_FILE_BILLING_MODEL_ID,
+            billingTaskId,
+          }),
+        };
       }
     }
 
@@ -2530,15 +2567,42 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /transactions ???????? Bearer??    if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
+    // POST /transactions — 流水分页（需 Bearer；body: limit, page）
+    if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
       }
-      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 20));
+      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 30));
+      const page = Math.max(1, parseInt(body.page, 10) || 1);
       try {
+        const pagedFn = dbModule.listTransactionsForUserPaged;
+        if (typeof pagedFn === 'function') {
+          const result = await pagedFn(userId, { limit: lim, page });
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({
+              items: result.items || [],
+              page: result.page ?? page,
+              pageSize: result.pageSize ?? lim,
+              total: result.total ?? 0,
+              hasMore: !!result.hasMore,
+            }),
+          };
+        }
         const items = await dbModule.listRecentTransactionsForUser(userId, lim);
-        return { statusCode: 200, headers, body: JSON.stringify({ items }) };
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            items,
+            page: 1,
+            pageSize: lim,
+            total: Array.isArray(items) ? items.length : 0,
+            hasMore: false,
+          }),
+        };
       } catch (e) {
         console.error('[transactions]', e?.stack ?? e);
         return {
@@ -2548,6 +2612,7 @@ async function handleRequest(req) {
         };
       }
     }
+
 
     // POST /tasks ?????????? Bearer???????? idx_user_tasks??    if (pathNorm.endsWith('/tasks') || pathNorm === '/tasks') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
@@ -2616,7 +2681,10 @@ async function handleRequest(req) {
         return {
           statusCode: 429,
           headers,
-          body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+          body: JSON.stringify({
+            error: 'RATE_LIMIT_EXCEEDED',
+            message: '请求过于频繁，请稍后再试',
+          }),
         };
       }
       try {
@@ -2729,7 +2797,10 @@ async function handleRequest(req) {
       return {
         statusCode: 429,
         headers,
-        body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+        body: JSON.stringify({
+          error: 'RATE_LIMIT_EXCEEDED',
+          message: '请求过于频繁，请稍后再试',
+        }),
       };
     }
 

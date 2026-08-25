@@ -81,6 +81,11 @@ const CharacterInputPanel: React.FC<CharacterInputPanelProps> = ({
       return;
     }
 
+    if (characterPriceYuanbao == null) {
+      setError(locale === 'en' ? 'Please sign in' : '请登录');
+      return;
+    }
+
     setError(null);
     onCreateCharacter();
   };
@@ -244,7 +249,7 @@ const CharacterInputPanel: React.FC<CharacterInputPanelProps> = ({
         </span>
         <button
           onClick={handleCreate}
-          disabled={!videoUrl.trim() || isUploading || needsUpload}
+          disabled={!videoUrl.trim() || isUploading || needsUpload || characterPriceYuanbao == null}
           className={`flex-1 min-w-0 px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-center gap-2 ${
             isDarkMode
               ? (isUploading || needsUpload)

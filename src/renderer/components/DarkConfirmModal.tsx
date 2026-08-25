@@ -8,6 +8,7 @@ import {
   darkModalBtnOkClass,
   darkModalFooterClass,
   darkModalPanelMdClass,
+  DARK_MODAL_Z,
 } from './darkModalShell';
 
 export type DarkConfirmVariant = 'primary' | 'danger';
@@ -20,6 +21,8 @@ interface DarkConfirmModalProps {
   variant?: DarkConfirmVariant;
   okLabel?: string;
   cancelLabel?: string;
+  /** 覆盖最外层 z-index（如卡拉OK全屏预览之上） */
+  stackZClass?: string;
 }
 
 /** 暗黑系确认框，替代原生 confirm */
@@ -31,6 +34,7 @@ export const DarkConfirmModal: React.FC<DarkConfirmModalProps> = ({
   variant = 'primary',
   okLabel: okLabelProp,
   cancelLabel: cancelLabelProp,
+  stackZClass = DARK_MODAL_Z,
 }) => {
   const { locale } = useAppLocale();
   if (!open) return null;
@@ -42,6 +46,7 @@ export const DarkConfirmModal: React.FC<DarkConfirmModalProps> = ({
     <DarkModalFrame
       open={open}
       onBackdropClick={onCancel}
+      stackZClass={stackZClass}
       panelClassName={darkModalPanelMdClass}
       footer={
         <div className={`${darkModalFooterClass} gap-2 !justify-end border-t border-white/10 pt-3`}>

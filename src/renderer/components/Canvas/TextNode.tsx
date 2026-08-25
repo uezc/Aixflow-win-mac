@@ -39,6 +39,7 @@ export const TextNode: React.FC<TextNodeProps> = ({
   });
   const [text, setText] = useState(data.text || '');
   const nodeRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const viewport = useFrozenFlowViewport();
   const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
 
@@ -108,6 +109,22 @@ export const TextNode: React.FC<TextNodeProps> = ({
   const showPlaceholder = lodLevel === 'far' || isHardFrozen;
   const useLowEnergyTextView = lodLevel === 'near' && isVisualInteractionLocked;
 
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return undefined;
+    const onWheel = (e: WheelEvent) => {
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      const line = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
+      const dy = e.deltaY * line;
+      const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (maxTop > 0) el.scrollTop = Math.max(0, Math.min(maxTop, el.scrollTop + dy));
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener('wheel', onWheel, { capture: true });
+  }, [lodLevel, isVisualInteractionLocked]);
+
   return (
     <div
       ref={nodeRef}
@@ -156,11 +173,16 @@ export const TextNode: React.FC<TextNodeProps> = ({
       {/* 文本输入区 */}
       {lodLevel === 'near' && !isVisualInteractionLocked ? (
         <textarea
-          className="flex-grow bg-transparent text-white text-xs p-3 outline-none resize-none font-mono placeholder:text-white/40"
+          ref={textareaRef}
+          className="nodrag nowheel flex-grow bg-transparent text-white text-xs p-3 outline-none resize-none font-mono placeholder:text-white/40 overflow-auto"
           placeholder="ENTER MISSION PROMPT..."
           value={text}
           onChange={handleTextChange}
           onFocus={(e) => e.stopPropagation()}
+          onWheel={(e) => {
+            e.stopPropagation();
+            e.nativeEvent.stopImmediatePropagation();
+          }}
         />
       ) : useLowEnergyTextView ? (
         <div className={`flex-grow p-3 text-xs font-mono overflow-hidden ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>

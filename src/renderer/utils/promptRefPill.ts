@@ -2,6 +2,7 @@
  * 提示词内联引用胶囊（对齐 AI CanvasPro `.ref-pill`）：
  * 展示缩略图 + 名称；序列化为 insertText（如 @图片1）供生成逻辑使用。
  */
+import { audioEqThumbInnerHtml } from './audioEqThumb';
 import type { PromptMentionCandidate } from './promptMentionCandidates';
 
 export const REF_PILL_CLASS = 'ref-pill';
@@ -129,6 +130,12 @@ export function createRefPillElement(
     img.draggable = false;
     img.contentEditable = 'false';
     pill.appendChild(img);
+  } else if (item.type === 'audio') {
+    const eq = document.createElement('span');
+    eq.className = `${REF_PILL_THUMB_CLASS} mention-ref-thumb-audio`;
+    eq.contentEditable = 'false';
+    eq.innerHTML = audioEqThumbInnerHtml(item.nodeId || item.insertText || labelText, 5);
+    pill.appendChild(eq);
   } else {
     const fallback = document.createElement('span');
     fallback.className = `${REF_PILL_THUMB_CLASS} mention-ref-thumb-fallback`;
@@ -417,9 +424,12 @@ function escapeHtml(s: string): string {
 function pillToHtml(item: PromptMentionCandidate): string {
   const label = escapeHtml(String(item.label || item.refLabel || item.insertText || '').trim() || 'ref');
   const insertText = escapeHtml(String(item.insertText || '').trim());
+  const seed = String(item.nodeId || item.insertText || item.label || 'audio').trim();
   const thumb = item.thumbUrl
     ? `<img class="${REF_PILL_THUMB_CLASS}" src="${escapeHtml(item.thumbUrl)}" alt="" draggable="false" contenteditable="false" />`
-    : `<span class="${REF_PILL_THUMB_CLASS} mention-ref-thumb-fallback" contenteditable="false">${label.slice(0, 2)}</span>`;
+    : item.type === 'audio'
+      ? `<span class="${REF_PILL_THUMB_CLASS} mention-ref-thumb-audio" contenteditable="false">${audioEqThumbInnerHtml(seed, 5)}</span>`
+      : `<span class="${REF_PILL_THUMB_CLASS} mention-ref-thumb-fallback" contenteditable="false">${label.slice(0, 2)}</span>`;
   const attrs = [
     `class="${REF_PILL_CLASS}"`,
     'contenteditable="false"',

@@ -41,6 +41,8 @@ type TutorialVideosEntryProps = {
   strings: TutorialVideosStrings;
   buttonClassName: string;
   isDarkMode: boolean;
+  /** 窄顶栏：仅图标，文案放 title */
+  hideLabel?: boolean;
 };
 
 type ViewMode = 'panel' | 'enlarged' | 'pip';
@@ -63,6 +65,7 @@ export default function TutorialVideosEntry({
   strings: s,
   buttonClassName,
   isDarkMode,
+  hideLabel = false,
 }: TutorialVideosEntryProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<ViewMode>('panel');
@@ -442,8 +445,8 @@ export default function TutorialVideosEntry({
         title={s.tutorialVideosTitle}
         aria-label={s.tutorialVideos}
       >
-        <Clapperboard className="w-4 h-4" />
-        <span>{s.tutorialVideos}</span>
+        <Clapperboard className="w-4 h-4 shrink-0" />
+        {!hideLabel && <span className="whitespace-nowrap">{s.tutorialVideos}</span>}
       </button>
 
       <DarkModalFrame

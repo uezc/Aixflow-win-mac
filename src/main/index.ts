@@ -1,10 +1,14 @@
 // 必须在所有其他导入之前加载环境变量（含安装包 resources/.env；勿改用仅 cwd 的 dotenv/config）
 import './envLoader.js';
 
-/** GUI 启动无终端时 stdout 管道关闭，console.log 会 EPIPE 崩溃 */
+/** GUI 启动无终端时 stdout/stderr 管道关闭，console.log 会 EPIPE/EOF 崩溃（笔记本双击启动尤甚） */
+function isBrokenPipeError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code === 'EPIPE' || code === 'EOF' || code === 'ECONNRESET';
+}
 for (const stream of [process.stdout, process.stderr]) {
   stream.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EPIPE') return;
+    if (isBrokenPipeError(err)) return;
     throw err;
   });
 }
@@ -14,12 +18,30 @@ for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
     try {
       original(...args);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== 'EPIPE') throw err;
+      if (!isBrokenPipeError(err)) throw err;
     }
   };
 }
 
+process.on('uncaughtException', (err) => {
+  if (isBrokenPipeError(err) || /write EOF/i.test(String((err as Error)?.message || ''))) {
+    console.error('[main] ignored broken pipe (stdio/ffmpeg already closed)', err);
+    return;
+  }
+  console.error('[main] uncaughtException', err);
+  try {
+    dialog.showErrorBox(
+      'A JavaScript error occurred in the main process',
+      String((err as Error)?.stack || err),
+    );
+  } catch {
+    /* ignore */
+  }
+});
+
 import { app, BrowserWindow, ipcMain, dialog, shell, protocol, clipboard, nativeImage } from 'electron';
+
+// V8 堆上限已在 envLoader（首个 import）里 appendSwitch js-flags
 
 import path from 'path';
 import crypto, { randomUUID } from 'node:crypto';
@@ -116,6 +138,18 @@ import {
   repairDigitalHumanLibraryInStore,
 } from './utils/defaultDigitalHumanLibrary.js';
 import {
+  saveProjectGraphDurable,
+  loadProjectGraphDurable,
+  resolveBestProjectGraph,
+  atomicWriteText,
+  writeRollingBackup,
+  listProjectBackupSummaries,
+  archiveGraphToLost,
+  readProjectGraphFile,
+  graphScore,
+  enqueueProjectSave,
+} from './utils/projectDataDurability.js';
+import {
   clearSessionBeijingFcProxyUpload,
   ensureOssUploadRouteProbed,
   applyMediaOssRegion,
@@ -196,6 +230,24 @@ import {
   transcribeSpeechViaFunAsr,
 } from './services/dashscopeFileAsr.js';
 import {
+  burnKaraokeSubtitlesToProject,
+  detectChineseKaraokeFont,
+  exportKaraokeAssFile,
+  previewWriteKaraokeAss,
+} from './services/karaokeBurn.js';
+import {
+  abortKaraokePreviewComposeSession,
+  beginKaraokePreviewCompose,
+  finalizeKaraokePreviewCompose,
+  writeKaraokePreviewComposeFrame,
+} from './services/karaokePreviewCompose.js';
+import {
+  burnKaraokeWithCssPreview,
+  cancelAllKaraokeComposeJobs,
+  type KaraokeCssBurnProgress,
+} from './services/karaokeCssBurn.js';
+import type { KaraokeProject } from '../shared/karaoke/types.js';
+import {
   finalizeMicRecording,
   getMediaDuration,
   getSharpQueueStats,
@@ -207,6 +259,7 @@ import { initScreenSnip, setMainWindowForSnip } from './screenSnip.js';
 import { openInAppBrowser } from './inAppBrowser.js';
 import { aiCore } from './ai/AICore.js';
 import { registerProvider } from './ai/Registry.js';
+import { loadMinimaxH3PromptWritingBundle } from './utils/minimaxH3SkillGuide.js';
 import { ChatProvider } from './ai/providers/ChatProvider.js';
 import { ImageProvider } from './ai/providers/ImageProvider.js';
 import { VideoProvider } from './ai/providers/VideoProvider.js';
@@ -406,8 +459,10 @@ function createWindow() {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           `default-src 'self' ${VITE_DEV_SERVER_ORIGIN} https: http:; ` +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
-          "style-src 'self' 'unsafe-inline'; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; " +
+          "worker-src 'self' blob:; " +
+          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+          "font-src 'self' https://fonts.gstatic.com data:; " +
           "media-src 'self' https://midjourney-plus.oss-us-west-1.aliyuncs.com https: http: file: data: blob: local-resource:; " +
           "img-src * 'self' data: blob: file: https: http: local-resource:; " +
           "connect-src 'self' https: http: local-resource:;"
@@ -421,7 +476,7 @@ function createWindow() {
     rendererReady = true;
     flushPendingOpenProjectPath();
     if (isDev && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-      // mainWindow.webContents.openDevTools();
+      mainWindow.webContents.openDevTools();
     }
   });
   mainWindow.on('closed', () => {
@@ -442,6 +497,11 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
   }
 
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level < 2) return;
+    console.error('[渲染进程]', message, sourceId ? `${sourceId}:${line}` : '');
+  });
+
   // 页面加载失败时打印详情，便于排查白屏/崩溃
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[主进程] did-fail-load:', { errorCode, errorDescription, validatedURL });
@@ -454,7 +514,7 @@ function createWindow() {
     } catch {
       /* ignore */
     }
-    const msg = `reason: ${details.reason}\nexitCode: ${details.exitCode}\n\n可能原因：麦克风实时采集（旧版 ScriptProcessor）、3D 视角、大量图片或其它渲染压力。若刚按住了语音听写，请更新后重试「按住麦克风说话」；否则可减少画布图片/关闭 3D 预览后再重新加载。`;
+    const msg = `reason: ${details.reason}\nexitCode: ${details.exitCode}\n\n可能原因：整轨音频 decodeAudioData、麦克风实时采集、3D 视角、大量图片或其它渲染压力。若刚操作角色参考音/画布选音，或刚按住语音听写，请更新后重试；否则可减少画布图片/关闭 3D 预览后再重新加载。`;
     console.error('[主进程] 渲染进程已退出:', msg);
     dialog.showMessageBox(mainWindow!, {
       type: 'error',
@@ -1300,6 +1360,82 @@ ipcMain.handle(
 );
 ipcMain.handle('cancel-audio-transcribe-jobs', async () => cancelActiveAudioTranscribeJobs());
 
+/** 卡拉OK：探测中文字体 */
+ipcMain.handle('karaoke-detect-font', async () => detectChineseKaraokeFont());
+/** 卡拉OK：导出 ASS 到用户选择路径 */
+ipcMain.handle('karaoke-export-ass', async (_, project: KaraokeProject, defaultName?: string) =>
+  exportKaraokeAssFile(project, defaultName),
+);
+/** 卡拉OK：写临时 ASS（调试/预览） */
+ipcMain.handle('karaoke-write-ass-temp', async (_, project: KaraokeProject) =>
+  previewWriteKaraokeAss(project),
+);
+/** 卡拉OK：ffmpeg 烧录字幕到成片并入库（ASS 路径 / 兼容后备） */
+ipcMain.handle(
+  'karaoke-burn-subtitles',
+  async (_, projectId: string | undefined, videoUrl: string, project: KaraokeProject) =>
+    burnKaraokeSubtitlesToProject(projectId, videoUrl, project),
+);
+/**
+ * 卡拉OK 方案 A（默认）：隐藏窗只渲字幕层 + capturePage + ffmpeg overlay（与预览 CSS wipe 一致）。
+ * 进度经 event.sender 推送 karaoke-css-burn-progress。
+ */
+ipcMain.handle(
+  'karaoke-css-burn',
+  async (
+    event,
+    projectId: string | undefined,
+    videoUrl: string,
+    project: KaraokeProject,
+    opts?: {
+      fps?: number;
+      durationSec?: number;
+      lowSpec?: boolean;
+      preferSmooth?: boolean;
+    },
+  ) => {
+    const sender = event.sender;
+    return burnKaraokeWithCssPreview(projectId, videoUrl, project, {
+      fps: opts?.fps,
+      durationSec: opts?.durationSec,
+      // 透传 undefined，由主进程按机器规格自动选办公本/流畅档
+      lowSpec: opts?.lowSpec,
+      preferSmooth: opts?.preferSmooth,
+      onProgress: (p: KaraokeCssBurnProgress) => {
+        try {
+          if (!sender.isDestroyed()) sender.send('karaoke-css-burn-progress', p);
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+  },
+);
+/** 旧 PNG session API（兼容；方案 A 不再走 html2canvas） */
+ipcMain.handle(
+  'karaoke-preview-compose-begin',
+  async (
+    _,
+    projectId: string | undefined,
+    videoUrl: string,
+    project: KaraokeProject,
+    opts?: { fps?: number; durationSec?: number },
+  ) => beginKaraokePreviewCompose(projectId, videoUrl, project, opts),
+);
+ipcMain.handle(
+  'karaoke-preview-compose-write-frame',
+  async (_, sessionId: string, frameIndex: number, png: ArrayBuffer | Uint8Array | Buffer) =>
+    writeKaraokePreviewComposeFrame(sessionId, frameIndex, png),
+);
+ipcMain.handle('karaoke-preview-compose-finalize', async (_, sessionId: string) =>
+  finalizeKaraokePreviewCompose(sessionId),
+);
+ipcMain.handle('karaoke-preview-compose-abort', async (_, sessionId: string) =>
+  abortKaraokePreviewComposeSession(sessionId),
+);
+/** 卡拉OK：取消进行中的烧录（方案 A + ASS + 旧 session） */
+ipcMain.handle('karaoke-cancel-burn', async () => cancelAllKaraokeComposeJobs());
+
 /** 百炼实时 ASR 听写：票据经 FC，WebSocket 仅在主进程 */
 ipcMain.handle('asr-realtime-start', async () => asrRealtimeStart());
 /** 音频块用 on（单向），避免每帧 invoke 往返拖垮渲染进程 */
@@ -1633,19 +1769,10 @@ ipcMain.handle('delete-project', async (_, projectId: string) => {
 });
 
 function readProjectDataFile(filePath: string): { nodes: any[]; edges: any[] } | null {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    return {
-      nodes: Array.isArray(data?.nodes) ? data.nodes : [],
-      edges: Array.isArray(data?.edges) ? data.edges : [],
-    };
-  } catch {
-    return null;
-  }
+  return readProjectGraphFile(filePath);
 }
 
-// 项目数据（节点和边）：仅持久化 nodes/edges，不删除项目文件夹内任何图片/视频文件
+// 项目数据（节点和边）：原子落盘 + 滚动备份 + 防空/防缩；不删除项目文件夹内任何素材
 ipcMain.handle(
   'save-project-data',
   async (
@@ -1653,91 +1780,58 @@ ipcMain.handle(
     projectId: string,
     nodes: any[],
     edges: any[],
-    opts?: { allowEmptyOverwrite?: boolean },
+    opts?: { allowEmptyOverwrite?: boolean; allowShrinkOverwrite?: boolean; force?: boolean },
   ) => {
     const projectFolderPath = await getProjectFolderPath(projectId);
-
     if (!projectFolderPath) {
       throw new Error('项目不存在');
     }
-
     if (!fs.existsSync(projectFolderPath)) {
       fs.mkdirSync(projectFolderPath, { recursive: true });
     }
-
-    // 确保 assets 子文件夹存在
-    const assetsDir = path.join(projectFolderPath, 'assets');
-    if (!fs.existsSync(assetsDir)) {
-      fs.mkdirSync(assetsDir, { recursive: true });
-    }
-
-    const dataPath = path.join(projectFolderPath, 'data.json');
-    const bakPath = path.join(projectFolderPath, 'data.json.bak');
-    const incomingNodes = Array.isArray(nodes) ? nodes : [];
-    const incomingEdges = Array.isArray(edges) ? edges : [];
-    const incomingEmpty = incomingNodes.length === 0 && incomingEdges.length === 0;
-
-    const existing = readProjectDataFile(dataPath);
-    const existingHasGraph =
-      (existing?.nodes?.length ?? 0) > 0 || (existing?.edges?.length ?? 0) > 0;
-
-    if (incomingEmpty && existingHasGraph && !opts?.allowEmptyOverwrite) {
-      console.warn(
-        `[save-project-data] 阻止空画布覆盖非空工程: ${projectId}（现有 ${existing?.nodes?.length ?? 0} 节点）`,
-      );
-      return { success: false as const, code: 'EMPTY_OVERWRITE_BLOCKED' as const };
-    }
-
-    const payload = JSON.stringify({ nodes: incomingNodes, edges: incomingEdges }, null, 2);
-    if (fs.existsSync(dataPath)) {
-      try {
-        fs.copyFileSync(dataPath, bakPath);
-      } catch (e) {
-        console.warn('[save-project-data] 写入 data.json.bak 失败:', e);
-      }
-    }
-    fs.writeFileSync(dataPath, payload, 'utf-8');
-    return { success: true as const };
+    return enqueueProjectSave(projectId, () =>
+      saveProjectGraphDurable(projectFolderPath, projectId, nodes, edges, opts),
+    );
   },
 );
 
 ipcMain.handle('load-project-data', async (_, projectId: string) => {
   const projectFolderPath = await getProjectFolderPath(projectId);
-
   if (!projectFolderPath) {
     return { nodes: [], edges: [] };
   }
-
-  const dataPath = path.join(projectFolderPath, 'data.json');
-  const bakPath = path.join(projectFolderPath, 'data.json.bak');
-
-  const primary = readProjectDataFile(dataPath);
-  if (primary && (primary.nodes.length > 0 || primary.edges.length > 0)) {
-    return primary;
+  if (!fs.existsSync(projectFolderPath)) {
+    fs.mkdirSync(projectFolderPath, { recursive: true });
   }
-
-  const backup = readProjectDataFile(bakPath);
-  if (backup && (backup.nodes.length > 0 || backup.edges.length > 0)) {
-    console.warn(
-      `[load-project-data] data.json 为空或损坏，已从 data.json.bak 恢复 ${backup.nodes.length} 个节点: ${projectId}`,
-    );
-    try {
-      fs.copyFileSync(bakPath, dataPath);
-    } catch (e) {
-      console.warn('[load-project-data] 回写 data.json 失败:', e);
+  const loaded = loadProjectGraphDurable(projectFolderPath, projectId);
+  // 迁移旧数据：把节点里内嵌 base64 图片提取为文件，避免短剧草稿整图几十 MB 塞进内存导致切步卡顿/OOM
+  try {
+    const { directorV2MigrateGraphDataUrls } = await import('./director/directorV2Store.js');
+    if (directorV2MigrateGraphDataUrls(loaded.nodes, projectFolderPath)) {
+      await enqueueProjectSave(projectId, () =>
+        saveProjectGraphDurable(projectFolderPath, projectId, loaded.nodes, loaded.edges, {
+          force: true,
+        }),
+      );
     }
-    return backup;
+  } catch (e) {
+    console.warn('[load-project-data] base64 迁移失败（不影响加载）:', e);
   }
-
-  if (primary) {
-    return primary;
-  }
-
-  console.error('[load-project-data] 无法读取 data.json / data.json.bak:', projectId);
-  return { nodes: [], edges: [] };
+  return {
+    nodes: loaded.nodes,
+    edges: loaded.edges,
+    ...(loaded.recoveredFrom ? { recoveredFrom: loaded.recoveredFrom } : {}),
+  };
 });
 
-/** 将 data.json / data.json.bak 复制到项目目录 backups/（带时间戳文件名） */
+ipcMain.handle('list-project-data-backups', async (_, projectId: string) => {
+  const projectFolderPath = await getProjectFolderPath(projectId);
+  if (!projectFolderPath || !fs.existsSync(projectFolderPath)) {
+    return { success: false as const, error: 'NO_PROJECT' as const, backups: [] as const };
+  }
+  return { success: true as const, backups: listProjectBackupSummaries(projectFolderPath) };
+});
+
 ipcMain.handle(
   'backup-project-data',
   async (
@@ -1750,32 +1844,32 @@ ipcMain.handle(
       if (!projectFolderPath || !fs.existsSync(projectFolderPath)) {
         return { success: false, error: 'NO_PROJECT', files: [] };
       }
+      const graph =
+        readProjectGraphFile(path.join(projectFolderPath, 'data.json')) ||
+        readProjectGraphFile(path.join(projectFolderPath, 'data.json.bak'));
+      if (!graph || graphScore(graph) <= 0) {
+        return { success: false, error: 'NO_DATA_FILES', files: [] };
+      }
+      const rolled = writeRollingBackup(projectFolderPath, graph, 'manual');
+      if (rolled) files.push(rolled);
       const names = ['data.json', 'data.json.bak'] as const;
-      const toCopy: { src: string; base: string }[] = [];
+      const backupsDir = path.join(projectFolderPath, 'backups');
+      fs.mkdirSync(backupsDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
       for (const name of names) {
         const src = path.join(projectFolderPath, name);
         try {
           if (fs.existsSync(src) && fs.statSync(src).isFile()) {
-            toCopy.push({ src, base: name });
+            const destName = `${stamp}-${name}`;
+            const dest = path.join(backupsDir, destName);
+            fs.copyFileSync(src, dest);
+            files.push(`backups/${destName}`);
           }
         } catch {
           /* skip */
         }
       }
-      if (toCopy.length === 0) {
-        return { success: false, error: 'NO_DATA_FILES', files: [] };
-      }
-      const backupsDir = path.join(projectFolderPath, 'backups');
-      fs.mkdirSync(backupsDir, { recursive: true });
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-      for (const { src, base } of toCopy) {
-        const ext = path.extname(base) || '.json';
-        const stem = ext ? base.slice(0, -ext.length) : base;
-        const destName = `${stem}-${stamp}${ext}`;
-        const dest = path.join(backupsDir, destName);
-        fs.copyFileSync(src, dest);
-        files.push(`backups/${destName}`);
-      }
+      if (files.length === 0) return { success: false, error: 'NO_DATA_FILES', files: [] };
       return { success: true, files };
     } catch (e) {
       console.error('[backup-project-data]', e);
@@ -1784,14 +1878,13 @@ ipcMain.handle(
   },
 );
 
-/** 当 data.json 节点少于 data.json.bak 时，用备份覆盖当前工程图数据（恢复误删模块） */
 ipcMain.handle(
   'restore-project-data-from-backup',
   async (
     _,
     projectId: string,
   ): Promise<
-    | { success: true; nodeCount: number; previousCount: number }
+    | { success: true; nodeCount: number; previousCount: number; source?: string }
     | { success: false; error: string; currentCount?: number; backupCount?: number }
   > => {
     try {
@@ -1799,43 +1892,39 @@ ipcMain.handle(
       if (!projectFolderPath || !fs.existsSync(projectFolderPath)) {
         return { success: false, error: 'NO_PROJECT' };
       }
-
       const dataPath = path.join(projectFolderPath, 'data.json');
-      const bakPath = path.join(projectFolderPath, 'data.json.bak');
-      const current = readProjectDataFile(dataPath);
-      const backup = readProjectDataFile(bakPath);
-
-      if (!backup || backup.nodes.length === 0) {
-        return { success: false, error: 'NO_BACKUP', currentCount: current?.nodes?.length ?? 0, backupCount: 0 };
+      const current = readProjectGraphFile(dataPath);
+      const best = resolveBestProjectGraph(projectFolderPath, projectId);
+      if (!best || graphScore(best.graph) <= 0) {
+        return {
+          success: false,
+          error: 'NO_BACKUP',
+          currentCount: current?.nodes?.length ?? 0,
+          backupCount: 0,
+        };
       }
-
       const currentCount = current?.nodes?.length ?? 0;
-      const backupCount = backup.nodes.length;
+      const backupCount = best.graph.nodes.length;
       if (backupCount <= currentCount) {
         return { success: false, error: 'BACKUP_NOT_NEWER', currentCount, backupCount };
       }
-
-      if (fs.existsSync(dataPath)) {
-        const preRestore = path.join(
-          projectFolderPath,
-          `data.json.pre-restore-${Date.now()}.json`,
-        );
-        try {
-          fs.copyFileSync(dataPath, preRestore);
-        } catch (e) {
-          console.warn('[restore-project-data-from-backup] 写入 pre-restore 失败:', e);
-        }
+      if (current && graphScore(current) > 0) {
+        archiveGraphToLost(projectId, current, 'pre-manual-restore');
+        writeRollingBackup(projectFolderPath, current, 'pre-restore');
       }
-
-      fs.writeFileSync(
+      atomicWriteText(
         dataPath,
-        JSON.stringify({ nodes: backup.nodes, edges: backup.edges }, null, 2),
-        'utf-8',
+        JSON.stringify({ nodes: best.graph.nodes, edges: best.graph.edges }, null, 2),
       );
       console.log(
-        `[restore-project-data-from-backup] 已恢复 ${backupCount} 个节点（原 ${currentCount}）: ${projectId}`,
+        `[restore-project-data-from-backup] 已从 ${best.source} 恢复 ${backupCount} 个节点（原 ${currentCount}）: ${projectId}`,
       );
-      return { success: true, nodeCount: backupCount, previousCount: currentCount };
+      return {
+        success: true,
+        nodeCount: backupCount,
+        previousCount: currentCount,
+        source: best.source,
+      };
     } catch (e) {
       console.error('[restore-project-data-from-backup]', e);
       return { success: false, error: 'IO_ERROR' };
@@ -2120,6 +2209,39 @@ ipcMain.handle('ai:invoke', async (_, params: any) => {
   };
   return await aiCore.invoke(normalized);
 });
+
+/** 取消进行中的 FC LLM（导演/LLM 节点取消按钮） */
+ipcMain.handle('ai:abort-llm', async () => {
+  try {
+    const { abortInFlightFcLlm } = await import('./ai-provider.js');
+    return abortInFlightFcLlm();
+  } catch (e: any) {
+    console.warn('[ai:abort-llm]', e?.message || e);
+    return { aborted: false };
+  }
+});
+
+/** MiniMax-H3 本地 skill 指南（resources/skills/minimax-h3/h3-prompt-writing） */
+ipcMain.handle(
+  'skills:get-minimax-h3-prompt-guide',
+  async (_, kind: 'base' | 'ref' = 'base') => {
+    try {
+      const k = kind === 'ref' ? 'ref' : 'base';
+      const bundle = loadMinimaxH3PromptWritingBundle(k);
+      return {
+        ok: true as const,
+        kind: bundle.kind,
+        skillMd: bundle.skillMd,
+        guide: bundle.guide,
+      };
+    } catch (e: any) {
+      return {
+        ok: false as const,
+        error: e?.message || String(e || '读取 MiniMax-H3 skill 失败'),
+      };
+    }
+  },
+);
 
 /** 重启后根据已持久化的 RunningHub taskId 恢复轮询 */
 ipcMain.handle(
@@ -2951,6 +3073,65 @@ ipcMain.handle('get-project-original-path', (_, projectId: string) => {
   return getProjectOriginalFolderPath(projectId);
 });
 
+ipcMain.handle('director-v2-save-session', async (_, projectId: string, session: unknown) => {
+  const { directorV2SaveSession } = await import('./director/directorV2Store.js');
+  return directorV2SaveSession(projectId, session);
+});
+
+ipcMain.handle(
+  'director-v2-save-asset-file',
+  async (
+    _,
+    projectId: string,
+    opts: { kind: 'image' | 'audio'; filename: string; mime?: string; data: ArrayBuffer | Uint8Array },
+  ) => {
+    const { directorV2SaveAssetFile } = await import('./director/directorV2Store.js');
+    return directorV2SaveAssetFile(projectId, opts);
+  },
+);
+
+ipcMain.handle('director-v2-load-session', async (_, projectId: string) => {
+  const { directorV2LoadSession } = await import('./director/directorV2Store.js');
+  return directorV2LoadSession(projectId);
+});
+
+ipcMain.handle('director-v2-exists', async (_, projectId: string) => {
+  const { directorV2Exists } = await import('./director/directorV2Store.js');
+  return directorV2Exists(projectId);
+});
+
+ipcMain.handle('director-v2-load-cast-library', async (_, projectId: string) => {
+  const { directorV2LoadCastLibrary } = await import('./director/directorV2Store.js');
+  return directorV2LoadCastLibrary(projectId);
+});
+
+ipcMain.handle('director-v2-recover-cast-picks', async (_, projectId: string) => {
+  const { directorV2RecoverCastPicks } = await import('./director/directorV2Store.js');
+  return directorV2RecoverCastPicks(projectId);
+});
+
+ipcMain.handle(
+  'director-v2-upsert-cast-library',
+  async (
+    _,
+    projectId: string,
+    incoming: {
+      characters?: Array<{
+        id?: string;
+        name?: string;
+        gender?: string;
+        prompt?: string;
+        imageUrl?: string;
+        voiceUrl?: string;
+      }>;
+      scenes?: Array<{ id?: string; name?: string; imageUrl?: string }>;
+    },
+  ) => {
+    const { directorV2UpsertCastLibrary } = await import('./director/directorV2Store.js');
+    return directorV2UpsertCastLibrary(projectId, incoming || {});
+  },
+);
+
 ipcMain.handle('get-project-base-path', () => {
   return getProjectsBasePath();
 });
@@ -3098,9 +3279,154 @@ ipcMain.handle('open-path', async (_, pathToOpen: string) => {
   }
 });
 
-// 角色管理
+function persistDataUrlImageSync(
+  characterId: string,
+  fileStem: string,
+  dataUrl: string,
+): { url: string; fsPath: string } | null {
+  const raw = String(dataUrl || '').trim();
+  if (!raw.startsWith('data:image/')) return null;
+  const comma = raw.indexOf(',');
+  if (comma < 0) return null;
+  const header = raw.slice(0, comma);
+  const b64 = raw.slice(comma + 1).replace(/\s/g, '');
+  const mimeMatch = header.match(/data:image\/([a-zA-Z0-9+.-]+)/i);
+  const extRaw = (mimeMatch?.[1] || 'png').toLowerCase();
+  const ext = extRaw === 'jpeg' ? 'jpg' : extRaw.replace(/[^a-z0-9]/g, '') || 'png';
+  let buf: Buffer;
+  try {
+    buf = Buffer.from(b64, 'base64');
+  } catch {
+    return null;
+  }
+  if (buf.length < 1 || buf.length > 8 * 1024 * 1024) return null;
+  const dir = path.join(app.getPath('userData'), fileStem.startsWith('view') ? 'character-views' : 'avatars');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const fsPath = path.join(dir, `${characterId}-${fileStem}.${ext}`);
+  try {
+    if (!fs.existsSync(fsPath) || fs.statSync(fsPath).size !== buf.length) {
+      fs.writeFileSync(fsPath, buf);
+    }
+  } catch (e) {
+    console.error('[角色库] 落盘头像失败:', e);
+    return null;
+  }
+  let normalizedPath = fsPath.replace(/\\/g, '/');
+  if (normalizedPath.match(/^\/[a-zA-Z]:/)) normalizedPath = normalizedPath.substring(1);
+  return { url: `local-resource://${normalizedPath}`, fsPath };
+}
+
+function fsPathToLocalResource(fsPath: string): string {
+  let normalizedPath = String(fsPath || '').replace(/\\/g, '/');
+  if (!normalizedPath) return '';
+  if (normalizedPath.match(/^\/[a-zA-Z]:/)) normalizedPath = normalizedPath.substring(1);
+  if (normalizedPath.startsWith('local-resource://')) return normalizedPath;
+  return `local-resource://${normalizedPath}`;
+}
+
+function hydrateCharacterLocalMedia(raw: Record<string, unknown>): { character: Record<string, unknown>; changed: boolean } {
+  const next: Record<string, unknown> = { ...raw };
+  let changed = false;
+  const id = String(raw.id || 'character');
+  const avatar = String(raw.avatar || '').trim();
+  const localAvatar = String(raw.localAvatarPath || '').trim();
+  if (!localAvatar && avatar.startsWith('data:image/')) {
+    const one = persistDataUrlImageSync(id, 'avatar', avatar);
+    if (one) {
+      next.localAvatarPath = one.fsPath;
+      next.avatar = one.url;
+      changed = true;
+    }
+  } else if (localAvatar && avatar.startsWith('data:')) {
+    next.avatar = fsPathToLocalResource(localAvatar);
+    changed = true;
+  }
+  const views = Array.isArray(raw.viewImages) ? [...(raw.viewImages as unknown[])] : [];
+  const localViews = Array.isArray(raw.localViewPaths)
+    ? [...(raw.localViewPaths as unknown[])].map((p) => String(p || ''))
+    : [];
+  for (let i = 0; i < Math.max(4, views.length); i++) {
+    const v = String(views[i] || '').trim();
+    if (!v.startsWith('data:image/')) continue;
+    const one = persistDataUrlImageSync(id, `view${i}`, v);
+    if (!one) continue;
+    views[i] = one.url;
+    if (one.fsPath && !localViews.includes(one.fsPath)) localViews.push(one.fsPath);
+    changed = true;
+  }
+  if (changed) {
+    next.viewImages = views;
+    next.localViewPaths = localViews;
+  }
+  return { character: next, changed };
+}
+
+function compactCharacterForIpc(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const c = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...c };
+  const localAvatar = String(c.localAvatarPath || '').trim();
+  if (localAvatar) {
+    out.avatar = fsPathToLocalResource(localAvatar);
+  } else if (typeof out.avatar === 'string' && out.avatar.startsWith('data:') && out.avatar.length > 120_000) {
+    out.avatar = '';
+  }
+  if (Array.isArray(out.viewImages)) {
+    const locals = Array.isArray(out.localViewPaths) ? (out.localViewPaths as unknown[]) : [];
+    out.viewImages = (out.viewImages as unknown[]).map((v, i) => {
+      const s = String(v || '');
+      if (s.startsWith('data:') && s.length > 120_000) {
+        const lp = String(locals[i] || '').trim();
+        return lp ? fsPathToLocalResource(lp) : '';
+      }
+      return v;
+    });
+  }
+  return out;
+}
+
+let characterPersistQueued = false;
+function queueCharacterMediaPersist() {
+  if (characterPersistQueued) return;
+  characterPersistQueued = true;
+  let index = 0;
+  const step = () => {
+    try {
+      const list = (store.get('characters') || []) as Array<Record<string, unknown>>;
+      if (!Array.isArray(list) || index >= list.length) {
+        characterPersistQueued = false;
+        return;
+      }
+      const item = list[index++];
+      if (item && typeof item === 'object') {
+        const { character, changed } = hydrateCharacterLocalMedia(item);
+        if (changed) {
+          const next = list.slice();
+          next[index - 1] = character;
+          store.set('characters', next);
+          for (const win of BrowserWindow.getAllWindows()) {
+            try {
+              win.webContents.send('characters-updated');
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[角色库] 后台落盘失败:', e);
+    }
+    setImmediate(step);
+  };
+  setImmediate(step);
+}
+
+// 角色管理：立刻返回，落盘放到后台，避免进草稿时主进程卡死、哪儿都点不了
 ipcMain.handle('get-characters', () => {
-  return store.get('characters') || [];
+  const list = store.get('characters') || [];
+  if (!Array.isArray(list)) return [];
+  queueCharacterMediaPersist();
+  return list.map((c) => compactCharacterForIpc(c));
 });
 
 /** 将 data URL 音频写入 userData/character-voices，返回 local-resource URL 与磁盘路径（供删除时清理） */
@@ -3249,6 +3575,7 @@ ipcMain.handle(
     permalink?: string,
     voiceClip?: string,
     viewImages?: string[],
+    imageDescription?: string,
   ) => {
   const characters = (store.get('characters') || []) as Array<{
     id: string;
@@ -3263,6 +3590,7 @@ ipcMain.handle(
     localVoicePath?: string;
     viewImages?: string[];
     localViewPaths?: string[];
+    imageDescription?: string;
   }>;
 
   const characterId = `character-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -3332,6 +3660,7 @@ ipcMain.handle(
     }
   }
 
+  const desc = typeof imageDescription === 'string' ? imageDescription.trim() : '';
   const newCharacter = {
     id: characterId,
     nickname,
@@ -3345,6 +3674,7 @@ ipcMain.handle(
     createdAt: Date.now(),
     ...(viewImagesPersisted ? { viewImages: viewImagesPersisted } : {}),
     ...(localViewPathsPersisted?.length ? { localViewPaths: localViewPathsPersisted } : {}),
+    ...(desc ? { imageDescription: desc } : {}),
   };
   
   characters.push(newCharacter);
@@ -3390,7 +3720,7 @@ async function persistImageTo3dCharacterReferenceImage(
   return { url: trimmed };
 }
 
-ipcMain.handle('update-character', async (_, characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; voiceClip?: string; viewImages?: string[] }) => {
+ipcMain.handle('update-character', async (_, characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; voiceClip?: string; viewImages?: string[]; imageDescription?: string }) => {
   const characters = (store.get('characters') || []) as Array<{
     id: string;
     nickname: string;
@@ -3405,6 +3735,7 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
     localVoicePath?: string;
     viewImages?: string[];
     localViewPaths?: string[];
+    imageDescription?: string;
   }>;
   
   const index = characters.findIndex((c) => c.id === characterId);
@@ -3422,6 +3753,7 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
       localVoicePath?: string;
       viewImages?: string[];
       localViewPaths?: string[];
+      imageDescription?: string;
     } = { ...updates };
     
     if (updates.avatar !== undefined && isImageTo3d) {
@@ -3532,6 +3864,11 @@ ipcMain.handle('update-character', async (_, characterId: string, updates: { nic
         finalUpdates.viewImages = viSlots;
         finalUpdates.localViewPaths = lvPaths.length ? lvPaths : undefined;
       }
+    }
+
+    if (updates.imageDescription !== undefined) {
+      finalUpdates.imageDescription =
+        typeof updates.imageDescription === 'string' ? updates.imageDescription.trim() : '';
     }
     
     characters[index] = { ...character, ...finalUpdates };
@@ -6828,7 +7165,9 @@ ipcMain.handle('nx-cloud-logout', async () => {
   return getCloudUserState();
 });
 ipcMain.handle('nx-cloud-get-profile', async () => nxCloudGetProfile());
-ipcMain.handle('nx-cloud-get-transactions', async (_, limit?: number) => ({ items: await nxCloudGetTransactions(limit) }));
+ipcMain.handle('nx-cloud-get-transactions', async (_, limit?: number, page?: number) =>
+  nxCloudGetTransactions(limit, page),
+);
 ipcMain.handle('nx-cloud-get-tasks', async (_, limit?: number) => ({ items: await nxCloudGetTasks(limit) }));
 ipcMain.handle('nx-cloud-task-status', async (_, taskId: string) => nxCloudTaskStatus(taskId));
 ipcMain.handle('nx-cloud-recharge', async (_, amountCny: number) => nxCloudRecharge(amountCny));
@@ -6947,6 +7286,15 @@ ipcMain.handle('tutorial-videos:list', async (_evt, force?: boolean) => {
 ipcMain.handle('local-resource:set-sharp-queue-paused', async (_, paused: boolean) => {
   setSharpQueuePaused(Boolean(paused));
   return { success: true, paused: Boolean(paused) };
+});
+
+ipcMain.on('local-resource:peek-library-list-thumb', (event, sourceUrlOrPath: string, maxEdge?: number) => {
+  try {
+    const r = localResourceManager.peekLibraryListThumb(sourceUrlOrPath, maxEdge);
+    event.returnValue = r ? { success: true, ...r } : { success: false };
+  } catch {
+    event.returnValue = { success: false };
+  }
 });
 
 ipcMain.handle('local-resource:ensure-library-list-thumb', async (_, sourceUrlOrPath: string, maxEdge?: number) => {
@@ -7113,18 +7461,7 @@ ipcMain.handle(
   async (
     _,
     projectId: string | undefined,
-    videoClips: Array<{
-      type: string;
-      src: string;
-      duration: number;
-      startTime: number;
-      trimStart?: number;
-      trimEnd?: number;
-      lockTrim?: boolean;
-      name?: string;
-      layout?: { x: number; y: number; w: number; h: number };
-      crop?: { left: number; top: number; right: number; bottom: number };
-    }>,
+    videoClipsOrTracks: unknown,
     audioTracks: Array<
       Array<{
         type: string;
@@ -7137,8 +7474,8 @@ ipcMain.handle(
       }>
     >,
     options?: {
-      videoTrackVolume?: number;
-      videoTrackMuted?: boolean;
+      videoTrackVolume?: number | number[];
+      videoTrackMuted?: boolean | boolean[];
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
       outputWidth?: number;
@@ -7159,7 +7496,7 @@ ipcMain.handle(
       }
       const { videoPath, hasAudio } = await localResourceManager.exportTimelineVideo(
         projectId,
-        videoClips,
+        videoClipsOrTracks as Parameters<typeof localResourceManager.exportTimelineVideo>[1],
         audioTracks,
         result.filePath,
         options,
@@ -7180,18 +7517,7 @@ ipcMain.handle(
   async (
     _,
     projectId: string | undefined,
-    videoClips: Array<{
-      type: string;
-      src: string;
-      duration: number;
-      startTime: number;
-      trimStart?: number;
-      trimEnd?: number;
-      lockTrim?: boolean;
-      name?: string;
-      layout?: { x: number; y: number; w: number; h: number };
-      crop?: { left: number; top: number; right: number; bottom: number };
-    }>,
+    videoClipsOrTracks: unknown,
     audioTracks: Array<
       Array<{
         type: string;
@@ -7204,8 +7530,8 @@ ipcMain.handle(
       }>
     >,
     options?: {
-      videoTrackVolume?: number;
-      videoTrackMuted?: boolean;
+      videoTrackVolume?: number | number[];
+      videoTrackMuted?: boolean | boolean[];
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
       outputWidth?: number;
@@ -7217,7 +7543,7 @@ ipcMain.handle(
       const tmpPath = path.join(os.tmpdir(), `nexflow-splice-${id}.mp4`).replace(/\\/g, '/');
       const { hasAudio } = await localResourceManager.exportTimelineVideo(
         projectId,
-        videoClips,
+        videoClipsOrTracks as Parameters<typeof localResourceManager.exportTimelineVideo>[1],
         audioTracks,
         tmpPath,
         options,

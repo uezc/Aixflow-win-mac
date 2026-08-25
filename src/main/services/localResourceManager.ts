@@ -9,8 +9,14 @@ import * as OpenCC from 'opencc-js';
 import { getProjectFolderPath, isLocalResourcePathAllowed } from '../utils/projectFolderHelper.js';
 import { buildYoutubeYtDlpClientArgs, buildYoutubeYtDlpSpeedArgs, runYoutubeYtDlpAdaptive } from './videoScraper.js';
 import { listWhisperSearchRoots, ensureWhisperReady } from './localWhisperEngine.js';
-import { buildClipLayoutScaleFilter, type ClipLayout } from '../../shared/clipLayout.js';
-import { buildClipCropFilterPrefix, type ClipCrop } from '../../shared/clipCrop.js';
+import {
+  buildClipLayoutOverlayFilter,
+  buildClipLayoutScaleFilter,
+  isDefaultClipLayout,
+  normalizeClipLayout,
+  type ClipLayout,
+} from '../../shared/clipLayout.js';
+import { buildClipCropFilterPrefix, normalizeClipCrop, type ClipCrop } from '../../shared/clipCrop.js';
 import { buildFfmpegChromaKeyVf } from '../../shared/chromaKey.js';
 
 /** 人声分离 / Whisper 转写进行中的子进程，供取消 IPC 杀掉 */
@@ -1514,6 +1520,7 @@ async function runFfmpegCropVideo(
 /** 音频裁剪：按起始和结束时间截取片段，输出 mp3 */
 async function runFfmpegTrimAudio(inputPath: string, outputPath: string, startSec: number, endSec: number): Promise<void> {
   const duration = Math.max(0.01, endSec - startSec);
+  const timeoutMs = 60_000;
   await new Promise<void>((resolve, reject) => {
     const ffmpegBin = resolveFfmpegPath();
     const args = [
@@ -1536,11 +1543,37 @@ async function runFfmpegTrimAudio(inputPath: string, outputPath: string, startSe
     ];
     const child = spawn(ffmpegBin, args, { windowsHide: true });
     let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (process.platform === 'win32' && child.pid) {
+          spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+            windowsHide: true,
+            stdio: 'ignore',
+          });
+        } else {
+          child.kill('SIGKILL');
+        }
+      } catch {
+        /* ignore */
+      }
+      reject(new Error(`ffmpeg 裁剪音频超时（>${timeoutMs / 1000}s）`));
+    }, timeoutMs);
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk || '');
     });
-    child.on('error', (error) => reject(error));
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (code === 0) resolve();
       else reject(new Error(stderr || `ffmpeg exited with code ${code}`));
     });
@@ -1747,42 +1780,41 @@ export async function getMediaDuration(url: string, projectId?: string): Promise
   });
 }
 
-/** 导出时解析片段参考时长：导演 lockTrim 优先 trim，勿被成片探测拉长覆盖有意裁切 */
-async function resolveTimelineClipDuration(
+/**
+ * 导出用 in/out：与剪辑预览时间轴一致。
+ * - 有显式 trimEnd → 只用 trim 区间
+ * - 否则用 clip.duration 作 out（轨道上的素材长度）
+ * - 禁止用 ffmpeg 探测全长覆盖上述值（否则「时间轴已裁短、导出仍是整段源」）
+ * - 仅当 duration/trim 都无效时才探测源文件
+ */
+async function resolveExportClipTrimRange(
   clip: {
     type: string;
-    src: string;
+    src?: string;
     duration: number;
     trimStart?: number;
     trimEnd?: number;
-    lockTrim?: boolean;
   },
   projectId?: string,
-): Promise<number> {
-  if (clip.type === 'image') return clip.duration;
-  const ts = Number(clip.trimStart) || 0;
-  const te = clip.trimEnd;
-  const intentionalTrim =
-    te != null && Number.isFinite(te) && (te as number) > ts + 0.01;
-
-  // 导演有意裁切：返回值仅作 trimEnd 缺省；调用方用 trimEnd-trimStart 切片，禁止 max(probed) 抬高
-  if (clip.lockTrim && intentionalTrim) {
-    return Math.max(Number.isFinite(clip.duration) ? clip.duration : 0, te as number);
+): Promise<{ trimStart: number; trimEnd: number; span: number }> {
+  const ts = Math.max(0, Number(clip.trimStart) || 0);
+  const explicitTe = Number(clip.trimEnd);
+  if (Number.isFinite(explicitTe) && explicitTe > ts + 0.01) {
+    const te = explicitTe;
+    return { trimStart: ts, trimEnd: te, span: Math.max(0.01, te - ts) };
   }
-
-  const src = (clip.src || '').trim();
-  if (!src) return clip.duration;
-  const probed = await getMediaDuration(src, projectId);
-  const fromClip = Math.max(
-    clip.duration,
-    intentionalTrim ? (te as number) : 0,
-  );
-  // 已有明确 trim 时：探测不得把参考时长抬到超过 trimEnd（避免缺 trim 回退时切到全片）
-  if (intentionalTrim && probed > 0) {
-    return Math.max(fromClip, Math.min(probed, te as number));
+  const dur = Number(clip.duration);
+  if (Number.isFinite(dur) && dur > ts + 0.01) {
+    return { trimStart: ts, trimEnd: dur, span: Math.max(0.01, dur - ts) };
   }
-  if (probed > 0) return Math.max(fromClip, probed);
-  return fromClip;
+  if (clip.type === 'image') {
+    const te = ts + 0.01;
+    return { trimStart: ts, trimEnd: te, span: 0.01 };
+  }
+  const src = String(clip.src || '').trim();
+  const probed = src ? await getMediaDuration(src, projectId).catch(() => 0) : 0;
+  const te = Math.max(ts + 0.01, probed || 0.01);
+  return { trimStart: ts, trimEnd: te, span: Math.max(0.01, te - ts) };
 }
 
 async function generateVideoPosterAndGhost(
@@ -2123,30 +2155,30 @@ export class LocalResourceManager {
    * 资产库列表专用小缩略图（默认 256px）。磁盘缓存，二次打开秒开；
    * 不走画布 sharp pause，避免平移时列表假死。
    */
-  async ensureLibraryListThumb(
+  resolveLibraryListThumbTarget(
     sourceUrlOrPath: string,
     maxEdge = 256,
-  ): Promise<{ thumbUrl: string; thumbPath: string; cached: boolean }> {
+  ): { sourcePath: string; thumbPath: string; edge: number } | null {
     const raw = String(sourceUrlOrPath || '').trim();
-    if (!raw) throw new Error('源路径为空');
-    if (/\.(mp4|webm|mov|mkv|m4v)(\?|$)/i.test(raw)) {
-      throw new Error('视频请使用 poster，不生成列表缩略图');
-    }
+    if (!raw) return null;
+    if (/\.(mp4|webm|mov|mkv|m4v)(\?|$)/i.test(raw)) return null;
 
     let sourcePath = raw;
     if (raw.startsWith('local-resource://')) {
-      sourcePath = decodeURIComponent(raw.slice('local-resource://'.length));
+      try {
+        sourcePath = decodeURIComponent(raw.slice('local-resource://'.length));
+      } catch {
+        sourcePath = raw.slice('local-resource://'.length);
+      }
       if (/^\/[A-Za-z]:/.test(sourcePath)) sourcePath = sourcePath.slice(1);
     } else if (raw.startsWith('file://')) {
       sourcePath = raw.replace(/^file:\/\/\/?/i, '');
       if (process.platform === 'win32' && sourcePath.startsWith('/')) sourcePath = sourcePath.slice(1);
     }
     sourcePath = path.normalize(sourcePath.replace(/\//g, path.sep));
-    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
-      throw new Error('源文件不存在');
-    }
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) return null;
 
-    const edge = Math.max(64, Math.min(512, Math.round(Number(maxEdge) || 256)));
+    const edge = Math.max(64, Math.min(1024, Math.round(Number(maxEdge) || 256)));
     const srcStat = fs.statSync(sourcePath);
     const key = crypto
       .createHash('sha1')
@@ -2154,19 +2186,43 @@ export class LocalResourceManager {
       .digest('hex')
       .slice(0, 20);
     const thumbDir = path.join(app.getPath('userData'), 'library-list-thumbs');
-    fs.mkdirSync(thumbDir, { recursive: true });
     const thumbPath = path.join(thumbDir, `${key}.jpg`).replace(/\\/g, '/');
+    return { sourcePath, thumbPath, edge };
+  }
 
-    if (fs.existsSync(thumbPath)) {
-      try {
-        const tStat = fs.statSync(thumbPath);
-        if (tStat.isFile() && tStat.size > 0) {
-          return { thumbUrl: toLocalResourceUrl(thumbPath), thumbPath, cached: true };
-        }
-      } catch {
-        /* regenerate */
-      }
+  peekLibraryListThumb(
+    sourceUrlOrPath: string,
+    maxEdge = 256,
+  ): { thumbUrl: string; thumbPath: string; cached: true } | null {
+    const target = this.resolveLibraryListThumbTarget(sourceUrlOrPath, maxEdge);
+    if (!target) return null;
+    try {
+      if (!fs.existsSync(target.thumbPath)) return null;
+      const tStat = fs.statSync(target.thumbPath);
+      if (!tStat.isFile() || tStat.size <= 0) return null;
+      return {
+        thumbUrl: toLocalResourceUrl(target.thumbPath),
+        thumbPath: target.thumbPath,
+        cached: true,
+      };
+    } catch {
+      return null;
     }
+  }
+
+  async ensureLibraryListThumb(
+    sourceUrlOrPath: string,
+    maxEdge = 256,
+  ): Promise<{ thumbUrl: string; thumbPath: string; cached: boolean }> {
+    const raw = String(sourceUrlOrPath || '').trim();
+    if (!raw) throw new Error('源路径为空');
+    const peeked = this.peekLibraryListThumb(raw, maxEdge);
+    if (peeked) return peeked;
+
+    const target = this.resolveLibraryListThumbTarget(raw, maxEdge);
+    if (!target) throw new Error('源文件不存在');
+    const { sourcePath, thumbPath, edge } = target;
+    fs.mkdirSync(path.dirname(thumbPath), { recursive: true });
 
     const sharpMod = await getSharp();
     if (!sharpMod) {
@@ -2175,7 +2231,7 @@ export class LocalResourceManager {
 
     await runSharpTask(async () => {
       const sharp = sharpMod.default || sharpMod;
-      await sharp(sourcePath, { failOn: 'none', sequentialRead: true })
+      await sharp(sourcePath, { failOn: 'none', sequentialRead: true, limitInputPixels: 48_000_000 })
         .rotate()
         .resize({
           width: edge,
@@ -2183,7 +2239,7 @@ export class LocalResourceManager {
           fit: 'inside',
           withoutEnlargement: true,
         })
-        .jpeg({ quality: 62, chromaSubsampling: '4:2:0' })
+        .jpeg({ quality: 82, chromaSubsampling: '4:2:0' })
         .toFile(thumbPath);
     }, { bypassPause: true });
 
@@ -2291,6 +2347,18 @@ export class LocalResourceManager {
         setTimeout(() => resolve({}), 9000);
       }),
     ]);
+    // 封面抽帧会 scale=640，勿把海报尺寸当成视频分辨率（否则卡拉OK烧录入库会“变 640p”）
+    let width = poster.width;
+    let height = poster.height;
+    try {
+      const meta = await probeVideoBasicMeta(normalized);
+      if (meta.width > 0 && meta.height > 0) {
+        width = meta.width;
+        height = meta.height;
+      }
+    } catch {
+      /* 探测失败则回退 poster 尺寸 */
+    }
     return {
       originalPath,
       originalUrl: toLocalResourceUrl(originalPath),
@@ -2299,8 +2367,8 @@ export class LocalResourceManager {
       ghostBase64: poster.ghostBase64,
       bytesOriginal,
       bytesPoster: poster.bytesPoster,
-      width: poster.width,
-      height: poster.height,
+      width,
+      height,
       ...(hasAlpha ? { hasAlpha: true } : {}),
     };
   }
@@ -2315,6 +2383,17 @@ export class LocalResourceManager {
     fs.writeFileSync(originalPath, Buffer.from(buffer));
     const bytesOriginal = fs.statSync(originalPath).size;
     const poster = await generateVideoPosterAndGhost(originalPath, posterPath);
+    let width = poster.width;
+    let height = poster.height;
+    try {
+      const meta = await probeVideoBasicMeta(originalPath);
+      if (meta.width > 0 && meta.height > 0) {
+        width = meta.width;
+        height = meta.height;
+      }
+    } catch {
+      /* ignore */
+    }
     return {
       originalPath,
       originalUrl: toLocalResourceUrl(originalPath),
@@ -2323,8 +2402,8 @@ export class LocalResourceManager {
       ghostBase64: poster.ghostBase64,
       bytesOriginal,
       bytesPoster: poster.bytesPoster,
-      width: poster.width,
-      height: poster.height,
+      width,
+      height,
     };
   }
 
@@ -2343,6 +2422,17 @@ export class LocalResourceManager {
     const bytesOriginal = fs.statSync(originalPath).size;
 
     const poster = await generateVideoPosterAndGhost(originalPath, posterPath);
+    let width = poster.width;
+    let height = poster.height;
+    try {
+      const meta = await probeVideoBasicMeta(originalPath);
+      if (meta.width > 0 && meta.height > 0) {
+        width = meta.width;
+        height = meta.height;
+      }
+    } catch {
+      /* ignore */
+    }
     return {
       originalPath,
       originalUrl: toLocalResourceUrl(originalPath),
@@ -2351,8 +2441,8 @@ export class LocalResourceManager {
       ghostBase64: poster.ghostBase64,
       bytesOriginal,
       bytesPoster: poster.bytesPoster,
-      width: poster.width,
-      height: poster.height,
+      width,
+      height,
     };
   }
 
@@ -3191,24 +3281,42 @@ export class LocalResourceManager {
   }
 
   /**
-   * 时间轴导出视频：按 videoClips 顺序拼接视频/图片片段，合并音频轨道（剪映风格）
+   * 时间轴导出视频：单轨顺序拼接，或多轨叠放（上层 index 小覆盖下层，layout/crop/alpha）。
+   * 第二参可为单轨 clips[]，或多轨 clips[][]。
    */
   async exportTimelineVideo(
     projectId: string | undefined,
-    videoClips: Array<{
-      type: string;
-      src: string;
-      duration: number;
-      startTime: number;
-      trimStart?: number;
-      trimEnd?: number;
-      lockTrim?: boolean;
-      name?: string;
-      /** 合成画面布局（归一化）；仅作用于本导出的主轨顺序拼接 */
-      layout?: ClipLayout;
-      /** 源画面裁剪（归一化边距）；在 scale/pad 前应用 ffmpeg crop */
-      crop?: ClipCrop;
-    }>,
+    videoClipsOrTracks:
+      | Array<{
+          type: string;
+          src: string;
+          duration: number;
+          startTime: number;
+          trimStart?: number;
+          trimEnd?: number;
+          lockTrim?: boolean;
+          name?: string;
+          layout?: ClipLayout;
+          crop?: ClipCrop;
+          hasAlpha?: boolean;
+          volume?: number;
+        }>
+      | Array<
+          Array<{
+            type: string;
+            src: string;
+            duration: number;
+            startTime: number;
+            trimStart?: number;
+            trimEnd?: number;
+            lockTrim?: boolean;
+            name?: string;
+            layout?: ClipLayout;
+            crop?: ClipCrop;
+            hasAlpha?: boolean;
+            volume?: number;
+          }>
+        >,
     audioTracks: Array<
       Array<{
         type: string;
@@ -3221,11 +3329,29 @@ export class LocalResourceManager {
       }>
     >,
     outputPath: string,
-    options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
+    options?: {
+      videoTrackVolume?: number | number[];
+      videoTrackMuted?: boolean | boolean[];
+      audioTrackVolume?: number[];
+      audioTrackMuted?: boolean[];
+      outputWidth?: number;
+      outputHeight?: number;
+    },
   ): Promise<{ videoPath: string; hasAudio: boolean }> {
-    // EXPORT_GAP: 本函数只顺序拼接传入的 videoClips（通常为 videoTracks[0]），
-    // 多轨叠放/PiP 合成未接入；各 clip.layout / crop 会参与单段 crop→pad/scale。
-    // 上层轨的 layout/crop 仅预览生效，导出未合成。
+    type ExportClip = {
+      type: string;
+      src: string;
+      duration: number;
+      startTime: number;
+      trimStart?: number;
+      trimEnd?: number;
+      lockTrim?: boolean;
+      name?: string;
+      layout?: ClipLayout;
+      crop?: ClipCrop;
+      hasAlpha?: boolean;
+      volume?: number;
+    };
     const hasFfmpeg = await ensureFfmpegAvailable();
     if (!hasFfmpeg) {
       throw new Error('未检测到 ffmpeg，无法导出视频。请安装 ffmpeg 并添加到系统 PATH。');
@@ -3243,18 +3369,84 @@ export class LocalResourceManager {
       }
     };
     try {
-      const sortedClips = [...videoClips].filter((c) => c.type === 'video' || c.type === 'image').sort((a, b) => a.startTime - b.startTime);
-      if (sortedClips.length === 0) throw new Error('没有可导出的视频或图片素材');
+      type RawClip = ExportClip & { src?: string; type?: string };
+      const isVisualClip = (c: unknown): c is RawClip => {
+        if (!c || typeof c !== 'object') return false;
+        const t = String((c as RawClip).type || '');
+        return t === 'video' || t === 'image';
+      };
+      const clipHasSrc = (c: RawClip): boolean => !!String(c.src || '').trim();
+      /** 误标为 video 但 src 为静态图时，按 image 走 loop 输入，避免当视频解码失败 */
+      const coerceExportClip = (c: RawClip): ExportClip => {
+        const clip = { ...(c as ExportClip) };
+        const src = String(clip.src || '');
+        if (
+          clip.type === 'video' &&
+          /\.(png|jpe?g|gif|webp|bmp)(?:$|[?#])/i.test(src)
+        ) {
+          clip.type = 'image';
+        }
+        // 非主轨图片/视频的 layout、crop 必须进 overlay；归一化避免 IPC 后出现字符串数字或残缺字段
+        clip.layout = normalizeClipLayout(clip.layout);
+        clip.crop = normalizeClipCrop(clip.crop);
+        return clip;
+      };
+      /**
+       * 兼容：
+       * - 旧：扁平 clips[]
+       * - 新：多轨 clips[][]
+       * 判定优先「每个元素都是数组」；否则若首元素是数组也按多轨（含首轨为空的 [[], [clip]]）。
+       * 无源片段保留在轨结构中供调试，真正编码前再按 src 过滤。
+       */
+      const rawIn: unknown = videoClipsOrTracks || [];
+      let parsedTracks: RawClip[][] = [[]];
+      if (Array.isArray(rawIn) && rawIn.length > 0) {
+        const everyIsTrack = rawIn.every((t) => Array.isArray(t));
+        const firstIsTrack = Array.isArray(rawIn[0]);
+        if (everyIsTrack || firstIsTrack) {
+          parsedTracks = (rawIn as unknown[]).map((t) =>
+            (Array.isArray(t) ? t : []).filter(isVisualClip),
+          );
+        } else {
+          parsedTracks = [(rawIn as unknown[]).filter(isVisualClip)];
+        }
+      }
+      while (parsedTracks.length < 1) parsedTracks.push([]);
+      /** 仅含可解析源的轨（无源/未绑定片段跳过，不导致整单失败） */
+      const videoTracks: ExportClip[][] = parsedTracks.map((t) =>
+        t.filter((c) => clipHasSrc(c)).map((c) => coerceExportClip(c)),
+      );
+      const nonEmptyTrackCount = videoTracks.filter((t) => t.length > 0).length;
+      if (nonEmptyTrackCount === 0) throw new Error('没有可导出的视频或图片素材');
+      const useStackedExport = nonEmptyTrackCount > 1;
       const ffmpegBin = resolveFfmpegPath();
       const outW = Math.max(2, Math.round(Number(options?.outputWidth) || 1280));
       const outH = Math.max(2, Math.round(Number(options?.outputHeight) || 720));
       const scaleFilter = buildClipLayoutScaleFilter(outW, outH, null);
-      const videoTrackMuted = options?.videoTrackMuted ?? false;
-      const videoTrackVolume = Math.max(0, Math.min(2, options?.videoTrackVolume ?? 1));
+      const nVideoTracks = videoTracks.length;
+      const videoMutedList: boolean[] = Array.isArray(options?.videoTrackMuted)
+        ? Array.from({ length: nVideoTracks }, (_, i) => !!(options!.videoTrackMuted as boolean[])[i])
+        : Array.from({ length: nVideoTracks }, () => !!options?.videoTrackMuted);
+      const videoVolList: number[] = Array.isArray(options?.videoTrackVolume)
+        ? Array.from({ length: nVideoTracks }, (_, i) =>
+            Math.max(0, Math.min(2, Number((options!.videoTrackVolume as number[])[i]) || 1)),
+          )
+        : Array.from({ length: nVideoTracks }, () =>
+            Math.max(0, Math.min(2, Number(options?.videoTrackVolume) || 1)),
+          );
       const audioTrackMuted = options?.audioTrackMuted ?? [];
       const audioTrackVolume = (options?.audioTrackVolume ?? []).map((v) => Math.max(0, Math.min(3, v ?? 1)));
       const segmentPaths: string[] = [];
       let timelineCursor = 0;
+      /** 单轨路径使用的 clips（取第一条有源轨，兼容旧调用） */
+      const sortedClips = (
+        useStackedExport
+          ? []
+          : [...(videoTracks.find((t) => t.length > 0) || [])]
+      ).sort((a, b) => a.startTime - b.startTime);
+      if (!useStackedExport && sortedClips.length === 0) {
+        throw new Error('没有可导出的视频或图片素材');
+      }
       // 镜间空隙 / 成片偏短：有前片一律冻末帧（不设时长上限）；仅片头无前片时允许黑场
       const GAP_EPS = 0.05;
       const runExportFfmpeg = (args: string[]): Promise<void> =>
@@ -3363,133 +3555,8 @@ export class LocalResourceManager {
         }
         segmentPaths.push(await makeFreezeFromLastFrame(prevSegPath, t, idxLabel));
       };
-      for (let i = 0; i < sortedClips.length; i++) {
-        const clip = sortedClips[i];
-        const clipDuration = await resolveTimelineClipDuration(clip, projectId);
-        const trimStart = clip.trimStart ?? 0;
-        const trimEnd = clip.trimEnd ?? clipDuration;
-        const segDur = Math.max(0.01, trimEnd - trimStart);
-        const clipStart = Math.max(0, Number(clip.startTime) || 0);
-        // 尊重时间轴 startTime 空隙；有前片冻帧，勿插黑
-        const gap = clipStart - timelineCursor;
-        if (gap > GAP_EPS) {
-          const prevSeg = segmentPaths.length > 0 ? segmentPaths[segmentPaths.length - 1] : null;
-          await fillTimelineGap(gap, `pre-${String(i).padStart(3, '0')}`, prevSeg);
-          timelineCursor += gap;
-        }
-        let inputPath: string;
-        const url = (clip.src || '').trim();
-        if (url.startsWith('local-resource://') || url.startsWith('file://')) {
-          let filePath = url.replace(/^local-resource:\/\/+/, '').replace(/^file:\/\/+/, '');
-          if (filePath.includes('?')) filePath = filePath.split('?')[0];
-          filePath = filePath.replace(/^\/+/, '');
-          if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
-          try {
-            filePath = decodeURIComponent(filePath);
-          } catch {
-            // ignore
-          }
-          if (filePath.match(/^\/[a-zA-Z]:/)) filePath = filePath.substring(1);
-          let normalizedPath = path.normalize(filePath);
-          if (!path.isAbsolute(normalizedPath)) {
-            normalizedPath = path.resolve(app.getPath('userData'), normalizedPath);
-          }
-          if (!fs.existsSync(normalizedPath) || !fs.statSync(normalizedPath).isFile()) {
-            throw new Error(`素材不存在: ${(clip as { name?: string }).name ?? clip.type}`);
-          }
-          inputPath = normalizedPath;
-        } else if (url.startsWith('http://') || url.startsWith('https://')) {
-          const ext = clip.type === 'image' ? (path.extname(new URL(url).pathname) || '.png') : guessVideoExtFromUrl(url);
-          inputPath = path.join(segmentDir, `dl-${i}${ext}`).replace(/\\/g, '/');
-          const resp = await axios.get<ArrayBuffer>(url, { responseType: 'arraybuffer', timeout: 120000, proxy: false });
-          fs.writeFileSync(inputPath, Buffer.from(resp.data));
-          tempPaths.push(inputPath);
-        } else {
-          throw new Error('不支持的 URL 格式');
-        }
-        const segPath = path.join(segmentDir, `seg-${String(i).padStart(3, '0')}.mp4`).replace(/\\/g, '/');
-        // 成片短于规划 trim 时按实际可切长度编码，并用产出时长推进游标，避免 concat 比时间轴短导致后续镜相对原曲前移
-        let encodeDur = segDur;
-        if (clip.type !== 'image') {
-          const mediaDur = await getMediaDuration(
-            url.startsWith('http') ? url : inputPath,
-            projectId,
-          ).catch(() => 0);
-          if (mediaDur > 0.05) {
-            const available = Math.max(0.01, mediaDur - trimStart);
-            if (encodeDur > available + 0.02) encodeDur = available;
-          }
-        }
-        // 规划长于成片：tpad 克隆末帧；并前瞻到下一镜 startTime，把镜间空隙直接冻进本片，避免另插黑垫片
-        const inlinePadSec =
-          clip.type !== 'image' && segDur > encodeDur + 0.02 ? segDur - encodeDur : 0;
-        let tailHoldSec = 0;
-        if (i + 1 < sortedClips.length) {
-          const nextStart = Math.max(0, Number(sortedClips[i + 1].startTime) || 0);
-          const plannedEnd = clipStart + segDur;
-          if (nextStart > plannedEnd + GAP_EPS) {
-            tailHoldSec = nextStart - plannedEnd;
-          }
-        }
-        const totalClonePad = inlinePadSec + tailHoldSec;
-        // 源 crop（若有）→ layout scale/pad；偶数像素由 crop 表达式保证
-        const clipScaleFilter =
-          buildClipCropFilterPrefix(clip.crop) +
-          buildClipLayoutScaleFilter(outW, outH, clip.layout);
-        const videoVf =
-          totalClonePad > 0.02
-            ? `${clipScaleFilter},tpad=stop_mode=clone:stop_duration=${totalClonePad.toFixed(4)}`
-            : clipScaleFilter;
-        const imageOutDur = encodeDur + tailHoldSec;
-        if (clip.type === 'image') {
-          await runExportFfmpeg([
-            '-y', '-hide_banner', '-loglevel', 'error',
-            '-loop', '1', '-i', inputPath,
-            '-t', String(Math.max(0.01, imageOutDur)),
-            '-vf', clipScaleFilter,
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
-            segPath,
-          ]);
-        } else {
-          // -t 放在 -i 前限制读入；勿再加输出 -t，否则会裁掉 tpad 冻帧
-          await runExportFfmpeg([
-            '-y', '-hide_banner', '-loglevel', 'error',
-            '-ss', String(trimStart), '-t', String(encodeDur), '-i', inputPath,
-            '-vf', videoVf,
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
-            segPath,
-          ]);
-        }
-        segmentPaths.push(segPath);
-        const targetDur = segDur + tailHoldSec;
-        let advanced = clip.type === 'image' ? imageOutDur : encodeDur + totalClonePad;
-        if (clip.type !== 'image') {
-          const produced = await getMediaDuration(segPath, projectId).catch(() => 0);
-          if (produced > 0.05) advanced = produced;
-        }
-        // 编码后仍短于目标（含镜间冻帧）：并入前片冻帧，禁止黑场
-        const padToTarget = targetDur - advanced;
-        if (padToTarget > GAP_EPS) {
-          await fillTimelineGap(padToTarget, `pad-${String(i).padStart(3, '0')}`, segPath);
-          advanced += padToTarget;
-        }
-        timelineCursor = Math.max(timelineCursor, clipStart) + advanced;
-      }
 
-      const listPath = path.join(segmentDir, 'concat.txt').replace(/\\/g, '/');
-      const listContent = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
-      fs.writeFileSync(listPath, listContent, 'utf8');
-      const tempVideoPath = path.join(segmentDir, 'video-only.mp4').replace(/\\/g, '/');
-      await new Promise<void>((resolve, reject) => {
-        const args = ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', tempVideoPath];
-        const child = spawn(ffmpegBin, args, { windowsHide: true });
-        let stderr = '';
-        child.stderr.on('data', (chunk) => { stderr += String(chunk || ''); });
-        child.on('error', reject);
-        child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`))));
-      });
-
-      const resolveUrlToPath = async (url: string, clipType: string, idx: number): Promise<string> => {
+      const resolveUrlToPath = async (url: string, clipType: string, idx: string | number): Promise<string> => {
         const u = (url || '').trim();
         if (u.startsWith('local-resource://') || u.startsWith('file://')) {
           let filePath = u.replace(/^local-resource:\/\/+/, '').replace(/^file:\/\/+/, '');
@@ -3513,7 +3580,7 @@ export class LocalResourceManager {
         }
         if (u.startsWith('http://') || u.startsWith('https://')) {
           const ext = clipType === 'image' ? (path.extname(new URL(u).pathname) || '.png') : guessVideoExtFromUrl(u);
-          const dest = path.join(segmentDir, `dl-audio-${idx}${ext}`).replace(/\\/g, '/');
+          const dest = path.join(segmentDir, `dl-${idx}${ext}`).replace(/\\/g, '/');
           const resp = await axios.get<ArrayBuffer>(u, { responseType: 'arraybuffer', timeout: 120000, proxy: false });
           fs.writeFileSync(dest, Buffer.from(resp.data));
           tempPaths.push(dest);
@@ -3522,11 +3589,328 @@ export class LocalResourceManager {
         throw new Error('不支持的 URL 格式');
       };
 
+      const clipLikelyHasAlphaExport = (clip: ExportClip): boolean => {
+        if (clip.hasAlpha === true) return true;
+        const src = String(clip.src || '');
+        return (
+          /\.webm(?:$|[?#])/i.test(src) ||
+          /video-chromakey-/i.test(src) ||
+          /video-smart-matting-/i.test(src)
+        );
+      };
+      /**
+       * VP8/VP9 WebM 透明轨：系统解码器常丢掉 alpha（绿幕 RGB 残留），须强制 libvpx。
+       * 与 generateVideoPoster 一致；放在 -i 之前。
+       */
+      const alphaWebmDecoderArgs = (inputPath: string, clip: ExportClip): string[] => {
+        if (clip.type === 'image' || !clipLikelyHasAlphaExport(clip)) return [];
+        const ext = path.extname(inputPath).toLowerCase();
+        const base = path.basename(inputPath);
+        if (ext !== '.webm' && !/chromakey|smart-matting/i.test(base)) return [];
+        return ['-c:v', 'libvpx-vp9'];
+      };
+      const pushTimedMediaInput = (
+        args: string[],
+        inputPath: string,
+        clip: ExportClip,
+        localT: number,
+        dur: number,
+      ) => {
+        if (clip.type === 'image') {
+          args.push('-loop', '1', '-t', String(dur), '-i', inputPath);
+          return;
+        }
+        args.push(
+          ...alphaWebmDecoderArgs(inputPath, clip),
+          '-ss',
+          String(Math.max(0, localT)),
+          '-t',
+          String(dur),
+          '-i',
+          inputPath,
+        );
+      };
+
+      if (!useStackedExport) for (let i = 0; i < sortedClips.length; i++) {
+        const clip = sortedClips[i];
+        if (!String(clip.src || '').trim()) continue;
+        const { trimStart, span: segDur } = await resolveExportClipTrimRange(clip, projectId);
+        const clipStart = Math.max(0, Number(clip.startTime) || 0);
+        // 尊重时间轴 startTime 空隙；有前片冻帧，勿插黑
+        const gap = clipStart - timelineCursor;
+        if (gap > GAP_EPS) {
+          const prevSeg = segmentPaths.length > 0 ? segmentPaths[segmentPaths.length - 1] : null;
+          await fillTimelineGap(gap, `pre-${String(i).padStart(3, '0')}`, prevSeg);
+          timelineCursor += gap;
+        }
+        let inputPath: string;
+        try {
+          inputPath = await resolveUrlToPath(clip.src, (clip as { name?: string }).name ?? clip.type, i);
+        } catch (e) {
+          console.warn(
+            '[exportTimelineVideo] 跳过无法解析的片段:',
+            (clip as { name?: string }).name ?? clip.type,
+            e,
+          );
+          continue;
+        }
+        const segPath = path.join(segmentDir, `seg-${String(i).padStart(3, '0')}.mp4`).replace(/\\/g, '/');
+        // 成片短于规划 trim 时按实际可切长度编码，并用产出时长推进游标，避免 concat 比时间轴短导致后续镜相对原曲前移
+        let encodeDur = segDur;
+        if (clip.type !== 'image') {
+          const srcUrl = String(clip.src || '').trim();
+          const mediaDur = await getMediaDuration(
+            srcUrl.startsWith('http') ? srcUrl : inputPath,
+            projectId,
+          ).catch(() => 0);
+          if (mediaDur > 0.05) {
+            const available = Math.max(0.01, mediaDur - trimStart);
+            if (encodeDur > available + 0.02) encodeDur = available;
+          }
+        }
+        // 规划长于成片：tpad 克隆末帧；并前瞻到下一镜 startTime，把镜间空隙直接冻进本片，避免另插黑垫片
+        const inlinePadSec =
+          clip.type !== 'image' && segDur > encodeDur + 0.02 ? segDur - encodeDur : 0;
+        let tailHoldSec = 0;
+        if (i + 1 < sortedClips.length) {
+          const nextStart = Math.max(0, Number(sortedClips[i + 1].startTime) || 0);
+          const plannedEnd = clipStart + segDur;
+          if (nextStart > plannedEnd + GAP_EPS) {
+            tailHoldSec = nextStart - plannedEnd;
+          }
+        }
+        const totalClonePad = inlinePadSec + tailHoldSec;
+        // 源 crop（若有）→ layout scale/pad；偶数像素由 crop 表达式保证
+        const flattenAlpha = clip.type !== 'image' && clipLikelyHasAlphaExport(clip);
+        const clipScaleFilter =
+          buildClipCropFilterPrefix(clip.crop) +
+          buildClipLayoutScaleFilter(outW, outH, clip.layout, { flattenAlpha });
+        const videoVf =
+          totalClonePad > 0.02
+            ? `${clipScaleFilter},tpad=stop_mode=clone:stop_duration=${totalClonePad.toFixed(4)}`
+            : clipScaleFilter;
+        const imageOutDur = encodeDur + tailHoldSec;
+        if (clip.type === 'image') {
+          await runExportFfmpeg([
+            '-y', '-hide_banner', '-loglevel', 'error',
+            '-loop', '1', '-i', inputPath,
+            '-t', String(Math.max(0.01, imageOutDur)),
+            '-vf', clipScaleFilter,
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30',
+            segPath,
+          ]);
+        } else {
+          // -t 放在 -i 前限制读入；勿再加输出 -t，否则会裁掉 tpad 冻帧
+          await runExportFfmpeg([
+            '-y', '-hide_banner', '-loglevel', 'error',
+            ...alphaWebmDecoderArgs(inputPath, clip),
+            '-ss', String(trimStart), '-t', String(encodeDur), '-i', inputPath,
+            '-vf', videoVf,
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+            segPath,
+          ]);
+        }
+        segmentPaths.push(segPath);
+        const targetDur = segDur + tailHoldSec;
+        let advanced = clip.type === 'image' ? imageOutDur : encodeDur + totalClonePad;
+        if (clip.type !== 'image') {
+          const produced = await getMediaDuration(segPath, projectId).catch(() => 0);
+          if (produced > 0.05) advanced = produced;
+        }
+        // 编码后仍短于目标（含镜间冻帧）：并入前片冻帧，禁止黑场
+        const padToTarget = targetDur - advanced;
+        if (padToTarget > GAP_EPS) {
+          await fillTimelineGap(padToTarget, `pad-${String(i).padStart(3, '0')}`, segPath);
+          advanced += padToTarget;
+        }
+        timelineCursor = Math.max(timelineCursor, clipStart) + advanced;
+      } else {
+        // 多轨叠放：按时间切片，底层高 index → 顶层 index 0（与预览一致）
+        type Prepared = {
+          clip: ExportClip;
+          trackIdx: number;
+          start: number;
+          end: number;
+          ts: number;
+        };
+        const prepared: Prepared[] = [];
+        let stackTotal = 0;
+        for (let ti = 0; ti < videoTracks.length; ti++) {
+          for (const clip of videoTracks[ti]!) {
+            if (!String(clip.src || '').trim()) continue;
+            const { trimStart: ts, span } = await resolveExportClipTrimRange(clip, projectId);
+            const start = Math.max(0, Number(clip.startTime) || 0);
+            const end = start + span;
+            prepared.push({ clip, trackIdx: ti, start, end, ts });
+            stackTotal = Math.max(stackTotal, end);
+          }
+        }
+        // 有轨但全部无源/未解析时禁止导出纯黑片
+        if (prepared.length === 0) {
+          throw new Error('没有可导出的视频或图片素材');
+        }
+        for (const track of audioTracks) {
+          for (const c of track) {
+            if (!String(c.src || '').trim()) continue;
+            const { span } = await resolveExportClipTrimRange(c, projectId);
+            const end = Math.max(0, Number(c.startTime) || 0) + span;
+            stackTotal = Math.max(stackTotal, end);
+          }
+        }
+        stackTotal = Math.max(stackTotal, 0.01);
+        const cuts = new Set<number>([0, stackTotal]);
+        for (const p of prepared) {
+          cuts.add(p.start);
+          cuts.add(Math.min(p.end, stackTotal));
+        }
+        const cutList = [...cuts].filter((t) => t >= 0 && t <= stackTotal + 1e-9).sort((a, b) => a - b);
+        const findAt = (ti: number, t: number): Prepared | null => {
+          for (const p of prepared) {
+            if (p.trackIdx !== ti) continue;
+            if (t >= p.start && t < p.end - 1e-9) return p;
+          }
+          return null;
+        };
+        for (let si = 0; si < cutList.length - 1; si++) {
+          const t0 = cutList[si]!;
+          const t1 = cutList[si + 1]!;
+          const segDur = t1 - t0;
+          if (segDur < 0.009) continue;
+          const segPath = path.join(segmentDir, `stack-${String(si).padStart(4, '0')}.mp4`).replace(/\\/g, '/');
+          // 自下而上：高 index → 低 index（顶层）
+          const active: Prepared[] = [];
+          for (let ti = videoTracks.length - 1; ti >= 0; ti--) {
+            const hit = findAt(ti, t0);
+            if (!hit) continue;
+            // 顶层不透明全幅可裁掉其下已收集层（透明 WebM / 带 alpha 的 PNG 不裁）
+            const srcLower = String(hit.clip.src || '').toLowerCase();
+            const imageMayHaveAlpha =
+              hit.clip.type === 'image' && /\.png(?:$|[?#])/i.test(srcLower);
+            if (
+              hit.clip.type !== 'image' &&
+              !clipLikelyHasAlphaExport(hit.clip) &&
+              isDefaultClipLayout(hit.clip.layout)
+            ) {
+              active.length = 0;
+            } else if (
+              hit.clip.type === 'image' &&
+              !imageMayHaveAlpha &&
+              isDefaultClipLayout(hit.clip.layout)
+            ) {
+              active.length = 0;
+            }
+            active.push(hit);
+          }
+          if (active.length === 0) {
+            segmentPaths.push(await makeBlackSegment(segDur, `stack-gap-${si}`));
+            continue;
+          }
+          if (active.length === 1 && isDefaultClipLayout(active[0]!.clip.layout) && !clipLikelyHasAlphaExport(active[0]!.clip)) {
+            const only = active[0]!;
+            const localT = only.ts + (t0 - only.start);
+            let inputPath: string;
+            try {
+              inputPath = await resolveUrlToPath(only.clip.src, only.clip.type, `s${si}`);
+            } catch (e) {
+              console.warn('[exportTimelineVideo] 叠放片段无法解析，改黑场:', only.clip.name ?? only.clip.type, e);
+              segmentPaths.push(await makeBlackSegment(segDur, `stack-miss-${si}`));
+              continue;
+            }
+            const vf =
+              buildClipCropFilterPrefix(only.clip.crop) +
+              buildClipLayoutScaleFilter(outW, outH, only.clip.layout, {
+                flattenAlpha: only.clip.type !== 'image' && clipLikelyHasAlphaExport(only.clip),
+              });
+            if (only.clip.type === 'image') {
+              await runExportFfmpeg([
+                '-y', '-hide_banner', '-loglevel', 'error',
+                '-loop', '1', '-i', inputPath,
+                '-t', String(segDur),
+                '-vf', vf,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+                segPath,
+              ]);
+            } else {
+              await runExportFfmpeg([
+                '-y', '-hide_banner', '-loglevel', 'error',
+                ...alphaWebmDecoderArgs(inputPath, only.clip),
+                '-ss', String(Math.max(0, localT)), '-t', String(segDur), '-i', inputPath,
+                '-vf', vf,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+                segPath,
+              ]);
+            }
+            segmentPaths.push(segPath);
+            continue;
+          }
+          const inputArgs: string[] = [
+            '-f', 'lavfi', '-i', `color=c=black:s=${outW}x${outH}:r=30:d=${segDur.toFixed(4)}`,
+          ];
+          const filterParts: string[] = [];
+          const resolvedLayers: Prepared[] = [];
+          for (let li = 0; li < active.length; li++) {
+            const p = active[li]!;
+            try {
+              const inputPath = await resolveUrlToPath(p.clip.src, p.clip.type, `s${si}l${li}`);
+              const localT = p.ts + (t0 - p.start);
+              pushTimedMediaInput(inputArgs, inputPath, p.clip, localT, segDur);
+              resolvedLayers.push(p);
+            } catch (e) {
+              console.warn('[exportTimelineVideo] 跳过无法解析的叠放层:', p.clip.name ?? p.clip.type, e);
+            }
+          }
+          if (resolvedLayers.length === 0) {
+            segmentPaths.push(await makeBlackSegment(segDur, `stack-gap-${si}`));
+            continue;
+          }
+          for (let li = 0; li < resolvedLayers.length; li++) {
+            const p = resolvedLayers[li]!;
+            const vf =
+              buildClipCropFilterPrefix(p.clip.crop) +
+              buildClipLayoutOverlayFilter(outW, outH, p.clip.layout);
+            filterParts.push(`[${li + 1}:v]${vf}[l${li}]`);
+          }
+          let prevTag = '0:v';
+          for (let li = 0; li < resolvedLayers.length; li++) {
+            const isLast = li === resolvedLayers.length - 1;
+            const outTag = isLast ? 'vout' : `o${li}`;
+            const fmt = isLast ? ',format=yuv420p' : '';
+            filterParts.push(`[${prevTag}][l${li}]overlay=0:0:format=auto${fmt}[${outTag}]`);
+            prevTag = outTag;
+          }
+          await runExportFfmpeg([
+            '-y', '-hide_banner', '-loglevel', 'error',
+            ...inputArgs,
+            '-filter_complex', filterParts.join(';'),
+            '-map', '[vout]',
+            '-t', String(segDur),
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-r', '30', '-an',
+            segPath,
+          ]);
+          segmentPaths.push(segPath);
+        }
+      }
+
+      if (segmentPaths.length === 0) throw new Error('没有可导出的视频或图片素材');
+      const listPath = path.join(segmentDir, 'concat.txt').replace(/\\/g, '/');
+      const listContent = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join('\n');
+      fs.writeFileSync(listPath, listContent, 'utf8');
+      const tempVideoPath = path.join(segmentDir, 'video-only.mp4').replace(/\\/g, '/');
+      await new Promise<void>((resolve, reject) => {
+        const args = ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', tempVideoPath];
+        const child = spawn(ffmpegBin, args, { windowsHide: true });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += String(chunk || ''); });
+        child.on('error', reject);
+        child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`))));
+      });
+
       let totalDuration = 0;
-      const allClips = [...sortedClips, ...audioTracks.flat()];
+      const allClips = [...videoTracks.flat(), ...audioTracks.flat()];
       for (const c of allClips) {
-        const d = await resolveTimelineClipDuration(c, projectId);
-        const end = c.startTime + ((c.trimEnd ?? d) - (c.trimStart ?? 0));
+        if (!String(c.src || '').trim()) continue;
+        const { span } = await resolveExportClipTrimRange(c, projectId);
+        const end = Math.max(0, Number(c.startTime) || 0) + span;
         totalDuration = Math.max(totalDuration, end);
       }
       totalDuration = Math.max(totalDuration, 0.01);
@@ -3588,26 +3972,34 @@ export class LocalResourceManager {
         return null;
       };
 
-      for (const clip of sortedClips) {
-        if (clip.type !== 'video' || videoTrackMuted || videoTrackVolume <= 0) continue;
-        const clipDuration = await resolveTimelineClipDuration(clip, projectId);
-        const trimStart = clip.trimStart ?? 0;
-        const trimEnd = clip.trimEnd ?? clipDuration;
-        if (trimEnd <= trimStart) continue;
-        try {
-          const inputPath = await resolveUrlToPath(clip.src, 'video', audioSources.length);
-          const extracted = await extractAudioToTemp(inputPath, trimStart, trimEnd, videoTrackVolume);
-          if (extracted) {
-            audioSources.push({
-              inputPath: extracted,
-              trimStart: 0,
-              trimEnd: trimEnd - trimStart,
-              startTime: clip.startTime,
-              volume: 1,
-            });
+      for (let ti = 0; ti < videoTracks.length; ti++) {
+        if (videoMutedList[ti] || (videoVolList[ti] ?? 0) <= 0) continue;
+        const trackVol = videoVolList[ti] ?? 1;
+        for (const clip of videoTracks[ti]!) {
+          if (clip.type !== 'video' || !String(clip.src || '').trim()) continue;
+          const { trimStart, trimEnd, span } = await resolveExportClipTrimRange(clip, projectId);
+          if (span <= 0.01) continue;
+          try {
+            const inputPath = await resolveUrlToPath(clip.src, 'video', `a${audioSources.length}`);
+            const clipVol = Math.max(0, Math.min(2, Number(clip.volume) || 1));
+            const extracted = await extractAudioToTemp(
+              inputPath,
+              trimStart,
+              trimEnd,
+              Math.min(2, trackVol * clipVol),
+            );
+            if (extracted) {
+              audioSources.push({
+                inputPath: extracted,
+                trimStart: 0,
+                trimEnd: span,
+                startTime: clip.startTime,
+                volume: 1,
+              });
+            }
+          } catch {
+            // 视频可能无音轨，跳过
           }
-        } catch {
-          // 视频可能无音轨，跳过
         }
       }
 
@@ -3616,10 +4008,9 @@ export class LocalResourceManager {
         const vol = audioTrackVolume[trackIdx] ?? 1;
         if (vol <= 0) continue;
         for (const clip of audioTracks[trackIdx]) {
-          const clipDuration = await resolveTimelineClipDuration(clip, projectId);
-          const trimStart = clip.trimStart ?? 0;
-          const trimEnd = clip.trimEnd ?? clipDuration;
-          if (trimEnd <= trimStart) continue;
+          if (!String(clip.src || '').trim()) continue;
+          const { trimStart, trimEnd, span } = await resolveExportClipTrimRange(clip, projectId);
+          if (span <= 0.01) continue;
           try {
             const inputPath = await resolveUrlToPath(clip.src, 'audio', audioSources.length);
             const clipVol = Math.max(0, Math.min(3, Number((clip as { volume?: number }).volume) || 1));
@@ -3629,7 +4020,7 @@ export class LocalResourceManager {
               audioSources.push({
                 inputPath: extracted,
                 trimStart: 0,
-                trimEnd: trimEnd - trimStart,
+                trimEnd: span,
                 startTime: clip.startTime,
                 volume: 1,
               });
@@ -3683,6 +4074,8 @@ export class LocalResourceManager {
             '-c:v', 'copy',
             '-map', '0:v',
             '-map', '1:a',
+            // 成片时长钳在时间轴 span，避免音轨/探测回退把成片撑到源文件全长
+            '-t', String(totalDuration),
             '-shortest',
             outputPath,
           ];
@@ -3693,7 +4086,19 @@ export class LocalResourceManager {
           child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited ${code}`))));
         });
       } else {
-        fs.copyFileSync(tempVideoPath, outputPath);
+        // 无音轨时也按时间轴总长裁一下（concat 异常偏长时的保险）
+        const probedVideo = await getMediaDuration(tempVideoPath, projectId).catch(() => 0);
+        if (probedVideo > totalDuration + 0.15) {
+          await runExportFfmpeg([
+            '-y', '-hide_banner', '-loglevel', 'error',
+            '-i', tempVideoPath,
+            '-t', String(totalDuration),
+            '-c', 'copy',
+            outputPath,
+          ]);
+        } else {
+          fs.copyFileSync(tempVideoPath, outputPath);
+        }
       }
       return { videoPath: outputPath, hasAudio: audioSources.length > 0 };
     } finally {

@@ -584,7 +584,10 @@ export class AudioProvider extends BaseProvider {
         fcChargedTaskId = ledgerDoubao || fcBaseId;
         const taskId = this.requireRhTaskIdFromSubmit(data, 'Doubao-音频生成-1.0');
         onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
-        const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerDoubao);
+        const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerDoubao, {
+          totalTimeoutMs: 3 * 60 * 1000,
+          timeoutLabel: '声音生成',
+        });
         if (pollResult.audioUrls.length > 0) {
           await this.handleAudioResults(pollResult.audioUrls, nodeId, onStatus, projectId, nodeTitle);
         }
@@ -619,7 +622,10 @@ export class AudioProvider extends BaseProvider {
         fcChargedTaskId = ledgerTts || fcBaseId;
         const taskId = this.requireRhTaskIdFromSubmit(data, 'Index-TTS2.0');
         onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
-        const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerTts);
+        const pollResult = await this.pollTaskUntilSuccess(String(taskId), fcBaseId, nodeId, onStatus, ledgerTts, {
+          totalTimeoutMs: 3 * 60 * 1000,
+          timeoutLabel: '声音生成',
+        });
         if (pollResult.audioUrls.length > 0) {
           await this.handleAudioResults(pollResult.audioUrls, nodeId, onStatus, projectId, nodeTitle);
         }
@@ -671,8 +677,8 @@ export class AudioProvider extends BaseProvider {
       console.log(`[音频生成] 获取到 taskId: ${taskId}，开始轮询...`);
       onStatus({ nodeId, status: 'PROCESSING', payload: { taskId: String(taskId) } });
 
-      // 轮询配置：10 分钟总超时时间
-      const totalTimeout = 10 * 60 * 1000; // 10 分钟（毫秒）
+      // 轮询配置：试听/配音 3 分钟总超时，超时失败并退回元宝
+      const totalTimeout = 3 * 60 * 1000;
       const startTime = Date.now();
       let attempt = 0;
       let lastPollTime = startTime;
@@ -682,7 +688,9 @@ export class AudioProvider extends BaseProvider {
         // 检查总超时时间
         const elapsed = Date.now() - startTime;
         if (elapsed >= totalTimeout) {
-          throw new Error(`轮询超时（10分钟）：无法获取音频结果，任务 ID: ${taskId}`);
+          throw new Error(
+            `声音生成超时（3分钟未完成），已退回元宝。任务 ID: ${taskId}`,
+          );
         }
 
         // 计算轮询间隔：前 30 秒每 2 秒，之后每 5 秒
@@ -800,7 +808,10 @@ export class AudioProvider extends BaseProvider {
         }
       }
     } catch (error: unknown) {
-      void tryRefundFcForwardCharge(fcChargedTaskId, 'audio', 'execute_failed');
+      const rawMsg =
+        (error instanceof Error ? error.message : String(error || '')) || '';
+      const refundReason = /超时/.test(rawMsg) ? 'poll_timeout' : 'execute_failed';
+      void tryRefundFcForwardCharge(fcChargedTaskId, 'audio', refundReason);
       const message =
         (axios.isAxiosError(error) && (error.response?.data as { error?: { message?: string } })?.error?.message) ||
         (axios.isAxiosError(error) && (error.response?.data as { errorMessage?: string })?.errorMessage) ||
@@ -1004,6 +1015,7 @@ export class AudioProvider extends BaseProvider {
 
   /**
    * 轮询任务直到成功或失败，返回全部音频 URL（用于 AI 应用 / 翻唱多结果）
+   * @param opts.totalTimeoutMs 默认 10 分钟；试听音/配音传 3 分钟
    */
   private async pollTaskUntilSuccess(
     taskId: string,
@@ -1011,14 +1023,24 @@ export class AudioProvider extends BaseProvider {
     nodeId: string,
     onStatus: (packet: AIStatusPacket) => void,
     ledgerTaskId?: string | null,
+    opts?: { totalTimeoutMs?: number; timeoutLabel?: string },
   ): Promise<{ audioUrl: string; audioUrls: string[] }> {
-    const totalTimeout = 10 * 60 * 1000;
+    const totalTimeout =
+      Number.isFinite(Number(opts?.totalTimeoutMs)) && Number(opts?.totalTimeoutMs) > 0
+        ? Number(opts!.totalTimeoutMs)
+        : 10 * 60 * 1000;
+    const timeoutMin = Math.max(1, Math.round(totalTimeout / 60_000));
+    const label = String(opts?.timeoutLabel || '音频生成').trim() || '音频生成';
     const startTime = Date.now();
     let attempt = 0;
     let lastPollTime = startTime;
     while (true) {
       const elapsed = Date.now() - startTime;
-      if (elapsed >= totalTimeout) throw new Error(`轮询超时（10分钟），任务 ID: ${taskId}`);
+      if (elapsed >= totalTimeout) {
+        throw new Error(
+          `${label}超时（${timeoutMin}分钟未完成），已退回元宝。任务 ID: ${taskId}`,
+        );
+      }
       const pollInterval = elapsed < 30000 ? 2000 : 5000;
       const timeSinceLastPoll = Date.now() - lastPollTime;
       if (timeSinceLastPoll < pollInterval) await new Promise((r) => setTimeout(r, pollInterval - timeSinceLastPoll));

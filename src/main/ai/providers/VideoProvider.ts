@@ -27,7 +27,17 @@ import {
   formatRunningHubTaskError,
   rhPollFailureError,
   summarizeRhNodeInfoForLog,
+  fetchRhAiAppCallDemoNodes,
+  buildMinimaxH3T2vNodeInfoList,
+  buildMinimaxH3I2vNodeInfoList,
+  buildMinimaxH3MultiNodeInfoList,
+  buildMinimaxH3AudioNodeInfoList,
+  isRhNodeInfoMismatch803,
+  enhanceMinimaxH3NodeMismatchError,
+  extractRhTaskIdFromForward,
+  unwrapRunningHubForwardBody,
 } from '../../utils/runningHubFcHelpers.js';
+import { getRhSealMediaBundle } from '../../utils/rhSealMedia.js';
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import {
   buildVideoBillingModelId,
@@ -35,6 +45,8 @@ import {
   normalizeRhartVideoXDurationSec,
   normalizeGrok3StableDurationSec,
   normalizeLtx23DurationSec,
+  normalizeMinimaxH3DurationSec,
+  mapMinimaxH3AudioBillingDurationSec,
   normalizeSeedanceDurationSec,
   normalizeGeminiOmniDurationSec,
   normalizeGeminiOmniFlashDurationSec,
@@ -44,6 +56,13 @@ import {
 import { buildFcErrorPayload, isFcBalanceInsufficientError } from '../../utils/fcBalanceError.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
 import { fcForwardRequest } from '../../utils/fcForwardTask.js';
+import {
+  uploadRunningHubMediaFromRemoteUrlViaFc,
+  rhComfyMediaFieldValue,
+  rhAudioUploadMetaFromUrl,
+  isLikelyValidMp3Buffer,
+  sniffAudioMagic,
+} from '../../services/runningHubAiAppFc.js';
 import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 import { app } from 'electron';
 import path from 'path';
@@ -68,6 +87,31 @@ import {
   isLtx23HdrMultiRunnable,
   validateLtx23HdrMultiInputs,
 } from '../../../common/ltx23HdrMulti.js';
+import {
+  MINIMAX_H3_MULTI_APP_ID,
+  MINIMAX_H3_MULTI_MAX_IMAGES,
+  MINIMAX_H3_MULTI_MEGAPIXELS,
+  MINIMAX_H3_MULTI_MODEL_ID,
+  normalizeMinimaxH3MultiAudios,
+  normalizeMinimaxH3MultiImages,
+} from '../../../common/minimaxH3Multi.js';
+import {
+  MINIMAX_H3_AUDIO_APP_ID,
+  MINIMAX_H3_AUDIO_MAX_IMAGES,
+  MINIMAX_H3_AUDIO_MEGAPIXELS,
+  MINIMAX_H3_AUDIO_MODEL_ID,
+  normalizeMinimaxH3AudioImages,
+  isMinimaxH3AudioModel as isMinimaxH3AudioModelId,
+} from '../../../common/minimaxH3Audio.js';
+import {
+  RHART_VIDEO_UPSCALER_API_PATH,
+  RHART_VIDEO_UPSCALER_MAX_DURATION_SEC,
+  RHART_VIDEO_UPSCALER_MODEL_ID,
+  isRhartVideoUpscalerModelId,
+  normalizeRhartVideoUpscalerResolution,
+} from '../../../common/rhartVideoUpscaler.js';
+import { getMediaDuration } from '../../services/localResourceManager.js';
+import { adaptDirectorPromptForLtxI2v } from '../../../shared/directorPipeline/composeFinalPrompt.js';
 import {
   LTX23_MSR_AV_APP_ID,
   LTX23_MSR_AV_MODEL_ID,
@@ -94,7 +138,7 @@ type Wan26FlashDuration = '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' |
 
 interface VideoInput {
   prompt: string;
-  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+  model?: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'wan-animate-2' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end' | 'minimax-h3-t2v' | 'minimax-h3-i2v' | 'minimax-h3-multi' | 'minimax-h3-audio' | 'rhart-video-upscaler';
   aspect_ratio?: '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | 'adaptive' | '4:3' | '3:4' | '21:9';
   hd?: boolean;
   duration?: '5' | '10' | '15' | '25';
@@ -119,7 +163,7 @@ interface VideoInput {
   generateAudioVeo31ProOfficial?: boolean;
   enablePromptExpansion?: boolean;
   // 全能视频V3.1-fast 文生视频（仅文生）
-  resolutionRhartV31?: '720p' | '1080p' | '4k';
+  resolutionRhartV31?: '720p' | '1080p' | '4k' | '1920p' | '720' | '1280' | '1920';
   /** Grok video3 图生视频（标准 rhart-video-g/image-to-video）：时长 6|10|15|30 秒 */
   durationGrok3?: string;
   resolutionGrok3?: '720p';
@@ -131,8 +175,10 @@ interface VideoInput {
   // 可灵文生视频o1：仅文生，时长 5|10 秒，模式 std|pro
   durationKlingO1?: '5' | '10';
   modeKlingO1?: 'std' | 'pro';
-  // ltx-2.3-lipsync 数字人对口型
+  // ltx-2.3-lipsync 数字人对口型 / MiniMax H3 全能参考等多参考音
   inputAudioUrl?: string;
+  /** MiniMax H3 全能参考：最多 3 路参考音（优先于单路 inputAudioUrl） */
+  inputAudioUrls?: string[];
   resolutionLtx23Lipsync?: '720' | '1280' | '1920'; // API 档；UI 展示为 720p / 1280 / 1920
   actionPrompt?: string;
   // ltx-2.3-i2v 图生视频：时长 5|10|15 秒，分辨率 720|1280|1920（标准/高清/超清），工作流默认保持参考图比例
@@ -145,6 +191,9 @@ interface VideoInput {
   ltx23HdrBackgroundImage?: string;
   durationLtx23HdrMulti?: '5' | '10' | '15';
   resolutionLtx23HdrMulti?: '720' | '1280' | '1920';
+  /** MiniMax-H3 文生/图生/全能参考/口型同步（RH ai-app）：时长；口型同步按参考音向上取整计费；仅 720P → megapixels 0.9 */
+  durationMinimaxH3?: '6' | '10' | '15' | '20';
+  resolutionMinimaxH3?: '720p';
   /** Sora2 算力渠道：plugin=插件算力(RunningHub)，core=核心算力(BLTCY) */
   sora2Channel?: 'plugin' | 'core';
   /** WanAnimate（角色替换）：分辨率档位 720P / 1080P（RH node 259） */
@@ -157,6 +206,8 @@ interface VideoInput {
   /** Gemini Omni 图生视频：分辨率 720p|1080p|4k，时长 4|6|8|10 秒 */
   resolutionGeminiOmni?: '720p' | '1080p' | '4k';
   durationGeminiOmni?: '6' | '8' | '10';
+  /** 视频超分放大：目标分辨率 720p|1080p|2k|4k */
+  targetResolution?: '720p' | '1080p' | '2k' | '4k';
 }
 
 export class VideoProvider extends BaseProvider {
@@ -466,6 +517,178 @@ export class VideoProvider extends BaseProvider {
         else reject(new Error(stderr || `ffmpeg exited with code ${code}`));
       });
     });
+  }
+
+  /** 收集 stderr（用于 volumedetect）；exit≠0 也返回 stderr 以便解析 */
+  private runFfmpegCaptureStderr(args: string[]): Promise<{ code: number | null; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const ffmpegBin = this.resolveFfmpegPath();
+      const child = spawn(ffmpegBin, args, { windowsHide: true, shell: false });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        stderr += String(chunk || '');
+      });
+      child.on('error', (err) => reject(err));
+      child.on('close', (code) => resolve({ code, stderr }));
+    });
+  }
+
+  /** 用 volumedetect 估平均音量；失败返回 null */
+  private async probeAudioMeanVolumeDb(filePath: string): Promise<number | null> {
+    try {
+      const { stderr } = await this.runFfmpegCaptureStderr([
+        '-i',
+        filePath,
+        '-af',
+        'volumedetect',
+        '-f',
+        'null',
+        '-',
+      ]);
+      const m = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/i);
+      if (!m) return null;
+      const n = Number(m[1]);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 将公网/本地可访问的音频转为 RH LoadAudio 支持的 mp3，并上传 OSS。
+   * RH 官方仅支持 MP3 / WAV / FLAC；m4a/ogg/aac 等需先转码，否则会以错误 MIME 上传后静默无声。
+   * 会校验文件头与平均音量，避免「假 mp3 / 静音轨」被 RH 内容寻址复用后成片无参考音。
+   */
+  private async transcodeRemoteAudioToMp3Oss(audioUrl: string): Promise<string> {
+    const src = String(audioUrl || '').trim();
+    if (!src) throw new Error('音频地址为空');
+    const tmpDir = app.getPath('temp');
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const inPath = path.join(tmpDir, `rh-audio-in-${id}`);
+    const outPath = path.join(tmpDir, `rh-audio-out-${id}.mp3`);
+    try {
+      let inputForFfmpeg = src;
+      if (src.startsWith('http://') || src.startsWith('https://')) {
+        const res = await axios.get(src, {
+          responseType: 'arraybuffer',
+          timeout: 120_000,
+          proxy: false,
+          maxContentLength: 80 * 1024 * 1024,
+          validateStatus: (s) => s >= 200 && s < 300,
+        });
+        const buf = Buffer.from(res.data);
+        if (!buf.length) throw new Error('下载参考音为空文件');
+        const magic = sniffAudioMagic(buf);
+        const ct = String(res.headers['content-type'] || '').toLowerCase();
+        const urlExt = (() => {
+          try {
+            return path.extname(new URL(src).pathname).toLowerCase();
+          } catch {
+            return '';
+          }
+        })();
+        // 优先按魔数选扩展名，避免「.mp3 名 + wav 字节」被 ffmpeg 误判
+        const ext =
+          magic === 'wav'
+            ? '.wav'
+            : magic === 'flac'
+              ? '.flac'
+              : magic === 'ogg'
+                ? '.ogg'
+                : magic === 'mp4'
+                  ? '.m4a'
+                  : magic === 'mp3'
+                    ? '.mp3'
+                    : ct.includes('wav')
+                      ? '.wav'
+                      : ct.includes('flac')
+                        ? '.flac'
+                        : ct.includes('ogg')
+                          ? '.ogg'
+                          : ct.includes('m4a') || ct.includes('mp4')
+                            ? '.m4a'
+                            : ct.includes('mpeg') || ct.includes('mp3')
+                              ? '.mp3'
+                              : urlExt || '.bin';
+        console.log('[参考音转码] 源文件嗅探', {
+          magic,
+          contentType: ct.slice(0, 64),
+          urlExt,
+          bytes: buf.length,
+          pickExt: ext,
+        });
+        const withExt = `${inPath}${ext}`;
+        fs.writeFileSync(withExt, buf);
+        inputForFfmpeg = withExt;
+      } else if (src.startsWith('local-resource://') || src.startsWith('file://')) {
+        let filePath = src.startsWith('local-resource://')
+          ? src.replace(/^local-resource:\/\/+/, '')
+          : src.replace(/^file:\/\/+/, '');
+        filePath = filePath.replace(/%5C/gi, '/');
+        if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
+        filePath = decodeURIComponent(filePath);
+        if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+        inputForFfmpeg = path.normalize(filePath);
+        if (!fs.existsSync(inputForFfmpeg)) throw new Error(`参考音文件不存在: ${inputForFfmpeg}`);
+      } else {
+        throw new Error('参考音需为 http(s) 或本地路径才能转码');
+      }
+      await this.runFfmpeg([
+        '-y',
+        '-i',
+        inputForFfmpeg,
+        '-vn',
+        '-acodec',
+        'libmp3lame',
+        '-ar',
+        '44100',
+        '-ac',
+        '2',
+        '-b:a',
+        '192k',
+        outPath,
+      ]);
+      const outBuf = fs.readFileSync(outPath);
+      if (!outBuf.length) throw new Error('参考音转码后为空');
+      if (!isLikelyValidMp3Buffer(outBuf)) {
+        throw new Error(
+          `参考音转码后不是有效 MP3（魔数=${sniffAudioMagic(outBuf)}，大小=${outBuf.length}）。请换一段可播放的参考音后重试`,
+        );
+      }
+      const meanDb = await this.probeAudioMeanVolumeDb(outPath);
+      if (meanDb != null && meanDb <= -70) {
+        throw new Error(
+          `参考音疑似静音或几乎无声（mean_volume=${meanDb.toFixed(1)} dB）。请确认画布接入的是有对白/人声的音频，而非空音轨视频`,
+        );
+      }
+      console.log('[参考音转码] 输出 MP3 校验通过', {
+        bytes: outBuf.length,
+        magic: sniffAudioMagic(outBuf),
+        meanVolumeDb: meanDb,
+      });
+      return this.uploadAudioToOSS(outBuf, 'audio/mpeg');
+    } finally {
+      for (const p of [outPath]) {
+        try {
+          if (fs.existsSync(p)) fs.unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        for (const f of fs.readdirSync(tmpDir)) {
+          if (f.startsWith(`rh-audio-in-${id}`)) {
+            try {
+              fs.unlinkSync(path.join(tmpDir, f));
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   private normalizeAndValidateLocalVideoPath(localVideoPath: string): string {
@@ -932,6 +1155,7 @@ export class VideoProvider extends BaseProvider {
         durationKlingO1: inputDurationKlingO1,
         modeKlingO1: inputModeKlingO1,
         inputAudioUrl,
+        inputAudioUrls,
         resolutionLtx23Lipsync: inputResolutionLtx23Lipsync = '720',
         actionPrompt: inputActionPrompt = '',
         durationLtx23I2v: inputDurationLtx23I2v = '10',
@@ -941,6 +1165,8 @@ export class VideoProvider extends BaseProvider {
         ltx23HdrBackgroundImage: inputLtx23HdrBackgroundImage = '',
         durationLtx23HdrMulti: inputDurationLtx23HdrMulti = '15',
         resolutionLtx23HdrMulti: inputResolutionLtx23HdrMulti = '720',
+        durationMinimaxH3: inputDurationMinimaxH3 = '10',
+        resolutionMinimaxH3: inputResolutionMinimaxH3 = '720p',
         sora2Channel = 'plugin',
         referenceVideoUrl: inputReferenceVideoUrl = '',
         resolutionWanAnimate: inputResolutionWanAnimate = '720p',
@@ -951,24 +1177,38 @@ export class VideoProvider extends BaseProvider {
         durationSeedance: inputDurationSeedance = '10',
         resolutionGeminiOmni: inputResolutionGeminiOmni = '720p',
         durationGeminiOmni: inputDurationGeminiOmni = '6',
+        targetResolution: inputTargetResolution = '1080p',
       } = videoInput;
 
       const images = resolveOriginalImageUrls(rawImages);
 
-      const isWanAnimateModel = model === 'wan-animate';
-      const isHeyGemModel = model === 'hey-gem';
-      const isGeminiOmniModel = model === 'gemini-omni';
-      const isGeminiOmniFlashModel = model === 'gemini-omni-flash';
-      const isSeedanceFastModel = model === 'seedance-2.0-fast';
-      const isSeedanceMiniModel = model === 'seedance-2.0-mini';
+      const modelNorm = String(model || '').trim();
+      const isWanAnimateModel = modelNorm === 'wan-animate';
+      const isWanAnimate2Model = modelNorm === 'wan-animate-2';
+      const isWanAnimateFamily = isWanAnimateModel || isWanAnimate2Model;
+      const isHeyGemModel = modelNorm === 'hey-gem';
+      const isRhartVideoUpscaler = isRhartVideoUpscalerModelId(modelNorm);
+      const isGeminiOmniModel = modelNorm === 'gemini-omni';
+      const isGeminiOmniFlashModel = modelNorm === 'gemini-omni-flash';
+      const isSeedanceFastModel = modelNorm === 'seedance-2.0-fast';
+      const isSeedanceMiniModel = modelNorm === 'seedance-2.0-mini';
       const isSeedanceModel = isSeedanceFastModel || isSeedanceMiniModel;
-      if (!isWanAnimateModel && !isHeyGemModel && !(prompt || '').trim()) {
+      if (
+        !isWanAnimateFamily &&
+        !isHeyGemModel &&
+        !isRhartVideoUpscaler &&
+        !(prompt || '').trim()
+      ) {
         throw new Error('提示词是必需的');
       }
 
       const isLtx23LipsyncModel = model === 'ltx-2.3-lipsync';
       const isLtx23HdrMultiModel = model === 'ltx-2.3-hdr-multi';
       const isLtx23MsrAv = isLtx23MsrAvModel(model);
+      /** MiniMax H3 全能参考 / 口型同步：独立 RH 路径，勿当普通 i2v 白名单拦截 */
+      const modelId = String(model || '');
+      const isMinimaxH3MultiModel = modelId === MINIMAX_H3_MULTI_MODEL_ID;
+      const isMinimaxH3AudioModel = isMinimaxH3AudioModelId(modelId);
 
       const isImageToVideo =
         isLtx23HdrMultiModel || isLtx23MsrAv
@@ -1013,6 +1253,8 @@ export class VideoProvider extends BaseProvider {
         'rhart-v3.1-fast-se',
         'grok-3',
         'gemini-omni',
+        'ltx-2.3-msr-av',
+        'ltx-2.3-hdr-multi',
       ]);
       if (retiredVideoModels.has(String(model))) {
         onStatus({
@@ -1020,7 +1262,9 @@ export class VideoProvider extends BaseProvider {
           status: 'ERROR',
           payload: {
             error:
-              model === 'gemini-omni'
+              model === 'ltx-2.3-msr-av' || model === 'ltx-2.3-hdr-multi'
+                ? '该 LTX2.3 能力已下架。当前保留：图生视频、文生视频、首位帧、对口型。MSR 请改用图生或对口型。'
+                : model === 'gemini-omni'
                 ? 'Gemini Omni（gemini-omni）已从前端下架，请在面板中改用全能视频 Omni Flash、全能视频X 或其他可用模型。'
                 : model === 'grok-3'
                   ? 'Grok video3（grok-3）已从前端下架，请在面板中改用全能视频X、Seedance 或 LTX2.3 等模型。'
@@ -1071,9 +1315,15 @@ export class VideoProvider extends BaseProvider {
         (isLtx23LipsyncModel ||
           model === 'ltx-2.3-i2v' ||
           model === 'ltx-2.3-t2v' ||
+          model === 'minimax-h3-t2v' ||
+          model === 'minimax-h3-i2v' ||
+          model === MINIMAX_H3_MULTI_MODEL_ID ||
+          model === MINIMAX_H3_AUDIO_MODEL_ID ||
           isLtx23HdrMultiModel ||
           isWanAnimateModel ||
+          isWanAnimate2Model ||
           isHeyGemModel ||
+          isRhartVideoUpscaler ||
           isSeedanceModel ||
           isKlingModel ||
           isKlingVideoO1Model ||
@@ -1116,13 +1366,17 @@ export class VideoProvider extends BaseProvider {
         return;
       }
 
-      // WanAnimate（角色替换）：1 张图 + 参考视频
-      if (isWanAnimateModel) {
+      // WanAnimate / Wan animate2（角色替换）：1 张图 + 参考视频
+      if (isWanAnimateFamily) {
         if (!Array.isArray(images) || images.length < 1) {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: 'WanAnimate（角色替换）需接入 1 张角色参考图。' },
+            payload: {
+              error: isWanAnimate2Model
+                ? 'Wan animate2 视频换人需接入 1 张角色参考图。'
+                : 'WanAnimate（角色替换）需接入 1 张角色参考图。',
+            },
           });
           return;
         }
@@ -1130,7 +1384,11 @@ export class VideoProvider extends BaseProvider {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: 'WanAnimate（角色替换）需连接参考视频节点。' },
+            payload: {
+              error: isWanAnimate2Model
+                ? 'Wan animate2 视频换人需连接参考视频节点。'
+                : 'WanAnimate（角色替换）需连接参考视频节点。',
+            },
           });
           return;
         }
@@ -1503,8 +1761,67 @@ export class VideoProvider extends BaseProvider {
         }
       }
 
-      // 图生视频模型验证：根据 API 文档，只有特定模型支持图生视频
-      if (isImageToVideo) {
+      // MiniMax H3 全能参考：0–9 张参考图 + 可选参考音（无参考亦可纯文生；无参考视频槽），走独立 RH multi 提交。
+      // MiniMax-H3 口型同步：1–5 张参考图 + 必填参考音，走独立 RH audio 提交。
+      // WanAnimate / Wan animate2：图+参考视频走独立 RH ai-app，勿当普通 i2v 白名单拦截。
+      // 必须优先于下方通用 i2v 白名单（else if），否则有图时会被「不支持图生视频」误拦。
+      if (isWanAnimateFamily) {
+        const wanImgCount = Array.isArray(images) ? images.length : 0;
+        if (wanImgCount !== 1) {
+          const name = isWanAnimate2Model ? 'Wan animate2 视频换人' : 'WanAnimate（角色替换）';
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error: `${name} 需要恰好 1 张角色参考图，当前提供了 ${wanImgCount} 张。`,
+            },
+          });
+          return;
+        }
+        if (!String(inputReferenceVideoUrl || '').trim()) {
+          const name = isWanAnimate2Model ? 'Wan animate2 视频换人' : 'WanAnimate（角色替换）';
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: `${name} 需要连接参考视频。` },
+          });
+          return;
+        }
+      } else if (isMinimaxH3MultiModel) {
+        const multiCount = Array.isArray(images) ? images.length : 0;
+        if (multiCount > MINIMAX_H3_MULTI_MAX_IMAGES) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error: `MiniMax H3 全能参考最多 ${MINIMAX_H3_MULTI_MAX_IMAGES} 张参考图，当前提供了 ${multiCount} 张。`,
+            },
+          });
+          return;
+        }
+      } else if (isMinimaxH3AudioModel) {
+        const audioCount = Array.isArray(images) ? images.length : 0;
+        if (audioCount < 1 || audioCount > MINIMAX_H3_AUDIO_MAX_IMAGES) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error: `MiniMax-H3 口型同步支持 1–${MINIMAX_H3_AUDIO_MAX_IMAGES} 张参考图，当前提供了 ${audioCount} 张。`,
+            },
+          });
+          return;
+        }
+        if (!String(inputAudioUrl || '').trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'MiniMax-H3 口型同步需要连接参考音（必填）' },
+          });
+          return;
+        }
+      } else if (isImageToVideo) {
+        // 图生视频模型验证：根据 API 文档，只有特定模型支持图生视频
+        // （multi 已在上方独立分支放行；白名单仍列入作双重保险）
         const imageCount = images!.length;
         
         // 支持首尾帧的模型（已移除 VEO，当前无）
@@ -1517,12 +1834,16 @@ export class VideoProvider extends BaseProvider {
           'wan-2.6',
           'wan-2.6-flash',
           'wan-animate',
+          'wan-animate-2',
           'gemini-omni',
           'gemini-omni-flash',
           'seedance-2.0-fast',
           'seedance-2.0-mini',
           'ltx-2.3-lipsync',
           'ltx-2.3-i2v', // LTX2.3 图生视频，仅 1 张
+          'minimax-h3-i2v', // MiniMax-H3 图生视频，仅 1 张
+          MINIMAX_H3_MULTI_MODEL_ID, // 全能参考允许带图（非普通 i2v；正常走独立分支）
+          MINIMAX_H3_AUDIO_MODEL_ID, // 口型同步允许带图（非普通 i2v；正常走独立分支）
           'ltx-2.3-hdr-multi', // LTX2.3 高动态：背景 + 1–4 分镜
           LTX23_MSR_AV_MODEL_ID, // LTX2.3-MSR 图像+声音
           'rhart-v3.1-fast',
@@ -1599,8 +1920,8 @@ export class VideoProvider extends BaseProvider {
         }
 
         // sora-2 / 万相2.6 / 万相2.6 Flash / 海螺-2.3 图生 / 可灵图生o1 只支持 1 张图片
-        if ((isSora2Model || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isWanAnimateModel || isHailuo23I2vModel || isKlingVideoO1I2vModel || isLtx23LipsyncModel || isLtx23I2vModel) && imageCount > 1) {
-          const name = isWanAnimateModel ? 'WanAnimate（角色替换）' : isRhartV31ProOfficialI2vModel ? 'Veo 3.1 Pro（图生）' : isKlingVideoO1I2vModel ? '可灵图生视频o1' : isHailuo23I2vModel ? '海螺-2.3-图生视频-标准' : isWan26FlashModel ? '万相2.6 Flash' : isWan26Model ? '万相2.6' : isLtx23I2vModel ? 'LTX2.3 图生视频' : 'sora-2';
+        if ((isSora2Model || isRhartV31ProOfficialI2vModel || isWan26Model || isWan26FlashModel || isWanAnimateFamily || isHailuo23I2vModel || isKlingVideoO1I2vModel || isLtx23LipsyncModel || isLtx23I2vModel) && imageCount > 1) {
+          const name = isWanAnimate2Model ? 'Wan animate2 视频换人' : isWanAnimateModel ? 'WanAnimate（角色替换）' : isRhartV31ProOfficialI2vModel ? 'Veo 3.1 Pro（图生）' : isKlingVideoO1I2vModel ? '可灵图生视频o1' : isHailuo23I2vModel ? '海螺-2.3-图生视频-标准' : isWan26FlashModel ? '万相2.6 Flash' : isWan26Model ? '万相2.6' : isLtx23I2vModel ? 'LTX2.3 图生视频' : 'sora-2';
           const errorMessage = `${name} 图生视频模式最多支持 1 张图片，当前提供了 ${imageCount} 张`;
           console.error(`[视频生成] ${errorMessage}`);
           onStatus({
@@ -1614,6 +1935,7 @@ export class VideoProvider extends BaseProvider {
         }
         
         // 根据图片数量验证模型：2 张图时可选首尾帧(fast-se/pro-se)或图生；Seedance 支持 1–9 张多参考图，不走此分支
+        //（H3 multi/audio 正常已在上方独立分支放行；此处再列入作双重保险）
         if (imageCount === 2 && !isSeedanceModel) {
           const allowedForTwo =
             supportedFirstLastFrameModels.includes(model) ||
@@ -1624,24 +1946,27 @@ export class VideoProvider extends BaseProvider {
             model === 'grok-3' ||
             model === 'rhart-video-x' ||
             model === 'grok-3-stable' ||
-            model === 'gemini-omni';
+            model === 'gemini-omni' ||
+            modelId === MINIMAX_H3_MULTI_MODEL_ID ||
+            modelId === MINIMAX_H3_AUDIO_MODEL_ID;
           if (!allowedForTwo) {
             onStatus({
               nodeId,
               status: 'ERROR',
               payload: {
-                error: '2 张参考图时请选择支持首尾帧或多参考图的模型（如 Seedance 2.0 Mini、全能视频X、全能视频V3.1-fast 等）。',
+                error: '2 张参考图时请选择支持首尾帧或多参考图的模型（如 MiniMax H3 全能参考、Seedance 2.0 Mini、全能视频X、全能视频V3.1-fast 等）。',
               },
             });
             return;
           }
         } else if (imageCount !== 2 || !isSeedanceModel) {
-          if (!supportedImageToVideoModels.includes(model)) {
+          // 用 modelNorm，避免空白/别名导致白名单误判；换人模型已在上方独立分支放行
+          if (!isWanAnimateFamily && !supportedImageToVideoModels.includes(modelNorm)) {
             onStatus({
               nodeId,
               status: 'ERROR',
               payload: {
-                error: `模型 ${model} 不支持图生视频。支持的模型：${supportedImageToVideoModels.join(', ')}`,
+                error: `模型 ${modelNorm || model} 不支持图生视频。支持的模型：${supportedImageToVideoModels.join(', ')}`,
               },
             });
             return;
@@ -1704,7 +2029,7 @@ export class VideoProvider extends BaseProvider {
             nodeInfoList: [
               { nodeId: '50', fieldName: 'image', fieldValue: imageUrlRemote },
               { nodeId: '37', fieldName: 'audio', fieldValue: audioUrlRemote },
-              { nodeId: '54', fieldName: 'value', fieldValue: (inputActionPrompt || prompt || '').trim() || '正在讲解，有一些手势动作' },
+              { nodeId: '54', fieldName: 'value', fieldValue: adaptDirectorPromptForLtxI2v((inputActionPrompt || prompt || '').trim()) || '正在讲解，有一些手势动作' },
               { nodeId: '187', fieldName: 'value', fieldValue: String(inputResolutionLtx23Lipsync || '720') },
             ],
             instanceType: 'plus', // LTX2.3 对口型：48G 显存，效果更佳
@@ -1818,7 +2143,7 @@ export class VideoProvider extends BaseProvider {
             { nodeId: '584', fieldName: 'image', fieldValue: imageUrlRemote },
             { nodeId: '593', fieldName: 'value', fieldValue: String(normalizeLtx23DurationSec(inputDurationLtx23I2v, 10)) },
             { nodeId: '595', fieldName: 'value', fieldValue: String(res) },
-            { nodeId: '602', fieldName: 'positive', fieldValue: (prompt || '').trim() || '视频动画' },
+            { nodeId: '602', fieldName: 'positive', fieldValue: adaptDirectorPromptForLtxI2v((prompt || '').trim()) || '视频动画' },
           ];
 
           const runPayload = {
@@ -1999,6 +2324,1002 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'LTX2.3 文生视频生成失败'),
+          });
+        }
+        return;
+      }
+
+      // MiniMax-H3 文生视频：RunningHub ai-app 2085682347676102657（国内 .cn）
+      // 官方 API 示例：149/text、16/megapixels|aspect_ratio、14/value；仅 720P→megapixels 0.9
+      // instanceType：文档示例为 default，产品要求默认 plus；803 时再试 default
+      // 若仍 NODE_INFO_MISMATCH：RH 线上工作流可能与「API调用」示例不一致（非 FC 改写）
+      const isMinimaxH3T2vModel = model === 'minimax-h3-t2v';
+      if (isMinimaxH3T2vModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        if (Array.isArray(images) && images.some((u) => String(u || '').trim())) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'MiniMax-H3 文生视频不支持参考图，请移除参考图后重试' },
+          });
+          return;
+        }
+        const MINIMAX_H3_T2V_APP_ID = '2085682347676102657';
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const megapixels = '0.9'; // 仅 720P；旧节点若存 1080p 亦强制 0.9
+        const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
+        const aspectRh = (() => {
+          const map: Record<string, string> = {
+            '1:1': '1:1 (Square)',
+            '2:3': '2:3 (Portrait Photo)',
+            '3:2': '3:2 (Photo)',
+            '3:4': '3:4 (Portrait Standard)',
+            '4:3': '4:3 (Standard)',
+            '9:16': '9:16 (Portrait Widescreen)',
+            '16:9': '16:9 (Widescreen)',
+            '21:9': '21:9 (Ultrawide)',
+            '1:1 (Square)': '1:1 (Square)',
+            '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
+            '3:2 (Photo)': '3:2 (Photo)',
+            '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
+            '4:3 (Standard)': '4:3 (Standard)',
+            '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
+            '16:9 (Widescreen)': '16:9 (Widescreen)',
+            '21:9 (Ultrawide)': '21:9 (Ultrawide)',
+          };
+          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+        })();
+        const promptText = (prompt || '').trim() || '视频动画';
+
+        let h3FcChargedId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 8, text: '核对应用节点…' } });
+
+          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+          try {
+            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_T2V_APP_ID, { rhRegion: 'cn' });
+          } catch (probeErr) {
+            console.warn(
+              '[MiniMax-H3 t2v] apiCallDemo 探测失败，使用官方文档节点映射',
+              probeErr instanceof Error ? probeErr.message : probeErr,
+            );
+          }
+
+          const rhSeal = await getRhSealMediaBundle();
+          const nodeInfoList = buildMinimaxH3T2vNodeInfoList(
+            promptText,
+            megapixels,
+            aspectRh,
+            durationSec,
+            rhSeal,
+            liveNodes,
+          );
+          console.log(
+            '[MiniMax-H3 t2v] 提交 nodeInfoList=',
+            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
+            'liveNodes=',
+            liveNodes.length,
+          );
+
+          const billingModelId = buildVideoBillingModelId(
+            'minimax-h3-t2v',
+            input as Record<string, unknown>,
+          );
+          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_T2V_APP_ID}`;
+
+          const trySubmit = async (instanceType: 'plus' | 'default') => {
+            const h3FcId = randomUUID();
+            const runRes = await rhPostChargeVideo(
+              submitUrl,
+              {
+                nodeInfoList,
+                instanceType,
+                usePersonalQueue: 'false',
+              } as Record<string, unknown>,
+              h3FcId,
+              { billingModelId },
+            );
+            return { h3FcId, runRes: runRes ?? {} };
+          };
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 10, text: '提交任务中...' } });
+          let submitted = await trySubmit('plus');
+          h3FcChargedId = submitted.h3FcId;
+          let body = submitted.runRes;
+          let taskId = body.taskId ?? body.task_id;
+
+          if (!taskId && isRhNodeInfoMismatch803(body)) {
+            console.warn('[MiniMax-H3 t2v] plus 提交 803，改试 instanceType=default');
+            await tryRefundFcForwardCharge(h3FcChargedId, 'video', 'minimax_h3_t2v_retry_default');
+            h3FcChargedId = undefined;
+            submitted = await trySubmit('default');
+            h3FcChargedId = submitted.h3FcId;
+            body = submitted.runRes;
+            taskId = body.taskId ?? body.task_id;
+          }
+
+          if (!taskId) {
+            const raw = formatRunningHubTaskError(body, '未返回 taskId');
+            throw new Error(
+              `提交失败：${
+                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
+              }`,
+            );
+          }
+
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskId) },
+          });
+
+          const deadline = Date.now() + POLL_DEADLINE_MS;
+          let lastProgress = 15;
+          let h3PollRound = 0;
+          const h3PollFcBase = h3FcChargedId || randomUUID();
+
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgress = Math.min(95, lastProgress + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
+            });
+
+            h3PollRound += 1;
+            const queryRes = await rhQueryPollVideo(String(taskId), `${h3PollFcBase}:poll:${h3PollRound}`);
+
+            const status = queryRes.status;
+            if (status === 'SUCCESS') {
+              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
+              if (results && Array.isArray(results) && results.length > 0) {
+                const first = results[0];
+                const url =
+                  typeof first?.url === 'string'
+                    ? first.url
+                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
+                if (url) {
+                  onStatus({ nodeId, status: 'SUCCESS', payload: { url, videoUrl: url, originalVideoUrl: url } });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (status === 'FAILED' || status === 'FAILURE') {
+              throw rhPollFailureError('MiniMax-H3 文生视频', queryRes, String(taskId));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(h3FcChargedId, 'video', 'minimax_h3_t2v_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax-H3 文生视频生成失败'),
+          });
+        }
+        return;
+      }
+
+
+      // MiniMax-H3 图生视频：RunningHub ai-app 2085687129061019649（国内 .cn）
+      // 官方：13/image、57/aspect_ratio|megapixels、56/value、149/text；仅 720P→0.9；instanceType 默认 plus，803 再试 default
+      const isMinimaxH3I2vModel = model === 'minimax-h3-i2v';
+      if (isMinimaxH3I2vModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const imageUrl = (images && images[0] ? String(images[0]).trim() : '');
+        if (!imageUrl) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'MiniMax-H3 图生视频需要 1 张参考图' },
+          });
+          return;
+        }
+        const MINIMAX_H3_I2V_APP_ID = '2085687129061019649';
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const megapixels = '0.9'; // 仅 720P；旧节点若存 1080p 亦强制 0.9
+        const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
+        const aspectRh = (() => {
+          const map: Record<string, string> = {
+            '1:1': '1:1 (Square)',
+            '2:3': '2:3 (Portrait Photo)',
+            '3:2': '3:2 (Photo)',
+            '3:4': '3:4 (Portrait Standard)',
+            '4:3': '4:3 (Standard)',
+            '9:16': '9:16 (Portrait Widescreen)',
+            '16:9': '16:9 (Widescreen)',
+            '21:9': '21:9 (Ultrawide)',
+          };
+          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+        })();
+        const promptText = (prompt || '').trim() || '视频动画';
+
+        let h3I2vFcChargedId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 5, text: '正在上传参考图...' } });
+          const imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+          const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+            imageUrlRemote,
+            'minimax-h3-ref.jpg',
+            'image/jpeg',
+          );
+          const rhImageField = rhComfyMediaFieldValue(uploaded);
+          if (!rhImageField || !/^(openapi|api)\//i.test(rhImageField)) {
+            throw new Error(
+              `参考图上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhImageField || '空'}）`,
+            );
+          }
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
+          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+          try {
+            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_I2V_APP_ID, { rhRegion: 'cn' });
+          } catch (probeErr) {
+            console.warn(
+              '[MiniMax-H3 i2v] apiCallDemo 探测失败，使用官方文档节点映射',
+              probeErr instanceof Error ? probeErr.message : probeErr,
+            );
+          }
+
+          const rhSeal = await getRhSealMediaBundle();
+          const nodeInfoList = buildMinimaxH3I2vNodeInfoList(
+            rhImageField,
+            promptText,
+            megapixels,
+            aspectRh,
+            durationSec,
+            rhSeal,
+            liveNodes,
+          );
+          console.log(
+            '[MiniMax-H3 i2v] 提交 nodeInfoList=',
+            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
+            'liveNodes=',
+            liveNodes.length,
+          );
+
+          const billingModelId = buildVideoBillingModelId(
+            'minimax-h3-i2v',
+            input as Record<string, unknown>,
+          );
+          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_I2V_APP_ID}`;
+          const trySubmit = async (instanceType: 'plus' | 'default') => {
+            const h3FcId = randomUUID();
+            const runRes = await rhPostChargeVideo(
+              submitUrl,
+              {
+                nodeInfoList,
+                instanceType,
+                usePersonalQueue: 'false',
+              } as Record<string, unknown>,
+              h3FcId,
+              { billingModelId },
+            );
+            return { h3FcId, runRes: runRes ?? {} };
+          };
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中...' } });
+          let submitted = await trySubmit('plus');
+          h3I2vFcChargedId = submitted.h3FcId;
+          let body = submitted.runRes;
+          let taskId = body.taskId ?? body.task_id;
+
+          if (!taskId && isRhNodeInfoMismatch803(body)) {
+            console.warn('[MiniMax-H3 i2v] plus 提交 803，改试 instanceType=default');
+            await tryRefundFcForwardCharge(h3I2vFcChargedId, 'video', 'minimax_h3_i2v_retry_default');
+            h3I2vFcChargedId = undefined;
+            submitted = await trySubmit('default');
+            h3I2vFcChargedId = submitted.h3FcId;
+            body = submitted.runRes;
+            taskId = body.taskId ?? body.task_id;
+          }
+
+          if (!taskId) {
+            const raw = formatRunningHubTaskError(body, '未返回 taskId');
+            throw new Error(
+              `提交失败：${
+                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
+              }`,
+            );
+          }
+
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 20, text: '任务已提交，生成中…', taskId: String(taskId) },
+          });
+
+          const deadline = Date.now() + POLL_DEADLINE_MS;
+          let lastProgress = 20;
+          let h3PollRound = 0;
+          const h3I2vPollFcBase = h3I2vFcChargedId || randomUUID();
+
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgress = Math.min(95, lastProgress + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
+            });
+
+            h3PollRound += 1;
+            const queryRes = await rhQueryPollVideo(String(taskId), `${h3I2vPollFcBase}:poll:${h3PollRound}`);
+
+            const status = queryRes.status;
+            if (status === 'SUCCESS') {
+              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
+              if (results && Array.isArray(results) && results.length > 0) {
+                const first = results[0];
+                const url =
+                  typeof first?.url === 'string'
+                    ? first.url
+                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
+                if (url) {
+                  onStatus({ nodeId, status: 'SUCCESS', payload: { url, videoUrl: url, originalVideoUrl: url } });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (status === 'FAILED' || status === 'FAILURE') {
+              throw rhPollFailureError('MiniMax-H3 图生视频', queryRes, String(taskId));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(h3I2vFcChargedId, 'video', 'minimax_h3_i2v_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax-H3 图生视频生成失败'),
+          });
+        }
+        return;
+      }
+
+      // MiniMax H3 全能参考：RunningHub ai-app 2086289185186603010（国内 .cn）
+      // 官方：25/value 提示词、26/aspect_ratio|megapixels、28/value 时间、38/67/68 参考音、18/23/22/24/32–35/76 最多 9 图
+      // 仅 720P→megapixels 0.9；时长 6|10|15|20；无参考视频槽；instanceType 默认 plus，803 再试 default
+      if (isMinimaxH3MultiModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const multiImages = normalizeMinimaxH3MultiImages(images || []);
+        const refAudioUrls = normalizeMinimaxH3MultiAudios([
+          ...(Array.isArray(inputAudioUrls) ? inputAudioUrls : []),
+          String(inputAudioUrl || '').trim(),
+        ]);
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const megapixels = MINIMAX_H3_MULTI_MEGAPIXELS; // 仅 720P；勿传 1080
+        const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
+        const aspectRh = (() => {
+          const map: Record<string, string> = {
+            '1:1': '1:1 (Square)',
+            '2:3': '2:3 (Portrait Photo)',
+            '3:2': '3:2 (Photo)',
+            '3:4': '3:4 (Portrait Standard)',
+            '4:3': '4:3 (Standard)',
+            '9:16': '9:16 (Portrait Widescreen)',
+            '16:9': '16:9 (Widescreen)',
+            '21:9': '21:9 (Ultrawide)',
+            '1:1 (Square)': '1:1 (Square)',
+            '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
+            '3:2 (Photo)': '3:2 (Photo)',
+            '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
+            '4:3 (Standard)': '4:3 (Standard)',
+            '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
+            '16:9 (Widescreen)': '16:9 (Widescreen)',
+            '21:9 (Ultrawide)': '21:9 (Ultrawide)',
+          };
+          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+        })();
+        const promptText = (prompt || '').trim() || '视频动画';
+
+        const ensureAudioRemoteH3Multi = async (url: string): Promise<string> => {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            if (isOurOssOrCdnObjectUrl(url)) {
+              return preferDirectOssUrlForThirdPartyImageRef(url);
+            }
+            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+            const ct = res.headers['content-type'] || '';
+            const mimeType = ct.includes('wav')
+              ? 'audio/wav'
+              : ct.includes('ogg')
+                ? 'audio/ogg'
+                : ct.includes('m4a')
+                  ? 'audio/mp4'
+                  : 'audio/mpeg';
+            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+          }
+          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+            return this.uploadLocalAudioToOSS(url);
+          }
+          if (url.startsWith('data:audio/')) {
+            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+            const buf = Buffer.from(m ? m[2] : '', 'base64');
+            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+            return this.uploadAudioToOSS(buf, mime);
+          }
+          return url;
+        };
+
+        let h3MultiFcChargedId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          const uploadHint =
+            multiImages.length || refAudioUrls.length
+              ? '正在上传参考图 / 参考音…'
+              : '纯文生模式，准备提交…';
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 5, text: uploadHint },
+          });
+
+          const rhImageFields: string[] = [];
+          for (let i = 0; i < multiImages.length; i++) {
+            const remote = await this.processImageToOssUrl(multiImages[i]);
+            const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+              remote,
+              `minimax-h3-multi-img${i + 1}.jpg`,
+              'image/jpeg',
+            );
+            const field = rhComfyMediaFieldValue(uploaded);
+            if (!field || !/^(openapi|api)\//i.test(field)) {
+              throw new Error(
+                `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
+              );
+            }
+            rhImageFields.push(field);
+          }
+
+          const rhAudioFields: string[] = [];
+          for (let ai = 0; ai < refAudioUrls.length; ai++) {
+            const refAudioUrl = refAudioUrls[ai];
+            let audioRemote = await ensureAudioRemoteH3Multi(refAudioUrl);
+            audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: {
+                progress: 8,
+                text: `参考音 ${ai + 1}/${refAudioUrls.length} 转码为干净 MP3…`,
+              },
+            });
+            audioRemote = preferDirectOssUrlForThirdPartyImageRef(
+              await this.transcodeRemoteAudioToMp3Oss(audioRemote),
+            );
+            const meta = rhAudioUploadMetaFromUrl(audioRemote);
+            const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
+              audioRemote,
+              meta.filename || `minimax-h3-multi-audio${ai + 1}.mp3`,
+              meta.contentType || 'audio/mpeg',
+            );
+            const rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
+            const sizeNum = Number(uploadedAudio.size);
+            if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
+              throw new Error(
+                `参考音 ${ai + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
+              );
+            }
+            if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
+              throw new Error(
+                `参考音 ${ai + 1} 上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
+              );
+            }
+            if (Number.isFinite(sizeNum) && sizeNum <= 0) {
+              throw new Error(`参考音 ${ai + 1} 上传后大小为 0，请检查音频文件`);
+            }
+            rhAudioFields.push(rhAudioField);
+          }
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
+          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+          try {
+            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_MULTI_APP_ID, { rhRegion: 'cn' });
+          } catch (probeErr) {
+            console.warn(
+              '[MiniMax H3 全能参考] apiCallDemo 探测失败，使用官方文档节点映射',
+              probeErr instanceof Error ? probeErr.message : probeErr,
+            );
+          }
+
+          const rhSeal = await getRhSealMediaBundle();
+          const nodeInfoList = buildMinimaxH3MultiNodeInfoList(
+            promptText,
+            megapixels,
+            aspectRh,
+            durationSec,
+            rhImageFields,
+            rhSeal,
+            rhAudioFields,
+            liveNodes,
+          );
+          console.log(
+            '[MiniMax H3 全能参考] 提交 nodeInfoList=',
+            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
+            'liveNodes=',
+            liveNodes.length,
+            'duration=',
+            durationSec,
+            'images=',
+            rhImageFields.length,
+            'audios=',
+            rhAudioFields.length,
+          );
+
+          const billingModelId = buildVideoBillingModelId(
+            MINIMAX_H3_MULTI_MODEL_ID,
+            input as Record<string, unknown>,
+          );
+          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_MULTI_APP_ID}`;
+          const trySubmit = async (instanceType: 'plus' | 'default') => {
+            const h3FcId = randomUUID();
+            const runRes = await rhPostChargeVideo(
+              submitUrl,
+              {
+                nodeInfoList,
+                instanceType,
+                randomSeed: true,
+                retainSeconds: 0,
+                usePersonalQueue: false,
+              } as Record<string, unknown>,
+              h3FcId,
+              { billingModelId },
+            );
+            return { h3FcId, runRes: runRes ?? {} };
+          };
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中...' } });
+          let submitted = await trySubmit('plus');
+          h3MultiFcChargedId = submitted.h3FcId;
+          let body = submitted.runRes;
+          let taskId = body.taskId ?? body.task_id;
+
+          if (!taskId && isRhNodeInfoMismatch803(body)) {
+            console.warn('[MiniMax H3 全能参考] plus 提交 803，改试 instanceType=default');
+            await tryRefundFcForwardCharge(h3MultiFcChargedId, 'video', 'minimax_h3_multi_retry_default');
+            h3MultiFcChargedId = undefined;
+            submitted = await trySubmit('default');
+            h3MultiFcChargedId = submitted.h3FcId;
+            body = submitted.runRes;
+            taskId = body.taskId ?? body.task_id;
+          }
+
+          if (!taskId) {
+            const raw = formatRunningHubTaskError(body, '未返回 taskId');
+            throw new Error(
+              `提交失败：${
+                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
+              }`,
+            );
+          }
+
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 20, text: '任务已提交，生成中…', taskId: String(taskId) },
+          });
+
+          const deadline = Date.now() + POLL_DEADLINE_MS;
+          let lastProgress = 20;
+          let h3PollRound = 0;
+          const h3MultiPollFcBase = h3MultiFcChargedId || randomUUID();
+
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgress = Math.min(95, lastProgress + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
+            });
+
+            h3PollRound += 1;
+            const queryRes = await rhQueryPollVideo(String(taskId), `${h3MultiPollFcBase}:poll:${h3PollRound}`);
+
+            const status = queryRes.status;
+            if (status === 'SUCCESS') {
+              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
+              if (results && Array.isArray(results) && results.length > 0) {
+                const first = results[0];
+                const url =
+                  typeof first?.url === 'string'
+                    ? first.url
+                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
+                if (url) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url, videoUrl: url, originalVideoUrl: url },
+                  });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (status === 'FAILED' || status === 'FAILURE') {
+              throw rhPollFailureError('MiniMax H3 全能参考', queryRes, String(taskId));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(h3MultiFcChargedId, 'video', 'minimax_h3_multi_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax H3 全能参考生成失败'),
+          });
+        }
+        return;
+      }
+
+      // MiniMax-H3 口型同步：RunningHub ai-app 2086260808442531842（国内 .cn）
+      // 官方：138/value 提示词、171/audio 必填、115/aspect_ratio|megapixels、137/182/199/200/202 最多 5 图
+      // 工作流按参考音自动读时长（无时长节点）；计费档 6|10|15|20（向上取整，>20 封顶 20）
+      // 仅 720P→megapixels 0.9；instanceType 默认 plus，803 再试 default
+      if (isMinimaxH3AudioModel) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const audioImages = normalizeMinimaxH3AudioImages(images || []);
+        if (audioImages.length < 1) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'MiniMax-H3 口型同步需要至少 1 张参考图' },
+          });
+          return;
+        }
+        const refAudioUrl = String(inputAudioUrl || '').trim();
+        if (!refAudioUrl) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: 'MiniMax-H3 口型同步需要连接参考音（必填）' },
+          });
+          return;
+        }
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        const megapixels = MINIMAX_H3_AUDIO_MEGAPIXELS; // 仅 720P；勿传 1080
+        const aspectRh = (() => {
+          const map: Record<string, string> = {
+            '1:1': '1:1 (Square)',
+            '2:3': '2:3 (Portrait Photo)',
+            '3:2': '3:2 (Photo)',
+            '3:4': '3:4 (Portrait Standard)',
+            '4:3': '4:3 (Standard)',
+            '9:16': '9:16 (Portrait Widescreen)',
+            '16:9': '16:9 (Widescreen)',
+            '21:9': '21:9 (Ultrawide)',
+            '1:1 (Square)': '1:1 (Square)',
+            '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
+            '3:2 (Photo)': '3:2 (Photo)',
+            '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
+            '4:3 (Standard)': '4:3 (Standard)',
+            '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
+            '16:9 (Widescreen)': '16:9 (Widescreen)',
+            '21:9 (Ultrawide)': '21:9 (Ultrawide)',
+          };
+          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+        })();
+        const promptText = (prompt || '').trim() || '视频动画';
+
+        const ensureAudioRemoteH3Audio = async (url: string): Promise<string> => {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            if (isOurOssOrCdnObjectUrl(url)) {
+              return preferDirectOssUrlForThirdPartyImageRef(url);
+            }
+            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+            const ct = res.headers['content-type'] || '';
+            const mimeType = ct.includes('wav')
+              ? 'audio/wav'
+              : ct.includes('ogg')
+                ? 'audio/ogg'
+                : ct.includes('m4a')
+                  ? 'audio/mp4'
+                  : 'audio/mpeg';
+            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+          }
+          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+            return this.uploadLocalAudioToOSS(url);
+          }
+          if (url.startsWith('data:audio/')) {
+            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+            const buf = Buffer.from(m ? m[2] : '', 'base64');
+            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+            return this.uploadAudioToOSS(buf, mime);
+          }
+          return url;
+        };
+
+        let h3AudioFcChargedId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 5, text: '正在上传参考图与参考音…' },
+          });
+
+          const rhImageFields: string[] = [];
+          for (let i = 0; i < audioImages.length; i++) {
+            const remote = await this.processImageToOssUrl(audioImages[i]);
+            const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+              remote,
+              `minimax-h3-audio-img${i + 1}.jpg`,
+              'image/jpeg',
+            );
+            const field = rhComfyMediaFieldValue(uploaded);
+            if (!field || !/^(openapi|api)\//i.test(field)) {
+              throw new Error(
+                `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
+              );
+            }
+            rhImageFields.push(field);
+          }
+
+          // 始终强制 ffmpeg→干净 MP3 再上 RH（与 H3 multi 同链路）
+          let audioRemote = await ensureAudioRemoteH3Audio(refAudioUrl);
+          audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
+          console.log('[MiniMax-H3 audio] 参考音源', {
+            src: refAudioUrl.length > 120 ? `${refAudioUrl.slice(0, 120)}…` : refAudioUrl,
+            oss: audioRemote.length > 120 ? `${audioRemote.slice(0, 120)}…` : audioRemote,
+          });
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 8, text: '参考音强制转码为干净 MP3…' },
+          });
+          audioRemote = preferDirectOssUrlForThirdPartyImageRef(
+            await this.transcodeRemoteAudioToMp3Oss(audioRemote),
+          );
+
+          // 计费：读参考音时长 → 向上取整到 6|10|15|20；读不到保守 20s；>20 封顶 20 并提示
+          const h3AudioProjectId =
+            typeof (input as { projectId?: unknown }).projectId === 'string'
+              ? String((input as { projectId?: string }).projectId)
+              : undefined;
+          let probedAudioSec = 0;
+          try {
+            probedAudioSec = Number(await getMediaDuration(audioRemote, h3AudioProjectId)) || 0;
+            if (!(probedAudioSec > 0)) {
+              probedAudioSec = Number(await getMediaDuration(refAudioUrl, h3AudioProjectId)) || 0;
+            }
+          } catch {
+            probedAudioSec = 0;
+          }
+          const billingDurSec = mapMinimaxH3AudioBillingDurationSec(
+            probedAudioSec > 0 ? probedAudioSec : undefined,
+          );
+          (input as { durationMinimaxH3?: string }).durationMinimaxH3 = String(billingDurSec) as
+            | '6'
+            | '10'
+            | '15'
+            | '20';
+          const billingHint =
+            !(probedAudioSec > 0)
+              ? `未能读取参考音时长，按 ${billingDurSec}s 档计费`
+              : probedAudioSec > 20
+                ? `参考音约 ${probedAudioSec.toFixed(1)}s，超过 20s 按 20s 档计费`
+                : `参考音约 ${probedAudioSec.toFixed(1)}s → 计费 ${billingDurSec}s`;
+          console.log('[MiniMax-H3 audio] 计费时长映射', {
+            probedAudioSec,
+            billingDurSec,
+            inputFallback: inputDurationMinimaxH3,
+          });
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 10, text: billingHint },
+          });
+
+          const meta = rhAudioUploadMetaFromUrl(audioRemote);
+          const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
+            audioRemote,
+            meta.filename || 'minimax-h3-audio-ref.mp3',
+            meta.contentType || 'audio/mpeg',
+          );
+          const rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
+          const sizeNum = Number(uploadedAudio.size);
+          if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
+            throw new Error(
+              `参考音上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
+            );
+          }
+          if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
+            throw new Error(
+              `参考音上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
+            );
+          }
+          if (Number.isFinite(sizeNum) && sizeNum <= 0) {
+            throw new Error('参考音上传后大小为 0，请检查音频文件');
+          }
+          console.log('[MiniMax-H3 audio] 参考音 RH field=', rhAudioField.slice(0, 96), {
+            mediaType: uploadedAudio.mediaType,
+            size: uploadedAudio.size,
+            uploadName: meta.filename,
+            ossAfterTranscode: audioRemote.length > 96 ? `${audioRemote.slice(0, 96)}…` : audioRemote,
+          });
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
+          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+          try {
+            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_AUDIO_APP_ID, { rhRegion: 'cn' });
+          } catch (probeErr) {
+            console.warn(
+              '[MiniMax-H3 audio] apiCallDemo 探测失败，使用官方文档节点映射',
+              probeErr instanceof Error ? probeErr.message : probeErr,
+            );
+          }
+
+          const rhSeal = await getRhSealMediaBundle();
+          const nodeInfoList = buildMinimaxH3AudioNodeInfoList(
+            promptText,
+            megapixels,
+            aspectRh,
+            rhImageFields,
+            rhAudioField,
+            rhSeal,
+            liveNodes,
+          );
+          console.log(
+            '[MiniMax-H3 audio] 提交 nodeInfoList=',
+            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
+            'liveNodes=',
+            liveNodes.length,
+            'billingDuration=',
+            billingDurSec,
+            'images=',
+            rhImageFields.length,
+          );
+
+          const billingModelId = buildVideoBillingModelId(
+            MINIMAX_H3_AUDIO_MODEL_ID,
+            {
+              ...(input as Record<string, unknown>),
+              durationMinimaxH3: String(billingDurSec),
+              resolutionMinimaxH3: '720p',
+            },
+          );
+          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_AUDIO_APP_ID}`;
+          const trySubmit = async (instanceType: 'plus' | 'default') => {
+            const h3FcId = randomUUID();
+            const runRes = await rhPostChargeVideo(
+              submitUrl,
+              {
+                nodeInfoList,
+                instanceType,
+                randomSeed: true,
+                retainSeconds: 0,
+                usePersonalQueue: false,
+              } as Record<string, unknown>,
+              h3FcId,
+              { billingModelId },
+            );
+            return { h3FcId, runRes: runRes ?? {} };
+          };
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中...' } });
+          let submitted = await trySubmit('plus');
+          h3AudioFcChargedId = submitted.h3FcId;
+          let body = submitted.runRes;
+          let taskId = body.taskId ?? body.task_id;
+
+          if (!taskId && isRhNodeInfoMismatch803(body)) {
+            console.warn('[MiniMax-H3 audio] plus 提交 803，改试 instanceType=default');
+            await tryRefundFcForwardCharge(h3AudioFcChargedId, 'video', 'minimax_h3_audio_retry_default');
+            h3AudioFcChargedId = undefined;
+            submitted = await trySubmit('default');
+            h3AudioFcChargedId = submitted.h3FcId;
+            body = submitted.runRes;
+            taskId = body.taskId ?? body.task_id;
+          }
+
+          if (!taskId) {
+            const raw = formatRunningHubTaskError(body, '未返回 taskId');
+            throw new Error(
+              `提交失败：${
+                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
+              }`,
+            );
+          }
+
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 20, text: '任务已提交，生成中…', taskId: String(taskId) },
+          });
+
+          const deadline = Date.now() + POLL_DEADLINE_MS;
+          let lastProgress = 20;
+          let h3PollRound = 0;
+          const h3AudioPollFcBase = h3AudioFcChargedId || randomUUID();
+
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgress = Math.min(95, lastProgress + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
+            });
+
+            h3PollRound += 1;
+            const queryRes = await rhQueryPollVideo(String(taskId), `${h3AudioPollFcBase}:poll:${h3PollRound}`);
+
+            const status = queryRes.status;
+            if (status === 'SUCCESS') {
+              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
+              if (results && Array.isArray(results) && results.length > 0) {
+                const first = results[0];
+                const url =
+                  typeof first?.url === 'string'
+                    ? first.url
+                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
+                if (url) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url, videoUrl: url, originalVideoUrl: url },
+                  });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (status === 'FAILED' || status === 'FAILURE') {
+              throw rhPollFailureError('MiniMax-H3 口型同步', queryRes, String(taskId));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(h3AudioFcChargedId, 'video', 'minimax_h3_audio_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax-H3 口型同步生成失败'),
           });
         }
         return;
@@ -2410,13 +3731,18 @@ export class VideoProvider extends BaseProvider {
         }
 
         const ratio = aspect_ratio === '9:16' ? '9:16' : '16:9';
-        const res = inputResolutionRhartV31 === '720p' || inputResolutionRhartV31 === '1080p' || inputResolutionRhartV31 === '4k'
-          ? inputResolutionRhartV31
-          : '1080p';
+        // OTS 档：720p|1080p|1920p（最高 1920p，旧 4k 按 1920p 出片）
+        const resRaw = String(inputResolutionRhartV31 || '').trim().toLowerCase();
+        const res =
+          resRaw === '720' || resRaw === '720p'
+            ? '720p'
+            : resRaw === '1920' || resRaw === '1920p' || resRaw === '4k' || resRaw === '2160p'
+              ? '1920p'
+              : '1080p';
         const sec = duration === '15' ? '15' : duration === '10' ? '10' : '5';
         const size = (() => {
-          if (res === '4k') return ratio === '9:16' ? { w: '2160', h: '3840' } : { w: '3840', h: '2160' };
           if (res === '720p') return ratio === '9:16' ? { w: '720', h: '1280' } : { w: '1280', h: '720' };
+          // 1080p / 1920p：1920×1080（或竖屏 1080×1920），勿提交真 4K
           return ratio === '9:16' ? { w: '1080', h: '1920' } : { w: '1920', h: '1080' };
         })();
         const runPayload = {
@@ -2491,6 +3817,147 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'LTX2.3（首位帧）生成失败'),
+          });
+          return;
+        }
+      }
+
+      // 视频超分放大：RunningHub OpenAPI /rhart-video/video-upscaler（国内站；仅需参考视频）
+      if (isRhartVideoUpscaler) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const refVideo = String(inputReferenceVideoUrl || '').trim();
+        if (!refVideo) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '视频超分放大需要连接参考视频' },
+          });
+          return;
+        }
+        const targetRes = normalizeRhartVideoUpscalerResolution(inputTargetResolution, '1080p');
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+        let upscalerChargedTaskId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 5, text: '正在准备输入视频…' },
+          });
+          const videoUrl = await this.prepareWanAnimateVideoRemoteUrl(refVideo);
+          let probedDurationSec = Number((input as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
+          try {
+            const durSec = await getMediaDuration(videoUrl);
+            if (Number.isFinite(durSec) && durSec > 0) probedDurationSec = durSec;
+            if (Number.isFinite(durSec) && durSec > RHART_VIDEO_UPSCALER_MAX_DURATION_SEC) {
+              throw new Error(
+                `视频超分放大支持最长 ${RHART_VIDEO_UPSCALER_MAX_DURATION_SEC / 60} 分钟，当前约 ${Math.ceil(durSec / 60)} 分钟`,
+              );
+            }
+          } catch (durErr) {
+            if (durErr instanceof Error && /最长|支持最长/.test(durErr.message)) throw durErr;
+            console.warn('[视频超分放大] 时长探测失败，继续提交', durErr);
+          }
+
+          const billingInput = {
+            ...(input as Record<string, unknown>),
+            targetResolution: targetRes,
+            mediaDurationSec: probedDurationSec > 0 ? probedDurationSec : 5,
+          };
+          const apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}${RHART_VIDEO_UPSCALER_API_PATH}`;
+          const payloadUpscale = {
+            videoUrl,
+            targetResolution: targetRes,
+          };
+
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '提交超分任务…' } });
+          const fcBaseIdUp = randomUUID();
+          const runResUp = await rhPostChargeVideo(
+            apiEndpoint,
+            payloadUpscale as Record<string, unknown>,
+            fcBaseIdUp,
+            {
+              billingModelId: buildVideoBillingModelId(RHART_VIDEO_UPSCALER_MODEL_ID, billingInput),
+            },
+          );
+          upscalerChargedTaskId = fcBaseIdUp;
+          const taskIdUp = runResUp?.taskId ?? runResUp?.task_id;
+          if (!taskIdUp) {
+            throw new Error(`提交失败：${formatRunningHubTaskError(runResUp ?? {}, '未返回 taskId')}`);
+          }
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 18, text: '任务已提交，超分中…', taskId: String(taskIdUp) },
+          });
+
+          const deadlineUp = Date.now() + POLL_DEADLINE_MS;
+          let lastProgressUp = 18;
+          let pollRoundUp = 0;
+          while (Date.now() < deadlineUp) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgressUp = Math.min(95, lastProgressUp + 4);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgressUp, text: '超分处理中…', taskId: String(taskIdUp) },
+            });
+            pollRoundUp += 1;
+            const queryResUp = await rhQueryPollVideo(
+              String(taskIdUp),
+              `${fcBaseIdUp}:poll:${pollRoundUp}`,
+            );
+            const st = queryResUp.status;
+            if (st === 'SUCCESS') {
+              const resultsUp = queryResUp.results as
+                | Array<{ url?: unknown; outputType?: unknown }>
+                | undefined;
+              if (resultsUp && Array.isArray(resultsUp) && resultsUp.length > 0) {
+                const pickUrl = (it: { url?: unknown } | undefined): string => {
+                  if (!it) return '';
+                  if (typeof it.url === 'string') return it.url;
+                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
+                };
+                const mp4Item = resultsUp.find((it) => {
+                  const out = String(it?.outputType ?? '').trim().toLowerCase();
+                  const u = pickUrl(it).toLowerCase();
+                  return out === 'mp4' || u.endsWith('.mp4');
+                });
+                const bestItem = mp4Item || resultsUp[0];
+                const urlUp = pickUrl(bestItem);
+                if (urlUp) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url: urlUp, videoUrl: urlUp, originalVideoUrl: urlUp },
+                  });
+                  return;
+                }
+              }
+              throw new Error('超分成功但未返回视频 URL');
+            }
+            if (st === 'FAILED' || st === 'FAILURE') {
+              throw rhPollFailureError('视频超分放大', queryResUp, String(taskIdUp));
+            }
+          }
+          throw new Error('视频超分超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(upscalerChargedTaskId, 'video', 'rhart_video_upscaler_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(
+              err,
+              err instanceof Error ? err.message : '视频超分放大失败',
+            ),
           });
           return;
         }
@@ -2620,6 +4087,160 @@ export class VideoProvider extends BaseProvider {
             nodeId,
             status: 'ERROR',
             payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'WanAnimate（角色替换）生成失败'),
+          });
+          return;
+        }
+      }
+
+      // Wan animate2 视频换人：RunningHub ai-app 2086818758475210753（角色图 + 参考视频，提示词选填）
+      if (isWanAnimate2Model) {
+        if (!getAliyunFcInitUserUrl().trim()) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
+          });
+          return;
+        }
+        const RH_WAN_ANIMATE_2_APP_ID = '2086818758475210753';
+        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
+        const POLL_INTERVAL_MS = 5 * 1000;
+        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+
+        let imageUrlWa2 = '';
+        let videoUrlWa2 = '';
+        try {
+          imageUrlWa2 = await this.processImageToOssUrl(images![0]);
+          videoUrlWa2 = await this.prepareWanAnimateVideoRemoteUrl(String(inputReferenceVideoUrl || '').trim());
+        } catch (e: unknown) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error: `Wan animate2 处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
+            },
+          });
+          return;
+        }
+
+        let probedDurationSecWa2 = Number((input as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
+        try {
+          const durSecWa2 = await getMediaDuration(videoUrlWa2);
+          if (Number.isFinite(durSecWa2) && durSecWa2 > 0) probedDurationSecWa2 = durSecWa2;
+        } catch (durErrWa2) {
+          console.warn('[Wan animate2] 原视频时长探测失败，按 1 秒计费兜底', durErrWa2);
+        }
+        const billingInputWa2 = {
+          ...(input as Record<string, unknown>),
+          model: 'wan-animate-2',
+          resolutionWanAnimate: inputResolutionWanAnimate,
+          mediaDurationSec: probedDurationSecWa2 > 0 ? probedDurationSecWa2 : 1,
+        };
+
+        const presetRaw2 = String(inputResolutionWanAnimate || '720p').trim().toLowerCase();
+        // RH 工作流分辨率档：文档示例 832；1080 档映射为 1280
+        const resKeyWa2 =
+          presetRaw2 === '1080p' || presetRaw2 === '1080' || presetRaw2 === '1920x1080' || presetRaw2 === '1080x1920'
+            ? '1080p'
+            : '720p';
+        const resVal2 = resKeyWa2 === '1080p' ? '1280' : '832';
+        const promptWa2 = String(prompt || '').trim();
+        const mediaDurationSecWa2 = probedDurationSecWa2 > 0 ? probedDurationSecWa2 : 1;
+        billingInputWa2.resolutionWanAnimate = resKeyWa2;
+        billingInputWa2.mediaDurationSec = mediaDurationSecWa2;
+
+        const runPayloadWa2 = {
+          nodeInfoList: [
+            { nodeId: '637', fieldName: 'value', fieldValue: resVal2, description: '分辨率' },
+            { nodeId: '642', fieldName: 'value', fieldValue: promptWa2, description: '提示词' },
+            { nodeId: '651', fieldName: 'value', fieldValue: '', description: '原视频描述' },
+            { nodeId: '647', fieldName: 'video', fieldValue: videoUrlWa2, description: '原视频' },
+            { nodeId: '655', fieldName: 'image', fieldValue: imageUrlWa2, description: '替换参考图' },
+          ],
+          instanceType: 'plus',
+          usePersonalQueue: 'false',
+          // FC 扣费读 forward.body 作 nodeData：写入计费槽位（RH 忽略未知字段）
+          model: 'wan-animate-2',
+          resolutionWanAnimate: resKeyWa2,
+          mediaDurationSec: mediaDurationSecWa2,
+        };
+
+        let wanAnimate2ChargedTaskId: string | undefined;
+        try {
+          onStatus({ nodeId, status: 'START', payload: {} });
+          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 10, text: '提交任务中...' } });
+          const fcBaseIdWa2 = randomUUID();
+          const runResWa2 = await rhPostChargeVideo(
+            `${RUN_BASE}/run/ai-app/${RH_WAN_ANIMATE_2_APP_ID}`,
+            runPayloadWa2 as Record<string, unknown>,
+            fcBaseIdWa2,
+            { billingModelId: buildVideoBillingModelId('wan-animate-2', billingInputWa2) },
+          );
+          wanAnimate2ChargedTaskId = fcBaseIdWa2;
+          const taskIdWa2 = runResWa2?.taskId ?? runResWa2?.task_id;
+          if (!taskIdWa2) {
+            throw new Error(`提交失败：${formatRunningHubTaskError(runResWa2 ?? {}, '未返回 taskId')}`);
+          }
+          onStatus({
+            nodeId,
+            status: 'PROCESSING',
+            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskIdWa2) },
+          });
+
+          const deadlineWa2 = Date.now() + POLL_DEADLINE_MS;
+          let lastProgressWa2 = 15;
+          let pollRoundWa2 = 0;
+          while (Date.now() < deadlineWa2) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+            lastProgressWa2 = Math.min(95, lastProgressWa2 + 5);
+            onStatus({
+              nodeId,
+              status: 'PROCESSING',
+              payload: { progress: lastProgressWa2, text: '生成中...', taskId: String(taskIdWa2) },
+            });
+            pollRoundWa2 += 1;
+            const queryResWa2 = await rhQueryPollVideo(String(taskIdWa2), `${fcBaseIdWa2}:poll:${pollRoundWa2}`);
+            const st2 = queryResWa2.status;
+            if (st2 === 'SUCCESS') {
+              const resultsWa2 = queryResWa2.results as Array<{ url?: unknown; outputType?: unknown }> | undefined;
+              if (resultsWa2 && Array.isArray(resultsWa2) && resultsWa2.length > 0) {
+                const pickUrl2 = (it: { url?: unknown } | undefined): string => {
+                  if (!it) return '';
+                  if (typeof it.url === 'string') return it.url;
+                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
+                };
+                const mp4Item2 = resultsWa2.find((it) => {
+                  const out = String(it?.outputType ?? '').trim().toLowerCase();
+                  const u = pickUrl2(it).toLowerCase();
+                  return out === 'mp4' || u.endsWith('.mp4');
+                });
+                const bestItem2 = mp4Item2 || resultsWa2[0];
+                const urlWa2 = pickUrl2(bestItem2);
+                if (urlWa2) {
+                  onStatus({
+                    nodeId,
+                    status: 'SUCCESS',
+                    payload: { url: urlWa2, videoUrl: urlWa2, originalVideoUrl: urlWa2 },
+                  });
+                  return;
+                }
+              }
+              throw new Error('生成成功但未返回视频 URL');
+            }
+            if (st2 === 'FAILED' || st2 === 'FAILURE') {
+              throw rhPollFailureError('Wan animate2', queryResWa2, String(taskIdWa2));
+            }
+          }
+          throw new Error('生成超时');
+        } catch (err: unknown) {
+          void tryRefundFcForwardCharge(wanAnimate2ChargedTaskId, 'video', 'wan_animate_2_failed');
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: buildFcErrorPayload(
+              err,
+              err instanceof Error ? err.message : 'Wan animate2 视频换人生成失败',
+            ),
           });
           return;
         }
@@ -3238,12 +4859,12 @@ export class VideoProvider extends BaseProvider {
       } else if (isHailuo02Model) {
         // 海螺-02 文生视频标准：https://www.runninghub.cn/openapi/v2/minimax/hailuo-02/t2v-standard
         const dur = inputDurationHailuo02 === '10' ? '10' : '6';
-        payload = { prompt, enablePromptExpansion: true, duration: dur };
+        payload = { prompt, enablePromptExpansion: false, duration: dur };
         apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/minimax/hailuo-02/t2v-standard`;
       } else if (isHailuo23Model) {
         // 海螺-2.3 文生视频标准：https://www.runninghub.cn/openapi/v2/minimax/hailuo-2.3/t2v-standard
         const dur = inputDurationHailuo02 === '10' ? '10' : '6';
-        payload = { prompt, enablePromptExpansion: true, duration: dur };
+        payload = { prompt, enablePromptExpansion: false, duration: dur };
         apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/minimax/hailuo-2.3/t2v-standard`;
       } else if (isKlingVideoO1Model) {
         // 可灵文生视频o1：https://www.runninghub.cn/openapi/v2/kling-video-o1/text-to-video
@@ -3417,7 +5038,7 @@ export class VideoProvider extends BaseProvider {
         if (!firstImageUrl) throw new Error('海螺-02 图生视频需要至少一张有效参考图');
         payload = {
           prompt: prompt || '',
-          enablePromptExpansion: true,
+          enablePromptExpansion: false,
           firstImageUrl,
           duration: dur,
         };
@@ -3470,7 +5091,7 @@ export class VideoProvider extends BaseProvider {
           throw new Error('图片上传失败，请检查图片格式和网络连接');
         }
         const dur = inputDurationHailuo02 === '10' ? '10' : '6';
-        payload = { prompt: prompt || '', enablePromptExpansion: true, imageUrl: processedImageUrl, duration: dur };
+        payload = { prompt: prompt || '', enablePromptExpansion: false, imageUrl: processedImageUrl, duration: dur };
         apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}/minimax/hailuo-2.3/i2v-standard`;
       } else if (isWan26Model) {
         const shotType = inputShotType === 'multi' ? 'multi' : 'single';
@@ -4865,14 +6486,14 @@ export class VideoProvider extends BaseProvider {
                 pollData.output ||
                 pollData.url;
               if (possibleVideoUrl) console.log(`[视频生成] Sora2 核心算力 - 提取到视频 URL: ${possibleVideoUrl}`);
-            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isRhartVideoXModel || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateModel) {
+            } else if (isSora2Model || isSora2ProModel || isWan26Model || isWan26FlashModel || isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProModel || isRhartV31ProSEModel || isGrok3Model || isRhartVideoXModel || isGrok3StableModel || isSeedanceModel || isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isRhVideoStartEndModel || isWanAnimateFamily) {
               const resultsArray = Array.isArray(pollData.results) ? pollData.results : pollData.data?.results;
               if (resultsArray && resultsArray.length > 0) {
                 possibleVideoUrl = this.firstRhMediaUrlFromResultItem(resultsArray[0]);
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimate2Model ? 'wan-animate-2' : isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.log(`[视频生成] ${name} - 从 results[0].url 提取到视频 URL: ${possibleVideoUrl}`);
               } else {
-                const name = isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
+                const name = isWanAnimate2Model ? 'wan-animate-2' : isWanAnimateModel ? 'wan-animate' : isRhVideoStartEndModel ? 'rh-video-start-end' : isRhartV31ProOfficialI2vModel ? 'rhart-v3.1-pro-official-i2v' : isSora2ProModel ? 'sora-2-pro' : isKlingVideoO1StartEndModel ? 'kling-video-o1-start-end' : isKlingVideoO1I2vModel ? 'kling-video-o1-i2v' : isKlingVideoO1Model ? 'kling-video-o1' : isHailuo23I2vModel ? 'hailuo-2.3-i2v-standard' : isHailuo02I2vModel ? 'hailuo-02-i2v-standard' : isHailuo23Model ? 'hailuo-2.3-t2v-standard' : isHailuo02Model ? 'hailuo-02-t2v-standard' : isGrok3StableModel ? 'grok-3-stable' : isSeedanceMiniModel ? 'seedance-2.0-mini' : isSeedanceFastModel ? 'seedance-2.0-fast' : isRhartVideoXModel ? 'rhart-video-x' : isGrok3Model ? 'grok-video3' : isRhartV31ProSEModel ? 'rhart-v3.1-pro-se' : isRhartV31ProModel ? 'rhart-v3.1-pro' : isRhartV31FastSEModel ? 'rhart-v3.1-fast-se' : isRhartV31FastModel ? 'rhart-v3.1-fast' : isWan26FlashModel ? 'wan-2.6-flash' : isWan26Model ? 'wan-2.6' : 'sora-2';
                 console.warn(`[视频生成] ${name} - 未找到视频 URL，完整响应:`, JSON.stringify(pollData, null, 2));
               }
             } else if (isKlingModel) {

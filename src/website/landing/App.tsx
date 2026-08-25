@@ -68,7 +68,7 @@ export default function App() {
           </div>
           <div
             id="download"
-            className={`mt-5 flex flex-col gap-3 sm:flex-row md:mt-6 md:gap-4 ${animClass(inView)}`}
+            className={`mt-5 flex flex-col gap-3 md:mt-6 ${animClass(inView)}`}
             style={{ animationDelay: '0.5s' }}
           >
             <DownloadButton />

@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.8.0",
+  "version": "1.9.1",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -19,7 +19,7 @@
     "alipay:verify": "backend\\.venv\\Scripts\\python.exe backend\\verify_alipay_env.py",
     "alipay:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-alipay-test.ps1",
     "alipay:update-public-key": "backend\\.venv\\Scripts\\python.exe backend\\update_alipay_public_key.py",
-    "electron:dev": "chcp 65001 >nul 2>&1 && npm run build:main && concurrently \"npm run dev\" \"wait-on http://localhost:5274 && cross-env NODE_ENV=development electron .\"",
+    "electron:dev": "chcp 65001 >nul 2>&1 && npm run build:main && concurrently \"npm run dev\" \"wait-on http://localhost:5274 && cross-env NODE_ENV=development NODE_OPTIONS=--max-old-space-size=8192 electron .\"",
     "sync:asset-library": "node scripts/sync-asset-library-to-resources.mjs",
     "sync:digital-human-library": "node scripts/sync-digital-human-library-to-resources.mjs",
     "convert-icon": "node scripts/convert-icon-to-ico.js",
@@ -33,6 +33,8 @@
     "sync:splash-videos": "node scripts/sync-splash-videos-to-resources.mjs",
     "electron:build": "npm run build:all && npm run convert-icon:force && node scripts/generate-nsis-installer-branding.mjs && node scripts/sync-llm-personas-to-default.js && node scripts/sync-asset-library-to-resources.mjs && node scripts/verify-default-asset-library.mjs && node scripts/sync-digital-human-library-to-resources.mjs && node scripts/verify-default-digital-human-library.mjs && node scripts/copy-ffmpeg-to-resources.js && npm run copy-yt-dlp && node scripts/verify-offline-bundle-resources.mjs && node scripts/copy-env-for-packaging.mjs && npm run download-vc-redist && npm run clean:release-unpacked && node scripts/clean-partial-nsis-installer.mjs && node scripts/clean-nsis-web-version-artifacts.mjs && node scripts/patch-nsis-web-download.mjs && electron-builder && node scripts/verify-exe-icon.mjs && node scripts/verify-nsis-web-artifacts.mjs && node scripts/pack-offline-windows-installer.mjs",
     "electron:build:release": "node scripts/prompt-version-before-electron-build.js",
+    "build:glass-installer": "node scripts/build-glass-installer.mjs",
+    "upload:glass-installer": "node scripts/upload-glass-installer-to-oss.mjs",
     "upload:release": "node scripts/upload-release-to-oss.js",
     "upload:release:ci": "node scripts/upload-release-to-oss.js --no-confirm",
     "release": "node scripts/release-with-version.js",
@@ -42,6 +44,7 @@
     "release:major": "node scripts/release-with-version.js --major",
     "deploy": "npm run deploy --prefix demo/aliyun-fc-init-user",
     "check:pricing": "node scripts/check-pricing-alignment.mjs",
+    "test:rh-seal": "node scripts/test-rh-seal-closure.mjs",
     "sync:pricing-ots": "node scripts/sync-pricing-to-ots.mjs",
     "check:tasks-table": "node scripts/check-tasks-table.mjs",
     "fix-models": "node scripts/fix-models.mjs",
@@ -129,6 +132,10 @@
       {
         "from": "resources/default-llm-personas.json",
         "to": "default-llm-personas.json"
+      },
+      {
+        "from": "resources/skills",
+        "to": "skills"
       },
       {
         "from": "resources/default-asset-library",

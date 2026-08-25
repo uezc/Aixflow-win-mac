@@ -240,6 +240,7 @@ function isReleaseArtifactForVersion(fileName, version) {
   const v = escapeRegExp(version);
   if (/^latest(-mac)?\.yml$/i.test(fileName)) return true;
   if (new RegExp(`Aixflow-Windows-Setup-${v}\\.exe`, 'i').test(fileName)) return true;
+  if (new RegExp(`Aixflow-Installer-${v}\\.exe`, 'i').test(fileName)) return true;
   if (new RegExp(`Aixflow-Bate-Windows-Setup-${v}\\.exe`, 'i').test(fileName)) return true;
   if (new RegExp(`Aixflow-Windows-Offline-${v}\\.zip`, 'i').test(fileName)) return true;
   if (new RegExp(`^nexflow-${v}-`, 'i').test(fileName)) return true;
@@ -583,6 +584,27 @@ async function uploadRelease() {
       });
     } else {
       console.warn('[upload-release] 未找到离线 zip，跳过:', offlineZipPath);
+    }
+
+    /** 玻璃拟态本机安装器（官网默认入口；不写入 latest.yml） */
+    const glassInstallerName = `Aixflow-Installer-${version}.exe`;
+    const glassCandidates = [
+      path.join(releaseDir, glassInstallerName),
+      path.join(releaseDir, 'glass-installer', glassInstallerName),
+    ];
+    const glassLocal = glassCandidates.find((p) => fs.existsSync(p));
+    if (glassLocal) {
+      pushManifest(glassLocal, `${remoteFolder}${glassInstallerName}`, {
+        'Content-Type': 'application/octet-stream',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+      });
+      console.log('[upload-release] 含玻璃安装器:', glassInstallerName);
+    } else {
+      console.warn(
+        '[upload-release] 未找到玻璃安装器（可选）:',
+        glassInstallerName,
+        '→ 可先 npm run build:glass-installer',
+      );
     }
   }
 

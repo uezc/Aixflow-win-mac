@@ -33,16 +33,54 @@ function resolveApiBase() {
 }
 
 /**
+ * 解析 sentence.words（ms → sec）。fun-asr / Qwen ASR 在 enable_words 时返回字/词级时间戳。
+ * @param {unknown} rawWords
+ * @returns {Array<{ text: string; startSec: number; endSec: number }>}
+ */
+function normalizeWords(rawWords) {
+  if (!Array.isArray(rawWords)) return [];
+  /** @type {Array<{ text: string; startSec: number; endSec: number }>} */
+  const out = [];
+  for (const w of rawWords) {
+    if (!w || typeof w !== 'object') continue;
+    const o = /** @type {Record<string, unknown>} */ (w);
+    const text = `${String(o.text || '')}${String(o.punctuation || '')}`.trim();
+    if (!text) continue;
+    const beginMs = Number(o.begin_time);
+    const endMs = Number(o.end_time);
+    const startSec = Number.isFinite(beginMs) ? beginMs / 1000 : 0;
+    const endSec = Number.isFinite(endMs) ? endMs / 1000 : startSec;
+    out.push({
+      text,
+      startSec,
+      endSec: endSec >= startSec ? endSec : startSec,
+    });
+  }
+  return out;
+}
+
+/**
  * 将 DashScope transcription JSON 归一化为客户端契约。
+ * 保留字/词级 words（卡拉OK对齐用）；无 words 时 segments 仍为句级。
  * @param {unknown} json
- * @returns {{ text: string; segments: Array<{ text: string; startSec: number; endSec: number }> }}
+ * @returns {{
+ *   text: string;
+ *   segments: Array<{
+ *     text: string;
+ *     startSec: number;
+ *     endSec: number;
+ *     words?: Array<{ text: string; startSec: number; endSec: number }>;
+ *   }>;
+ *   hasWordTimestamps: boolean;
+ * }}
  */
 export function normalizeTranscriptionResult(json) {
   const root = json && typeof json === 'object' ? /** @type {Record<string, unknown>} */ (json) : {};
   const transcripts = Array.isArray(root.transcripts) ? root.transcripts : [];
-  /** @type {Array<{ text: string; startSec: number; endSec: number }>} */
+  /** @type {Array<{ text: string; startSec: number; endSec: number; words?: Array<{ text: string; startSec: number; endSec: number }> }>} */
   const segments = [];
   const fullParts = [];
+  let hasWordTimestamps = false;
 
   for (const t of transcripts) {
     if (!t || typeof t !== 'object') continue;
@@ -57,10 +95,13 @@ export function normalizeTranscriptionResult(json) {
       if (!text) continue;
       const beginMs = Number(sent.begin_time);
       const endMs = Number(sent.end_time);
+      const words = normalizeWords(sent.words);
+      if (words.length > 0) hasWordTimestamps = true;
       segments.push({
         text,
         startSec: Number.isFinite(beginMs) ? beginMs / 1000 : 0,
         endSec: Number.isFinite(endMs) ? endMs / 1000 : 0,
+        ...(words.length > 0 ? { words } : {}),
       });
     }
   }
@@ -69,7 +110,7 @@ export function normalizeTranscriptionResult(json) {
   if (!text && segments.length > 0) {
     text = segments.map((s) => s.text).join('\n');
   }
-  return { text, segments };
+  return { text, segments, hasWordTimestamps };
 }
 
 /**
@@ -108,14 +149,42 @@ export async function handleAsrFileTranscribe(opts) {
     };
   }
 
-  const languageRaw = String(body?.language ?? '').trim().toLowerCase();
+  /**
+   * language → language_hints（Fun-ASR 仅取第一个 hint）。
+   * - auto / 空：不传 language_hints，由模型自动识别（含粤语等中文方言）
+   * - zh：普通话/中文
+   * - yue：粤语（Paraformer/Qwen 正式码；fun-asr 文件转写文档未列 yue，但能力含粤语，尽量传 yue）
+   */
+  const languageRaw = String(body?.language ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
   /** @type {string[] | undefined} */
   let languageHints;
-  if (languageRaw && languageRaw !== 'auto') {
-    const hint = languageRaw === 'zh-cn' || languageRaw === 'zh_cn' ? 'zh' : languageRaw;
-    languageHints = [hint];
+  if (!languageRaw || languageRaw === 'auto') {
+    languageHints = undefined;
+  } else if (
+    languageRaw === 'yue' ||
+    languageRaw === 'cantonese' ||
+    languageRaw === 'zh-yue' ||
+    languageRaw === 'zh-hk' ||
+    languageRaw === 'yue-hk'
+  ) {
+    languageHints = ['yue'];
+  } else if (
+    languageRaw === 'zh' ||
+    languageRaw === 'zh-cn' ||
+    languageRaw === 'zh-hans' ||
+    languageRaw === 'cmn' ||
+    languageRaw === 'mandarin' ||
+    languageRaw === 'chinese'
+  ) {
+    languageHints = ['zh'];
+  } else if (languageRaw === 'en' || languageRaw === 'english') {
+    languageHints = ['en'];
   } else {
-    languageHints = ['zh', 'en'];
+    const first = languageRaw.split(/[,\s]+/).filter(Boolean)[0];
+    languageHints = first ? [first] : undefined;
   }
 
   // 稳定版异步模型；可用 DASHSCOPE_ASR_FILE_MODEL 钉死 fun-asr-2025-11-07
@@ -146,7 +215,10 @@ export async function handleAsrFileTranscribe(opts) {
         input: { file_urls: [fileUrl] },
         parameters: {
           channel_id: [0],
-          language_hints: languageHints,
+          // auto 时省略 language_hints，避免 Fun-ASR 只取首项时被钉死成 zh
+          ...(languageHints ? { language_hints: languageHints } : {}),
+          // 字/词级时间戳：结果在 sentences[].words[]（卡拉OK对齐；切镜仍用句级）
+          enable_words: true,
         },
       }),
     });
@@ -307,6 +379,7 @@ export async function handleAsrFileTranscribe(opts) {
         ok: true,
         text: normalized.text,
         segments: normalized.segments,
+        hasWordTimestamps: normalized.hasWordTimestamps === true,
         model,
         taskId,
         userId,

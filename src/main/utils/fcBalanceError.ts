@@ -59,6 +59,9 @@ export function buildFcErrorPayload(
     (error instanceof Error ? error.message : String(error)) ||
     fallbackMessage;
   const out = String(msg);
+  if (resp?.status === 429 || /RATE_LIMIT/i.test(out)) {
+    return { error: '请求过于频繁，请等待约 1 分钟后再试' };
+  }
   // 云端可能直接返回长中文，与 HTTP 码/BALANCE 枚举不一致，仍按「元宝不足」统一短文案
   if (out.includes('元宝不足')) {
     return { error: DEFAULT_BALANCE_MSG, balanceInsufficient: true };

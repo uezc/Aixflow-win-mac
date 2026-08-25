@@ -14,10 +14,35 @@ import {
 } from './services/aliyunService.js';
 import { getAliyunFcInitUserUrl } from './config/aliyunConfig.js';
 import { notifyCloudBalance } from './cloudBalanceNotifier.js';
-import { withFcRouteFailover } from './services/nxFcRouteManager.js';
+import {
+  beginFcGenerationActivity,
+  endFcGenerationActivity,
+  withFcRouteFailover,
+} from './services/nxFcRouteManager.js';
 
 const FC_RETRY_COUNT = 3;
 const FC_RETRY_DELAY_MS = 2000;
+
+/** 进行中的 FC LLM AbortController（支持多路并发；abortInFlightFcLlm 一次全取消） */
+const llmAbortControllers = new Set();
+
+/**
+ * 取消进行中的全部 FC LLM（导演「取消」/ Esc）
+ * @returns {{ aborted: boolean }}
+ */
+export function abortInFlightFcLlm() {
+  let aborted = false;
+  for (const ac of [...llmAbortControllers]) {
+    try {
+      ac.abort();
+      aborted = true;
+    } catch {
+      /* ignore */
+    }
+  }
+  llmAbortControllers.clear();
+  return { aborted };
+}
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -42,9 +67,17 @@ function getRunTaskUrl() {
   return base.endsWith('/run-task') ? base : `${base}/run-task`;
 }
 
-function isRetryable(e) {
+/** @param {unknown} e @param {{ type?: string }} [opts] */
+function isRetryable(e, opts = {}) {
   const code = e?.code;
   const message = String(e?.message ?? '');
+  const isTimeout =
+    code === 'ECONNABORTED' ||
+    code === 'ETIMEDOUT' ||
+    /timeout of \d+ms exceeded/i.test(message) ||
+    /timed?\s*out/i.test(message);
+  // LLM 超时禁止重试：会叠扣费，且拖到客户端已放弃后仍在后台跑
+  if (opts.type === 'llm' && isTimeout) return false;
   return (
     code === 'ECONNRESET' ||
     code === 'ECONNREFUSED' ||
@@ -108,7 +141,7 @@ export async function callFCGenericTask(opts = {}) {
     };
   };
 
-  const buildConfig = (useJwt, access) => {
+  const buildConfig = (useJwt, access, signal) => {
     const h = {
       'Content-Type': 'application/json; charset=utf-8',
       'x-nexflow-token': token,
@@ -120,10 +153,11 @@ export async function callFCGenericTask(opts = {}) {
       h['x-task-id'] = taskId;
     }
     return {
-      timeout: forward ? 600000 : 120000,
+      timeout: forward ? 600000 : 180000,
       headers: h,
       proxy: false,
       httpsAgent,
+      ...(signal ? { signal } : {}),
     };
   };
 
@@ -140,44 +174,82 @@ export async function callFCGenericTask(opts = {}) {
   let useJwt = saas || (!!rawAccess && !offline);
   let access = offline ? '' : rawAccess;
 
-  return withFcRouteFailover(async () => {
-    let lastError;
-    for (let attempt = 1; attempt <= FC_RETRY_COUNT; attempt++) {
-      try {
-        const config = buildConfig(useJwt, access);
-        const { data } = await postRunTask(url, buildPayload(useJwt), config);
-        const balRaw = data?.balance;
-        const balanceNum = typeof balRaw === 'number' ? balRaw : Number(balRaw);
-        const rest = { ...data };
-        if (Object.prototype.hasOwnProperty.call(rest, 'balance')) {
-          delete rest.balance;
-        }
-        if (Number.isFinite(balanceNum)) {
-          notifyCloudBalance(balanceNum);
-        }
-        return { data: rest, balance: balanceNum };
-      } catch (e) {
-        lastError = e;
-        const status = e?.response?.status;
-        if (useJwt && status === 401 && attempt === 1) {
-          const ok = await refreshNxAccessToken();
-          if (ok) {
-            access = getNxAccessToken();
-            continue;
+  const isLlm = type === 'llm' && !forward;
+  /** @type {AbortController | null} */
+  let myLlmAbort = null;
+  if (isLlm) {
+    // 批量优化提示词等场景需要多路并发；勿再「新请求顶替旧请求」
+    myLlmAbort = new AbortController();
+    llmAbortControllers.add(myLlmAbort);
+    beginFcGenerationActivity();
+  }
+
+  try {
+    const runWithRetries = async () => {
+      let lastError;
+      // LLM：禁止线路故障切换叠两次 180s；仅允许 401 换票后重试 1 次
+      const maxAttempts = isLlm ? 2 : FC_RETRY_COUNT;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const signal = isLlm ? myLlmAbort?.signal : undefined;
+          if (signal?.aborted) {
+            const err = new Error('cancelled');
+            err.code = 'ERR_CANCELED';
+            err.name = 'CanceledError';
+            throw err;
+          }
+          const config = buildConfig(useJwt, access, signal);
+          const { data } = await postRunTask(url, buildPayload(useJwt), config);
+          const balRaw = data?.balance;
+          const balanceNum = typeof balRaw === 'number' ? balRaw : Number(balRaw);
+          const rest = { ...data };
+          if (Object.prototype.hasOwnProperty.call(rest, 'balance')) {
+            delete rest.balance;
+          }
+          if (Number.isFinite(balanceNum)) {
+            notifyCloudBalance(balanceNum);
+          }
+          return { data: rest, balance: balanceNum };
+        } catch (e) {
+          lastError = e;
+          if (e?.code === 'ERR_CANCELED' || e?.name === 'CanceledError' || e?.name === 'AbortError') {
+            const err = new Error('已取消');
+            err.code = 'ERR_CANCELED';
+            err.name = 'CanceledError';
+            throw err;
+          }
+          const status = e?.response?.status;
+          if (useJwt && status === 401 && attempt === 1) {
+            const ok = await refreshNxAccessToken({ force: true });
+            if (ok) {
+              access = getNxAccessToken();
+              continue;
+            }
+          }
+          if (!isLlm && attempt < FC_RETRY_COUNT && isRetryable(e, { type })) {
+            console.warn(
+              `[FC] run-task 请求失败 (${e?.code || e?.message})，${FC_RETRY_DELAY_MS / 1000}s 后重试 (${attempt}/${FC_RETRY_COUNT})`,
+            );
+            await new Promise((r) => setTimeout(r, FC_RETRY_DELAY_MS));
+          } else {
+            throw lastError;
           }
         }
-        if (attempt < FC_RETRY_COUNT && isRetryable(e)) {
-          console.warn(
-            `[FC] run-task 请求失败 (${e?.code || e?.message})，${FC_RETRY_DELAY_MS / 1000}s 后重试 (${attempt}/${FC_RETRY_COUNT})`,
-          );
-          await new Promise((r) => setTimeout(r, FC_RETRY_DELAY_MS));
-        } else {
-          throw lastError;
-        }
       }
+      throw lastError;
+    };
+
+    // LLM 不做 HK↔北京 failover：超时后再切线路会把等待叠到 4～6 分钟，导演台必现「响应超时」
+    if (isLlm) {
+      return await runWithRetries();
     }
-    throw lastError;
-  });
+    return await withFcRouteFailover(runWithRetries);
+  } finally {
+    if (isLlm) {
+      if (myLlmAbort) llmAbortControllers.delete(myLlmAbort);
+      endFcGenerationActivity();
+    }
+  }
 }
 
 /**

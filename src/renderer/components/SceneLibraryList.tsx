@@ -98,7 +98,12 @@ const SceneLibraryList: React.FC<SceneLibraryListProps> = ({
   const loadScenes = useCallback(async () => {
     try {
       if (window.electronAPI?.getScenes) {
-        const list = await window.electronAPI.getScenes();
+        const list = await Promise.race([
+          window.electronAPI.getScenes(),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('getScenes timeout')), 12000);
+          }),
+        ]);
         setScenes(list.sort((a, b) => b.createdAt - a.createdAt));
       }
     } catch (e) {

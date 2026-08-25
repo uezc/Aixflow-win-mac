@@ -41,6 +41,13 @@ export type CanvasShortcutsStrings = {
   deleteNodes: CanvasShortcutEntryStrings;
   multiSelect: CanvasShortcutEntryStrings;
   quickConnect: CanvasShortcutEntryStrings;
+  /** MiniMax-H3 视频节点：一键优化提示词 */
+  optimizeH3Prompt: CanvasShortcutEntryStrings;
+  /** 按住说话语音输入（可自定义） */
+  voiceInputHold: CanvasShortcutEntryStrings;
+  voiceInputHoldRecording: string;
+  voiceInputHoldClickToRebind: string;
+  voiceInputHoldSaved: string;
   wheelUpKey: string;
   wheelDownKey: string;
   clickKey: string;
@@ -53,7 +60,7 @@ export type CanvasShortcutsStrings = {
 };
 
 const zh: CanvasShortcutsStrings = {
-  panelTitle: '快捷键查询',
+  panelTitle: '快捷键与设置',
   generalSection: '通用',
   editSection: '编辑与选择',
   opsSection: '常规操作',
@@ -67,8 +74,8 @@ const zh: CanvasShortcutsStrings = {
     '图片、视频、音频这类素材优先用连线传递；文本设定、说明和提示词片段常用 @ 引用。',
   escClose: '退出录制 / 关闭面板',
   restoreDefaults: '恢复默认设置',
-  restoreDefaultsDone: '已恢复为默认快捷键列表',
-  openPanelTitle: '快捷键查询',
+  restoreDefaultsDone: '已恢复为默认快捷键（含语音 Ctrl+`）',
+  openPanelTitle: '快捷键与设置',
   zoomIn: { label: '放大' },
   zoomOut: { label: '缩小' },
   fitView: { label: '聚焦节点 / 适应画布', hint: '工具栏' },
@@ -84,6 +91,14 @@ const zh: CanvasShortcutsStrings = {
   deleteNodes: { label: '删除节点' },
   multiSelect: { label: '多选节点（配合点击）' },
   quickConnect: { label: '快速连线（点击目标）' },
+  optimizeH3Prompt: { label: '优化提示词（MiniMax-H3）' },
+  voiceInputHold: {
+    label: '语音输入（按住说话）',
+    hint: '先点输入框，再按住快捷键；点击右侧可改键',
+  },
+  voiceInputHoldRecording: '按下新快捷键…',
+  voiceInputHoldClickToRebind: '点击改键',
+  voiceInputHoldSaved: '语音快捷键已更新',
   wheelUpKey: '滚轮 ↑',
   wheelDownKey: '滚轮 ↓',
   clickKey: '点击',
@@ -96,7 +111,7 @@ const zh: CanvasShortcutsStrings = {
 };
 
 const en: CanvasShortcutsStrings = {
-  panelTitle: 'Keyboard shortcuts',
+  panelTitle: 'Shortcuts & settings',
   generalSection: 'General',
   editSection: 'Edit & selection',
   opsSection: 'Common operations',
@@ -110,8 +125,8 @@ const en: CanvasShortcutsStrings = {
     'Prefer wiring for image, video, and audio media; use @ mentions for text setups, notes, and prompt snippets.',
   escClose: 'Exit capture / close panel',
   restoreDefaults: 'Restore defaults',
-  restoreDefaultsDone: 'Restored default shortcut list',
-  openPanelTitle: 'Keyboard shortcuts',
+  restoreDefaultsDone: 'Restored defaults (voice shortcut back to Ctrl+`)',
+  openPanelTitle: 'Shortcuts & settings',
   zoomIn: { label: 'Zoom in' },
   zoomOut: { label: 'Zoom out' },
   fitView: { label: 'Focus nodes / fit view', hint: 'Toolbar' },
@@ -127,6 +142,14 @@ const en: CanvasShortcutsStrings = {
   deleteNodes: { label: 'Delete nodes' },
   multiSelect: { label: 'Multi-select (with click)' },
   quickConnect: { label: 'Quick connect (click target)' },
+  optimizeH3Prompt: { label: 'Optimize prompt (MiniMax-H3)' },
+  voiceInputHold: {
+    label: 'Voice input (hold to talk)',
+    hint: 'Focus a field, hold shortcut; click keys to rebind',
+  },
+  voiceInputHoldRecording: 'Press a new shortcut…',
+  voiceInputHoldClickToRebind: 'Click to rebind',
+  voiceInputHoldSaved: 'Voice shortcut updated',
   wheelUpKey: 'Scroll ↑',
   wheelDownKey: 'Scroll ↓',
   clickKey: 'Click',

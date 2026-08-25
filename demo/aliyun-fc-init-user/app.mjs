@@ -1,8 +1,8 @@
 /**
- * AIXFLOW 正式�?FC：JWT 注册/登录 + run-task 扣费
- * 部署约定：阿里云香港地域 FC；OTS/OSS 与函数同地域（见仓库�?.env.example�? * 环境变量：JWT_SECRET, JWT_REFRESH_SECRET, BLTCY_API_KEY, OTS_ENDPOINT, OTS_INSTANCE（或 OTS_INST_NAME�? OTS_*, API_SECRET_TOKEN（可选）
+ * AIXFLOW 正式�?FC：JWT 注册/登录 + run-task 扣费
+ * 部署约定：阿里云香港地域 FC；OTS/OSS 与函数同地域（见仓库�?.env.example�? * 环境变量：JWT_SECRET, JWT_REFRESH_SECRET, BLTCY_API_KEY, OTS_ENDPOINT, OTS_INSTANCE（或 OTS_INST_NAME�? OTS_*, API_SECRET_TOKEN（可选）
  *
- * 自定义运行时：直接执�?`node index.mjs` 时会�?0.0.0.0:9000（或 PORT）起 node:http 服务，请求仍�?handler -> handleRequest + CORS�? */
+ * 自定义运行时：直接执�?`node index.mjs` 时会�?0.0.0.0:9000（或 PORT）起 node:http 服务，请求仍�?handler -> handleRequest + CORS�? */
 import { createRequire } from 'module';
 import crypto from 'crypto';
 import http from 'node:http';
@@ -17,10 +17,11 @@ import {
   resolveRhRegionForQuery,
   rhAuthErrorMessage,
   forceOverseasByBillingOrPath,
+  buildRunningHubForwardUrl,
 } from './lib/runningHubTarget.mjs';
 import { resolveLlmUpstream, buildLlmChatPayload } from './lib/llmUpstream.mjs';
 
-/** 阿里�?FC 自定义运行时 / 事件模式均可能设�?*/
+/** 阿里�?FC 自定义运行时 / 事件模式均可能设�?*/
 function isAliyunFcRuntime() {
   return Boolean(
     process.env.FC_FUNCTION_NAME ||
@@ -30,33 +31,33 @@ function isAliyunFcRuntime() {
 }
 
 /**
- * Tablestore 实例名：优先 OTS_INSTANCE（与仓库 .env.example 一致），兼�?FC 控制台常见命�?OTS_INST_NAME（二选一即可�? * @returns {string}
+ * Tablestore 实例名：优先 OTS_INSTANCE（与仓库 .env.example 一致），兼�?FC 控制台常见命�?OTS_INST_NAME（二选一即可�? * @returns {string}
  */
 function getOtsInstanceName() {
   return process.env.OTS_INSTANCE?.trim() || process.env.OTS_INST_NAME?.trim() || '';
 }
 
 /**
- * 启动时仅打印提示，不退出进程（避免仅使�?/api/admin 等子集时实例无法启动�? * 须在任意 await import 之前调用：保证事件模式与自定义运行时均第一时间自检
+ * 启动时仅打印提示，不退出进程（避免仅使�?/api/admin 等子集时实例无法启动�? * 须在任意 await import 之前调用：保证事件模式与自定义运行时均第一时间自检
  */
 function checkFcDeployEnv() {
   const missing = [];
   if (!process.env.JWT_SECRET?.trim()) missing.push('JWT_SECRET');
   if (!process.env.OTS_ENDPOINT?.trim()) missing.push('OTS_ENDPOINT');
-  if (!getOtsInstanceName()) missing.push('OTS_INSTANCE �?OTS_INST_NAME');
+  if (!getOtsInstanceName()) missing.push('OTS_INSTANCE �?OTS_INST_NAME');
   if (missing.length && isAliyunFcRuntime()) {
     console.warn(
-      '[AIXFLOW FC] 以下环境变量未配置，登录/扣费/OTS 相关接口将不可用�?,
+      '[AIXFLOW FC] 以下环境变量未配置，登录/扣费/OTS 相关接口将不可用�?,
       missing.join(', '),
     );
   }
 }
 
-/** 模块顶层、最早副作用：先于本文件内所�?top-level await */
+/** 模块顶层、最早副作用：先于本文件内所�?top-level await */
 checkFcDeployEnv();
 
 /**
- * 定价模块按需加载：登�?注册等路径不依赖 pricing；若部署包漏�?/code/pricing/，仅影响扣费类接口而非整实例冷启动失败�? * 完整部署仍须包含 pricing/（npm run fc:pack 会打�?zip）�? */
+ * 定价模块按需加载：登�?注册等路径不依赖 pricing；若部署包漏�?/code/pricing/，仅影响扣费类接口而非整实例冷启动失败�? * 完整部署仍须包含 pricing/（npm run fc:pack 会打�?zip）�? */
 let _pricingMod = null;
 async function ensurePricing() {
   if (_pricingMod) return _pricingMod;
@@ -98,7 +99,7 @@ async function ensureDb() {
   return db;
 }
 
-/** �?POST /model-config 同源；供 run-task �?nx_model_config 扣费（短缓存�?*/
+/** �?POST /model-config 同源；供 run-task �?nx_model_config 扣费（短缓存�?*/
 let _nxModelConfigMapCache = { map: null, at: 0 };
 const NX_MODEL_CONFIG_CACHE_MS = 60_000;
 
@@ -132,24 +133,24 @@ function normalizeForwardTaskType(taskType) {
 }
 
 /**
- * �?RunningHub 路径�?body 提取模型 ID（与 pricing �?model 字段对齐�? * @param {string} path
+ * �?RunningHub 路径�?body 提取模型 ID（与 pricing �?model 字段对齐�? * @param {string} path
  * @param {Record<string, unknown>} bodyObj
  */
 function extractModelIdFromForward(path, bodyObj) {
   const b = bodyObj && typeof bodyObj === 'object' ? bodyObj : {};
   if (typeof b.model === 'string' && b.model.trim()) return b.model.trim();
   const p = String(path || '').replace(/^\//, '');
-  // /run/ai-app/{appId} �?应用 ID（勿取首�?"run"�?  const aiApp = p.match(/^run\/ai-app\/([a-zA-Z0-9._-]+)/i);
+  // /run/ai-app/{appId} �?应用 ID（勿取首�?"run"�?  const aiApp = p.match(/^run\/ai-app\/([a-zA-Z0-9._-]+)/i);
   if (aiApp?.[1]) return aiApp[1];
   const seg = p.split('/').filter(Boolean)[0];
   if (seg && /^[a-zA-Z0-9._-]+$/.test(seg)) return seg;
   return '';
 }
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-/** 单用户每分钟最�?run-task 次数（防刷） */
-const RATE_LIMIT_MAX = 5;
+/** 单用户每分钟最�?run-task 次数（防刷） */
+const RATE_LIMIT_MAX = Math.max(5, parseInt(process.env.NX_RATE_LIMIT_MAX || '20', 10) || 20);
 const BLTCY_CHAT_URL = 'https://api.bltcy.ai/v1/chat/completions';
-const API_TIMEOUT_MS = 120000;
+const API_TIMEOUT_MS = 180000;
 const ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '30m';
 const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '7d';
 
@@ -159,7 +160,7 @@ function getJwtSecrets() {
   const a = process.env.JWT_SECRET?.trim();
   const r = process.env.JWT_REFRESH_SECRET?.trim() || a;
   if (!a) {
-    const err = new Error('请在 FC 环境变量中配�?JWT_SECRET（用于签�?JWT�?);
+    const err = new Error('请在 FC 环境变量中配�?JWT_SECRET（用于签�?JWT�?);
     err.code = 'JWT_SECRET_NOT_CONFIGURED';
     err.name = 'JWT_SECRET_NOT_CONFIGURED';
     throw err;
@@ -176,7 +177,7 @@ function signTokens(userId, tokenVersion = 0) {
   return { accessToken, refreshToken, expiresIn: ACCESS_EXPIRES };
 }
 
-/** 校验 access JWT �?token �?tv �?nx_users.token_version 一致（改密后旧 token 失效�?*/
+/** 校验 access JWT �?token �?tv �?nx_users.token_version 一致（改密后旧 token 失效�?*/
 async function verifyAccessTokenAsync(authHeader, dbModule) {
   const raw = authHeader && String(authHeader).replace(/^Bearer\s+/i, '').trim();
   if (!raw) return null;
@@ -225,7 +226,7 @@ async function verifyRefreshTokenAsync(token, dbModule) {
   return userId;
 }
 
-/** 邮箱验证�?HTML：深色极简 */
+/** 邮箱验证�?HTML：深色极简 */
 function buildOtpEmailHtml(code) {
   const safe = String(code).replace(/[^0-9]/g, '').slice(0, 6);
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
@@ -233,11 +234,11 @@ function buildOtpEmailHtml(code) {
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#0a0a0c;padding:48px 16px;">
     <tr><td align="center">
       <div style="max-width:440px;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-        <p style="color:#9ca3af;font-size:15px;margin:0 0 20px;letter-spacing:0.02em;">登录验证�?/p>
+        <p style="color:#9ca3af;font-size:15px;margin:0 0 20px;letter-spacing:0.02em;">登录验证�?/p>
         <div style="background:#12121a;border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:36px 28px;text-align:center;box-shadow:0 24px 48px rgba(0,0,0,0.45);">
           <span style="color:#f4f4f5;font-size:44px;font-weight:700;letter-spacing:12px;font-variant-numeric:tabular-nums;line-height:1.2;">${safe}</span>
         </div>
-        <p style="color:#52525b;font-size:12px;margin:28px 0 0;line-height:1.6;">5 分钟内有效。若您未请求此邮件，请忽略�?/p>
+        <p style="color:#52525b;font-size:12px;margin:28px 0 0;line-height:1.6;">5 分钟内有效。若您未请求此邮件，请忽略�?/p>
       </div>
     </td></tr>
   </table>
@@ -245,7 +246,7 @@ function buildOtpEmailHtml(code) {
 }
 
 /**
- * 基于 nx_verify_codes.send_rate_ts（JSON 时间戳数组）限制发信：默�?60s �?1 次、滑�?1 小时内最�?5 次�? * 环境变量：NX_SEND_CODE_MIN_MS、NX_SEND_CODE_HOUR_MS、NX_SEND_CODE_PER_HOUR_MAX
+ * 基于 nx_verify_codes.send_rate_ts（JSON 时间戳数组）限制发信：默�?60s �?1 次、滑�?1 小时内最�?5 次�? * 环境变量：NX_SEND_CODE_MIN_MS、NX_SEND_CODE_HOUR_MS、NX_SEND_CODE_PER_HOUR_MAX
  */
 function planSendCodeRateFromRow(row, nowMs = Date.now()) {
   const minMs = Math.max(1000, parseInt(process.env.NX_SEND_CODE_MIN_MS || '60000', 10) || 60000);
@@ -290,7 +291,7 @@ function checkRateLimit(key) {
 }
 
 /**
- * �?FC / API 网关事件中解�?HTTP Method（预检 OPTIONS 若未正确传入会误落默�?POST，导�?CORS 401�? */
+ * �?FC / API 网关事件中解�?HTTP Method（预检 OPTIONS 若未正确传入会误落默�?POST，导�?CORS 401�? */
 function extractHttpMethod(event) {
   const h = event.headers || {};
   const fromHeader = (name) => {
@@ -313,7 +314,7 @@ function extractHttpMethod(event) {
 }
 
 /**
- * �?FC / API 网关事件中解�?path（FC 3.0 常见：仅 requestContext.http.path，无 rawPath�? */
+ * �?FC / API 网关事件中解�?path（FC 3.0 常见：仅 requestContext.http.path，无 rawPath�? */
 function extractHttpPath(event) {
   if (!event || typeof event !== 'object') return '/';
   const raw =
@@ -327,7 +328,7 @@ function extractHttpPath(event) {
 }
 
 /**
- * 规范�?HTTP 触发器返回值，避免 body 非字符串或带 x-fc-* 响应头导致网�?502（BadResponse�? */
+ * 规范�?HTTP 触发器返回值，避免 body 非字符串或带 x-fc-* 响应头导致网�?502（BadResponse�? */
 function sanitizeFcResponse(res) {
   if (!res || typeof res !== 'object') {
     return {
@@ -361,7 +362,7 @@ function sanitizeFcResponse(res) {
 }
 
 /**
- * 最优先处理：仅 JSON.parse 一次，识别任意路径 OPTIONS，立�?204 + CORS（不进入业务�? */
+ * 最优先处理：仅 JSON.parse 一次，识别任意路径 OPTIONS，立�?204 + CORS（不进入业务�? */
 function tryOptionsPreflightFirst(req) {
   try {
     let eventStr;
@@ -458,7 +459,7 @@ function getHeader(reqHeaders, name) {
   return undefined;
 }
 
-/** 运营接口统一密钥：与 POST /internal/issue-coupon 相同（NX_ADMIN_ISSUE_COUPON_SECRET�?*/
+/** 运营接口统一密钥：与 POST /internal/issue-coupon 相同（NX_ADMIN_ISSUE_COUPON_SECRET�?*/
 function checkNxAdminIssueCouponSecret(reqHeaders, body) {
   const secret = process.env.NX_ADMIN_ISSUE_COUPON_SECRET?.trim();
   if (!secret) {
@@ -467,7 +468,7 @@ function checkNxAdminIssueCouponSecret(reqHeaders, body) {
       status: 503,
       payload: {
         error: 'ADMIN_NOT_CONFIGURED',
-        message: '请配�?NX_ADMIN_ISSUE_COUPON_SECRET',
+        message: '请配�?NX_ADMIN_ISSUE_COUPON_SECRET',
       },
     };
   }
@@ -481,7 +482,7 @@ function checkNxAdminIssueCouponSecret(reqHeaders, body) {
   return { ok: true };
 }
 
-/** 支付宝支付服�?�?FC 入账（NX_ALIPAY_PAY_SECRET，未设时回退 NX_ADMIN_ISSUE_COUPON_SECRET�?*/
+/** 支付宝支付服�?�?FC 入账（NX_ALIPAY_PAY_SECRET，未设时回退 NX_ADMIN_ISSUE_COUPON_SECRET�?*/
 function checkAlipayPaySecret(reqHeaders, body) {
   const secret =
     process.env.NX_ALIPAY_PAY_SECRET?.trim() || process.env.NX_ADMIN_ISSUE_COUPON_SECRET?.trim();
@@ -491,7 +492,7 @@ function checkAlipayPaySecret(reqHeaders, body) {
       status: 503,
       payload: {
         error: 'ALIPAY_PAY_NOT_CONFIGURED',
-        message: '请配�?NX_ALIPAY_PAY_SECRET',
+        message: '请配�?NX_ALIPAY_PAY_SECRET',
       },
     };
   }
@@ -506,12 +507,11 @@ function checkAlipayPaySecret(reqHeaders, body) {
 }
 
 function resolveForwardUrl(provider, path, rhTarget) {
-  const p = normalizeRhPath(path);
   if (provider === 'runninghub') {
-    const base = (rhTarget?.base || pickRunningHubTarget(path).base).replace(/\/$/, '');
-    return `${base}${p}`;
+    return buildRunningHubForwardUrl(path, rhTarget || pickRunningHubTarget(path));
   }
   if (provider === 'bltcy') {
+    const p = normalizeRhPath(path);
     const base = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
     return `${base}${p}`;
   }
@@ -644,7 +644,7 @@ async function handleLlmTask(userId, taskId, innerBody, dbModule) {
 
 const FORWARD_TIMEOUT_MS = parseInt(process.env.NX_FORWARD_TIMEOUT_MS || '300000', 10) || 300000;
 
-/** �?RunningHub �?forward 响应中尽量提取可展示的公网结�?URL，写�?nx_tasks.result_oss_url 供轮�?*/
+/** �?RunningHub �?forward 响应中尽量提取可展示的公网结�?URL，写�?nx_tasks.result_oss_url 供轮�?*/
 function extractForwardResultUrl(data) {
   if (!data || typeof data !== 'object') return '';
   const tryStr = (v) =>
@@ -718,7 +718,7 @@ function readRhQueryStatusFromForwardPayload(data) {
   return '';
 }
 
-/** �?�?视：转发 RunningHub �?BLTCY（密钥仅在云端） */
+/** �?�?视：转发 RunningHub �?BLTCY（密钥仅在云端） */
 async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskType, billing) {
   const fwd = inner.forward;
   if (!fwd || typeof fwd !== 'object') throw new Error('forward object required');
@@ -785,8 +785,64 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
         }
         const arr = await srcRes.arrayBuffer();
         const buf = Buffer.from(arr);
-        const filename = String(ufu.filename || 'file.bin');
-        const contentType = String(ufu.contentType || 'application/octet-stream');
+        if (!buf.length) {
+          const e = new Error('UPLOAD_FROM_URL_EMPTY_BODY');
+          e.response = { status: 400, data: {} };
+          throw e;
+        }
+        let filename = String(ufu.filename || 'file.bin');
+        const srcCt = String(srcRes.headers.get('content-type') || '')
+          .split(';')[0]
+          .trim();
+        const hintCt = String(ufu.contentType || '').trim();
+        // 魔数纠偏：扩展名 .mp3 但实际是 WAV/M4A 时，按真实容器改名，避免 RH LoadAudio 静默失效
+        const magic =
+          buf.length >= 12 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33
+            ? 'mp3'
+            : buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0
+              ? 'mp3'
+              : buf.length >= 12 &&
+                  buf[0] === 0x52 &&
+                  buf[1] === 0x49 &&
+                  buf[2] === 0x46 &&
+                  buf[3] === 0x46 &&
+                  buf.toString('ascii', 8, 12) === 'WAVE'
+                ? 'wav'
+                : buf.length >= 4 && buf.toString('ascii', 0, 4) === 'fLaC'
+                  ? 'flac'
+                  : buf.length >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53
+                    ? 'ogg'
+                    : buf.length >= 12 && buf.toString('ascii', 4, 8) === 'ftyp'
+                      ? 'mp4'
+                      : '';
+        if (magic === 'wav' && !/\.wav$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.wav';
+        } else if (magic === 'flac' && !/\.flac$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.flac';
+        } else if (magic === 'ogg' && !/\.ogg$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.ogg';
+        } else if (magic === 'mp4' && !/\.(m4a|mp4|aac)$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.m4a';
+        } else if (magic === 'mp3' && !/\.mp3$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.mp3';
+        }
+        const lowerName = filename.toLowerCase();
+        let contentType = hintCt || srcCt || 'application/octet-stream';
+        if (lowerName.endsWith('.mp3')) contentType = 'audio/mpeg';
+        else if (lowerName.endsWith('.wav')) contentType = 'audio/wav';
+        else if (lowerName.endsWith('.flac')) contentType = 'audio/flac';
+        else if (lowerName.endsWith('.ogg')) contentType = 'audio/ogg';
+        else if (lowerName.endsWith('.m4a')) contentType = 'audio/mp4';
+        else if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) contentType = 'image/jpeg';
+        else if (lowerName.endsWith('.png')) contentType = 'image/png';
+        else if (lowerName.endsWith('.webp')) contentType = 'image/webp';
+        else if (lowerName.endsWith('.mp4')) contentType = 'video/mp4';
+        else if (!hintCt && srcCt) contentType = srcCt;
+        if (magic) {
+          console.log(
+            `[RH] uploadFromUrl magic=${magic} filename=${filename} bytes=${buf.length} ct=${contentType}`,
+          );
+        }
         const fieldName = String(ufu.fieldName || 'file');
         const blob = new Blob([buf], { type: contentType });
         const form = new FormData();
@@ -810,8 +866,8 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
           if (res.status === 401) {
             e.message =
               rhTarget?.region === 'ai'
-                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
-                : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
+                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
+                : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
           }
           throw e;
         }
@@ -860,8 +916,8 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
           if (res.status === 401) {
             e.message =
               rhTarget?.region === 'ai'
-                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
-                : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
+                ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
+                : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
           }
           throw e;
         }
@@ -890,8 +946,8 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
         if (res.status === 401 && provider === 'runninghub') {
           e.message =
             rhTarget?.region === 'ai'
-              ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
-              : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
+              ? '海外 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY_AI'
+              : '国内 RunningHub 鉴权失败（HTTP 401）：请检�?FC 环境变量 RUNNINGHUB_API_KEY';
         }
         throw e;
       }
@@ -913,7 +969,7 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
       provider === 'runninghub' &&
       (pathNorm === '/query' || pathNorm.endsWith('/query'));
 
-    /** 仅当 OTS 已有�?task_id（如 /tasks/create 预建单）时同步状态；轮询 /query 用的临时 id 不写�?*/
+    /** 仅当 OTS 已有�?task_id（如 /tasks/create 预建单）时同步状态；轮询 /query 用的临时 id 不写�?*/
     let existingRow = null;
     try {
       const getFn = dbModule.getTaskRowForUser;
@@ -1044,7 +1100,7 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
 
   const deductResult = await dbModule.deductWithTransaction(userId, taskId, cost, {
     provider: 'forward',
-    /** 仅记计费模型 id，便于账单展示；不含 runninghub 前缀�?API 路径 */
+    /** 仅记计费模型 id，便于账单展示；不含 runninghub 前缀�?API 路径 */
     description: modelId,
   });
 
@@ -1098,8 +1154,8 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
 }
 
 /**
- * 合并 run-task 负载：根级字段（�?forward）必须覆�?body/payload，否则会出现
- * body �?{ messages: [] } �?inner 只取�?body、忽略根�?forward，误�?LLM 分支�?messages required�? */
+ * 合并 run-task 负载：根级字段（�?forward）必须覆�?body/payload，否则会出现
+ * body �?{ messages: [] } �?inner 只取�?body、忽略根�?forward，误�?LLM 分支�?messages required�? */
 function mergeRunTaskInner(rawBody) {
   if (!rawBody || typeof rawBody !== 'object') return {};
   const fromPayload = rawBody.payload && typeof rawBody.payload === 'object' ? rawBody.payload : {};
@@ -1112,7 +1168,7 @@ async function handleRunTask(userId, taskId, rawBody, dbModule) {
   const taskType = String(rawBody.type || inner.type || 'llm').toLowerCase();
   const billingRaw = String(inner.billing ?? rawBody.billing ?? 'charge').toLowerCase();
 
-  /** 异步任务已成功扣费但下游失败：客户端用同一 taskId 请求退回（幂等�?*/
+  /** 异步任务已成功扣费但下游失败：客户端用同一 taskId 请求退回（幂等�?*/
   if (billingRaw === 'refund') {
     const fn = dbModule.refundConsumedTask;
     if (typeof fn !== 'function') {
@@ -1149,8 +1205,8 @@ async function handleRunTask(userId, taskId, rawBody, dbModule) {
 }
 
 /**
- * POST /tasks/create：按 nx_model_config �?model_id 计价并扣元宝，写�?nx_tasks（pending），返回 task_id�? * Body: model_id（必填）, params（对象或 JSON 字符串，写入 prompt_json�? type|task_type（llm|image|video|audio，默�?image�?
- *       nodeData|node_data（可选，�?run-task 计费维度一致）, workflow_json（可选）
+ * POST /tasks/create：按 nx_model_config �?model_id 计价并扣元宝，写�?nx_tasks（pending），返回 task_id�? * Body: model_id（必填）, params（对象或 JSON 字符串，写入 prompt_json�? type|task_type（llm|image|video|audio，默�?image�?
+ *       nodeData|node_data（可选，�?run-task 计费维度一致）, workflow_json（可选）
  */
 async function handleTasksCreate(userId, body, dbModule) {
   const { getFinalPrice } = await ensurePricing();
@@ -1255,17 +1311,17 @@ async function handleTasksCreate(userId, body, dbModule) {
 }
 
 async function handleRequest(req) {
-  /** 解析后用�?CORS 回显 Origin；解析失败或未解析时为空对象 */
+  /** 解析后用�?CORS 回显 Origin；解析失败或未解析时为空对象 */
   let reqHeadersForCors = {};
   let headers = { ...getCorsHeaders(), 'Content-Type': 'application/json' };
-  /** 供最外层 catch �?/api/admin/* �?CORS */
+  /** 供最外层 catch �?/api/admin/* �?CORS */
   let isAdminApiPath = false;
 
   try {
     const preflightFirst = tryOptionsPreflightFirst(req);
     if (preflightFirst) return preflightFirst;
 
-    /** 少数运行时直接传入事件对象（�?JSON 字符串）；FC 3.0 可能仅有 requestContext.http */
+    /** 少数运行时直接传入事件对象（�?JSON 字符串）；FC 3.0 可能仅有 requestContext.http */
     if (req && typeof req === 'object' && !Buffer.isBuffer(req)) {
       const m = extractHttpMethod(req);
       if (m === 'OPTIONS') {
@@ -1285,9 +1341,9 @@ async function handleRequest(req) {
     isAdminApiPath = pathNorm.includes('/api/admin/');
 
     /**
-     * Aixflow 官网管理�?/api/admin/* �?lib/aixflow-admin-oss.mjs �?handleAixflowAdminRequest
-     * POST /api/admin/scan-oss-stock �?handleAdminScanOssStock（与其它 admin 路由同文件挂载）
-     * 含：upload-file、update-json、delete-item、update-title、get-showcase、scan-oss-stock �?     * OPTIONS 已在上方统一 204；POST 才校�?x-admin-password（ADMIN_PASS�?     */
+     * Aixflow 官网管理�?/api/admin/* �?lib/aixflow-admin-oss.mjs �?handleAixflowAdminRequest
+     * POST /api/admin/scan-oss-stock �?handleAdminScanOssStock（与其它 admin 路由同文件挂载）
+     * 含：upload-file、update-json、delete-item、update-title、get-showcase、scan-oss-stock �?     * OPTIONS 已在上方统一 204；POST 才校�?x-admin-password（ADMIN_PASS�?     */
     if (isAdminApiPath && httpMethod === 'POST') {
       const { handleAixflowAdminRequest } = await import(new URL('./lib/aixflow-admin-oss.mjs', import.meta.url));
       const adminRes = await handleAixflowAdminRequest({
@@ -1325,13 +1381,13 @@ async function handleRequest(req) {
 
     const auth = getHeader(reqHeaders, 'authorization') || getHeader(reqHeaders, 'Authorization');
 
-    // POST /internal/settle-stale-tasks �?Cron：超�?RUNNING/PROCESSING 等任务退款并标记 TIMEOUT（需 ADMIN_SETTLE_SECRET�?    if (pathNorm.endsWith('/internal/settle-stale-tasks') || pathNorm === '/internal/settle-stale-tasks') {
+    // POST /internal/settle-stale-tasks �?Cron：超�?RUNNING/PROCESSING 等任务退款并标记 TIMEOUT（需 ADMIN_SETTLE_SECRET�?    if (pathNorm.endsWith('/internal/settle-stale-tasks') || pathNorm === '/internal/settle-stale-tasks') {
       const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
       if (!secret) {
         return {
           statusCode: 503,
           headers,
-          body: JSON.stringify({ error: 'SETTLEMENT_NOT_CONFIGURED', message: '请配�?ADMIN_SETTLE_SECRET' }),
+          body: JSON.stringify({ error: 'SETTLEMENT_NOT_CONFIGURED', message: '请配�?ADMIN_SETTLE_SECRET' }),
         };
       }
       const h =
@@ -1371,7 +1427,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/issue-coupon �?后台签发兑换码（需 NX_ADMIN_ISSUE_COUPON_SECRET，不写用�?JWT�?    if (pathNorm.endsWith('/internal/issue-coupon') || pathNorm === '/internal/issue-coupon') {
+    // POST /internal/issue-coupon �?后台签发兑换码（需 NX_ADMIN_ISSUE_COUPON_SECRET，不写用�?JWT�?    if (pathNorm.endsWith('/internal/issue-coupon') || pathNorm === '/internal/issue-coupon') {
       const secret = process.env.NX_ADMIN_ISSUE_COUPON_SECRET?.trim();
       if (!secret) {
         return {
@@ -1379,7 +1435,7 @@ async function handleRequest(req) {
           headers,
           body: JSON.stringify({
             error: 'ISSUE_COUPON_NOT_CONFIGURED',
-            message: '请配�?NX_ADMIN_ISSUE_COUPON_SECRET',
+            message: '请配�?NX_ADMIN_ISSUE_COUPON_SECRET',
           }),
         };
       }
@@ -1406,7 +1462,7 @@ async function handleRequest(req) {
             headers,
             body: JSON.stringify({
               error: 'INVALID_COUPON_TIER',
-              message: '档位须为 30/50/100/200/500（元�?,
+              message: '档位须为 30/50/100/200/500（元�?,
             }),
           };
         }
@@ -1419,7 +1475,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/alipay-create-order �?支付服务创建 pending 订单（需 NX_ALIPAY_PAY_SECRET + x-nexflow-token�?    if (pathNorm.endsWith('/internal/alipay-create-order') || pathNorm === '/internal/alipay-create-order') {
+    // POST /internal/alipay-create-order �?支付服务创建 pending 订单（需 NX_ALIPAY_PAY_SECRET + x-nexflow-token�?    if (pathNorm.endsWith('/internal/alipay-create-order') || pathNorm === '/internal/alipay-create-order') {
       const gate = checkAlipayPaySecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1468,7 +1524,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/alipay-notify-settle �?支付�?notify 验签后入账（需 NX_ALIPAY_PAY_SECRET�?    if (pathNorm.endsWith('/internal/alipay-notify-settle') || pathNorm === '/internal/alipay-notify-settle') {
+    // POST /internal/alipay-notify-settle �?支付�?notify 验签后入账（需 NX_ALIPAY_PAY_SECRET�?    if (pathNorm.endsWith('/internal/alipay-notify-settle') || pathNorm === '/internal/alipay-notify-settle') {
       const gate = checkAlipayPaySecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1506,7 +1562,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/alipay-order-status �?查询订单状态（支付服务/客户端轮询）
+    // POST /internal/alipay-order-status �?查询订单状态（支付服务/客户端轮询）
     if (pathNorm.endsWith('/internal/alipay-order-status') || pathNorm === '/internal/alipay-order-status') {
       const gate = checkAlipayPaySecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1546,7 +1602,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/alipay-retry-process �?补偿队列（Cron / 支付服务 30s�?    if (pathNorm.endsWith('/internal/alipay-retry-process') || pathNorm === '/internal/alipay-retry-process') {
+    // POST /internal/alipay-retry-process �?补偿队列（Cron / 支付服务 30s�?    if (pathNorm.endsWith('/internal/alipay-retry-process') || pathNorm === '/internal/alipay-retry-process') {
       const gate = checkAlipayPaySecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1564,7 +1620,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/alipay-execute-pending �?单条 queued 预入账立即执行（可选）
+    // POST /internal/alipay-execute-pending �?单条 queued 预入账立即执行（可选）
     if (pathNorm.endsWith('/internal/alipay-execute-pending') || pathNorm === '/internal/alipay-execute-pending') {
       const gate = checkAlipayPaySecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1586,7 +1642,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/check-balance-consistency �?资金一致性巡检
+    // POST /internal/check-balance-consistency �?资金一致性巡检
     if (
       pathNorm.endsWith('/internal/check-balance-consistency') ||
       pathNorm === '/internal/check-balance-consistency' ||
@@ -1609,7 +1665,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-dashboard-stats �?今日营收、兑换码总数、失败任务数（需 NX_ADMIN_ISSUE_COUPON_SECRET�?    if (pathNorm.endsWith('/internal/admin-dashboard-stats') || pathNorm === '/internal/admin-dashboard-stats') {
+    // POST /internal/admin-dashboard-stats �?今日营收、兑换码总数、失败任务数（需 NX_ADMIN_ISSUE_COUPON_SECRET�?    if (pathNorm.endsWith('/internal/admin-dashboard-stats') || pathNorm === '/internal/admin-dashboard-stats') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1632,7 +1688,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-failed-tasks �?失败/超时任务列表
+    // POST /internal/admin-failed-tasks �?失败/超时任务列表
     if (pathNorm.endsWith('/internal/admin-failed-tasks') || pathNorm === '/internal/admin-failed-tasks') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1656,7 +1712,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-refund-task �?一键退款（refundConsumedTask�?    if (pathNorm.endsWith('/internal/admin-refund-task') || pathNorm === '/internal/admin-refund-task') {
+    // POST /internal/admin-refund-task �?一键退款（refundConsumedTask�?    if (pathNorm.endsWith('/internal/admin-refund-task') || pathNorm === '/internal/admin-refund-task') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1676,7 +1732,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-model-config-list �?全表模型定价（与 /model-config 同源数据，管理密钥）
+    // POST /internal/admin-model-config-list �?全表模型定价（与 /model-config 同源数据，管理密钥）
     if (pathNorm.endsWith('/internal/admin-model-config-list') || pathNorm === '/internal/admin-model-config-list') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1695,7 +1751,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-model-config-upsert �?写入 nx_model_config
+    // POST /internal/admin-model-config-upsert �?写入 nx_model_config
     if (pathNorm.endsWith('/internal/admin-model-config-upsert') || pathNorm === '/internal/admin-model-config-upsert') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1715,7 +1771,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-users-list �?脱敏用户列表（需 NX_ADMIN_ISSUE_COUPON_SECRET�?    if (pathNorm.endsWith('/internal/admin-users-list') || pathNorm === '/internal/admin-users-list') {
+    // POST /internal/admin-users-list �?脱敏用户列表（需 NX_ADMIN_ISSUE_COUPON_SECRET�?    if (pathNorm.endsWith('/internal/admin-users-list') || pathNorm === '/internal/admin-users-list') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
         return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
@@ -1736,7 +1792,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /internal/admin-profit-analytics �?利润聚合（consume + nx_model_config + 已核销兑换码）
+    // POST /internal/admin-profit-analytics �?利润聚合（consume + nx_model_config + 已核销兑换码）
     if (pathNorm.endsWith('/internal/admin-profit-analytics') || pathNorm === '/internal/admin-profit-analytics') {
       const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
       if (!gate.ok) {
@@ -1760,7 +1816,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /auth/send-code �?�?6 位验证码（TableStore nx_verify_codes�? 分钟有效；Resend 发信�?    if (pathNorm.endsWith('/auth/send-code') || pathNorm === '/auth/send-code') {
+    // POST /auth/send-code �?�?6 位验证码（TableStore nx_verify_codes�? 分钟有效；Resend 发信�?    if (pathNorm.endsWith('/auth/send-code') || pathNorm === '/auth/send-code') {
       const emailRaw = body.email;
       const email = typeof emailRaw === 'string' ? emailRaw.trim().toLowerCase() : '';
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -1777,8 +1833,8 @@ async function handleRequest(req) {
       if (!ratePlan.ok) {
         const msg =
           ratePlan.reason === 'RATE_HOUR'
-            ? '该邮�?1 小时内验证码发送次数已达上限，请稍后再�?
-            : '发送过于频繁，请稍后再�?;
+            ? '该邮�?1 小时内验证码发送次数已达上限，请稍后再�?
+            : '发送过于频繁，请稍后再�?;
         return {
           statusCode: 429,
           headers,
@@ -1795,7 +1851,7 @@ async function handleRequest(req) {
         return {
           statusCode: 503,
           headers,
-          body: JSON.stringify({ error: 'RESEND_NOT_CONFIGURED', message: '请配�?RESEND_API_KEY �?RESEND_FROM_EMAIL' }),
+          body: JSON.stringify({ error: 'RESEND_NOT_CONFIGURED', message: '请配�?RESEND_API_KEY �?RESEND_FROM_EMAIL' }),
         };
       }
       const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
@@ -1808,7 +1864,7 @@ async function handleRequest(req) {
       }
       const purpose = typeof body.purpose === 'string' ? body.purpose.trim() : '';
       const emailSubject =
-        purpose === 'change_password' ? 'AIXflow 修改密码验证�? : 'AIXflow 登录验证�?;
+        purpose === 'change_password' ? 'AIXflow 修改密码验证�? : 'AIXflow 登录验证�?;
       try {
         const { Resend } = await import('resend');
         const resend = new Resend(resendKey);
@@ -1848,8 +1904,8 @@ async function handleRequest(req) {
 
     /**
      * POST /auth/change-password（无需 JWT；桌面端 nxFcClient 已列入免 Bearer 白名单）
-     * Body: { email, code�? 位）, new_password | newPassword }
-     * 流程：校�?nx_verify_codes �?bcrypt �?nx_users.password_hash（经 updateUserPasswordByEmail�?     */
+     * Body: { email, code�? 位）, new_password | newPassword }
+     * 流程：校�?nx_verify_codes �?bcrypt �?nx_users.password_hash（经 updateUserPasswordByEmail�?     */
     if (pathNorm.endsWith('/auth/change-password') || pathNorm === '/auth/change-password') {
       const emailNorm = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       const newPassword = body.new_password ?? body.newPassword;
@@ -1902,7 +1958,7 @@ async function handleRequest(req) {
       };
     }
 
-    // POST /auth/login �?邮箱 + 6 位验证码；新用户自动 nx_users + nx_email_user
+    // POST /auth/login �?邮箱 + 6 位验证码；新用户自动 nx_users + nx_email_user
     if (pathNorm.endsWith('/auth/login') || pathNorm === '/auth/login') {
       try {
         getJwtSecrets();
@@ -1971,7 +2027,7 @@ async function handleRequest(req) {
       };
     }
 
-    // POST /register �?须先通过 POST /auth/send-code 获取邮箱验证码，body.code �?6 位数�?    if (pathNorm.endsWith('/register') || pathNorm === '/register') {
+    // POST /register �?须先通过 POST /auth/send-code 获取邮箱验证码，body.code �?6 位数�?    if (pathNorm.endsWith('/register') || pathNorm === '/register') {
       try {
         getJwtSecrets();
       } catch (e) {
@@ -2145,7 +2201,7 @@ async function handleRequest(req) {
       };
     }
 
-    // GET /me �?可选：查余�?    if (pathNorm.endsWith('/me') || pathNorm === '/me') {
+    // GET /me �?可选：查余�?    if (pathNorm.endsWith('/me') || pathNorm === '/me') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
@@ -2165,7 +2221,7 @@ async function handleRequest(req) {
       };
     }
 
-    // POST /recharge �?充值入账（Bearer 用户自助；或支付服务密钥 + out_trade_no 支付宝闭环）
+    // POST /recharge �?充值入账（Bearer 用户自助；或支付服务密钥 + out_trade_no 支付宝闭环）
     if (pathNorm.endsWith('/recharge') || pathNorm === '/recharge') {
       const payGate = checkAlipayPaySecret(reqHeaders, body);
       if (payGate.ok) {
@@ -2216,7 +2272,7 @@ async function handleRequest(req) {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
+            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
           };
         }
         if (msg === 'USER_NOT_FOUND') {
@@ -2234,7 +2290,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /redeem-coupon �?兑换码入账（需 Bearer�?    if (pathNorm.endsWith('/redeem-coupon') || pathNorm === '/redeem-coupon') {
+    // POST /redeem-coupon �?兑换码入账（需 Bearer�?    if (pathNorm.endsWith('/redeem-coupon') || pathNorm === '/redeem-coupon') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
@@ -2262,7 +2318,7 @@ async function handleRequest(req) {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ error: 'COUPON_INVALID', message: '兑换码无效或不存�? }),
+            body: JSON.stringify({ error: 'COUPON_INVALID', message: '兑换码无效或不存�? }),
           };
         }
         if (msg === 'COUPON_USED') {
@@ -2276,14 +2332,14 @@ async function handleRequest(req) {
           return {
             statusCode: 500,
             headers,
-            body: JSON.stringify({ error: 'COUPON_MISCONFIGURED', message: '兑换码配置异�? }),
+            body: JSON.stringify({ error: 'COUPON_MISCONFIGURED', message: '兑换码配置异�? }),
           };
         }
         if (msg === 'INVALID_RECHARGE_TIER') {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
+            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
           };
         }
         if (msg === 'USER_NOT_FOUND') {
@@ -2301,15 +2357,42 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /transactions �?最近流水（需 Bearer�?    if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
+    // POST /transactions — 流水分页（需 Bearer；body: limit, page）
+    if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
       }
-      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 20));
+      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 30));
+      const page = Math.max(1, parseInt(body.page, 10) || 1);
       try {
+        const pagedFn = dbModule.listTransactionsForUserPaged;
+        if (typeof pagedFn === 'function') {
+          const result = await pagedFn(userId, { limit: lim, page });
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({
+              items: result.items || [],
+              page: result.page ?? page,
+              pageSize: result.pageSize ?? lim,
+              total: result.total ?? 0,
+              hasMore: !!result.hasMore,
+            }),
+          };
+        }
         const items = await dbModule.listRecentTransactionsForUser(userId, lim);
-        return { statusCode: 200, headers, body: JSON.stringify({ items }) };
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            items,
+            page: 1,
+            pageSize: lim,
+            total: Array.isArray(items) ? items.length : 0,
+            hasMore: false,
+          }),
+        };
       } catch (e) {
         console.error('[transactions]', e?.stack ?? e);
         return {
@@ -2320,7 +2403,8 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /tasks �?最近任务记录（需 Bearer；走全局二级索引 idx_user_tasks�?    if (pathNorm.endsWith('/tasks') || pathNorm === '/tasks') {
+
+    // POST /tasks �?最近任务记录（需 Bearer；走全局二级索引 idx_user_tasks�?    if (pathNorm.endsWith('/tasks') || pathNorm === '/tasks') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
@@ -2340,7 +2424,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /tasks/status �?单条任务状态（需 Bearer；与 /tasks 列表字段一�?+ balance�?    if (pathNorm.endsWith('/tasks/status') || pathNorm === '/tasks/status') {
+    // POST /tasks/status �?单条任务状态（需 Bearer；与 /tasks 列表字段一�?+ balance�?    if (pathNorm.endsWith('/tasks/status') || pathNorm === '/tasks/status') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
@@ -2378,7 +2462,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /tasks/create �?�?model_id 扣元宝并�?pending 任务（需 Bearer�?    if (pathNorm.endsWith('/tasks/create') || pathNorm === '/tasks/create') {
+    // POST /tasks/create �?�?model_id 扣元宝并�?pending 任务（需 Bearer�?    if (pathNorm.endsWith('/tasks/create') || pathNorm === '/tasks/create') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
@@ -2387,7 +2471,10 @@ async function handleRequest(req) {
         return {
           statusCode: 429,
           headers,
-          body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+          body: JSON.stringify({
+            error: 'RATE_LIMIT_EXCEEDED',
+            message: '请求过于频繁，请稍后再试',
+          }),
         };
       }
       try {
@@ -2422,7 +2509,7 @@ async function handleRequest(req) {
           return {
             statusCode: 400,
             headers,
-            body: JSON.stringify({ error: 'INVALID_AMOUNT', message: '计价结果�?0 或无效，无法扣费' }),
+            body: JSON.stringify({ error: 'INVALID_AMOUNT', message: '计价结果�?0 或无效，无法扣费' }),
           };
         }
         if (msg === 'model_id required') {
@@ -2444,12 +2531,12 @@ async function handleRequest(req) {
         headers,
         body: JSON.stringify({
           error: 'DEPRECATED',
-          message: '请使�?/register �?/login，客户端升级至正式版',
+          message: '请使�?/register �?/login，客户端升级至正式版',
         }),
       };
     }
 
-    // POST /model-config �?nx_model_config 全量（需 Bearer；客户端展示价）
+    // POST /model-config �?nx_model_config 全量（需 Bearer；客户端展示价）
     if (pathNorm.endsWith('/model-config') || pathNorm === '/model-config') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
@@ -2484,7 +2571,7 @@ async function handleRequest(req) {
       return {
         statusCode: 401,
         headers,
-        body: JSON.stringify({ error: 'UNAUTHORIZED', message: '需�?Authorization: Bearer <access_token>' }),
+        body: JSON.stringify({ error: 'UNAUTHORIZED', message: '需�?Authorization: Bearer <access_token>' }),
       };
     }
 
@@ -2500,7 +2587,10 @@ async function handleRequest(req) {
       return {
         statusCode: 429,
         headers,
-        body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+        body: JSON.stringify({
+          error: 'RATE_LIMIT_EXCEEDED',
+          message: '请求过于频繁，请稍后再试',
+        }),
       };
     }
 
@@ -2598,7 +2688,7 @@ async function handleRequest(req) {
 export const handler = async (req) => sanitizeFcResponse(await handleRequest(req));
 
 // ---------------------------------------------------------------------------
-// 自定义运行时：FC 配置「启动命�?node index.mjs、监�?9000」时，由本机 HTTP 承接请求并复用上�?handler
+// 自定义运行时：FC 配置「启动命�?node index.mjs、监�?9000」时，由本机 HTTP 承接请求并复用上�?handler
 // ---------------------------------------------------------------------------
 
 function isMainModule() {
@@ -2619,7 +2709,7 @@ async function readIncomingMessageBody(req) {
 }
 
 /**
- * �?Node IncomingMessage 转为�?FC HTTP 触发器兼容的 event，供 parseRequest / handleRequest 使用
+ * �?Node IncomingMessage 转为�?FC HTTP 触发器兼容的 event，供 parseRequest / handleRequest 使用
  */
 function buildFcEventFromNodeRequest(req, bodyStr) {
   const host = req.headers?.host || '127.0.0.1';
@@ -2673,8 +2763,8 @@ function registerAixflowGlobalErrorHandlers() {
 }
 
 /**
- * FC_SERVER_KEEPALIVE_MS 未设置时默认 120000（大文件/长耗时）；设为 0 表示使用 0ms（按需配合 Node 默认�? * FC_SERVER_HEADERS_MS 可单独覆盖；否则�?keepAlive + 5s
- * FC_SERVER_REQUEST_MS：整请求超时，默�?0（不限制，利于长视频）；需限制时再设毫秒数
+ * FC_SERVER_KEEPALIVE_MS 未设置时默认 120000（大文件/长耗时）；设为 0 表示使用 0ms（按需配合 Node 默认�? * FC_SERVER_HEADERS_MS 可单独覆盖；否则�?keepAlive + 5s
+ * FC_SERVER_REQUEST_MS：整请求超时，默�?0（不限制，利于长视频）；需限制时再设毫秒数
  */
 function applyAixflowHttpServerTimeouts(server) {
   const raw = process.env.FC_SERVER_KEEPALIVE_MS;
@@ -2700,7 +2790,7 @@ function startCustomRuntimeHttpServer() {
   const port = Number(process.env.PORT || process.env.FC_SERVER_PORT || 9000);
   const server = http.createServer(async (req, res) => {
     try {
-      /** 预检：不�?body，便于健康检查与 CORS 快�?204 */
+      /** 预检：不�?body，便于健康检查与 CORS 快�?204 */
       if (String(req.method || '').toUpperCase() === 'OPTIONS') {
         res.writeHead(204, getCorsHeaders(req.headers));
         res.end();

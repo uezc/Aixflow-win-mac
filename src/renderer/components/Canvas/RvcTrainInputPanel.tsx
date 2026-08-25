@@ -94,7 +94,11 @@ const RvcTrainInputPanel: React.FC<RvcTrainInputPanelProps> = ({
 
   const connected = !!(referenceAudioUrl || '').trim();
   const hasAvatar = !!(libraryAvatarUrl || '').trim();
-  const canRun = connected && !!(rvcTrainModelName || '').trim() && aiStatus !== 'PROCESSING';
+  const canRun =
+    connected &&
+    !!(rvcTrainModelName || '').trim() &&
+    aiStatus !== 'PROCESSING' &&
+    priceLabel != null;
   const isBusy = aiStatus === 'PROCESSING' || aiStatus === 'START';
 
   const priceLabel = useMemo(() => {

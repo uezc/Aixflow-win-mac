@@ -93,6 +93,8 @@ export const store = new Store({
     nxCloudFcRoute: 'beijing' as 'hk' | 'beijing',
     /** 临时素材 OSS 桶：cn=北京桶，hk=香港桶（设置页「素材线路」） */
     nxMediaOssRegion: '' as '' | 'cn' | 'hk',
+    /** 软件更新 feed：cn=北京 OSS，hk=香港 OSS；空则按系统语言/环境变量 */
+    nxReleaseFeedRegion: '' as '' | 'cn' | 'hk',
     // 任务列表
     tasks: [] as Array<{
       id: string;

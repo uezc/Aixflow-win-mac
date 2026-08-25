@@ -8,8 +8,26 @@ import path from 'path';
 import { getNxFcAxios, getFcBaseUrlForClient } from './nxFcClient.js';
 import { resolveLocalMediaFilePath } from './localResourceManager.js';
 
-export type SpeechSegment = { text: string; startSec: number; endSec: number };
-export type SpeechSegmentsResult = { text: string; segments: SpeechSegment[] };
+/** fun-asr sentences[].words[] 字/词级时间戳（秒） */
+export type SpeechWord = { text: string; startSec: number; endSec: number };
+export type SpeechSegment = {
+  text: string;
+  startSec: number;
+  endSec: number;
+  words?: SpeechWord[];
+};
+export type SpeechSegmentsResult = {
+  text: string;
+  segments: SpeechSegment[];
+  hasWordTimestamps?: boolean;
+  /** FC 已实扣（/asr/file-transcribe 成功响应必带 true） */
+  charged?: boolean;
+  /** FC 实扣元宝（/asr/file-transcribe 成功响应必带） */
+  cost?: number;
+  balance?: number;
+  billingModelId?: string;
+  billingTaskId?: string;
+};
 
 const FC_FILE_TRANSCRIBE_TIMEOUT_MS = 11 * 60 * 1000;
 
@@ -33,6 +51,12 @@ function mapFcError(status: number, data: unknown): { code: string; message: str
   }
   if (status === 402 || err === 'BALANCE_INSUFFICIENT') {
     return { code: 'BALANCE_INSUFFICIENT', message: msg || '元宝不足，请充值后再使用云端转写' };
+  }
+  if (err === 'INVALID_AMOUNT' || err === 'BILLING_MISSING') {
+    return {
+      code: err,
+      message: msg || '云端转写计费异常，请更新 FC 或联系管理员',
+    };
   }
   if (err === 'DASHSCOPE_ASR_NOT_CONFIGURED' || status === 503) {
     return {
@@ -112,30 +136,106 @@ async function callFcFileTranscribe(
   }
 
   const axiosInst = getNxFcAxios();
+  const endpoint = `${base}/asr/file-transcribe`;
   try {
+    console.info('[asr/file-transcribe] POST', endpoint, {
+      language: (language || 'auto').trim() || 'auto',
+      hasBearer: true,
+    });
     const res = await axiosInst.post(
       '/asr/file-transcribe',
       {
         fileUrl,
-        // language 可选：不传 / auto → FC 侧 language_hints ['zh','en'] 自动识别
+        // language 可选：不传 / auto → FC 侧省略 language_hints，由模型自动识别
         language: (language || 'auto').trim() || 'auto',
       },
       { timeout: FC_FILE_TRANSCRIBE_TIMEOUT_MS },
     );
-    const data = res.data || {};
+    const data = (res.data || {}) as Record<string, unknown>;
+    const costYuanbao = Math.round(Number(data.cost));
+    // 未部署计费版 FC 时响应无 cost：拒绝当作成功，避免「字级成功却 0 扣费」
+    // charged===true 为新包标志；旧计费包仅有 cost 亦接受；显式 charged:false 拒绝
+    if (data.charged === false || !Number.isFinite(costYuanbao) || costYuanbao < 1) {
+      console.warn('[asr/file-transcribe] BILLING_MISSING', {
+        charged: data.charged,
+        cost: data.cost,
+        balance: data.balance,
+      });
+      throw Object.assign(
+        new Error(
+          '未扣费：云端未返回 charged/cost。请上传含 /asr/file-transcribe 计费的 FC 包（nexflow-fc.zip）后重试',
+        ),
+        { code: 'BILLING_MISSING' },
+      );
+    }
+    const balRaw = Number(data.balance);
+    if (Number.isFinite(balRaw)) {
+      try {
+        const { notifyCloudBalance } = await import('../cloudBalanceNotifier.js');
+        notifyCloudBalance(balRaw);
+      } catch {
+        /* 余额条刷新失败不影响转写结果 */
+      }
+    } else {
+      // 有 cost 无 balance：拉 /me 刷新顶栏
+      try {
+        const { nxCloudGetProfile } = await import('./aliyunService.js');
+        const { notifyCloudUserStateRefresh } = await import('../cloudBalanceNotifier.js');
+        await nxCloudGetProfile();
+        notifyCloudUserStateRefresh();
+      } catch {
+        /* ignore */
+      }
+    }
+    console.info('[asr/file-transcribe] ok', {
+      charged: true,
+      cost: costYuanbao,
+      balance: Number.isFinite(balRaw) ? balRaw : undefined,
+      billingModelId: data.billingModelId,
+      billingTaskId: data.billingTaskId,
+    });
     const text = String(data.text || '').trim();
     const rawSegs = Array.isArray(data.segments) ? data.segments : [];
     const segments: SpeechSegment[] = rawSegs
       .map((s: unknown) => {
         const o = s && typeof s === 'object' ? (s as Record<string, unknown>) : {};
+        const rawWords = Array.isArray(o.words) ? o.words : [];
+        const words: SpeechWord[] = rawWords
+          .map((w: unknown) => {
+            const wo = w && typeof w === 'object' ? (w as Record<string, unknown>) : {};
+            const wt = String(wo.text || '').trim();
+            if (!wt) return null;
+            const startSec = Number(wo.startSec) || 0;
+            const endSec = Number(wo.endSec) || startSec;
+            return {
+              text: wt,
+              startSec,
+              endSec: endSec >= startSec ? endSec : startSec,
+            } satisfies SpeechWord;
+          })
+          .filter((w): w is SpeechWord => !!w);
         return {
           text: String(o.text || '').trim(),
           startSec: Number(o.startSec) || 0,
           endSec: Number(o.endSec) || 0,
+          ...(words.length > 0 ? { words } : {}),
         };
       })
       .filter((s: SpeechSegment) => !!s.text);
-    return { text, segments };
+    const hasWordTimestamps =
+      data.hasWordTimestamps === true || segments.some((s) => (s.words?.length || 0) > 0);
+    const billingModelId = String(data.billingModelId || '').trim();
+    const billingTaskId = String(data.billingTaskId || '').trim();
+    return {
+      text,
+      segments,
+      hasWordTimestamps,
+      charged: true,
+      cost: costYuanbao,
+      ...(Number.isFinite(balRaw) ? { balance: balRaw } : {}),
+      ...(billingModelId ? { billingModelId } : {}),
+      ...(billingTaskId ? { billingTaskId } : {}),
+    };
   } catch (e: unknown) {
     const ax = e as {
       response?: { status?: number; data?: unknown };

@@ -80,7 +80,10 @@ const AdminModelsPage: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-white/90">模型定价（nx_model_config）</h2>
-          <p className="text-xs text-white/45 mt-1">修改后写入 Tablestore，FC 计费缓存约 60s 内刷新。</p>
+          <p className="text-xs text-white/45 mt-1">
+            修改后写入 Tablestore，FC 计费缓存约 60s 内刷新。实付元宝 ≈ base_price × multiplier ×
+            yuanbao_rate；例：fun-asr（字级时间轴）建议 base_price=1、yuanbao_rate=10 → 10 元宝/次。
+          </p>
         </div>
         <button
           type="button"

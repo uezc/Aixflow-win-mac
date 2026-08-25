@@ -32,7 +32,7 @@ export function inferAudioFileExtFromUrl(url: string): string {
   return 'mp3';
 }
 
-function basenameFromAudioUrl(url: string): string {
+export function basenameFromAudioUrl(url: string): string {
   if (!url) return '';
   try {
     const pathPart = url.startsWith('http://') || url.startsWith('https://')
@@ -46,6 +46,51 @@ function basenameFromAudioUrl(url: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * 视频面板「已连接音频」展示名：优先 URL/路径 basename（含扩展名），再节点标题/曲名。
+ */
+export function resolveAudioConnectedDisplayName(
+  data:
+    | {
+        title?: string | null;
+        songName?: string | null;
+        label?: string | null;
+        outputAudio?: string | null;
+        originalAudioUrl?: string | null;
+        referenceAudioUrl?: string | null;
+        sourceSongAudioUrl?: string | null;
+        outputAudios?: unknown;
+      }
+    | undefined
+    | null,
+  fallback = 'audio',
+): string {
+  const multi = Array.isArray(data?.outputAudios)
+    ? (data!.outputAudios as unknown[]).map((u) => String(u || '').trim()).filter(Boolean)
+    : [];
+  const url = String(
+    data?.originalAudioUrl ||
+      data?.outputAudio ||
+      multi[0] ||
+      data?.sourceSongAudioUrl ||
+      data?.referenceAudioUrl ||
+      '',
+  ).trim();
+  const fromUrl = basenameFromAudioUrl(url);
+  if (fromUrl) return fromUrl;
+
+  const song = String(data?.songName || '').trim();
+  if (song) return sanitizeAudioDownloadBaseName(song);
+
+  const title = String(data?.title || '').trim();
+  if (!isGenericAudioTitle(title)) return sanitizeAudioDownloadBaseName(title);
+
+  const label = String(data?.label || '').trim();
+  if (!isGenericAudioTitle(label)) return sanitizeAudioDownloadBaseName(label);
+
+  return sanitizeAudioDownloadBaseName(fallback);
 }
 
 /** 从本地文件名得到展示用曲名（去掉扩展名） */

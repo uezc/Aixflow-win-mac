@@ -1,11 +1,10 @@
 /**
- * 画布居中大话筒：先点输入框聚焦 → 按住大话筒 / 按住 Ctrl+S 听写，松开结束。
- * 写入最近聚焦的可听写输入；可向下收起（偏好 localStorage）。
+ * 画布悬浮大话筒：先点输入框聚焦 → 按住大话筒 / 按住语音快捷键听写，松开结束。
+ * 可拖动；拖到窗口边缘松开会半露收起，再拖回画布即展开。
  * 各面板右上角小话筒仍保留。
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
@@ -18,23 +17,108 @@ import {
 } from '../../utils/dictationTargetRegistry';
 import { showQuickConnectToast } from '../../utils/quickConnectStore';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import { acquireVoiceModalLock, forceClearVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
+import {
+  formatVoiceInputShortcutLabel,
+  isVoiceShortcutRecording,
+  matchesVoiceInputShortcut,
+  readVoiceInputShortcut,
+  VOICE_INPUT_SHORTCUT_CHANGED_EVENT,
+  type VoiceInputShortcut,
+} from '../../utils/voiceInputShortcutPrefs';
 import VoiceMicGlyph from './VoiceMicGlyph';
 
-const COLLAPSED_LS_KEY = 'nexflow.floatingDictation.collapsed';
+const POSITION_LS_KEY = 'nexflow.floatingDictation.position';
+const LEGACY_COLLAPSED_LS_KEY = 'nexflow.floatingDictation.collapsed';
+/** 超过该像素位移视为拖动，取消按住说话 */
+const DRAG_THRESHOLD_PX = 8;
+/** 松手时距边缘小于此值则半露吸附 */
+const EDGE_SNAP_PX = 36;
+const MIC_SIZE = 56;
+const VIEW_INSET = MIC_SIZE / 2 + 8;
 
-function readCollapsedPref(): boolean {
+type DockEdge = 'left' | 'right' | 'top' | 'bottom';
+/** left/top 为话筒中心点（fixed + translate(-50%,-50%)） */
+type FloatingLayout = { left: number; top: number; edge: DockEdge | null };
+
+function readLayoutPref(): FloatingLayout {
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const fallback: FloatingLayout = { left: vw / 2, top: vh - 56, edge: null };
   try {
-    return localStorage.getItem(COLLAPSED_LS_KEY) === '1';
+    const raw = localStorage.getItem(POSITION_LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<FloatingLayout>;
+      const left = Number(parsed?.left);
+      const top = Number(parsed?.top);
+      const edgeRaw = String(parsed?.edge || '').trim();
+      const edge =
+        edgeRaw === 'left' || edgeRaw === 'right' || edgeRaw === 'top' || edgeRaw === 'bottom'
+          ? edgeRaw
+          : null;
+      if (Number.isFinite(left) && Number.isFinite(top)) {
+        return snapLayout({ left, top, edge }, vw, vh);
+      }
+    }
+    // 旧版「收起」偏好 → 默认贴底半露
+    if (localStorage.getItem(LEGACY_COLLAPSED_LS_KEY) === '1') {
+      localStorage.removeItem(LEGACY_COLLAPSED_LS_KEY);
+      return snapLayout({ left: vw / 2, top: vh, edge: 'bottom' }, vw, vh);
+    }
   } catch {
-    return false;
+    /* ignore */
+  }
+  return fallback;
+}
+
+function writeLayoutPref(layout: FloatingLayout): void {
+  try {
+    localStorage.setItem(POSITION_LS_KEY, JSON.stringify(layout));
+    localStorage.removeItem(LEGACY_COLLAPSED_LS_KEY);
+  } catch {
+    /* ignore */
   }
 }
 
-function writeCollapsedPref(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_LS_KEY, collapsed ? '1' : '0');
-  } catch {
-    /* ignore */
+function clampFree(left: number, top: number, vw: number, vh: number): { left: number; top: number } {
+  return {
+    left: Math.min(vw, Math.max(0, left)),
+    top: Math.min(vh, Math.max(0, top)),
+  };
+}
+
+function pickDockEdge(left: number, top: number, vw: number, vh: number): DockEdge | null {
+  const distL = left;
+  const distR = vw - left;
+  const distT = top;
+  const distB = vh - top;
+  const min = Math.min(distL, distR, distT, distB);
+  if (min > EDGE_SNAP_PX) return null;
+  if (min === distL) return 'left';
+  if (min === distR) return 'right';
+  if (min === distT) return 'top';
+  return 'bottom';
+}
+
+function snapLayout(layout: FloatingLayout, vw: number, vh: number): FloatingLayout {
+  const edge = layout.edge;
+  if (!edge) {
+    return {
+      left: Math.min(vw - VIEW_INSET, Math.max(VIEW_INSET, layout.left)),
+      top: Math.min(vh - VIEW_INSET, Math.max(VIEW_INSET, layout.top)),
+      edge: null,
+    };
+  }
+  const free = clampFree(layout.left, layout.top, vw, vh);
+  switch (edge) {
+    case 'left':
+      return { left: 0, top: Math.min(vh - VIEW_INSET, Math.max(VIEW_INSET, free.top)), edge };
+    case 'right':
+      return { left: vw, top: Math.min(vh - VIEW_INSET, Math.max(VIEW_INSET, free.top)), edge };
+    case 'top':
+      return { left: Math.min(vw - VIEW_INSET, Math.max(VIEW_INSET, free.left)), top: 0, edge };
+    case 'bottom':
+      return { left: Math.min(vw - VIEW_INSET, Math.max(VIEW_INSET, free.left)), top: vh, edge };
   }
 }
 
@@ -55,12 +139,57 @@ export type FloatingDictationMicProps = {
 const FloatingDictationMic: React.FC<FloatingDictationMicProps> = ({ isDarkMode = true }) => {
   const { locale } = useAppLocale();
   const { showAlert } = useDarkAlert();
-  const t = useMemo(() => floatingDictationT(locale), [locale]);
+  const [voiceShortcut, setVoiceShortcut] = useState<VoiceInputShortcut>(() =>
+    readVoiceInputShortcut(),
+  );
+  const voiceShortcutRef = useRef(voiceShortcut);
+  voiceShortcutRef.current = voiceShortcut;
+
+  const t = useMemo(() => {
+    void voiceShortcut;
+    return floatingDictationT(locale);
+  }, [locale, voiceShortcut]);
   const refMicAt = useMemo(() => audioInputPanelT(locale), [locale]);
 
-  const [collapsed, setCollapsed] = useState(readCollapsedPref);
+  const [layout, setLayout] = useState<FloatingLayout>(() => readLayoutPref());
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const shellRef = useRef<HTMLDivElement | null>(null);
   const targetRef = useRef<DictationTargetAdapter | null>(null);
-  const ctrlSHeldRef = useRef(false);
+  const shortcutHeldRef = useRef(false);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originLeft: number;
+    originTop: number;
+    dragging: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const sync = () => setVoiceShortcut(readVoiceInputShortcut());
+    const onChanged = () => sync();
+    window.addEventListener(VOICE_INPUT_SHORTCUT_CHANGED_EVENT, onChanged);
+    window.addEventListener('storage', onChanged);
+    return () => {
+      window.removeEventListener(VOICE_INPUT_SHORTCUT_CHANGED_EVENT, onChanged);
+      window.removeEventListener('storage', onChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      setLayout((prev) => {
+        const next = snapLayout(prev, vw, vh);
+        writeLayoutPref(next);
+        return next;
+      });
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const {
     status: dictationStatus,
@@ -89,6 +218,7 @@ const FloatingDictationMic: React.FC<FloatingDictationMicProps> = ({ isDarkMode 
 
   const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
   const micVoiceStopping = dictationStatus === 'stopping';
+  const docked = !!layout.edge && !isDictationActive;
 
   const ensureTargetOrToast = useCallback((): boolean => {
     const ad = getLastDictationTarget();
@@ -102,63 +232,201 @@ const FloatingDictationMic: React.FC<FloatingDictationMicProps> = ({ isDarkMode 
 
   const { pressStart, pressEnd, pointerHandlers, holdingRef } = useDictationPushToTalk({
     start: startRealtimeDictation,
-    stop: stopRealtimeDictation,
-    cancel: cancelRealtimeDictation,
+    stop: async () => {
+      const text = await stopRealtimeDictation();
+      const ad = targetRef.current ?? getLastDictationTarget();
+      ad?.commit?.();
+      return text;
+    },
+    cancel: () => {
+      cancelRealtimeDictation();
+      const ad = targetRef.current ?? getLastDictationTarget();
+      ad?.commit?.();
+    },
     status: dictationStatus,
-    disabled: micVoiceStopping,
+    disabled: false,
     canStart: ensureTargetOrToast,
   });
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
-  const setCollapsedPref = useCallback((next: boolean) => {
-    setCollapsed(next);
-    writeCollapsedPref(next);
+  const commitLayout = useCallback((next: FloatingLayout) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const snapped = snapLayout(next, vw, vh);
+    layoutRef.current = snapped;
+    setLayout(snapped);
+    writeLayoutPref(snapped);
   }, []);
 
-  // Ctrl+S / Cmd+S：按住开始、松开结束；听写优先于浏览器/应用「保存」
+  const applyDragMove = useCallback(
+    (clientX: number, clientY: number) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = clientX - d.startX;
+      const dy = clientY - d.startY;
+      if (!d.dragging) {
+        if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+        d.dragging = true;
+        if (holdingRef.current || shortcutHeldRef.current) {
+          shortcutHeldRef.current = false;
+          pressEnd();
+          cancelRealtimeDictation();
+        }
+      }
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const free = clampFree(d.originLeft + dx, d.originTop + dy, vw, vh);
+      // 拖动中先取消吸附，便于拖出边缘
+      const next: FloatingLayout = { ...free, edge: null };
+      layoutRef.current = next;
+      setLayout(next);
+    },
+    [cancelRealtimeDictation, holdingRef, pressEnd],
+  );
+
+  const endDragSession = useCallback(
+    (pointerId: number, commit: boolean) => {
+      const d = dragRef.current;
+      if (!d || d.pointerId !== pointerId) return;
+      const wasDragging = d.dragging;
+      dragRef.current = null;
+      if (wasDragging && commit) {
+        const cur = layoutRef.current;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const edge = pickDockEdge(cur.left, cur.top, vw, vh);
+        commitLayout({ left: cur.left, top: cur.top, edge });
+      }
+      return wasDragging;
+    },
+    [commitLayout],
+  );
+
+  const onShellPointerDown = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement | null)?.closest?.('.nexflow-floating-dictation-mic')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      originLeft: layoutRef.current.left,
+      originTop: layoutRef.current.top,
+      dragging: false,
+    };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const onShellPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLElement>) => {
+      const d = dragRef.current;
+      if (!d || d.pointerId !== e.pointerId) return;
+      applyDragMove(e.clientX, e.clientY);
+    },
+    [applyDragMove],
+  );
+
+  const onShellPointerUp = useCallback(
+    (e: React.PointerEvent<HTMLElement>) => {
+      const d = dragRef.current;
+      if (!d || d.pointerId !== e.pointerId) return;
+      endDragSession(e.pointerId, true);
+      try {
+        if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [endDragSession],
+  );
+
+  const micPointerHandlers = useMemo(() => {
+    const base = pointerHandlers;
+    return {
+      ...base,
+      onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+        dragRef.current = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          originLeft: layoutRef.current.left,
+          originTop: layoutRef.current.top,
+          dragging: false,
+        };
+        base.onPointerDown(e);
+      },
+      onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
+        const d = dragRef.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        applyDragMove(e.clientX, e.clientY);
+      },
+      onPointerUp: (e: React.PointerEvent<HTMLElement>) => {
+        const wasDragging = endDragSession(e.pointerId, true);
+        if (wasDragging) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        base.onPointerUp(e);
+      },
+      onPointerCancel: (e: React.PointerEvent<HTMLElement>) => {
+        endDragSession(e.pointerId, false);
+        base.onPointerCancel(e);
+      },
+    };
+  }, [applyDragMove, endDragSession, pointerHandlers]);
+
   useEffect(() => {
     const endShortcutHold = () => {
-      if (!ctrlSHeldRef.current) return;
-      ctrlSHeldRef.current = false;
+      if (!shortcutHeldRef.current) return;
+      shortcutHeldRef.current = false;
       pressEnd();
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-      if (e.key.toLowerCase() !== 's') return;
+      if (isVoiceShortcutRecording()) return;
+      const sc = voiceShortcutRef.current;
+      if (!matchesVoiceInputShortcut(e, sc)) return;
 
       const active = document.activeElement;
       const inScope =
         isInWorkspaceScope(active instanceof Element ? active : null) ||
         !!getLastDictationTarget() ||
         isDictationActive ||
-        ctrlSHeldRef.current;
+        shortcutHeldRef.current;
 
       if (!inScope) return;
 
       e.preventDefault();
       e.stopPropagation();
-      // 防系统自动重复 keydown 多次 start
-      if (e.repeat || ctrlSHeldRef.current) return;
+      if (e.repeat || shortcutHeldRef.current) return;
       pressStart();
-      // canStart 失败时不会进入 holding，勿锁住后续按键
       if (!holdingRef.current) return;
-      ctrlSHeldRef.current = true;
+      shortcutHeldRef.current = true;
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
-      if (!ctrlSHeldRef.current) return;
-      const key = e.key.toLowerCase();
-      const releasedMod = e.key === 'Control' || e.key === 'Meta';
-      const releasedS = key === 's';
-      if (!releasedMod && !releasedS) return;
+      if (!shortcutHeldRef.current) return;
+      const sc = voiceShortcutRef.current;
+      const releasedMod =
+        e.key === 'Control' ||
+        e.key === 'Meta' ||
+        e.key === 'Alt' ||
+        e.key === 'Shift';
+      const releasedMain = e.code === sc.code;
+      if (!releasedMod && !releasedMain) return;
       e.preventDefault();
       e.stopPropagation();
       endShortcutHold();
@@ -184,62 +452,66 @@ const FloatingDictationMic: React.FC<FloatingDictationMicProps> = ({ isDarkMode 
     }
   }, [isDictationActive]);
 
+  useEffect(() => {
+    const onForceEnd = () => {
+      if (shortcutHeldRef.current) {
+        shortcutHeldRef.current = false;
+        pressEnd();
+      } else if (isDictationActive || holdingRef.current) {
+        pressEnd();
+      }
+      cancelRealtimeDictation();
+      forceClearVoiceModalLock();
+    };
+    window.addEventListener('nexflow-force-end-dictation', onForceEnd);
+    return () => window.removeEventListener('nexflow-force-end-dictation', onForceEnd);
+  }, [pressEnd, isDictationActive, holdingRef, cancelRealtimeDictation]);
+
   if (typeof document === 'undefined') return null;
 
-  if (collapsed && !isDictationActive) {
-    return createPortal(
-      <div
-        className="pointer-events-none fixed inset-x-0 bottom-3 z-[100040] flex justify-center"
-        data-nexflow-floating-dictation
-      >
-        <button
-          type="button"
-          className={`pointer-events-auto flex h-3 w-14 items-center justify-center rounded-full border shadow-lg transition-all hover:h-5 hover:w-16 ${
-            isDarkMode
-              ? 'border-white/20 bg-zinc-800/90 text-white/70 hover:bg-zinc-700'
-              : 'border-gray-300 bg-white/95 text-gray-500 hover:bg-gray-100'
-          }`}
-          title={t.expandTitle}
-          aria-label={t.expandTitle}
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setCollapsedPref(false);
-          }}
-        >
-          <span className="sr-only">{t.expandTitle}</span>
-          <span
-            className={`block h-1 w-6 rounded-full ${isDarkMode ? 'bg-white/45' : 'bg-gray-400'}`}
-          />
-        </button>
-      </div>,
-      document.body,
-    );
-  }
-
+  const keyLabel = formatVoiceInputShortcutLabel(voiceShortcut);
   const title = micVoiceBusy
     ? t.busyTitle
     : isDictationActive
       ? t.stopTitle
-      : t.startTitle;
+      : docked
+        ? `${t.startTitle} · ${t.dockHint}`
+        : `${t.startTitle} · ${t.dragHint}`;
+
+  const shellStyle: React.CSSProperties = {
+    left: layout.left,
+    top: layout.top,
+    transform: 'translate(-50%, -50%)',
+  };
 
   return createPortal(
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-8 z-[100040] flex flex-col items-center gap-2"
+      ref={shellRef}
+      className={`fixed z-[100040] flex flex-col items-center gap-1.5 touch-none ${
+        docked ? 'pointer-events-auto' : 'pointer-events-none'
+      }`}
+      style={shellStyle}
       data-nexflow-floating-dictation
+      data-dock={layout.edge || 'none'}
+      onPointerDown={onShellPointerDown}
+      onPointerMove={onShellPointerMove}
+      onPointerUp={onShellPointerUp}
+      onPointerCancel={onShellPointerUp}
     >
-      <p
-        className={`pointer-events-none select-none text-[11px] ${
-          isDarkMode ? 'text-white/45' : 'text-gray-500'
-        }`}
-      >
-        {t.shortcutHint}
-      </p>
+      {!docked ? (
+        <p
+          className={`pointer-events-auto max-w-[220px] select-none text-center text-[11px] leading-snug cursor-grab active:cursor-grabbing ${
+            isDarkMode ? 'text-white/45' : 'text-gray-500'
+          }`}
+          title={t.dragHint}
+        >
+          {t.shortcutHint}
+        </p>
+      ) : null}
       <div className="pointer-events-auto relative flex flex-col items-center">
         <button
           type="button"
-          {...pointerHandlers}
-          disabled={micVoiceStopping}
+          {...micPointerHandlers}
           style={
             dictationStatus === 'listening' || dictationStatus === 'connecting'
               ? micLevelCssVars(dictationInputLevel)
@@ -270,26 +542,8 @@ const FloatingDictationMic: React.FC<FloatingDictationMicProps> = ({ isDarkMode 
             level={dictationInputLevel}
           />
         </button>
-        {!isDictationActive && (
-          <button
-            type="button"
-            className={`mt-1.5 flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
-              isDarkMode
-                ? 'border-white/15 bg-zinc-900/80 text-white/50 hover:text-white/80'
-                : 'border-gray-200 bg-white/90 text-gray-400 hover:text-gray-600'
-            }`}
-            title={t.collapseTitle}
-            aria-label={t.collapseTitle}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setCollapsedPref(true);
-            }}
-          >
-            <ChevronDown className="h-3.5 w-3.5" strokeWidth={2.5} />
-          </button>
-        )}
       </div>
+      <span className="sr-only">{keyLabel}</span>
     </div>,
     document.body,
   );

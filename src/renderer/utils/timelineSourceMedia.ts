@@ -30,6 +30,8 @@ export type TimelineClipRecord = {
   sourceNodeId?: string;
   volume?: number;
   directorShotNo?: string;
+  /** 色度抠像 WebM 等带透明通道 */
+  hasAlpha?: boolean;
 };
 
 export type VideoSpliceClipLabels = {
@@ -171,14 +173,21 @@ function shouldPreserveClipTrim(
     return true;
   }
   if (prev.src !== resolvedUrl) return false;
+  // 新媒体时长尚未可信时先不保留，等探测后再合并
   if (needsTimelineDurationProbe(duration, sourceHint)) return false;
-  if (needsTimelineDurationProbe(prev.duration, sourceHint)) return false;
   const ts = prev.trimStart ?? 0;
-  const te = prev.trimEnd ?? prev.duration;
-  if (needsTimelineDurationProbe(te, sourceHint)) return false;
-  // trimEnd 绑在旧短 duration 上（占位探测错误）→ 丢弃
-  if (duration > prev.duration + 0.5 && te <= prev.duration + 0.01) return false;
-  return te > ts && te <= duration + 0.01;
+  const te = prev.trimEnd;
+  // 无显式 trim 无需保留
+  if (te == null || !(te > ts + 0.05)) return false;
+  // 超出新媒体时长的 trim 无效
+  if (te > duration + 0.05) return false;
+  // 仅丢弃「贴在旧占位短 duration 上」的 trim；用户裁短（te << sourceHint）必须保留
+  const prevDurUntrusted =
+    needsTimelineDurationProbe(prev.duration, 0) || isUntrustedTimelineDuration(prev.duration);
+  if (duration > prev.duration + 0.5 && te <= prev.duration + 0.01 && prevDurUntrusted) {
+    return false;
+  }
+  return true;
 }
 
 /** 清除占位探测或 sourceHint 不一致时遗留的错误 trim（duration 已正确但 trimEnd 仍为几秒） */
@@ -227,15 +236,19 @@ export function sanitizeTimelineClipTrim(
     ts >= -0.001 && te > ts + 0.05 && te <= dur + 0.05 && (!sourceHint || te <= sourceHint + 0.05);
   if (mediaTrusted && trimInMedia) return clip;
 
-  // 仅清除占位探测遗留 trim
+  // 仅清除占位探测遗留 trim。注意：needsTimelineDurationProbe(x, sourceHint) 在 x < sourceHint 时为 true，
+  // 不能用来判断「用户裁短」是否 stale，否则会清掉时间轴上的有意 trimEnd。
   const trimEndPinnedToOldShortDuration =
-    sourceHint > dur + 0.5 && te <= dur + 0.01 && effective <= dur + 0.01;
+    sourceHint > dur + 0.5 &&
+    te <= dur + 0.01 &&
+    effective <= dur + 0.01 &&
+    isUntrustedTimelineDuration(dur);
   const trimLooksStale =
     !Number.isFinite(dur) ||
     dur <= 0 ||
     effective <= 0.01 ||
-    needsTimelineDurationProbe(effective, sourceHint) ||
-    needsTimelineDurationProbe(te, sourceHint) ||
+    (isUntrustedTimelineDuration(effective) && sourceHint > effective + 0.5) ||
+    (isUntrustedTimelineDuration(te) && sourceHint > te + 0.5) ||
     trimEndPinnedToOldShortDuration;
 
   if (!trimLooksStale) return clip;
@@ -287,13 +300,16 @@ export function mergeProbedTimelineClipDuration(
     const { trimEnd: _te, ...rest } = next;
     return sanitizeTimelineClipTrim(rest, Math.max(nextDur, sourceHint));
   }
-  const hadPlaceholderDur = needsTimelineDurationProbe(prevDur, sourceHint);
-  const trimEnd = next.trimEnd ?? prevDur;
-  // 仅当 trim 钉在旧短 duration 上、且探测明显更长时视为占位；勿清用户有意裁短的 trimEnd
-  const trimWasPlaceholder =
-    hadPlaceholderDur ||
-    (next.trimEnd != null && trimEnd <= prevDur + 0.01 && probedDur > prevDur + 0.5);
-  if (trimWasPlaceholder) {
+  const ts = next.trimStart ?? 0;
+  const trimEnd = next.trimEnd;
+  // 仅当 trim 钉在「不可信的旧短 duration」上时才清；用户裁到 te < 新媒体长必须保留
+  const trimPinnedToUntrustedPrevDur =
+    trimEnd != null &&
+    trimEnd > ts + 0.05 &&
+    trimEnd <= prevDur + 0.01 &&
+    probedDur > prevDur + 0.5 &&
+    isUntrustedTimelineDuration(prevDur);
+  if (trimPinnedToUntrustedPrevDur) {
     const { trimEnd: _te, trimStart: _ts, ...rest } = next;
     return sanitizeTimelineClipTrim(rest, Math.max(nextDur, sourceHint));
   }
@@ -560,6 +576,13 @@ export function buildVideoSpliceClipsFromEdges(
     const placedStart =
       prev != null && Number.isFinite(prev.startTime) ? prev.startTime : 0;
 
+    const sourceHasAlpha =
+      resolved.clipType === 'video' &&
+      (sourceNode.data?.hasAlpha === true ||
+        /video-chromakey-/i.test(resolved.url) ||
+        /video-smart-matting-/i.test(resolved.url) ||
+        /\.webm(?:$|[?#])/i.test(resolved.url));
+
     const clip: TimelineClipRecord = sanitizeTimelineClipTrim(
       {
         id: prev?.id || `${resolved.clipType}-${edge.source}`,
@@ -574,6 +597,7 @@ export function buildVideoSpliceClipsFromEdges(
         ...(keepTrim && prev?.lockTrim ? { lockTrim: true } : {}),
         ...(prev?.volume != null ? { volume: prev.volume } : {}),
         ...(prev?.directorShotNo ? { directorShotNo: prev.directorShotNo } : {}),
+        ...(sourceHasAlpha || prev?.hasAlpha ? { hasAlpha: true } : {}),
       },
       sourceHint,
     );
@@ -609,7 +633,7 @@ export function timelineClipsFingerprint(
   audioTracks: TimelineClipRecord[][],
 ): string {
   const seg = (c: TimelineClipRecord) =>
-    `${c.id}|${c.sourceNodeId || ''}|${c.src}|${c.startTime}|${c.duration}|${c.trimStart ?? ''}|${c.trimEnd ?? ''}|${c.lockTrim ? 1 : 0}`;
+    `${c.id}|${c.sourceNodeId || ''}|${c.src}|${c.startTime}|${c.duration}|${c.trimStart ?? ''}|${c.trimEnd ?? ''}|${c.lockTrim ? 1 : 0}|${c.hasAlpha ? 1 : 0}|${c.type}`;
   const videoTracks = Array.isArray(videoClipsOrTracks[0])
     ? (videoClipsOrTracks as TimelineClipRecord[][])
     : [videoClipsOrTracks as TimelineClipRecord[]];

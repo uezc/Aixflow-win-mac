@@ -222,14 +222,15 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
       if (packet.status === 'ERROR') {
         genStartAtRef.current = null;
         const errorMsg = packet.payload?.error || '未知错误';
+        const isUserCancel = /已取消|cancell?ed|aborted/i.test(String(errorMsg));
         const balanceInsufficient = (packet.payload as any)?.balanceInsufficient === true;
-        setErrorMessage(errorMsg);
+        setErrorMessage(isUserCancel ? '' : errorMsg);
         updateNodeData({ 
-          errorMessage: errorMsg,
+          errorMessage: isUserCancel ? undefined : errorMsg,
           aiStatus: undefined,
           progress: 0,
         });
-        if (balanceInsufficient) {
+        if (!isUserCancel && balanceInsufficient) {
           showAlert('元宝不足，请联系管理员充值');
         }
         return;

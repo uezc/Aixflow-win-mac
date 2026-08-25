@@ -10,6 +10,8 @@ import {
   normalizeRhartVideoXDurationSec,
   normalizeGrok3StableDurationSec,
   normalizeLtx23DurationSec,
+  normalizeMinimaxH3DurationSec,
+  normalizeMinimaxH3AudioDurationSec,
 } from './cost_table.mjs';
 
 /** VIDEO_FLAT 裸 model_id：按次打包价，查表 Quantity=1（与客户端 cloudModelPricing 一致） */
@@ -118,6 +120,16 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  // Wan animate2：按原视频秒数计费；SKU 仅分辨率，Quantity = mediaDurationSec（ceil）
+  if (m === 'wan-animate-2') {
+    const resRaw = String(inp.resolutionWanAnimate ?? '').trim().toLowerCase();
+    const resSeg =
+      resRaw === '1080p' || resRaw === '1080' || resRaw === '1920x1080' || resRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    return joinKey('wan', 'animate', '2', resSeg);
+  }
+
   if (m === 'kling-v2.6-pro') {
     let durNum;
     if (inp.duration === '10') durNum = 10;
@@ -214,6 +226,29 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
     return joinKey('ltx', '2-3', res, dur);
   }
 
+  if (m === 'minimax-h3-t2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
+  }
+  if (m === 'minimax-h3-i2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
+  }
+  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  if (m === 'minimax-h3-multi') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
+  }
+  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  if (m === 'minimax-h3-audio') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3AudioDurationSec(inp.durationMinimaxH3, 20);
+    return joinKey('minimax', 'h3', 'audio', res, `${durSec}s`);
+  }
+
   if (m === 'ltx-2.3-hdr-multi') {
     const resRaw =
       inp.resolutionLtx23HdrMulti != null && String(inp.resolutionLtx23HdrMulti).trim() !== ''
@@ -241,11 +276,22 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
       inp.resolutionRhartV31 != null && String(inp.resolutionRhartV31).trim() !== ''
         ? lc(String(inp.resolutionRhartV31))
         : '';
-    const res = resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    const res =
+      resRaw === '720' || resRaw === '720p'
+        ? '720p'
+        : resRaw === '1920' || resRaw === '1920p' || resRaw === '4k' || resRaw === '2160p'
+          ? '1920p'
+          : '1080p';
     const d = parseInt(String(inp.duration ?? ''), 10);
     const durNum = Number.isFinite(d) && d > 0 ? Math.max(5, Math.min(15, d)) : 5;
     const dur = durNum >= 15 ? '15s' : durNum >= 10 ? '10s' : '5s';
     return joinKey('ltx', '2-3', 'start-end', res, dur);
+  }
+
+  if (m === 'rhart-video-upscaler') {
+    const r = lc(String(inp.targetResolution ?? '1080p'));
+    const res = r === '720p' || r === '1080p' || r === '2k' || r === '4k' ? r : '1080p';
+    return joinKey('rhart', 'video', 'upscaler', res);
   }
 
   return lc(model);
@@ -255,6 +301,22 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
  * 与 getVideoDisplayPrice 中 getVideoBillingQuantity 一致：从复合 SKU 中取最后一段 `-{N}s` 作为「UI 秒数」基准。
  */
 export function getVideoBillingQuantity(baseModel, input) {
+  const m = String(baseModel || '').trim();
+  const inp = input && typeof input === 'object' ? input : {};
+  // 视频超分：按秒基价；Quantity = max(floor(时长), 5)，与播放器时钟对齐
+  if (m === 'rhart-video-upscaler') {
+    const raw = inp.mediaDurationSec ?? inp.durationRhartVideoUpscaler ?? inp.duration ?? 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 5;
+    return Math.max(5, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+  }
+  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))，最长 10 分钟
+  if (m === 'wan-animate-2') {
+    const raw = inp.mediaDurationSec ?? inp.duration ?? 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 1;
+    return Math.max(1, Math.ceil(Math.min(n, 10 * 60) - 1e-9));
+  }
   const sku = buildVideoBillingModelIdCore(baseModel, input);
   const matches = [...sku.matchAll(/-(\d+)s(?=-|$)/gi)];
   if (matches.length === 0) return 1;

@@ -1,5 +1,9 @@
 import { canvasShortcutModLabel, canvasShortcutsT } from '../i18n/canvasShortcutsI18n';
 import type { AppLocale } from '../i18n/settingsI18n';
+import {
+  readVoiceInputShortcut,
+  voiceInputShortcutToKeycaps,
+} from './voiceInputShortcutPrefs';
 
 export type CanvasShortcutRow = {
   id: string;
@@ -7,6 +11,8 @@ export type CanvasShortcutRow = {
   /** 拆成多个 keycap；为空时用 hint */
   keys: string[];
   hint?: string;
+  /** 可在快捷键面板点击录制改键 */
+  customizable?: boolean;
 };
 
 export type CanvasShortcutSection = {
@@ -25,7 +31,7 @@ function modKey(): string {
   return canvasShortcutModLabel();
 }
 
-/** 默认快捷键列表（与 FlowContent / Workspace 实际绑定一致，无持久化自定义） */
+/** 默认快捷键列表（与 FlowContent / Workspace 实际绑定一致；语音项可读自定义偏好） */
 export function buildDefaultCanvasShortcutSections(locale: AppLocale): CanvasShortcutSection[] {
   const t = canvasShortcutsT(locale);
   const m = modKey();
@@ -49,7 +55,15 @@ export function buildDefaultCanvasOperationRows(locale: AppLocale): CanvasShortc
 
 function generalRows(t: ReturnType<typeof canvasShortcutsT>, m: string): CanvasShortcutRow[] {
   void m;
+  const voiceKeys = voiceInputShortcutToKeycaps(readVoiceInputShortcut());
   return [
+    {
+      id: 'voice-input-hold',
+      label: t.voiceInputHold.label,
+      keys: voiceKeys,
+      hint: t.voiceInputHold.hint,
+      customizable: true,
+    },
     { id: 'zoom-in', label: t.zoomIn.label, keys: [t.wheelUpKey] },
     { id: 'zoom-out', label: t.zoomOut.label, keys: [t.wheelDownKey] },
     { id: 'fit-view', label: t.fitView.label, keys: [], hint: t.fitView.hint },
@@ -70,5 +84,6 @@ function editRows(t: ReturnType<typeof canvasShortcutsT>, m: string): CanvasShor
     { id: 'delete', label: t.deleteNodes.label, keys: ['Delete', 'Backspace'] },
     { id: 'multi-select', label: t.multiSelect.label, keys: ['Shift'] },
     { id: 'quick-connect', label: t.quickConnect.label, keys: [m, t.clickKey] },
+    { id: 'optimize-h3-prompt', label: t.optimizeH3Prompt.label, keys: [m, 'Shift', 'H'] },
   ];
 }

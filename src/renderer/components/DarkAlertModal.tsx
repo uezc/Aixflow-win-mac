@@ -9,6 +9,7 @@ import {
   darkModalPanelSmClass,
   DARK_MODAL_Z,
 } from './darkModalShell';
+import { forceClearVoiceModalLock } from '../utils/voiceModalGate';
 
 interface DarkAlertModalProps {
   open: boolean;
@@ -46,18 +47,34 @@ export const DarkAlertModal: React.FC<DarkAlertModalProps> = ({
     message.includes('余额不足') ||
     /insufficient|low balance|top up/i.test(message);
   const okLabel = confirmLabel ?? (locale === 'en' ? 'OK' : '确定');
+  const handleClose = () => {
+    try {
+      forceClearVoiceModalLock();
+    } catch {
+      /* ignore */
+    }
+    onClose();
+  };
 
   if (isLoginShell) {
     return (
       <DarkModalFrame
         open={open}
-        onBackdropClick={onClose}
+        onBackdropClick={handleClose}
         stackZClass={stackZClass}
         panelClassName="nexflow-glass-panel flex w-full max-w-[min(100%,380px)] flex-col overflow-hidden rounded-2xl border border-white/[0.12]"
         showBrandHeader={false}
         footer={
           <div className="px-5 pb-5 pt-2 sm:px-6 sm:pb-6">
-            <button type="button" onClick={onClose} className="nexflow-btn-primary w-full">
+            <button
+              type="button"
+              onClick={handleClose}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                handleClose();
+              }}
+              className="nexflow-btn-primary w-full pointer-events-auto"
+            >
               {okLabel}
             </button>
           </div>
@@ -85,12 +102,34 @@ export const DarkAlertModal: React.FC<DarkAlertModalProps> = ({
   return (
     <DarkModalFrame
       open={open}
-      onBackdropClick={onClose}
+      onBackdropClick={handleClose}
       stackZClass={stackZClass}
       panelClassName={panelClass}
       footer={
         <div className={isLg ? `${darkModalFooterClass} px-8` : isDouble ? `${darkModalFooterClass} shrink-0` : darkModalFooterClass}>
-          <button type="button" onClick={onClose} className={isLg || isDouble ? `${darkModalBtnOkClass} !px-8` : `${darkModalBtnOkClass} w-full max-w-[280px]`}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleClose();
+            }}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleClose();
+            }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleClose();
+            }}
+            className={
+              isLg || isDouble
+                ? `${darkModalBtnOkClass} !px-8 pointer-events-auto relative z-[1]`
+                : `${darkModalBtnOkClass} w-full max-w-[280px] pointer-events-auto relative z-[1]`
+            }
+          >
             {okLabel}
           </button>
         </div>

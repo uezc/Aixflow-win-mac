@@ -1,107 +1,165 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 type Props = {
   src: string;
   className?: string;
   imgClassName?: string;
+  imgStyle?: React.CSSProperties;
   alt?: string;
-  /** 列表缩略边长，默认 256 */
+  /** 列表小图边长；有值时优先走磁盘缩略图，避免原图解码撑爆堆 */
   maxEdge?: number;
   placeholderClassName?: string;
 };
 
-/** 限制同时生成缩略图的数量，避免打开素材库时打满 CPU */
-const MAX_PARALLEL = 3;
-let running = 0;
-const waitQueue: Array<() => void> = [];
+const thumbMemo = new Map<string, string>();
 
-async function withThumbSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (running >= MAX_PARALLEL) {
-    await new Promise<void>((resolve) => waitQueue.push(resolve));
-  }
-  running += 1;
-  try {
-    return await fn();
-  } finally {
-    running = Math.max(0, running - 1);
-    const next = waitQueue.shift();
-    if (next) next();
-  }
+function isLocalMediaUrl(raw: string): boolean {
+  return (
+    raw.startsWith('local-resource://') ||
+    raw.startsWith('file://') ||
+    /^[A-Za-z]:[\\/]/.test(raw) ||
+    raw.startsWith('/')
+  );
 }
 
-const thumbCache = new Map<string, string>();
+function memoKey(raw: string, edge: number): string {
+  return `${raw}::${edge}`;
+}
+
+function peekCachedThumb(raw: string, edge: number): string {
+  const key = memoKey(raw, edge);
+  const hit = thumbMemo.get(key);
+  if (hit) return hit;
+  const api = window.electronAPI;
+  if (!api?.peekLibraryListThumb) return '';
+  try {
+    const r = api.peekLibraryListThumb(raw, edge);
+    const thumb = String(r?.thumbUrl || '').trim();
+    if (r?.success && thumb) {
+      thumbMemo.set(key, thumb);
+      return thumb;
+    }
+  } catch {
+    /* 同步探缓存失败则走异步 */
+  }
+  return '';
+}
 
 /**
- * 资产库缩略图：先占位秒开列表，进入视口后再异步生成/读取 256px 缓存图。
- * 避免场景/角色原图 0.5–3MB 在列表里全量解码。
+ * 列表预览：本地图用 ensureLibraryListThumb 出小 JPEG；远程/失败时回退原图。
+ * 启动时禁止先解原图，否则定妆四宫格会把卡片撑成全黑好几秒。
  */
+export const GatedOriginalImg: React.FC<{
+  src: string;
+  className?: string;
+  alt?: string;
+  style?: React.CSSProperties;
+  maxEdge?: number;
+}> = ({ src, className, alt = '', style, maxEdge }) => {
+  return (
+    <AssetLibLazyThumb
+      src={src}
+      className={className}
+      imgClassName="h-full w-full object-cover"
+      imgStyle={style}
+      alt={alt}
+      maxEdge={maxEdge}
+    />
+  );
+};
+
 const AssetLibLazyThumb: React.FC<Props> = ({
   src,
   className,
   imgClassName = 'h-full w-full object-cover',
+  imgStyle,
   alt = '',
-  maxEdge = 256,
+  maxEdge,
   placeholderClassName = 'bg-black/20',
 }) => {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  const [displaySrc, setDisplaySrc] = useState(() => thumbCache.get(`${src}|${maxEdge}`) || '');
+  const raw = String(src || '').trim();
+  const edge = Math.max(0, Math.round(Number(maxEdge) || 0));
+  const useThumb = !!raw && edge >= 32 && isLocalMediaUrl(raw);
+  const [displaySrc, setDisplaySrc] = useState(() =>
+    useThumb ? peekCachedThumb(raw, edge) : raw,
+  );
 
   useEffect(() => {
-    const el = hostRef.current;
-    if (!el) return;
-    if (typeof IntersectionObserver === 'undefined') {
-      setVisible(true);
+    let cancelled = false;
+    if (!raw) {
+      setDisplaySrc('');
       return;
     }
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          setVisible(true);
-          io.disconnect();
-        }
-      },
-      { rootMargin: '120px' },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
+    if (!useThumb) {
+      setDisplaySrc(raw);
+      return;
+    }
 
-  useEffect(() => {
-    const key = `${src}|${maxEdge}`;
-    const cached = thumbCache.get(key);
+    const cached = peekCachedThumb(raw, edge);
     if (cached) {
       setDisplaySrc(cached);
       return;
     }
-    if (!visible || !src.trim()) return;
-    let cancelled = false;
+
+    setDisplaySrc('');
+    const api = window.electronAPI;
+    if (!api?.ensureLibraryListThumb) {
+      setDisplaySrc(raw);
+      return;
+    }
+
     void (async () => {
       try {
-        const result = await withThumbSlot(async () => {
-          if (!window.electronAPI?.ensureLibraryListThumb) return null;
-          return window.electronAPI.ensureLibraryListThumb(src, maxEdge);
-        });
-        const url = result?.success && result.thumbUrl ? result.thumbUrl : src;
-        thumbCache.set(key, url);
-        if (!cancelled) setDisplaySrc(url);
+        const r = await api.ensureLibraryListThumb(raw, edge);
+        const thumb = String(r?.thumbUrl || '').trim();
+        if (cancelled) return;
+        if (r?.success && thumb) {
+          thumbMemo.set(memoKey(raw, edge), thumb);
+          setDisplaySrc(thumb);
+          return;
+        }
       } catch {
-        thumbCache.set(key, src);
-        if (!cancelled) setDisplaySrc(src);
+        /* 回退原图 */
       }
+      if (!cancelled) setDisplaySrc(raw);
     })();
+
     return () => {
       cancelled = true;
     };
-  }, [visible, src, maxEdge]);
+  }, [raw, edge, useThumb]);
+
+  if (!raw) {
+    return (
+      <div className={className} style={imgStyle}>
+        <div className={`h-full w-full ${placeholderClassName}`} aria-hidden />
+      </div>
+    );
+  }
+
+  if (!displaySrc) {
+    return (
+      <div className={className} style={imgStyle}>
+        <div
+          className={`h-full w-full animate-pulse ${placeholderClassName}`}
+          style={imgStyle}
+          aria-hidden
+        />
+      </div>
+    );
+  }
 
   return (
-    <div ref={hostRef} className={className}>
-      {displaySrc ? (
-        <img src={displaySrc} alt={alt} className={imgClassName} draggable={false} decoding="async" />
-      ) : (
-        <div className={`h-full w-full ${placeholderClassName}`} aria-hidden />
-      )}
+    <div className={className}>
+      <img
+        src={displaySrc}
+        alt={alt}
+        className={imgClassName}
+        style={imgStyle}
+        draggable={false}
+        decoding="async"
+        loading="eager"
+      />
     </div>
   );
 };

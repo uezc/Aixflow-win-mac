@@ -225,7 +225,7 @@ interface Window {
     ) => Promise<{ userId: string | null; balance: number; isPro: boolean; status: string }>;
     nxCloudLogout: () => Promise<{ userId: string | null; balance: number; isPro: boolean; status: string }>;
     nxCloudGetProfile: () => Promise<{ userId: string | null; balance: number; isPro: boolean; status: string; nxEmail?: string | null; isFirstRecharge?: boolean }>;
-    nxCloudGetTransactions: (limit?: number) => Promise<{
+    nxCloudGetTransactions: (limit?: number, page?: number) => Promise<{
       items: Array<{
         tx_id: string;
         task_id?: string;
@@ -236,6 +236,10 @@ interface Window {
         created_at?: string;
         balance_after?: string | number;
       }>;
+      page: number;
+      pageSize: number;
+      total: number;
+      hasMore: boolean;
     }>;
     nxCloudGetTasks: (limit?: number) => Promise<{
       items: Array<{
@@ -341,9 +345,32 @@ interface Window {
       projectId: string,
       nodes: any[],
       edges: any[],
-      opts?: { allowEmptyOverwrite?: boolean },
-    ) => Promise<{ success: true } | { success: false; code: 'EMPTY_OVERWRITE_BLOCKED' }>;
-    loadProjectData: (projectId: string) => Promise<{ nodes: any[]; edges: any[]; lastModified: number }>;
+      opts?: { allowEmptyOverwrite?: boolean; allowShrinkOverwrite?: boolean; force?: boolean },
+    ) => Promise<
+      | { success: true; rolledBackup?: string; skipped?: boolean }
+      | {
+          success: false;
+          code: 'EMPTY_OVERWRITE_BLOCKED' | 'SHRINK_OVERWRITE_BLOCKED';
+          existingNodes?: number;
+          incomingNodes?: number;
+          archivedPath?: string | null;
+        }
+    >;
+    loadProjectData: (projectId: string) => Promise<{
+      nodes: any[];
+      edges: any[];
+      lastModified?: number;
+      recoveredFrom?: string;
+    }>;
+    listProjectDataBackups: (
+      projectId: string,
+    ) => Promise<
+      | {
+          success: true;
+          backups: Array<{ path: string; nodes: number; edges: number; mtimeMs: number }>;
+        }
+      | { success: false; error: string; backups: [] }
+    >;
     backupProjectData: (
       projectId: string,
     ) => Promise<
@@ -353,7 +380,7 @@ interface Window {
     restoreProjectDataFromBackup: (
       projectId: string,
     ) => Promise<
-      | { success: true; nodeCount: number; previousCount: number }
+      | { success: true; nodeCount: number; previousCount: number; source?: string }
       | {
           success: false;
           error: 'NO_PROJECT' | 'NO_BACKUP' | 'BACKUP_NOT_NEWER' | 'IO_ERROR' | string;
@@ -483,12 +510,129 @@ interface Window {
     ) => () => void;
     /** 语音→文本：云端 fun-asr；契约 { text } */
     transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) => Promise<{ text: string }>;
-    /** MV 歌词时间线：云端 fun-asr；契约 { text, segments } */
+    /** MV 歌词时间线：云端 fun-asr；契约 { text, segments, hasWordTimestamps? }；segments 可含 words */
     transcribeSpeechSegmentsFromAudioUrl: (
       projectId: string | undefined,
       audioUrl: string,
       language?: string,
-    ) => Promise<{ text: string; segments: Array<{ text: string; startSec: number; endSec: number }> }>;
+    ) => Promise<{
+      text: string;
+      segments: Array<{
+        text: string;
+        startSec: number;
+        endSec: number;
+        words?: Array<{ text: string; startSec: number; endSec: number }>;
+      }>;
+      hasWordTimestamps?: boolean;
+      /** FC 已实扣；缺省时主进程会判计费包未部署 */
+      charged?: boolean;
+      /** FC 实扣元宝；缺省时主进程会判计费包未部署 */
+      cost?: number;
+      balance?: number;
+      billingModelId?: string;
+      billingTaskId?: string;
+    }>;
+    karaokeDetectFont: () => Promise<{
+      fontName: string;
+      fontsDir: string | null;
+      fontFile: string | null;
+    }>;
+    karaokeExportAss: (
+      project: unknown,
+      defaultName?: string,
+    ) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      filePath?: string;
+      error?: string;
+    }>;
+    karaokeWriteAssTemp: (project: unknown) => Promise<{
+      assPath: string;
+      assContent: string;
+      fontName: string;
+    }>;
+    karaokeBurnSubtitles: (
+      projectId: string | undefined,
+      videoUrl: string,
+      project: unknown,
+    ) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      assPath?: string;
+      error?: string;
+    }>;
+    karaokeCssBurn: (
+      projectId: string | undefined,
+      videoUrl: string,
+      project: unknown,
+      opts?: { fps?: number; durationSec?: number; lowSpec?: boolean; preferSmooth?: boolean },
+    ) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+      engine?: 'css' | 'ass';
+    }>;
+    onKaraokeCssBurnProgress: (
+      callback: (p: {
+        phase: 'prepare' | 'capture' | 'encode' | 'done';
+        frame: number;
+        total: number;
+        percent: number;
+        message?: string;
+        fps?: number;
+        etaSeconds?: number | null;
+        lowSpec?: boolean;
+      }) => void,
+    ) => () => void;
+    karaokePreviewComposeBegin: (
+      projectId: string | undefined,
+      videoUrl: string,
+      project: unknown,
+      opts?: { fps?: number; durationSec?: number },
+    ) => Promise<{
+      success: boolean;
+      sessionId?: string;
+      fps?: number;
+      durationSec?: number;
+      frameCount?: number;
+      captureWidth?: number;
+      captureHeight?: number;
+      videoWidth?: number;
+      videoHeight?: number;
+      error?: string;
+    }>;
+    karaokePreviewComposeWriteFrame: (
+      sessionId: string,
+      frameIndex: number,
+      png: ArrayBuffer | Uint8Array,
+    ) => Promise<{ success: boolean; error?: string }>;
+    karaokePreviewComposeFinalize: (sessionId: string) => Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+    }>;
+    karaokePreviewComposeAbort: (
+      sessionId: string,
+    ) => Promise<{ success: boolean; error?: string }>;
+    karaokeCancelBurn: () => Promise<{ success: true; killed: number }>;
     trimAudio: (projectId: string | undefined, audioUrl: string, startSec: number, endSec: number) => Promise<{ audioUrl: string }>;
     trimVideo: (projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) => Promise<{ videoUrl: string; durationSec?: number }>;
     smartAnalyzeVideoShots: (
@@ -565,35 +709,85 @@ interface Window {
     getMediaDuration: (url: string, projectId?: string) => Promise<number>;
     exportTimelineVideo: (
       projectId: string | undefined,
-      videoClips: Array<{
-        type: string;
-        src: string;
-        duration: number;
-        startTime: number;
-        trimStart?: number;
-        trimEnd?: number;
-        name?: string;
-        layout?: { x: number; y: number; w: number; h: number };
-        crop?: { left: number; top: number; right: number; bottom: number };
-      }>,
+      videoClipsOrTracks:
+        | Array<{
+            type: string;
+            src: string;
+            duration: number;
+            startTime: number;
+            trimStart?: number;
+            trimEnd?: number;
+            name?: string;
+            layout?: { x: number; y: number; w: number; h: number };
+            crop?: { left: number; top: number; right: number; bottom: number };
+            hasAlpha?: boolean;
+            volume?: number;
+          }>
+        | Array<
+            Array<{
+              type: string;
+              src: string;
+              duration: number;
+              startTime: number;
+              trimStart?: number;
+              trimEnd?: number;
+              name?: string;
+              layout?: { x: number; y: number; w: number; h: number };
+              crop?: { left: number; top: number; right: number; bottom: number };
+              hasAlpha?: boolean;
+              volume?: number;
+            }>
+          >,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
+      options?: {
+        videoTrackVolume?: number | number[];
+        videoTrackMuted?: boolean | boolean[];
+        audioTrackVolume?: number[];
+        audioTrackMuted?: boolean[];
+        outputWidth?: number;
+        outputHeight?: number;
+      }
     ) => Promise<{ success: boolean; videoPath?: string; hasAudio?: boolean; error?: string }>;
     exportTimelineVideoToProject: (
       projectId: string | undefined,
-      videoClips: Array<{
-        type: string;
-        src: string;
-        duration: number;
-        startTime: number;
-        trimStart?: number;
-        trimEnd?: number;
-        name?: string;
-        layout?: { x: number; y: number; w: number; h: number };
-        crop?: { left: number; top: number; right: number; bottom: number };
-      }>,
+      videoClipsOrTracks:
+        | Array<{
+            type: string;
+            src: string;
+            duration: number;
+            startTime: number;
+            trimStart?: number;
+            trimEnd?: number;
+            name?: string;
+            layout?: { x: number; y: number; w: number; h: number };
+            crop?: { left: number; top: number; right: number; bottom: number };
+            hasAlpha?: boolean;
+            volume?: number;
+          }>
+        | Array<
+            Array<{
+              type: string;
+              src: string;
+              duration: number;
+              startTime: number;
+              trimStart?: number;
+              trimEnd?: number;
+              name?: string;
+              layout?: { x: number; y: number; w: number; h: number };
+              crop?: { left: number; top: number; right: number; bottom: number };
+              hasAlpha?: boolean;
+              volume?: number;
+            }>
+          >,
       audioTracks: Array<Array<{ type: string; src: string; duration: number; startTime: number; trimStart?: number; trimEnd?: number }>>,
-      options?: { videoTrackVolume?: number; videoTrackMuted?: boolean; audioTrackVolume?: number[]; audioTrackMuted?: boolean[]; outputWidth?: number; outputHeight?: number }
+      options?: {
+        videoTrackVolume?: number | number[];
+        videoTrackMuted?: boolean | boolean[];
+        audioTrackVolume?: number[];
+        audioTrackMuted?: boolean[];
+        outputWidth?: number;
+        outputHeight?: number;
+      }
     ) => Promise<{
       success: boolean;
       hasAudio?: boolean;
@@ -614,6 +808,15 @@ interface Window {
       throughputPerSec: number;
       pauseTotalMs: number;
     }>;
+    peekLibraryListThumb: (
+      sourceUrlOrPath: string,
+      maxEdge?: number,
+    ) => {
+      success: boolean;
+      thumbUrl?: string;
+      thumbPath?: string;
+      cached?: boolean;
+    };
     ensureLibraryListThumb: (
       sourceUrlOrPath: string,
       maxEdge?: number,
@@ -659,6 +862,14 @@ interface Window {
 
     // AI 调用
     invokeAI: (params: { modelId: string; nodeId: string; input: any }) => Promise<void>;
+    /** 取消进行中的 FC LLM */
+    abortFcLlm: () => Promise<{ aborted: boolean }>;
+
+    /** 读取本地镜像的 MiniMax-H3 h3-prompt-writing 指南（base / ref） */
+    getMinimaxH3PromptGuide: (kind?: 'base' | 'ref') => Promise<
+      | { ok: true; kind: 'base' | 'ref'; skillMd: string; guide: string }
+      | { ok: false; error: string }
+    >;
     
     // AI 状态更新监听（返回清理函数）
     onAIStatusUpdate: (callback: (packet: { nodeId: string; status: 'START' | 'PROCESSING' | 'SUCCESS' | 'ERROR'; payload?: { text?: string; url?: string; progress?: number; error?: string } }) => void) => (() => void) | void;
@@ -694,6 +905,8 @@ interface Window {
       | { ok: false; error: string }
     >;
     checkForUpdates: () => Promise<{ updateAvailable: boolean; currentVersion: string; latestVersion: string | null; packageBytes?: number; error?: string | null }>;
+    getReleaseFeedRegion: () => Promise<{ region: 'cn' | 'hk'; active: 'cn' | 'hk' }>;
+    setReleaseFeedRegion: (region: 'cn' | 'hk') => Promise<{ ok: boolean; region: 'cn' | 'hk' }>;
     downloadAndInstallUpdate: () => Promise<{ success: boolean; error?: string }>;
     pauseUpdateDownload: () => Promise<{ success: boolean; paused?: boolean }>;
     resumeUpdateDownload: () => Promise<{ success: boolean; paused?: boolean; error?: string }>;
@@ -797,6 +1010,7 @@ interface Window {
 
     // 角色管理
     getCharacters: () => Promise<Array<{ id: string; nickname: string; name: string; username?: string; avatar: string; roleId?: string; permalink?: string; createdAt: number; localAvatarPath?: string; voiceClip?: string; localVoicePath?: string; viewImages?: string[]; localViewPaths?: string[]; assetKind?: 'role' | 'imageTo3d'; inputImageUrl?: string; localGlbPath?: string; localGlbUrl?: string; remoteGlbUrl?: string; resultTextureUrl?: string; localTexturePath?: string }>>;
+    onCharactersUpdated?: (callback: () => void) => () => void;
     registerImageTo3dCharacter: (payload: {
       nickname?: string;
       inputImageUrl?: string;
@@ -808,8 +1022,8 @@ interface Window {
       resultTextureRemoteUrl?: string;
     }) => Promise<{ id: string; nickname: string; name: string; avatar: string; createdAt: number; assetKind?: 'imageTo3d'; inputImageUrl?: string; localAvatarPath?: string; localGlbPath?: string; localGlbUrl?: string; remoteGlbUrl?: string; resultTextureUrl?: string; localTexturePath?: string }>;
     uploadCharacterVideo: (videoUrl: string, timestamp?: string, channel?: 'plugin' | 'core') => Promise<{ success: boolean; url: string; roleId?: string; permalink?: string; username?: string }>;
-    createCharacter: (nickname: string, name: string, avatar: string, roleId?: string, permalink?: string, voiceClip?: string, viewImages?: string[]) => Promise<{ id: string; nickname: string; name: string; username?: string; avatar: string; roleId?: string; permalink?: string; createdAt: number; localAvatarPath?: string; voiceClip?: string; localVoicePath?: string; viewImages?: string[]; localViewPaths?: string[] }>;
-    updateCharacter: (characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; permalink?: string; voiceClip?: string; viewImages?: string[] }) => Promise<{ id: string; nickname: string; name: string; avatar: string; roleId?: string; permalink?: string; createdAt: number; localAvatarPath?: string; voiceClip?: string; localVoicePath?: string; viewImages?: string[]; localViewPaths?: string[] }>;
+    createCharacter: (nickname: string, name: string, avatar: string, roleId?: string, permalink?: string, voiceClip?: string, viewImages?: string[], imageDescription?: string) => Promise<{ id: string; nickname: string; name: string; username?: string; avatar: string; roleId?: string; permalink?: string; createdAt: number; localAvatarPath?: string; voiceClip?: string; localVoicePath?: string; viewImages?: string[]; localViewPaths?: string[]; imageDescription?: string }>;
+    updateCharacter: (characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; permalink?: string; voiceClip?: string; viewImages?: string[]; imageDescription?: string }) => Promise<{ id: string; nickname: string; name: string; avatar: string; roleId?: string; permalink?: string; createdAt: number; localAvatarPath?: string; voiceClip?: string; localVoicePath?: string; viewImages?: string[]; localViewPaths?: string[]; imageDescription?: string }>;
     deleteCharacter: (characterId: string) => Promise<{ success: boolean }>;
     clearInvalidAvatarUrl: (characterId: string, invalidUrl: string) => Promise<{ success: boolean; message?: string }>;
     exportCharacters: (characterIds: string[]) => Promise<{ success: boolean; filePath?: string; error?: string }>;
@@ -1111,5 +1325,54 @@ interface Window {
     ensureProjectMapping: (projectId: string) => Promise<string | null>;
     getProjectMappedPath: (projectId: string) => Promise<string | null>;
     getProjectOriginalPath: (projectId: string) => Promise<string | null>;
+    directorV2SaveSession: (
+      projectId: string,
+      session: unknown,
+    ) => Promise<{ ok: boolean; error?: string; root?: string }>;
+    directorV2SaveAssetFile: (
+      projectId: string,
+      opts: { kind: 'image' | 'audio'; filename: string; mime?: string; data: ArrayBuffer | Uint8Array },
+    ) => Promise<{ ok: boolean; url?: string; error?: string }>;
+    directorV2LoadSession: (
+      projectId: string,
+    ) => Promise<{ ok: boolean; session?: unknown; error?: string }>;
+    directorV2Exists: (projectId: string) => Promise<boolean>;
+    directorV2LoadCastLibrary: (projectId: string) => Promise<{
+      ok: boolean;
+      library?: {
+        schemaVersion: string;
+        updated_at: number;
+        characters: Array<{
+          id: string;
+          name: string;
+          gender?: string;
+          prompt?: string;
+          imageUrl: string;
+          voiceUrl: string;
+          updated_at: number;
+        }>;
+        scenes: Array<{ id: string; name: string; imageUrl: string; updated_at: number }>;
+      };
+      error?: string;
+    }>;
+    directorV2RecoverCastPicks: (projectId: string) => Promise<{
+      ok: boolean;
+      picks?: Array<{ name: string; imageUrl: string; voiceUrl: string }>;
+      error?: string;
+    }>;
+    directorV2UpsertCastLibrary: (
+      projectId: string,
+      incoming: {
+        characters?: Array<{
+          id?: string;
+          name?: string;
+          gender?: string;
+          prompt?: string;
+          imageUrl?: string;
+          voiceUrl?: string;
+        }>;
+        scenes?: Array<{ id?: string; name?: string; imageUrl?: string }>;
+      },
+    ) => Promise<{ ok: boolean; library?: unknown; error?: string }>;
   };
 }

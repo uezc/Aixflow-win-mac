@@ -104,8 +104,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       nxEmail?: string | null;
       isFirstRecharge?: boolean;
     }>,
-  nxCloudGetTransactions: (limit?: number) =>
-    ipcRenderer.invoke('nx-cloud-get-transactions', limit) as Promise<{
+  nxCloudGetTransactions: (limit?: number, page?: number) =>
+    ipcRenderer.invoke('nx-cloud-get-transactions', limit, page) as Promise<{
       items: Array<{
         tx_id: string;
         task_id?: string;
@@ -116,6 +116,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
         created_at?: string;
         balance_after?: string | number;
       }>;
+      page: number;
+      pageSize: number;
+      total: number;
+      hasMore: boolean;
     }>,
   nxCloudGetTasks: (limit?: number) =>
     ipcRenderer.invoke('nx-cloud-get-tasks', limit) as Promise<{
@@ -394,9 +398,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteProject: (projectId: string) => ipcRenderer.invoke('delete-project', projectId),
 
   // 项目数据（节点和边）
-  saveProjectData: (projectId: string, nodes: any[], edges: any[], opts?: { allowEmptyOverwrite?: boolean }) =>
+  saveProjectData: (projectId: string, nodes: any[], edges: any[], opts?: { allowEmptyOverwrite?: boolean; allowShrinkOverwrite?: boolean; force?: boolean }) =>
     ipcRenderer.invoke('save-project-data', projectId, nodes, edges, opts),
   loadProjectData: (projectId: string) => ipcRenderer.invoke('load-project-data', projectId),
+  listProjectDataBackups: (projectId: string) => ipcRenderer.invoke('list-project-data-backups', projectId),
   backupProjectData: (projectId: string) => ipcRenderer.invoke('backup-project-data', projectId),
   restoreProjectDataFromBackup: (projectId: string) =>
     ipcRenderer.invoke('restore-project-data-from-backup', projectId),
@@ -425,6 +430,150 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 取消进行中的人声分离 / Whisper 转写子进程 */
   cancelAudioTranscribeJobs: () =>
     ipcRenderer.invoke('cancel-audio-transcribe-jobs') as Promise<{ success: boolean; killed: number }>,
+  /** 卡拉OK字幕：探测中文字体 */
+  karaokeDetectFont: () =>
+    ipcRenderer.invoke('karaoke-detect-font') as Promise<{
+      fontName: string;
+      fontsDir: string | null;
+      fontFile: string | null;
+    }>,
+  /** 卡拉OK：导出 ASS */
+  karaokeExportAss: (project: unknown, defaultName?: string) =>
+    ipcRenderer.invoke('karaoke-export-ass', project, defaultName) as Promise<{
+      success: boolean;
+      canceled?: boolean;
+      filePath?: string;
+      error?: string;
+    }>,
+  /** 卡拉OK：写临时 ASS */
+  karaokeWriteAssTemp: (project: unknown) =>
+    ipcRenderer.invoke('karaoke-write-ass-temp', project) as Promise<{
+      assPath: string;
+      assContent: string;
+      fontName: string;
+    }>,
+  /** 卡拉OK：烧录字幕到成片（ASS 路径 / 兼容后备） */
+  karaokeBurnSubtitles: (projectId: string | undefined, videoUrl: string, project: unknown) =>
+    ipcRenderer.invoke('karaoke-burn-subtitles', projectId, videoUrl, project) as Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      assPath?: string;
+      error?: string;
+    }>,
+  /**
+   * 卡拉OK 方案 A（默认导出）：离屏 CSS 字幕层烧录（与预览 wipe 一致）。
+   * 进度见 onKaraokeCssBurnProgress。
+   */
+  karaokeCssBurn: (
+    projectId: string | undefined,
+    videoUrl: string,
+    project: unknown,
+    opts?: { fps?: number; durationSec?: number; lowSpec?: boolean; preferSmooth?: boolean },
+  ) =>
+    ipcRenderer.invoke('karaoke-css-burn', projectId, videoUrl, project, opts) as Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+      engine?: 'css' | 'ass';
+    }>,
+  onKaraokeCssBurnProgress: (
+    callback: (p: {
+      phase: 'prepare' | 'capture' | 'encode' | 'done';
+      frame: number;
+      total: number;
+      percent: number;
+      message?: string;
+      fps?: number;
+      etaSeconds?: number | null;
+      lowSpec?: boolean;
+    }) => void,
+  ) => {
+    const handler = (
+      _: unknown,
+      p: {
+        phase: 'prepare' | 'capture' | 'encode' | 'done';
+        frame: number;
+        total: number;
+        percent: number;
+        message?: string;
+        fps?: number;
+        etaSeconds?: number | null;
+        lowSpec?: boolean;
+      },
+    ) => callback(p);
+    ipcRenderer.on('karaoke-css-burn-progress', handler);
+    return () => ipcRenderer.removeListener('karaoke-css-burn-progress', handler);
+  },
+  /** 卡拉OK：预览级合成 begin（旧 API，保留兼容） */
+  karaokePreviewComposeBegin: (
+    projectId: string | undefined,
+    videoUrl: string,
+    project: unknown,
+    opts?: { fps?: number; durationSec?: number },
+  ) =>
+    ipcRenderer.invoke(
+      'karaoke-preview-compose-begin',
+      projectId,
+      videoUrl,
+      project,
+      opts,
+    ) as Promise<{
+      success: boolean;
+      sessionId?: string;
+      fps?: number;
+      durationSec?: number;
+      frameCount?: number;
+      captureWidth?: number;
+      captureHeight?: number;
+      videoWidth?: number;
+      videoHeight?: number;
+      error?: string;
+    }>,
+  /** 卡拉OK：预览级合成写帧（透明 PNG） */
+  karaokePreviewComposeWriteFrame: (
+    sessionId: string,
+    frameIndex: number,
+    png: ArrayBuffer | Uint8Array,
+  ) =>
+    ipcRenderer.invoke(
+      'karaoke-preview-compose-write-frame',
+      sessionId,
+      frameIndex,
+      png,
+    ) as Promise<{ success: boolean; error?: string }>,
+  /** 卡拉OK：预览级合成 finalize（overlay + 入库） */
+  karaokePreviewComposeFinalize: (sessionId: string) =>
+    ipcRenderer.invoke('karaoke-preview-compose-finalize', sessionId) as Promise<{
+      success: boolean;
+      canceled?: boolean;
+      timedOut?: boolean;
+      originalUrl?: string;
+      originalPath?: string;
+      posterUrl?: string;
+      width?: number;
+      height?: number;
+      error?: string;
+    }>,
+  karaokePreviewComposeAbort: (sessionId: string) =>
+    ipcRenderer.invoke('karaoke-preview-compose-abort', sessionId) as Promise<{
+      success: boolean;
+      error?: string;
+    }>,
+  /** 卡拉OK：取消烧录（杀 ffmpeg / 预览级合成） */
+  karaokeCancelBurn: () =>
+    ipcRenderer.invoke('karaoke-cancel-burn') as Promise<{ success: true; killed: number }>,
   /** 阿里云百炼实时听写（主进程 WebSocket；渲染只收发 PCM/文本） */
   asrRealtimeStart: () =>
     ipcRenderer.invoke('asr-realtime-start') as Promise<
@@ -467,7 +616,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** 语音→文本：云端 fun-asr（经 FC）；契约 { text }，不再走本地 Whisper */
   transcribeSpeechFromAudioUrl: (projectId: string | undefined, audioUrl: string, language?: string) =>
     ipcRenderer.invoke('transcribe-speech-from-audio-url', projectId, audioUrl, language) as Promise<{ text: string }>,
-  /** MV 歌词时间线：云端 fun-asr（经 FC）；契约 { text, segments } */
+  /** MV 歌词时间线：云端 fun-asr（经 FC）；契约 { text, segments, hasWordTimestamps? }；segments 可含 words */
   transcribeSpeechSegmentsFromAudioUrl: (
     projectId: string | undefined,
     audioUrl: string,
@@ -478,7 +627,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
       projectId,
       audioUrl,
       language,
-    ) as Promise<{ text: string; segments: Array<{ text: string; startSec: number; endSec: number }> }>,
+    ) as Promise<{
+      text: string;
+      segments: Array<{
+        text: string;
+        startSec: number;
+        endSec: number;
+        words?: Array<{ text: string; startSec: number; endSec: number }>;
+      }>;
+      hasWordTimestamps?: boolean;
+      charged?: boolean;
+      cost?: number;
+      balance?: number;
+      billingModelId?: string;
+      billingTaskId?: string;
+    }>,
   trimAudio: (projectId: string | undefined, audioUrl: string, startSec: number, endSec: number) =>
     ipcRenderer.invoke('trim-audio', projectId, audioUrl, startSec, endSec),
   trimVideo: (projectId: string | undefined, videoUrl: string, startSec: number, endSec: number) =>
@@ -563,18 +726,37 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMediaDuration: (url: string, projectId?: string) => ipcRenderer.invoke('get-media-duration', url, projectId) as Promise<number>,
   exportTimelineVideo: (
     projectId: string | undefined,
-    videoClips: Array<{
-      type: string;
-      src: string;
-      duration: number;
-      startTime: number;
-      trimStart?: number;
-      trimEnd?: number;
-      lockTrim?: boolean;
-      name?: string;
-      layout?: { x: number; y: number; w: number; h: number };
-      crop?: { left: number; top: number; right: number; bottom: number };
-    }>,
+    videoClipsOrTracks:
+      | Array<{
+          type: string;
+          src: string;
+          duration: number;
+          startTime: number;
+          trimStart?: number;
+          trimEnd?: number;
+          lockTrim?: boolean;
+          name?: string;
+          layout?: { x: number; y: number; w: number; h: number };
+          crop?: { left: number; top: number; right: number; bottom: number };
+          hasAlpha?: boolean;
+          volume?: number;
+        }>
+      | Array<
+          Array<{
+            type: string;
+            src: string;
+            duration: number;
+            startTime: number;
+            trimStart?: number;
+            trimEnd?: number;
+            lockTrim?: boolean;
+            name?: string;
+            layout?: { x: number; y: number; w: number; h: number };
+            crop?: { left: number; top: number; right: number; bottom: number };
+            hasAlpha?: boolean;
+            volume?: number;
+          }>
+        >,
     audioTracks: Array<
       Array<{
         type: string;
@@ -587,28 +769,47 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>
     >,
     options?: {
-      videoTrackVolume?: number;
-      videoTrackMuted?: boolean;
+      videoTrackVolume?: number | number[];
+      videoTrackMuted?: boolean | boolean[];
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
       outputWidth?: number;
       outputHeight?: number;
     },
-  ) => ipcRenderer.invoke('export-timeline-video', projectId, videoClips, audioTracks, options),
+  ) => ipcRenderer.invoke('export-timeline-video', projectId, videoClipsOrTracks, audioTracks, options),
   exportTimelineVideoToProject: (
     projectId: string | undefined,
-    videoClips: Array<{
-      type: string;
-      src: string;
-      duration: number;
-      startTime: number;
-      trimStart?: number;
-      trimEnd?: number;
-      lockTrim?: boolean;
-      name?: string;
-      layout?: { x: number; y: number; w: number; h: number };
-      crop?: { left: number; top: number; right: number; bottom: number };
-    }>,
+    videoClipsOrTracks:
+      | Array<{
+          type: string;
+          src: string;
+          duration: number;
+          startTime: number;
+          trimStart?: number;
+          trimEnd?: number;
+          lockTrim?: boolean;
+          name?: string;
+          layout?: { x: number; y: number; w: number; h: number };
+          crop?: { left: number; top: number; right: number; bottom: number };
+          hasAlpha?: boolean;
+          volume?: number;
+        }>
+      | Array<
+          Array<{
+            type: string;
+            src: string;
+            duration: number;
+            startTime: number;
+            trimStart?: number;
+            trimEnd?: number;
+            lockTrim?: boolean;
+            name?: string;
+            layout?: { x: number; y: number; w: number; h: number };
+            crop?: { left: number; top: number; right: number; bottom: number };
+            hasAlpha?: boolean;
+            volume?: number;
+          }>
+        >,
     audioTracks: Array<
       Array<{
         type: string;
@@ -621,20 +822,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>
     >,
     options?: {
-      videoTrackVolume?: number;
-      videoTrackMuted?: boolean;
+      videoTrackVolume?: number | number[];
+      videoTrackMuted?: boolean | boolean[];
       audioTrackVolume?: number[];
       audioTrackMuted?: boolean[];
       outputWidth?: number;
       outputHeight?: number;
     },
-  ) => ipcRenderer.invoke('export-timeline-video-to-project', projectId, videoClips, audioTracks, options),
+  ) => ipcRenderer.invoke('export-timeline-video-to-project', projectId, videoClipsOrTracks, audioTracks, options),
 
   setSharpQueuePaused: (paused: boolean) =>
     ipcRenderer.invoke('local-resource:set-sharp-queue-paused', paused),
   getSharpQueueStats: () =>
     ipcRenderer.invoke('local-resource:get-sharp-queue-stats'),
   /** 资产库列表小缩略图（磁盘缓存，避免原图 1–3MB 解码卡死） */
+  peekLibraryListThumb: (sourceUrlOrPath: string, maxEdge?: number) =>
+    ipcRenderer.sendSync('local-resource:peek-library-list-thumb', sourceUrlOrPath, maxEdge) as {
+      success: boolean;
+      thumbUrl?: string;
+      thumbPath?: string;
+      cached?: boolean;
+    },
   ensureLibraryListThumb: (sourceUrlOrPath: string, maxEdge?: number) =>
     ipcRenderer.invoke('local-resource:ensure-library-list-thumb', sourceUrlOrPath, maxEdge) as Promise<{
       success: boolean;
@@ -685,6 +893,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // AI 调用
   invokeAI: (params: { modelId: string; nodeId: string; input: any }) => ipcRenderer.invoke('ai:invoke', params),
+  /** 取消进行中的 FC LLM 请求（立刻断开，释放云端连接） */
+  abortFcLlm: () => ipcRenderer.invoke('ai:abort-llm') as Promise<{ aborted: boolean }>,
+
+  /** 读取本地镜像的 MiniMax-H3 h3-prompt-writing 指南（base / ref） */
+  getMinimaxH3PromptGuide: (kind: 'base' | 'ref' = 'base') =>
+    ipcRenderer.invoke('skills:get-minimax-h3-prompt-guide', kind) as Promise<
+      | { ok: true; kind: 'base' | 'ref'; skillMd: string; guide: string }
+      | { ok: false; error: string }
+    >,
 
   // 熔断器状态查询（Ctrl+Shift+B 也可触发）
   getCircuitBreakerStatus: () => ipcRenderer.invoke('ai:get-circuit-breaker-status') as Promise<{ open: boolean; consecutiveTimeoutCount: number; circuitOpenUntil: number; retryAfterSeconds: number }>,
@@ -770,6 +987,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       latestVersion: string | null;
       packageBytes?: number;
       error?: string | null;
+    }>,
+  getReleaseFeedRegion: () =>
+    ipcRenderer.invoke('app:get-release-feed-region') as Promise<{
+      region: 'cn' | 'hk';
+      active: 'cn' | 'hk';
+    }>,
+  setReleaseFeedRegion: (region: 'cn' | 'hk') =>
+    ipcRenderer.invoke('app:set-release-feed-region', region) as Promise<{
+      ok: boolean;
+      region: 'cn' | 'hk';
     }>,
   downloadAndInstallUpdate: () => ipcRenderer.invoke('app:download-and-install-update') as Promise<{ success: boolean; error?: string }>,
   pauseUpdateDownload: () =>
@@ -910,11 +1137,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 角色管理
   getCharacters: () => ipcRenderer.invoke('get-characters'),
+  onCharactersUpdated: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('characters-updated', handler);
+    return () => ipcRenderer.removeListener('characters-updated', handler);
+  },
   uploadCharacterVideo: (videoUrl: string, timestamp?: string, channel?: 'plugin' | 'core') =>
     ipcRenderer.invoke('upload-character-video', videoUrl, timestamp, channel),
-  createCharacter: (nickname: string, name: string, avatar: string, roleId?: string, permalink?: string, voiceClip?: string, viewImages?: string[]) =>
-    ipcRenderer.invoke('create-character', nickname, name, avatar, roleId, permalink, voiceClip, viewImages),
-  updateCharacter: (characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; permalink?: string; voiceClip?: string; viewImages?: string[] }) => ipcRenderer.invoke('update-character', characterId, updates),
+  createCharacter: (nickname: string, name: string, avatar: string, roleId?: string, permalink?: string, voiceClip?: string, viewImages?: string[], imageDescription?: string) =>
+    ipcRenderer.invoke('create-character', nickname, name, avatar, roleId, permalink, voiceClip, viewImages, imageDescription),
+  updateCharacter: (characterId: string, updates: { nickname?: string; name?: string; avatar?: string; roleId?: string; permalink?: string; voiceClip?: string; viewImages?: string[]; imageDescription?: string }) => ipcRenderer.invoke('update-character', characterId, updates),
   deleteCharacter: (characterId: string) => ipcRenderer.invoke('delete-character', characterId),
   registerImageTo3dCharacter: (payload: {
     nickname?: string;
@@ -1165,6 +1397,73 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getProjectMappedPath: (projectId: string) => ipcRenderer.invoke('get-project-mapped-path', projectId),
   getProjectOriginalPath: (projectId: string) => ipcRenderer.invoke('get-project-original-path', projectId),
   getProjectBasePath: () => ipcRenderer.invoke('get-project-base-path'),
+  directorV2SaveSession: (projectId: string, session: unknown) =>
+    ipcRenderer.invoke('director-v2-save-session', projectId, session) as Promise<{
+      ok: boolean;
+      error?: string;
+      root?: string;
+    }>,
+  directorV2SaveAssetFile: (
+    projectId: string,
+    opts: { kind: 'image' | 'audio'; filename: string; mime?: string; data: ArrayBuffer | Uint8Array },
+  ) =>
+    ipcRenderer.invoke('director-v2-save-asset-file', projectId, opts) as Promise<{
+      ok: boolean;
+      url?: string;
+      error?: string;
+    }>,
+  directorV2LoadSession: (projectId: string) =>
+    ipcRenderer.invoke('director-v2-load-session', projectId) as Promise<{
+      ok: boolean;
+      session?: unknown;
+      error?: string;
+    }>,
+  directorV2Exists: (projectId: string) =>
+    ipcRenderer.invoke('director-v2-exists', projectId) as Promise<boolean>,
+  directorV2LoadCastLibrary: (projectId: string) =>
+    ipcRenderer.invoke('director-v2-load-cast-library', projectId) as Promise<{
+      ok: boolean;
+      library?: {
+        schemaVersion: string;
+        updated_at: number;
+        characters: Array<{
+          id: string;
+          name: string;
+          gender?: string;
+          prompt?: string;
+          imageUrl: string;
+          voiceUrl: string;
+          updated_at: number;
+        }>;
+        scenes: Array<{ id: string; name: string; imageUrl: string; updated_at: number }>;
+      };
+      error?: string;
+    }>,
+  directorV2RecoverCastPicks: (projectId: string) =>
+    ipcRenderer.invoke('director-v2-recover-cast-picks', projectId) as Promise<{
+      ok: boolean;
+      picks?: Array<{ name: string; imageUrl: string; voiceUrl: string }>;
+      error?: string;
+    }>,
+  directorV2UpsertCastLibrary: (
+    projectId: string,
+    incoming: {
+      characters?: Array<{
+        id?: string;
+        name?: string;
+        gender?: string;
+        prompt?: string;
+        imageUrl?: string;
+        voiceUrl?: string;
+      }>;
+      scenes?: Array<{ id?: string; name?: string; imageUrl?: string }>;
+    },
+  ) =>
+    ipcRenderer.invoke('director-v2-upsert-cast-library', projectId, incoming) as Promise<{
+      ok: boolean;
+      library?: unknown;
+      error?: string;
+    }>,
   setProjectBasePath: () => ipcRenderer.invoke('set-project-base-path') as Promise<{ success: boolean; path: string }>,
   diagnoseStoragePaths: () => ipcRenderer.invoke('diagnose-storage-paths') as Promise<{
     userData: string;

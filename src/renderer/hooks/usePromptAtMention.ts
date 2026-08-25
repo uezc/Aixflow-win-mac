@@ -11,6 +11,7 @@ import {
   applyMentionInsert,
   buildPromptMentionCandidates,
   parseAtMentionQuery,
+  type MentionInputAudioRef,
   type PromptMentionCandidate,
 } from '../utils/promptMentionCandidates';
 import { getCaretClientPoint } from '../utils/promptRefPill';
@@ -26,6 +27,8 @@ export type UsePromptAtMentionOptions = {
   enabled?: boolean;
   composing?: boolean;
   orderedInputImages?: string[];
+  /** 面板已挂载参考音（与 @音频N / 声音标签对齐） */
+  orderedInputAudios?: MentionInputAudioRef[];
   locale?: string;
   preferSeedanceTag?: boolean;
   onApply: (next: string) => void;
@@ -123,6 +126,7 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
     enabled = true,
     composing = false,
     orderedInputImages = [],
+    orderedInputAudios = [],
     locale,
     preferSeedanceTag = false,
     onApply,
@@ -150,11 +154,12 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
         nodes: nodes as any,
         edges: edges as any,
         orderedInputImages,
+        orderedInputAudios,
         locale,
         query: menu.query,
         preferSeedanceTag,
       }),
-    [nodeId, nodes, edges, orderedInputImages, locale, menu.query, preferSeedanceTag],
+    [nodeId, nodes, edges, orderedInputImages, orderedInputAudios, locale, menu.query, preferSeedanceTag],
   );
 
   /** 完整候选（无 query），供富文本水合缩略图 */
@@ -165,11 +170,12 @@ export function usePromptAtMention(opts: UsePromptAtMentionOptions) {
         nodes: nodes as any,
         edges: edges as any,
         orderedInputImages,
+        orderedInputAudios,
         locale,
         query: '',
         preferSeedanceTag,
       }),
-    [nodeId, nodes, edges, orderedInputImages, locale, preferSeedanceTag],
+    [nodeId, nodes, edges, orderedInputImages, orderedInputAudios, locale, preferSeedanceTag],
   );
 
   const closeMenu = useCallback(() => setMenu(CLOSED), []);

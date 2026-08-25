@@ -17,10 +17,26 @@ export type WorkspaceChromeStrings = {
   statusCreditsTooltip: string;
   statusRunning: string;
   backToProjects: string;
+  /** 窄顶栏：返回按钮短文案 */
+  backToProjectsShort: string;
+  /** 草稿尚未 hydrate 完成：顶栏不显示返回 */
+  canvasEntering: string;
+  canvasEnteringShort: string;
+  canvasEnteringTitle: string;
+  /** 点返回项目列表后、截缩略图/落盘期间 */
+  savingDraftOnExit: string;
+  returningToProjects: string;
   openProjectFolder: string;
   openProjectFolderTitle: string;
+  /** 窄顶栏：溢出「更多」菜单 */
+  headerMoreMenu: string;
+  headerMoreMenuTitle: string;
   /** 主进程拦截空覆盖 data.json 时的提示 */
   emptyOverwriteBlockedMessage: string;
+  /** 主进程拦截「节点大幅缩水」覆盖时的提示 */
+  shrinkOverwriteBlockedMessage: (existingNodes: number, incomingNodes: number) => string;
+  /** 打开工程时已从备份自动恢复 */
+  projectAutoRecoveredMessage: (source: string, nodeCount: number) => string;
   backupProjectButton: string;
   backupProjectTitle: string;
   backupProjectSuccess: (fileNames: string) => string;
@@ -181,24 +197,37 @@ const zh: WorkspaceChromeStrings = {
   statusCreditsTooltip: '元宝可用于所有云端 AI 模型生成',
   statusRunning: '运行中',
   backToProjects: '返回项目列表',
+  backToProjectsShort: '项目列表',
+  canvasEntering: '正在进入草稿…',
+  canvasEnteringShort: '进入中',
+  canvasEnteringTitle: '草稿加载完成前无法返回，以免卡死',
+  savingDraftOnExit: '草稿保存中…',
+  returningToProjects: '正在返回项目列表…',
   openProjectFolder: '打开项目文件夹',
   openProjectFolderTitle: '打开项目文件夹',
+  headerMoreMenu: '更多',
+  headerMoreMenuTitle: '更多顶栏操作',
   emptyOverwriteBlockedMessage:
     '检测到可能清空整个工程的操作，系统已阻止保存。若需清空，请手动删除节点后重试。',
+  shrinkOverwriteBlockedMessage: (existingNodes, incomingNodes) =>
+    `检测到画布节点异常减少（${existingNodes} → ${incomingNodes}），系统已阻止覆盖并已归档到 lost-project-data。可点「从备份恢复」找回完整工程。`,
+  projectAutoRecoveredMessage: (source, nodeCount) =>
+    `已从安全副本自动恢复工程（${nodeCount} 个模块，来源：${source}）。`,
   backupProjectButton: '备份工程',
-  backupProjectTitle: '将 data.json 与 data.json.bak 复制到项目 backups 文件夹（带时间戳）',
+  backupProjectTitle: '将工程草稿滚动备份到项目 backups 文件夹（带时间戳）',
   backupProjectSuccess: (fileNames) => `已备份到 backups/：${fileNames}`,
   backupProjectNoDataToBackup: '未找到 data.json 或 data.json.bak，无法备份。',
   backupProjectNoProject: '找不到项目目录，请确认工程已保存且项目未被移动或删除。',
   backupProjectIoError: '备份写入失败，请检查磁盘空间、防病毒软件拦截与 backups 文件夹写入权限。',
   backupProjectFailed: '备份失败，请稍后重试或检查磁盘权限。',
   restoreFromBackupButton: '从备份恢复',
-  restoreFromBackupTitle: '若 data.json.bak 中节点更多，用备份覆盖当前工程（会先保存 data.json.pre-restore-*.json）',
+  restoreFromBackupTitle:
+    '从 data.json.bak / backups / lost 中选取节点更多的副本覆盖当前工程（会先归档当前稿）',
   restoreFromBackupSuccess: (nodeCount, previousCount) =>
     `已从备份恢复 ${nodeCount} 个模块（恢复前 ${previousCount} 个）。画布将重新加载。`,
-  restoreFromBackupNoBackup: '未找到可用的 data.json.bak，无法恢复。',
+  restoreFromBackupNoBackup: '未找到可用的备份（bak / backups / lost），无法恢复。',
   restoreFromBackupNotNewer: (currentCount, backupCount) =>
-    `备份中没有更多模块（当前 ${currentCount} 个，备份 ${backupCount} 个）。可打开项目文件夹查看 backups/ 里的历史备份。`,
+    `备份中没有更多模块（当前 ${currentCount} 个，备份 ${backupCount} 个）。可打开项目文件夹查看 backups/ 与 %AppData%\\NEXFLOW\\lost-project-data。`,
   restoreFromBackupNoProject: '找不到项目目录，无法恢复。',
   restoreFromBackupIoError: '恢复写入失败，请检查磁盘权限。',
   restoreFromBackupFailed: '恢复失败，请稍后重试。',
@@ -328,12 +357,24 @@ const en: WorkspaceChromeStrings = {
   statusCreditsTooltip: 'Credits are used for all cloud AI generation',
   statusRunning: 'Running',
   backToProjects: 'Back to projects',
+  backToProjectsShort: 'Projects',
+  canvasEntering: 'Opening draft…',
+  canvasEnteringShort: 'Loading',
+  canvasEnteringTitle: 'Back is hidden until the draft finishes loading',
+  savingDraftOnExit: 'Saving draft…',
+  returningToProjects: 'Returning to projects…',
   openProjectFolder: 'Open project folder',
   openProjectFolderTitle: 'Open project folder',
+  headerMoreMenu: 'More',
+  headerMoreMenuTitle: 'More header actions',
   emptyOverwriteBlockedMessage:
     'Saving would clear the entire project; the operation was blocked. To empty the canvas, delete all nodes manually, then save again.',
+  shrinkOverwriteBlockedMessage: (existingNodes, incomingNodes) =>
+    `Canvas shrank abnormally (${existingNodes} → ${incomingNodes}). Save was blocked and archived to lost-project-data. Use Restore from backup to recover.`,
+  projectAutoRecoveredMessage: (source, nodeCount) =>
+    `Project auto-recovered (${nodeCount} modules from ${source}).`,
   backupProjectButton: 'Backup project',
-  backupProjectTitle: 'Copy data.json and data.json.bak to project backups/ (timestamped)',
+  backupProjectTitle: 'Roll project draft into backups/ (timestamped)',
   backupProjectSuccess: (fileNames) => `Backed up to backups/: ${fileNames}`,
   backupProjectNoDataToBackup: 'No data.json or data.json.bak found; nothing to back up.',
   backupProjectNoProject: 'Project folder not found. Save the project once or check that the folder was not moved or deleted.',
@@ -341,12 +382,12 @@ const en: WorkspaceChromeStrings = {
   backupProjectFailed: 'Backup failed. Check disk permissions or try again.',
   restoreFromBackupButton: 'Restore from backup',
   restoreFromBackupTitle:
-    'If data.json.bak has more nodes, overwrite the current project (saves data.json.pre-restore-*.json first)',
+    'Restore the richest snapshot from bak / backups / lost (current draft is archived first)',
   restoreFromBackupSuccess: (nodeCount, previousCount) =>
     `Restored ${nodeCount} modules from backup (was ${previousCount}). Reloading canvas…`,
-  restoreFromBackupNoBackup: 'No usable data.json.bak found.',
+  restoreFromBackupNoBackup: 'No usable backup found (bak / backups / lost).',
   restoreFromBackupNotNewer: (currentCount, backupCount) =>
-    `Backup does not have more modules (current ${currentCount}, backup ${backupCount}). Check backups/ in the project folder.`,
+    `Backup does not have more modules (current ${currentCount}, backup ${backupCount}). Check backups/ and %AppData%\\NEXFLOW\\lost-project-data.`,
   restoreFromBackupNoProject: 'Project folder not found; cannot restore.',
   restoreFromBackupIoError: 'Restore write failed. Check disk permissions.',
   restoreFromBackupFailed: 'Restore failed. Try again later.',

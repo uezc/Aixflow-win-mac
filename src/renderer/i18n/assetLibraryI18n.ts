@@ -73,6 +73,20 @@ export type AssetLibraryStrings = {
   roleUploadFourViews: string;
   roleFourViewsHint: string;
   roleFourViewsHintEdit: string;
+  /** 角色形象文字描述 */
+  roleImageDescLabel: string;
+  roleImageDescPlaceholder: string;
+  roleImageDescHint: string;
+  roleReverseModelLabel: string;
+  roleReverseNeedImage: string;
+  roleReversing: string;
+  roleReverseRun: string;
+  roleReverseFailed: string;
+  roleReverseEmpty: string;
+  roleReverseCreditsSuffix: string;
+  roleReversePriceTitle: string;
+  roleReverseNoPrice: string;
+  roleReverseClickImageTitle: string;
   roleCancel: string;
   roleSave: string;
   roleAddBtn: string;
@@ -242,6 +256,19 @@ const zh: AssetLibraryStrings = {
   roleUploadFourViews: '上传角色4视图（可选）',
   roleFourViewsHint: '四格对应多角度参考图（可选）；第一张图将作为角色头像。创建后写入角色数据。',
   roleFourViewsHintEdit: '四格对应多角度参考图（可选）；第一张图将作为角色头像。保存后更新角色数据。',
+  roleImageDescLabel: '角色形象描述',
+  roleImageDescPlaceholder: '描述角色外貌、服装与气质…也可点击上方已选图片自动反推',
+  roleImageDescHint: '先选反推模型（会显示价格），点选一张参考图，再点「运行反推」写入描述。',
+  roleReverseModelLabel: '图像反推模型',
+  roleReverseNeedImage: '请先在四视图中放入至少一张图片，并点选要反推的那一张',
+  roleReversing: '反推中…',
+  roleReverseRun: '运行反推',
+  roleReverseFailed: '图像反推失败',
+  roleReverseEmpty: '反推完成但未返回文字，请换一张图或换模型重试',
+  roleReverseCreditsSuffix: '元宝',
+  roleReversePriceTitle: '本次图像反推预估元宝',
+  roleReverseNoPrice: '暂未定价',
+  roleReverseClickImageTitle: '点选此图作为反推对象，再点下方「运行反推」',
   roleCancel: '取消',
   roleSave: '保存',
   roleAddBtn: '添加',
@@ -412,6 +439,19 @@ const en: AssetLibraryStrings = {
     'Four slots for multi-angle references (optional). The first image becomes the avatar. Saved to character data after creation.',
   roleFourViewsHintEdit:
     'Four slots for multi-angle references (optional). The first image becomes the avatar. Updates character data after save.',
+  roleImageDescLabel: 'Character look description',
+  roleImageDescPlaceholder: 'Describe appearance, outfit, vibe… or click a filled view above to auto-caption',
+  roleImageDescHint: 'Pick a caption model (price shown), select a reference image, then click Run caption.',
+  roleReverseModelLabel: 'Image caption model',
+  roleReverseNeedImage: 'Add at least one image and select which view to caption',
+  roleReversing: 'Captioning…',
+  roleReverseRun: 'Run caption',
+  roleReverseFailed: 'Image caption failed',
+  roleReverseEmpty: 'Caption finished with no text. Try another image or model.',
+  roleReverseCreditsSuffix: 'credits',
+  roleReversePriceTitle: 'Estimated credits for this image caption',
+  roleReverseNoPrice: 'Not priced',
+  roleReverseClickImageTitle: 'Select this image, then click Run caption below',
   roleCancel: 'Cancel',
   roleSave: 'Save',
   roleAddBtn: 'Add',

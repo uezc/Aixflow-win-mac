@@ -124,17 +124,20 @@ export function syncLayoutAfterCropChange(
  * ffmpeg -vf：将（已 crop 的）素材 contain 进 layout 占位框，再 pad 到 outW×outH。
  * layout 表示裁切后画面在画布上的占位；默认全画幅时与旧逻辑一致（居中 letterbox）。
  * 若需源画面 crop，请在此前拼接 buildClipCropFilterPrefix（见 clipCrop.ts）。
+ * flattenAlpha：抠像 WebM 等透明像素 RGB 常残留绿幕色，预乘后再转 yuv420p 避免导出回绿。
  */
 export function buildClipLayoutScaleFilter(
   outW: number,
   outH: number,
   layout?: Partial<ClipLayout> | null,
+  opts?: { flattenAlpha?: boolean },
 ): string {
   const W = Math.max(2, Math.round(outW) & ~1);
   const H = Math.max(2, Math.round(outH) & ~1);
+  const flatten = opts?.flattenAlpha ? 'format=yuva420p,premultiply=inplace=1,' : '';
   const baseTail = 'setsar=1,fps=30,format=yuv420p';
   if (isDefaultClipLayout(layout)) {
-    return `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,${baseTail}`;
+    return `${flatten}scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2,${baseTail}`;
   }
   const L = normalizeClipLayout(layout);
   const boxW = Math.max(2, Math.round(L.w * W) & ~1);
@@ -142,7 +145,31 @@ export function buildClipLayoutScaleFilter(
   const x = Math.round(L.x * W);
   const y = Math.round(L.y * H);
   return (
-    `scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease,` +
+    `${flatten}scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease,` +
     `pad=${W}:${H}:${x}+(${boxW}-iw)/2:${y}+(${boxH}-ih)/2,${baseTail}`
+  );
+}
+
+/**
+ * 多轨 overlay 用：contain 进 layout 占位后 pad 到画布，非占位区透明（yuva）。
+ * 调用前可拼接 buildClipCropFilterPrefix。
+ */
+export function buildClipLayoutOverlayFilter(
+  outW: number,
+  outH: number,
+  layout?: Partial<ClipLayout> | null,
+): string {
+  const W = Math.max(2, Math.round(outW) & ~1);
+  const H = Math.max(2, Math.round(outH) & ~1);
+  const L = normalizeClipLayout(layout);
+  const boxW = Math.max(2, Math.round(L.w * W) & ~1);
+  const boxH = Math.max(2, Math.round(L.h * H) & ~1);
+  const x = Math.round(L.x * W);
+  const y = Math.round(L.y * H);
+  return (
+    `scale=${boxW}:${boxH}:force_original_aspect_ratio=decrease,` +
+    // black@0：pad 透明区必须带 alpha，0x00000000 在部分 ffmpeg 上会被当成不透明
+    `pad=${W}:${H}:${x}+(${boxW}-iw)/2:${y}+(${boxH}-ih)/2:color=black@0,` +
+    `setsar=1,fps=30,format=yuva420p`
   );
 }

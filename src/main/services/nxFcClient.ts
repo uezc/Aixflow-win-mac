@@ -49,9 +49,12 @@ export function resetNxFcAxios(): void {
 }
 
 /**
- * 从环境变量解析 HTTP(S) 代理（与 curl 一致）。
+ * 从环境变量解析 HTTP(S) 代理。
+ * 默认不吃系统 HTTPS_PROXY（避免误连 127.0.0.1:7890）；仅当 NX_FC_USE_HTTPS_PROXY=1 时启用。
  */
 function proxyFromEnv(): false | { protocol: string; host: string; port: number; auth?: { username: string; password: string } } {
+  const allow = String(process.env.NX_FC_USE_HTTPS_PROXY || '').trim() === '1';
+  if (!allow) return false;
   const raw = (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY || '').trim();
   if (!raw) return false;
   try {
@@ -76,6 +79,8 @@ function proxyFromEnv(): false | { protocol: string; host: string; port: number;
   }
 }
 
+let loggedFcProxyHint = false;
+
 /**
  * 发往阿里云 FC 的 axios 实例：统一 x-nexflow-token，并对受保护路径自动附加 Authorization: Bearer &lt;accessToken&gt;。
  */
@@ -86,10 +91,19 @@ export function getNxFcAxios(): AxiosInstance {
   const fcTok = getAliyunFcToken();
   const envProxy = proxyFromEnv();
   const useEnvProxy = Boolean(envProxy);
-  if (useEnvProxy && envProxy) {
-    console.info('[NxFc] 使用代理', `${envProxy.host}:${envProxy.port}`, '（若仍 ETIMEDOUT 请检查代理软件是否允许本地应用）');
-  } else {
-    console.info('[NxFc] 未配置 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY，FC 为直连；若报 connect ETIMEDOUT 可在项目根 .env 增加一行：HTTPS_PROXY=http://127.0.0.1:你的HTTP代理端口');
+  if (!loggedFcProxyHint) {
+    loggedFcProxyHint = true;
+    if (useEnvProxy && envProxy) {
+      console.info(
+        '[NxFc] 使用代理',
+        `${envProxy.host}:${envProxy.port}`,
+        '（NX_FC_USE_HTTPS_PROXY=1；若仍 ETIMEDOUT 请检查代理是否允许本地应用）',
+      );
+    } else {
+      console.info(
+        '[NxFc] FC 直连（默认）。网络超时可设 NX_FC_USE_HTTPS_PROXY=1 与 HTTPS_PROXY=http://127.0.0.1:端口 后重启',
+      );
+    }
   }
   nxFcAxios = axios.create({
     baseURL: baseURL || undefined,

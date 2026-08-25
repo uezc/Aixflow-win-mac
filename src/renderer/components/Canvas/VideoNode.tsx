@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback, memo, useMemo } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Handle, Position, NodeProps, Node, Edge, addEdge, useStore, useReactFlow, useUpdateNodeInternals } from 'reactflow';
-import { Loader2, Scissors, Upload, Video, Download, Play, Pause, X, Check, Maximize2, Volume2, VolumeX, Layers2, Subtitles, Crop, Sparkles, Camera, Droplet, UserRound } from 'lucide-react';
+import { Handle, Position, NodeProps, Node, Edge, addEdge, useStore, useStoreApi, useReactFlow, useUpdateNodeInternals } from 'reactflow';
+import { Loader2, Scissors, Upload, Video, Download, Play, Pause, X, Check, Maximize2, Volume2, VolumeX, Layers2, Subtitles, Crop, Sparkles, Camera, Droplet, UserRound, Scaling } from 'lucide-react';
 import SmartVideoEditModal, { type SmartVideoEditSettings } from './SmartVideoEditModal';
 import { type SmartEditReviewSegment } from './SmartVideoEditReviewBar';
 import VideoTrimFilmstripBar from './VideoTrimFilmstripBar';
@@ -60,6 +60,7 @@ import {
   recordVideoNodeRender,
 } from '../../utils/videoPlaybackPerfStats';
 import { mapProjectPath } from '../../utils/pathMapper';
+import { DEFAULT_IMAGE_MODEL } from '../../config/imageModelUiPolicy';
 import {
   userFacingErrorMessage,
   refundHintForLocale,
@@ -74,8 +75,16 @@ import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import {
   getViapiSegmentVideoBodyDisplayPrice,
   getVideoDepthConvertDisplayPrice,
+  getVideoDisplayPrice,
   getVideoSubtitleWatermarkDisplayPrice,
 } from '../../utils/cloudModelPricing';
+import {
+  RHART_VIDEO_UPSCALER_MAX_DURATION_SEC,
+  RHART_VIDEO_UPSCALER_RESOLUTIONS,
+  normalizeRhartVideoUpscalerBillingSec,
+  normalizeRhartVideoUpscalerResolution,
+  type RhartVideoUpscalerResolution,
+} from '../../../common/rhartVideoUpscaler';
 import { assetLibBtnPrimary, assetLibBtnSecondary, nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import {
   VIDEO_FRAME_SPLIT_INTERVALS,
@@ -735,6 +744,15 @@ interface VideoNodeProps extends NodeProps<VideoNodeData> {
   onAddFrameSplitNodes?: (nodes: Node[]) => void;
   /** 智能剪辑 / 画面裁剪 / 深度转换等：右侧新建视频/图片模块 + 连线 */
   onAddVideoClipNodes?: (payload: { nodes: Node[]; edges: import('reactflow').Edge[] }) => void;
+  /**
+   * 工具栏超分放大：节点已在源模块右侧建好并连线后，由 Workspace 对该 target 提交任务。
+   */
+  onVideoUpscaleRun?: (params: {
+    targetNodeId: string;
+    videoUrl: string;
+    targetResolution: RhartVideoUpscalerResolution;
+    mediaDurationSec: number;
+  }) => void | Promise<void>;
   interactionSettings?: {
     ultraNearZoomThreshold?: number;
     fpsDropThreshold?: number;
@@ -756,6 +774,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     onDataChange,
     onAddFrameSplitNodes,
     onAddVideoClipNodes,
+    onVideoUpscaleRun,
     interactionSettings,
     // 过滤 React Flow 内部属性，避免透传到 DOM
     xPos = 0,
@@ -878,10 +897,15 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
    * 触发 pane 退出事件把会话关掉（表现为闪一下就退出）。短时忽略退出。
    */
   const sessionOpenGuardUntilRef = useRef(0);
-  const armSessionOpenGuard = useCallback(() => {
-    sessionOpenGuardUntilRef.current = Date.now() + 600;
+  const armSessionOpenGuard = useCallback((ms = 1200) => {
+    // 画面裁剪大窗口会 flushSync 改尺寸 + 对焦，同一次点击的 pointerup/失选可能较晚
+    sessionOpenGuardUntilRef.current = Math.max(sessionOpenGuardUntilRef.current, Date.now() + ms);
   }, []);
   const isSessionOpenGuarded = useCallback(() => Date.now() < sessionOpenGuardUntilRef.current, []);
+  /** 同步标记：避免 pane 退出监听闭包仍读到旧的 showCropModal=false */
+  const spatialCropActiveRef = useRef(false);
+  /** 画面裁剪期间临时取消 RF 选中（对齐 Image 裁剪）；退出后按需恢复 */
+  const cropSessionRestoreSelectedRef = useRef(false);
   /** 裁剪放大/还原时关闭宽高 CSS 过渡，避免 Handle 锚点量在动画中途 */
   const [suppressSizeTransition, setSuppressSizeTransition] = useState(false);
   /** 视频裁剪会话中临时放大模块；结束后还原 */
@@ -913,6 +937,9 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   const [chromaBlend, setChromaBlend] = useState(0.05);
   const [chromaPicking, setChromaPicking] = useState(false);
   const [smartMatting, setSmartMatting] = useState(false);
+  const [upscaleMenuOpen, setUpscaleMenuOpen] = useState(false);
+  const [upscaling, setUpscaling] = useState(false);
+  const upscaleMenuLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showBilibiliModal, setShowBilibiliModal] = useState(false);
   const [bilibiliUrlDraft, setBilibiliUrlDraft] = useState('');
   const [bilibiliFetching, setBilibiliFetching] = useState(false);
@@ -926,6 +953,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     [],
   );
   const { getEdges, getNodes, setEdges, setNodes, getZoom, screenToFlowPosition } = useReactFlow();
+  const storeApi = useStoreApi();
   const updateNodeInternals = useUpdateNodeInternals();
   const { cloudMap } = useNxModelPricing();
   const videoDepthConvertDisplayYuanbao = useMemo(() => getVideoDepthConvertDisplayPrice(cloudMap, 1), [cloudMap]);
@@ -1002,6 +1030,36 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     videoSmartMattingDisplayYuanbao != null
       ? vt.videoSmartMattingPriceLabel(String(videoSmartMattingDisplayYuanbao))
       : vt.videoSmartMattingPriceFallback;
+  const upscaleBillableSec = useMemo(
+    () =>
+      smartMattingDurationSec > 0
+        ? normalizeRhartVideoUpscalerBillingSec(smartMattingDurationSec)
+        : 0,
+    [smartMattingDurationSec],
+  );
+  const upscaleClockLabel = useMemo(() => {
+    if (!(smartMattingDurationSec > 0)) return '';
+    const s = Math.max(0, Math.floor(smartMattingDurationSec + 1e-6));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, [smartMattingDurationSec]);
+  const upscaleTierPrices = useMemo(
+    () =>
+      RHART_VIDEO_UPSCALER_RESOLUTIONS.map((res) => ({
+        res,
+        yuanbao:
+          smartMattingDurationSec > 0
+            ? getVideoDisplayPrice(
+                {
+                  model: 'rhart-video-upscaler',
+                  targetResolution: res,
+                  mediaDurationSec: smartMattingDurationSec,
+                },
+                cloudMap,
+              )
+            : null,
+      })),
+    [cloudMap, smartMattingDurationSec],
+  );
   const [uiVolume, setUiVolume] = useState(1);
   /** 模块左上角声音开关：默认静音，避免多视频同时出声 */
   const [userMuted, setUserMuted] = useState(true);
@@ -1933,7 +1991,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     [id, setNodes, onDataChange, scheduleRefreshNodeInternals],
   );
 
-  /** 打开裁剪时默认约 2 倍，且不超过视口 */
+  /** 打开时间裁剪时默认约 2 倍，且不超过视口 */
   const computeTrimEnlargeSize = useCallback(
     (baseW: number, baseH: number, zoom: number) => {
       const z = Math.max(zoom, 0.2);
@@ -1950,6 +2008,33 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       if (w < baseW || h < baseH) {
         w = clampW(baseW);
         h = clampH(baseH);
+      }
+      return { w, h };
+    },
+    [clampW, clampH],
+  );
+
+  /** 画面裁剪：接近视口的大窗口（对齐 ImageNode 裁剪） */
+  const computeLargeVideoCropSize = useCallback(
+    (aspect: number, zoom: number) => {
+      const zRaw = Number(zoom);
+      const aRaw = Number(aspect);
+      const z = Number.isFinite(zRaw) && zRaw > 0 ? Math.max(zRaw, 0.2) : 1;
+      const a = Number.isFinite(aRaw) && aRaw > 0 ? Math.max(aRaw, 0.05) : 16 / 9;
+      const vw = Math.max(320, Number(window.innerWidth) || 1280);
+      const vh = Math.max(240, Number(window.innerHeight) || 720);
+      const maxFlowW = Math.min((vw * 0.82) / z, VIDEO_NODE_MAX_W);
+      const maxFlowH = Math.min((vh * 0.7) / z, VIDEO_NODE_MAX_H);
+      let w = maxFlowW;
+      let h = w / a;
+      if (h > maxFlowH) {
+        h = maxFlowH;
+        w = h * a;
+      }
+      w = clampW(Math.round(w));
+      h = clampH(Math.round(h));
+      if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) {
+        return { w: VIDEO_NODE_MIN_W, h: VIDEO_NODE_MIN_H };
       }
       return { w, h };
     },
@@ -1994,6 +2079,81 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     });
     window.setTimeout(focusTrimModule, 280);
   }, [size.w, size.h, getZoom, computeTrimEnlargeSize, applyTrimNodeBox, id]);
+
+  /** 画面裁剪大窗口：按视频比例铺满视口可用区并居中 */
+  const beginSpatialCropEnlarge = useCallback(() => {
+    if (!trimSizeBackupRef.current) {
+      trimSizeBackupRef.current = { w: size.w, h: size.h };
+    }
+    const base = trimSizeBackupRef.current;
+    const z = getZoom?.() ?? 1;
+    const vEl = videoPreviewRef.current?.getVideoElement?.() ?? null;
+    const aspect =
+      vEl && vEl.videoWidth > 0 && vEl.videoHeight > 0
+        ? vEl.videoWidth / vEl.videoHeight
+        : base.w > 0 && base.h > 0
+          ? base.w / base.h
+          : 16 / 9;
+    const large = computeLargeVideoCropSize(aspect, z);
+    setSuppressSizeTransition(true);
+    // 放大前取消选中，避免旧 measured 幽灵选框；也避免失选 effect 误关会话
+    cropSessionRestoreSelectedRef.current =
+      cropSessionRestoreSelectedRef.current ||
+      selected ||
+      getNodes().some((n) => n.id === id && n.selected);
+    flushSync(() => {
+      setNodes((nds) =>
+        nds.map((n) => (n.id === id && n.selected ? { ...n, selected: false } : n)),
+      );
+    });
+    storeApi.setState({ nodesSelectionActive: false });
+    applyTrimNodeBox(large.w, large.h);
+    window.setTimeout(() => setSuppressSizeTransition(false), 50);
+    const CROP_FOCUS_MS = 320;
+    const focusCropModule = () => {
+      window.dispatchEvent(
+        new CustomEvent('nexflow-canvas-focus-nodes', {
+          detail: {
+            nodes: [{ id, width: large.w, height: large.h }],
+            duration: CROP_FOCUS_MS,
+            padding: 0.14,
+          },
+        }),
+      );
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(focusCropModule);
+    });
+    window.setTimeout(focusCropModule, 64);
+  }, [
+    size.w,
+    size.h,
+    getZoom,
+    computeLargeVideoCropSize,
+    applyTrimNodeBox,
+    id,
+    selected,
+    getNodes,
+    setNodes,
+    storeApi,
+  ]);
+
+  const endSpatialCropSession = useCallback(() => {
+    spatialCropActiveRef.current = false;
+    setShowCropModal(false);
+    restoreTrimNodeSize();
+    scheduleRefreshNodeInternals(id);
+    const shouldRestore = cropSessionRestoreSelectedRef.current;
+    cropSessionRestoreSelectedRef.current = false;
+    if (!shouldRestore) return;
+    window.setTimeout(() => {
+      flushSync(() => {
+        setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, selected: true } : n)));
+      });
+      storeApi.setState({ nodesSelectionActive: true });
+      scheduleRefreshNodeInternals(id);
+    }, 80);
+  }, [restoreTrimNodeSize, scheduleRefreshNodeInternals, id, setNodes, storeApi]);
 
   const endTrimSession = useCallback(() => {
     setShowTrimModal(false);
@@ -2348,7 +2508,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               title: 'image',
               resolution: '1k',
               aspectRatio: aspectLabel,
-              model: 'banana-2.0',
+              model: DEFAULT_IMAGE_MODEL,
               seedreamWidth: pixel.width,
               seedreamHeight: pixel.height,
               outputImage: tile.outputImage,
@@ -2553,7 +2713,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
           preserveExportLayout: true,
           resolution: '1k',
           aspectRatio: aspectLabel,
-          model: 'banana-2.0',
+          model: DEFAULT_IMAGE_MODEL,
           seedreamWidth: width,
           seedreamHeight: height,
           outputImage: out,
@@ -2655,12 +2815,14 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
   useEffect(() => {
     const onPaneExit = () => {
       if (isSessionOpenGuarded()) return;
-      if (trimming || smartEditExporting || chromaKeying) return;
+      if (trimming || smartEditExporting || chromaKeying || cropping) return;
       if (smartEditReviewOpen) {
         resetSmartEditReview();
         return;
       }
       if (showTrimModal) endTrimSession();
+      // 用 ref：打开瞬间 listener 闭包里的 showCropModal 可能仍是 false
+      if (spatialCropActiveRef.current || showCropModal) endSpatialCropSession();
       if (showChromaKeyModal) {
         setChromaPicking(false);
         setShowChromaKeyModal(false);
@@ -2673,17 +2835,22 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     trimming,
     smartEditExporting,
     chromaKeying,
+    cropping,
     smartEditReviewOpen,
     showTrimModal,
+    showCropModal,
     showChromaKeyModal,
     endTrimSession,
+    endSpatialCropSession,
     resetSmartEditReview,
   ]);
 
   useEffect(() => {
     if (selected) return;
     if (isSessionOpenGuarded()) return;
-    if (trimming || smartEditExporting || chromaKeying) return;
+    if (trimming || smartEditExporting || chromaKeying || cropping) return;
+    // 画面裁剪会主动取消选中 / 对焦时也会丢选中；勿因此自动关会话（点空白走 pane 退出）
+    if (spatialCropActiveRef.current || showCropModal) return;
     if (smartEditReviewOpen) {
       resetSmartEditReview();
       return;
@@ -2699,8 +2866,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     trimming,
     smartEditExporting,
     chromaKeying,
+    cropping,
     smartEditReviewOpen,
     showTrimModal,
+    showCropModal,
     showChromaKeyModal,
     endTrimSession,
     resetSmartEditReview,
@@ -3053,7 +3222,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     }
     if (showTrimModal) endTrimSession();
     if (smartEditReviewOpen) resetSmartEditReview();
-    setShowCropModal(false);
+    if (spatialCropActiveRef.current || showCropModal) endSpatialCropSession();
+    else setShowCropModal(false);
     armSessionOpenGuard();
     setChromaPicking(false);
     // 按当前键色重算推荐相似度，避免沿用过宽的旧默认（如 0.28）误抠主体
@@ -3074,6 +3244,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     endTrimSession,
     smartEditReviewOpen,
     resetSmartEditReview,
+    showCropModal,
+    endSpatialCropSession,
     armSessionOpenGuard,
     chromaColorHex,
   ]);
@@ -3108,7 +3280,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
 
     if (showTrimModal) endTrimSession();
     if (smartEditReviewOpen) resetSmartEditReview();
-    setShowCropModal(false);
+    if (spatialCropActiveRef.current || showCropModal) endSpatialCropSession();
+    else setShowCropModal(false);
     setShowChromaKeyModal(false);
     setSmartMatting(true);
     scheduleRefreshNodeInternals(id);
@@ -3243,6 +3416,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     endTrimSession,
     smartEditReviewOpen,
     resetSmartEditReview,
+    showCropModal,
+    endSpatialCropSession,
   ]);
 
   const handleChromaKeyConfirm = useCallback(
@@ -3406,27 +3581,25 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       showAlert(vt.videoSpatialCropNotSupported);
       return;
     }
+    if (showTrimModal) endTrimSession();
+    if (smartEditReviewOpen) resetSmartEditReview();
     setShowChromaKeyModal(false);
+    setChromaPicking(false);
+    // 先护住再改尺寸：同一次点击的 pointerup 常落到空白触发 pane 退出
+    armSessionOpenGuard(2500);
+    spatialCropActiveRef.current = true;
+    setUserMuted(true);
+    try {
+      videoPreviewRef.current?.setVolume(0);
+      videoPreviewRef.current?.pause();
+    } catch {
+      /* ignore */
+    }
+    setIsPreviewPlaying(false);
+    beginSpatialCropEnlarge();
     setShowCropModal(true);
-    /** 画面裁剪打开时与一键归位同级居中（fitBounds + 显式尺寸） */
-    const focusW = size.w;
-    const focusH = size.h;
-    const CROP_FOCUS_MS = 320;
-    const focusCropModule = () => {
-      window.dispatchEvent(
-        new CustomEvent('nexflow-canvas-focus-nodes', {
-          detail: {
-            nodes: [{ id, width: focusW, height: focusH }],
-            duration: CROP_FOCUS_MS,
-            padding: 0.14,
-          },
-        }),
-      );
-    };
-    requestAnimationFrame(() => {
-      requestAnimationFrame(focusCropModule);
-    });
-    window.setTimeout(focusCropModule, 64);
+    armSessionOpenGuard(2500);
+    window.setTimeout(() => armSessionOpenGuard(1500), 400);
   }, [
     videoDisplayUrl,
     outputVideo,
@@ -3434,9 +3607,12 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
     data?.originalVideoUrl,
     showAlert,
     vt,
-    size.w,
-    size.h,
-    id,
+    showTrimModal,
+    endTrimSession,
+    smartEditReviewOpen,
+    resetSmartEditReview,
+    armSessionOpenGuard,
+    beginSpatialCropEnlarge,
   ]);
 
   const handleCropConfirm = useCallback(
@@ -3466,7 +3642,10 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         return;
       }
 
-      setShowCropModal(false);
+      const backup = trimSizeBackupRef.current;
+      const exportW = backup?.w ?? size.w;
+      const exportH = backup?.h ?? size.h;
+      endSpatialCropSession();
       setCropping(true);
       scheduleRefreshNodeInternals(id);
 
@@ -3475,13 +3654,13 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         source,
         fallbackX: xPos,
         fallbackY: yPos,
-        fallbackW: size.w,
-        fallbackH: size.h,
+        fallbackW: exportW,
+        fallbackH: exportH,
         domEl: nodeRef.current,
         screenToFlowPosition,
       });
-      const placeholderW = Math.max(size.w, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
-      const placeholderH = Math.max(size.h, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
+      const placeholderW = Math.max(exportW, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
+      const placeholderH = Math.max(exportH, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
       const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const newNode: Node = {
         id: newNodeId,
@@ -3584,10 +3763,146 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       locale,
       onAddVideoClipNodes,
       scheduleRefreshNodeInternals,
+      endSpatialCropSession,
     ],
   );
 
   const isVideoGenerating = progress > 0 && progress < 100;
+
+  const clearUpscaleMenuLeaveTimer = useCallback(() => {
+    if (upscaleMenuLeaveTimerRef.current) {
+      clearTimeout(upscaleMenuLeaveTimerRef.current);
+      upscaleMenuLeaveTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => clearUpscaleMenuLeaveTimer(), [clearUpscaleMenuLeaveTimer]);
+
+  const handleUpscalePick = useCallback(
+    async (rawRes: RhartVideoUpscalerResolution) => {
+      const videoUrl = (videoDisplayUrl || outputVideo || data?.outputVideo || data?.originalVideoUrl || '').trim();
+      if (!videoUrl) {
+        showAlert(vt.videoUpscaleNeedVideo);
+        return;
+      }
+      if (!onVideoUpscaleRun || !onAddVideoClipNodes || !onDataChange) {
+        showAlert(vt.videoUpscaleFailed);
+        return;
+      }
+      if (
+        upscaling ||
+        smartMatting ||
+        chromaKeying ||
+        cropping ||
+        trimming ||
+        isVideoGenerating ||
+        isSplitFramesBusy ||
+        smartEditing ||
+        smartEditReviewOpen
+      ) {
+        return;
+      }
+      if (smartMattingDurationSec > RHART_VIDEO_UPSCALER_MAX_DURATION_SEC) {
+        showAlert(vt.videoUpscaleTooLong);
+        return;
+      }
+      const targetResolution = normalizeRhartVideoUpscalerResolution(rawRes);
+      const mediaDurationSec = smartMattingDurationSec > 0 ? smartMattingDurationSec : 0;
+      setUpscaleMenuOpen(false);
+      clearUpscaleMenuLeaveTimer();
+      setUpscaling(true);
+
+      const source = getNodes().find((n) => n.id === id);
+      const { baseX, baseY } = resolveExportRightAnchor({
+        source,
+        fallbackX: xPos,
+        fallbackY: yPos,
+        fallbackW: size.w,
+        fallbackH: size.h,
+        domEl: nodeRef.current,
+        screenToFlowPosition,
+      });
+      const placeholderW = Math.max(size.w, Number(source?.data?.width) || 0, VIDEO_NODE_MIN_W * 0.5);
+      const placeholderH = Math.max(size.h, Number(source?.data?.height) || 0, VIDEO_NODE_MIN_H * 0.5);
+      const newNodeId = `video-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newNode: Node = {
+        id: newNodeId,
+        type: 'video',
+        position: { x: baseX, y: baseY },
+        selected: true,
+        data: {
+          label: vt.videoUpscaleNodeLabel,
+          title: vt.videoUpscaleNodeLabel,
+          width: placeholderW,
+          height: placeholderH,
+          aspectRatio: data?.aspectRatio,
+          outputVideo: undefined,
+          originalVideoUrl: undefined,
+          exportedMediaClip: true,
+          isUserResized: true,
+          preserveExportLayout: true,
+          progress: 8,
+          progressMessage: vt.videoUpscaleRunning,
+          errorMessage: undefined,
+        },
+        style: nodeStyleDimensions(placeholderW, placeholderH),
+      };
+      const edge: Edge = {
+        id: `e-${id}-${newNodeId}`,
+        source: id,
+        target: newNodeId,
+        sourceHandle: 'output',
+        targetHandle: 'input',
+      };
+      onAddVideoClipNodes({ nodes: [newNode], edges: [edge] });
+      scheduleRefreshNodeInternals([id, newNodeId]);
+      try {
+        await onVideoUpscaleRun({
+          targetNodeId: newNodeId,
+          videoUrl,
+          targetResolution,
+          mediaDurationSec,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : vt.videoUpscaleFailed;
+        console.error('[VideoNode] video upscale failed:', err);
+        showAlert(`${vt.videoUpscaleFailed}\n\n${msg}`);
+        onDataChange(newNodeId, { errorMessage: msg, progress: 0, progressMessage: '' });
+      } finally {
+        setUpscaling(false);
+      }
+    },
+    [
+      videoDisplayUrl,
+      outputVideo,
+      data?.outputVideo,
+      data?.originalVideoUrl,
+      data?.aspectRatio,
+      onVideoUpscaleRun,
+      onAddVideoClipNodes,
+      onDataChange,
+      upscaling,
+      smartMatting,
+      chromaKeying,
+      cropping,
+      trimming,
+      isVideoGenerating,
+      isSplitFramesBusy,
+      smartEditing,
+      smartEditReviewOpen,
+      smartMattingDurationSec,
+      showAlert,
+      vt,
+      clearUpscaleMenuLeaveTimer,
+      getNodes,
+      id,
+      xPos,
+      yPos,
+      size.w,
+      size.h,
+      screenToFlowPosition,
+      scheduleRefreshNodeInternals,
+    ],
+  );
 
   /** B 站 / YouTube：IPC → 主进程本地 yt-dlp，不经阿里云；结果写 local-resource 并回填画布 */
   const handleBilibiliGrabConfirm = useCallback(async () => {
@@ -4481,7 +4796,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                 busy={cropping}
                 layoutRevision={`${size.w}x${size.h}`}
                 onConfirm={(rect, sw, sh) => void handleCropConfirm(rect, sw, sh)}
-                onCancel={() => !cropping && setShowCropModal(false)}
+                onCancel={() => !cropping && endSpatialCropSession()}
               />
             ) : null}
             {showChromaKeyModal ? (
@@ -4809,7 +5124,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                             preserveExportLayout: true,
                             resolution: '1k',
                             aspectRatio: '1:1',
-                            model: 'banana-2.0',
+                            model: DEFAULT_IMAGE_MODEL,
                             prompt: '',
                             progress: 8,
                             progressMessage: progressText,
@@ -4870,7 +5185,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                                 preserveExportLayout: true,
                                 resolution: '1k',
                                 aspectRatio: '1:1',
-                                model: 'banana-2.0',
+                                model: DEFAULT_IMAGE_MODEL,
                                 prompt: '',
                                 outputImage: resultUrl,
                                 outputImages: [resultUrl],
@@ -4983,7 +5298,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                                 preserveExportLayout: true,
                                 resolution: '1k',
                                 aspectRatio: '1:1',
-                                model: 'banana-2.0',
+                                model: DEFAULT_IMAGE_MODEL,
                                 prompt: '',
                                 progress: 0,
                                 progressMessage: '',
@@ -5272,7 +5587,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                                 preserveExportLayout: true,
                                 resolution: '1k',
                                 aspectRatio: '1:1',
-                                model: 'banana-2.0',
+                                model: DEFAULT_IMAGE_MODEL,
                                 prompt: '',
                                 outputImage: resultUrl,
                                 outputImages: [resultUrl],
@@ -5378,7 +5693,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               </span>
             </div>
           ) : null}
-          {hasRenderableVideo && videoDisplayUrl ? (
+          {hasRenderableVideo && videoDisplayUrl && !showCropModal ? (
             <button
               type="button"
               disabled={
@@ -5675,6 +5990,125 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   {smartMattingPriceHoverText}
                 </span>
               </div>
+              <div
+                className="relative inline-flex flex-col items-center"
+                onMouseEnter={() => {
+                  clearUpscaleMenuLeaveTimer();
+                  if (
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    upscaling ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                  ) {
+                    return;
+                  }
+                  setUpscaleMenuOpen(true);
+                }}
+                onMouseLeave={() => {
+                  clearUpscaleMenuLeaveTimer();
+                  upscaleMenuLeaveTimerRef.current = setTimeout(() => setUpscaleMenuOpen(false), 180);
+                }}
+              >
+                <button
+                  type="button"
+                  disabled={
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    upscaling ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (
+                      trimming ||
+                      isSplitFramesBusy ||
+                      cropping ||
+                      chromaKeying ||
+                      smartMatting ||
+                      upscaling ||
+                      smartEditing ||
+                      smartEditReviewOpen ||
+                      isVideoGenerating
+                    ) {
+                      return;
+                    }
+                    setUpscaleMenuOpen(true);
+                  }}
+                  className={`flex shrink-0 items-center gap-1 whitespace-nowrap px-2 py-1 rounded-lg text-xs font-medium transition-all text-white ${
+                    trimming ||
+                    isSplitFramesBusy ||
+                    cropping ||
+                    chromaKeying ||
+                    smartMatting ||
+                    upscaling ||
+                    smartEditing ||
+                    smartEditReviewOpen ||
+                    isVideoGenerating
+                      ? 'bg-amber-600/70 cursor-not-allowed opacity-80'
+                      : 'bg-amber-600 hover:bg-amber-500'
+                  }`}
+                  title={vt.videoUpscaleTitle}
+                  aria-label={vt.videoUpscaleButton}
+                >
+                  {upscaling ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Scaling className="w-3.5 h-3.5" />
+                  )}
+                  {vt.videoUpscaleButton}
+                </button>
+                {upscaleMenuOpen ? (
+                  <div
+                    className={`absolute left-1/2 top-full z-[80] mt-1 w-max min-w-[9.5rem] -translate-x-1/2 rounded-lg px-1.5 py-1.5 shadow-lg ring-1 ${
+                      isDarkMode
+                        ? 'bg-zinc-900/95 text-white ring-white/15'
+                        : 'bg-white text-gray-800 ring-black/10'
+                    }`}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <div className={`mb-1 px-1 text-[10px] leading-tight ${isDarkMode ? 'text-white/65' : 'text-gray-500'}`}>
+                      {upscaleClockLabel
+                        ? vt.videoUpscaleDurationLine(upscaleClockLabel, String(upscaleBillableSec || 5))
+                        : vt.videoUpscaleDurationUnknown}
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {upscaleTierPrices.map(({ res, yuanbao }) => (
+                        <button
+                          key={res}
+                          type="button"
+                          className={`nodrag flex w-full items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-[11px] font-medium ${
+                            isDarkMode ? 'hover:bg-white/10' : 'hover:bg-black/5'
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            void handleUpscalePick(res);
+                          }}
+                        >
+                          <span className="uppercase">{res}</span>
+                          <span className={isDarkMode ? 'text-amber-200' : 'text-amber-700'}>
+                            {yuanbao != null
+                              ? vt.videoUpscalePriceLabel(String(yuanbao), String(upscaleBillableSec || 5))
+                              : vt.videoUpscalePriceFallback}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </>
           ) : null}
         </div>
@@ -5750,8 +6184,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
               onClick={(e) => {
                 e.stopPropagation();
                 if (cropping) return;
-                setShowCropModal(false);
-                scheduleRefreshNodeInternals(id);
+                endSpatialCropSession();
               }}
               className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
                 isDarkMode

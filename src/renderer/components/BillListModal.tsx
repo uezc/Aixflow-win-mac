@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React, { useEffect } from 'react';
-import { Receipt, RefreshCw, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Receipt, RefreshCw, X } from 'lucide-react';
 import { dateLocaleForSettings, settingsT, type SettingsLocale } from '../i18n/settingsI18n';
 
 export type BillTransactionRow = {
@@ -21,7 +21,13 @@ type Props = {
   txList: BillTransactionRow[];
   txLoading: boolean;
   txError: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
   onRefresh: () => void | Promise<void>;
+  onPrevPage: () => void;
+  onNextPage: () => void;
 };
 
 function formatBillDescription(raw: string | undefined): string {
@@ -65,9 +71,18 @@ export function BillListModal({
   txList,
   txLoading,
   txError,
+  page,
+  pageSize,
+  total,
+  hasMore,
   onRefresh,
+  onPrevPage,
+  onNextPage,
 }: Props) {
   const t = settingsT(locale);
+  const totalPages = Math.max(1, Math.ceil(Math.max(0, total) / Math.max(1, pageSize || 30)));
+  const canPrev = page > 1 && !txLoading;
+  const canNext = hasMore && !txLoading;
 
   useEffect(() => {
     if (!open) return;
@@ -190,6 +205,32 @@ export function BillListModal({
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="mt-3 flex shrink-0 items-center justify-between gap-3 border-t border-white/[0.06] pt-3">
+            <p className="min-w-0 truncate text-xs text-white/45">
+              {t.billPageStatus(page, totalPages, total)}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onPrevPage}
+                disabled={!canPrev}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                {t.billPagePrev}
+              </button>
+              <button
+                type="button"
+                onClick={onNextPage}
+                disabled={!canNext}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t.billPageNext}
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
       </div>

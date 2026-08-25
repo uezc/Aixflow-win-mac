@@ -16,6 +16,7 @@ export type ContextMenuStrings = {
   storyboardScript: string;
   script: string;
   director: string;
+  directorDrama: string;
   imageTo3d: string;
   character: string;
   audio: string;
@@ -45,7 +46,8 @@ const zh: ContextMenuStrings = {
   imageComparer: '图片对比',
   storyboardScript: '分镜脚本',
   script: '剧本',
-  director: '导演',
+  director: 'MV导演',
+  directorDrama: 'AI短剧',
   imageTo3d: '图片转 3D',
   character: '角色',
   audio: '声音',
@@ -75,7 +77,8 @@ const en: ContextMenuStrings = {
   imageComparer: 'Image Compare',
   storyboardScript: 'Storyboard Script',
   script: 'Script',
-  director: 'Director',
+  director: 'MV Director',
+  directorDrama: 'AI Drama',
   imageTo3d: 'Image to 3D',
   character: 'Character',
   audio: 'Audio',
@@ -112,6 +115,7 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     storyboardScript: 'storyboardScript',
     script: 'script',
     director: 'director',
+    directorDrama: 'directorDrama',
     imageTo3d: 'imageTo3d',
     character: 'character',
     audio: 'audio',

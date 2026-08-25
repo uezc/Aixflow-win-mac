@@ -323,6 +323,58 @@ const DEFAULT_TIMEOUT_MS = 25 * 60 * 1000;
 const POLL_INTERVAL_MS = 5000;
 const MAX_SUCCESS_WITHOUT_URL_ROUNDS = 24;
 
+function isRetryableResumeQueryError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err || '');
+  const code = String((err as { code?: string })?.code || '');
+  return (
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNABORTED' ||
+    /ECONNRESET|socket hang up|ETIMEDOUT|ECONNREFUSED|ECONNABORTED|network error/i.test(msg)
+  );
+}
+
+/** 恢复轮询时国内/海外都问一遍，避免粘性丢失后问错站、平台已出图却一直 RUNNING */
+async function rhQueryPollImageResumeOnce(
+  rhTaskId: string,
+  attempt: number,
+): Promise<Record<string, unknown>> {
+  const token = randomUUID();
+  const regions: Array<'ai' | 'cn'> = ['ai', 'cn'];
+  let last: Record<string, unknown> = {};
+  let lastErr: unknown;
+  let progressHit: Record<string, unknown> | null = null;
+  let failHit: Record<string, unknown> | null = null;
+  for (const region of regions) {
+    try {
+      const data = (await rhQueryPollImage(
+        String(rhTaskId),
+        `resume-rh-img:${token}:p${attempt}:${region}`,
+        undefined,
+        { rhRegion: region },
+      )) as Record<string, unknown>;
+      last = data;
+      const rawSt = data.status ?? data.taskStatus ?? data.task_status;
+      const normalized = normalizeRunningHubPollStatus(rawSt);
+      if (normalized === 'SUCCESS') return data;
+      if (normalized === 'IN_PROGRESS' || normalized === 'NOT_START') {
+        if (!progressHit) progressHit = data;
+        continue;
+      }
+      if (normalized === 'FAILURE' || normalized === 'FAILED') {
+        if (!failHit) failHit = data;
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (progressHit) return progressHit;
+  if (failHit) return failHit;
+  if (Object.keys(last).length > 0) return last;
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr || '查询失败'));
+}
+
 export async function pollRunningHubImageUntilTerminal(
   rhTaskId: string,
   options?: {
@@ -344,11 +396,11 @@ export async function pollRunningHubImageUntilTerminal(
     attempt++;
     let pollData: Record<string, unknown>;
     try {
-      pollData = (await rhQueryPollImage(String(rhTaskId), `resume-rh-img:${randomUUID()}:p${attempt}`)) as Record<
-        string,
-        unknown
-      >;
+      pollData = await rhQueryPollImageResumeOnce(String(rhTaskId), attempt);
     } catch (e) {
+      if (isRetryableResumeQueryError(e)) {
+        continue;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       return { ok: false, error: `查询任务失败：${msg}` };
     }

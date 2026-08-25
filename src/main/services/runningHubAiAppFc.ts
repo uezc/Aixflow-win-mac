@@ -696,15 +696,65 @@ async function submitAndPollForGlb(
   }
 }
 
-/** RunningHub 媒体上传结果：官方 fieldValue 多为 download_url 短名，部分工作流需 openapi/ 全路径 */
+/**
+ * RunningHub 媒体上传结果。
+ * ComfyUI LoadImage/LoadAudio 的 fieldValue 必须用 `fileName`/`filename`（如 `openapi/xxx.mp3` 或 `api/xxx.mp3`），
+ * 不能只用 HTTPS download_url 的短文件名；标准模型 API 才用完整 download_url。
+ */
 export interface RhMediaUploadFieldValues {
-  /** 官方示例格式：hash.jpg */
+  /**
+   * 供 ai-app nodeInfoList 使用的值：优先 `openapi/…` / `api/…` 全路径。
+   */
   fieldValue: string;
-  /** RH 存储路径：openapi/xxxx.png */
+  /** RH 存储相对路径（与 fieldValue 相同或为其 openapi/api 形态） */
   fileNamePath?: string;
+  /** 上传接口返回的 type（image/audio/video 等） */
+  mediaType?: string;
+  /** 字节大小（字符串或数字，原样透传） */
+  size?: string | number;
 }
 
-/** 解析 RunningHub /media/upload/binary 响应 */
+/** 从 COS/RH download_url 中抽出 `openapi/…` 或 `api/…` 相对路径 */
+function extractRhOpenApiRelativePath(downloadUrl: string): string {
+  const s = String(downloadUrl || '').trim();
+  if (!s) return '';
+  if (/^(openapi|api)\//i.test(s) && !/^https?:\/\//i.test(s)) return s.replace(/^\/+/, '');
+  try {
+    const u = new URL(s);
+    const m = u.pathname.match(/\/((?:openapi|api)\/[^/?#]+)/i);
+    if (m?.[1]) return m[1];
+  } catch {
+    const m = s.match(/\/((?:openapi|api)\/[^/?#]+)/i);
+    if (m?.[1]) return m[1];
+  }
+  return '';
+}
+
+function basenameFromUrlOrPath(s: string): string {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  try {
+    if (/^https?:\/\//i.test(t)) {
+      return new URL(t).pathname.split('/').filter(Boolean).pop() || '';
+    }
+  } catch {
+    /* ignore */
+  }
+  return t.split('/').filter(Boolean).pop() || t;
+}
+
+/**
+ * ComfyUI Load* 节点应写入的 fieldValue：优先 openapi/api 全路径。
+ */
+export function rhComfyMediaFieldValue(uploaded: RhMediaUploadFieldValues): string {
+  const path = String(uploaded.fileNamePath || '').trim();
+  if (/^(openapi|api)\//i.test(path)) return path;
+  const fv = String(uploaded.fieldValue || '').trim();
+  if (/^(openapi|api)\//i.test(fv)) return fv;
+  return path || fv;
+}
+
+/** 解析 RunningHub /media/upload/binary 响应（兼容 fileName / filename、单层/双层 data） */
 function parseRhMediaUploadResponse(raw: Record<string, unknown>): RhMediaUploadFieldValues {
   const code = raw.code;
   const codeOk = code === 0 || code === '0' || code === 200 || code === '200';
@@ -712,35 +762,67 @@ function parseRhMediaUploadResponse(raw: Record<string, unknown>): RhMediaUpload
     const msg =
       (typeof raw.message === 'string' && raw.message) ||
       (typeof raw.errorMessage === 'string' && raw.errorMessage) ||
+      (typeof raw.msg === 'string' && raw.msg) ||
       '上传失败';
     throw new Error(`RunningHub 媒体上传失败：${msg}`);
   }
-  const payload = raw.data;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('RunningHub 媒体上传未返回 data');
-  }
-  const d = payload as Record<string, unknown>;
-  const downloadUrl = typeof d.download_url === 'string' ? d.download_url.trim() : '';
-  const fileName = typeof d.fileName === 'string' ? d.fileName.trim() : '';
 
-  let fieldValue = '';
-  if (downloadUrl && !/^https?:\/\//i.test(downloadUrl)) {
-    fieldValue = downloadUrl;
-  } else if (fileName) {
-    const base = fileName.split('/').filter(Boolean).pop();
-    fieldValue = base || fileName;
-  } else if (downloadUrl) {
-    try {
-      const u = new URL(downloadUrl);
-      fieldValue = u.pathname.split('/').filter(Boolean).pop() || downloadUrl;
-    } catch {
-      fieldValue = downloadUrl.split('/').filter(Boolean).pop() || downloadUrl;
+  let d: Record<string, unknown> | null = null;
+  const level1 = raw.data;
+  if (level1 && typeof level1 === 'object' && !Array.isArray(level1)) {
+    const o1 = level1 as Record<string, unknown>;
+    if (o1.fileName != null || o1.filename != null || o1.download_url != null) {
+      d = o1;
+    } else {
+      const level2 = o1.data;
+      if (level2 && typeof level2 === 'object' && !Array.isArray(level2)) {
+        const o2 = level2 as Record<string, unknown>;
+        if (o2.fileName != null || o2.filename != null || o2.download_url != null) {
+          d = o2;
+        }
+      }
+      if (!d) d = o1;
     }
+  } else if (raw.fileName != null || raw.filename != null || raw.download_url != null) {
+    d = raw;
   }
+  if (!d) throw new Error('RunningHub 媒体上传未返回 data');
+
+  const downloadUrl = typeof d.download_url === 'string' ? d.download_url.trim() : '';
+  // 新接口字段名为 filename；旧 /task/openapi/upload 为 fileName
+  const fileNameRaw =
+    (typeof d.fileName === 'string' && d.fileName.trim()) ||
+    (typeof d.filename === 'string' && d.filename.trim()) ||
+    '';
+
+  let fileNamePath =
+    (/^(openapi|api)\//i.test(fileNameRaw) ? fileNameRaw.replace(/^\/+/, '') : '') ||
+    extractRhOpenApiRelativePath(downloadUrl) ||
+    (/^(openapi|api)\//i.test(downloadUrl) ? downloadUrl.replace(/^\/+/, '') : '') ||
+    (fileNameRaw.includes('/') ? fileNameRaw.replace(/^\/+/, '') : '');
+
+  const shortName =
+    basenameFromUrlOrPath(fileNamePath) ||
+    basenameFromUrlOrPath(fileNameRaw) ||
+    basenameFromUrlOrPath(downloadUrl);
+
+  // ai-app LoadImage/LoadAudio：必须用相对路径；无路径时再退回短名
+  const fieldValue = fileNamePath || shortName;
   if (!fieldValue) throw new Error('RunningHub 媒体上传未返回 download_url / fileName');
 
-  const fileNamePath = fileName && fileName !== fieldValue ? fileName : undefined;
-  return { fieldValue, fileNamePath };
+  if (!fileNamePath && /^(openapi|api)\//i.test(fieldValue)) {
+    fileNamePath = fieldValue;
+  }
+
+  const mediaType = typeof d.type === 'string' ? d.type.trim() : undefined;
+  const size = (typeof d.size === 'string' || typeof d.size === 'number') ? d.size : undefined;
+
+  return {
+    fieldValue,
+    fileNamePath: fileNamePath || undefined,
+    mediaType,
+    size,
+  };
 }
 
 /** FC invoke body 约 32MB；base64 膨胀后 raw 文件宜 ≤24MB */
@@ -770,8 +852,10 @@ export async function uploadRunningHubMediaFromRemoteUrlViaFc(
   });
   const parsed = parseRhMediaUploadResponse(raw as Record<string, unknown>);
   console.log('[RunningHub] 媒体(URL)上传成功', {
-    fieldValue: parsed.fieldValue.slice(0, 80),
-    fileNamePath: parsed.fileNamePath?.slice(0, 80),
+    fieldValue: parsed.fieldValue.slice(0, 96),
+    fileNamePath: parsed.fileNamePath?.slice(0, 96),
+    mediaType: parsed.mediaType,
+    size: parsed.size,
   });
   return parsed;
 }
@@ -872,8 +956,10 @@ export async function uploadRunningHubMediaBinaryViaFc(
   });
   const parsed = parseRhMediaUploadResponse(raw as Record<string, unknown>);
   console.log('[RunningHub] 媒体上传成功', {
-    fieldValue: parsed.fieldValue.slice(0, 80),
-    fileNamePath: parsed.fileNamePath?.slice(0, 80),
+    fieldValue: parsed.fieldValue.slice(0, 96),
+    fileNamePath: parsed.fileNamePath?.slice(0, 96),
+    mediaType: parsed.mediaType,
+    size: parsed.size,
   });
   return parsed;
 }
@@ -893,6 +979,76 @@ function rhUploadFilenameAndMimeFromUrl(url: string): { filename: string; conten
   } catch {
     return { filename: 'image.jpg', contentType: 'image/jpeg' };
   }
+}
+
+/** RH LoadAudio 官方支持：MP3 / WAV / FLAC（见 Upload Resource 文档） */
+export function isRhLoadAudioSupportedExt(extOrName: string): boolean {
+  const s = String(extOrName || '').trim().toLowerCase();
+  return s.endsWith('.mp3') || s.endsWith('.wav') || s.endsWith('.flac') || s === 'mp3' || s === 'wav' || s === 'flac';
+}
+
+/** 按文件头嗅探容器（扩展名可被伪装；RH LoadAudio 对假 mp3 会静默无声） */
+export type RhAudioMagicKind = 'mp3' | 'wav' | 'flac' | 'ogg' | 'mp4' | 'unknown';
+
+export function sniffAudioMagic(buf: Buffer | Uint8Array | null | undefined): RhAudioMagicKind {
+  if (!buf || buf.length < 12) return 'unknown';
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'mp3'; // ID3
+  // MPEG frame sync 11 bits set
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return 'mp3';
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b.toString('ascii', 8, 12) === 'WAVE') {
+    return 'wav';
+  }
+  if (b.toString('ascii', 0, 4) === 'fLaC') return 'flac';
+  if (b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'ogg'; // OggS
+  // ftyp…. (mp4/m4a)
+  if (b.toString('ascii', 4, 8) === 'ftyp') return 'mp4';
+  return 'unknown';
+}
+
+/** 转码后的 MP3 至少应有可读帧头；过小文件几乎一定无效 */
+export function isLikelyValidMp3Buffer(buf: Buffer | Uint8Array | null | undefined): boolean {
+  if (!buf || buf.length < 2048) return false;
+  return sniffAudioMagic(buf) === 'mp3';
+}
+
+/** 按 OSS/公网音频 URL 推导 RH binary 上传的 filename + contentType（勿一律伪装成 mp3） */
+export function rhAudioUploadMetaFromUrl(url: string): {
+  filename: string;
+  contentType: string;
+  supportedByRhLoadAudio: boolean;
+} {
+  let base = 'audio.mp3';
+  try {
+    base = new URL(url).pathname.split('/').filter(Boolean).pop() || base;
+  } catch {
+    /* keep default */
+  }
+  const lower = base.toLowerCase();
+  let contentType = 'audio/mpeg';
+  let filename = base.replace(/[^\w.\-]+/g, '_') || 'audio.mp3';
+  if (lower.endsWith('.wav')) {
+    contentType = 'audio/wav';
+    if (!filename.toLowerCase().endsWith('.wav')) filename = `${filename}.wav`;
+  } else if (lower.endsWith('.flac')) {
+    contentType = 'audio/flac';
+    if (!filename.toLowerCase().endsWith('.flac')) filename = `${filename}.flac`;
+  } else if (lower.endsWith('.mp3')) {
+    contentType = 'audio/mpeg';
+  } else if (lower.endsWith('.ogg')) {
+    contentType = 'audio/ogg';
+  } else if (lower.endsWith('.m4a') || lower.endsWith('.mp4') || lower.endsWith('.aac')) {
+    contentType = lower.endsWith('.aac') ? 'audio/aac' : 'audio/mp4';
+  } else {
+    // 无扩展名时默认按 mp3 上传（调用方应先转码）
+    if (!/\.[a-z0-9]+$/i.test(filename)) filename = `${filename}.mp3`;
+    contentType = 'audio/mpeg';
+  }
+  return {
+    filename,
+    contentType,
+    supportedByRhLoadAudio: isRhLoadAudioSupportedExt(filename),
+  };
 }
 
 function buildImageTo3dSubmitBody(
@@ -954,13 +1110,17 @@ export async function runImageTo3dModelViaFc(
       return { success: false, message: `${label}：参考图上传 RunningHub 媒体库失败（${msg}）` };
     }
     const instanceType = instanceTypes[0] ?? 'plus';
-    attempts.push({ instanceType, fieldVal: uploaded.fieldValue });
+    const primaryRh = rhComfyMediaFieldValue(uploaded);
+    attempts.push({ instanceType, fieldVal: primaryRh });
     const altRh = uploaded.fileNamePath?.trim();
-    if (altRh && altRh !== uploaded.fieldValue) {
+    if (altRh && altRh !== primaryRh) {
       attempts.push({ instanceType, fieldVal: altRh });
     }
+    if (uploaded.fieldValue && uploaded.fieldValue !== primaryRh && uploaded.fieldValue !== altRh) {
+      attempts.push({ instanceType, fieldVal: uploaded.fieldValue });
+    }
     const alt = options?.alternateImageFieldValue?.trim();
-    if (alt && alt !== uploaded.fieldValue && alt !== altRh) {
+    if (alt && alt !== primaryRh && alt !== altRh && alt !== uploaded.fieldValue) {
       attempts.push({ instanceType, fieldVal: alt });
     }
   } else {

@@ -1,11 +1,19 @@
-import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { User, Copy, Check, Trash2, ChevronLeft, ChevronRight, Download, Upload, ExternalLink, Plus, X, Mic, Headphones, Square, Loader2, Pencil, Box, Layers } from 'lucide-react';
+import { User, Copy, Check, Trash2, ChevronLeft, ChevronRight, Download, Upload, ExternalLink, Plus, X, Mic, Headphones, Square, Pencil, Box, Layers, Loader2 } from 'lucide-react';
 import { useDarkAlert } from '../contexts/DarkAlertContext';
 import { useAppLocale } from '../contexts/AppLocaleContext';
+import { useNxModelPricing } from '../contexts/NxModelPricingContext';
+import { useAI } from '../hooks/useAI';
 import { assetLibraryT } from '../i18n/assetLibraryI18n';
+import {
+  IMAGE_REVERSE_DEFAULT_MODEL,
+  LLM_CHAT_MODEL_GPT56_TERRA,
+  getImageReverseDisplayPrice,
+  normalizeImageReverseCaptionModel,
+  type ImageReverseCaptionModel,
+} from '../utils/cloudModelPricing';
 import type { AssetLibraryViewMode } from './AssetLibrarySidebar';
-import { decodeAudioWaveform } from '../utils/audioWaveform';
 import type { Character } from './characterListShared';
 import {
   NEXFLOW_CHARACTER_DRAG_MIME,
@@ -19,9 +27,11 @@ import {
   preloadImageTo3dCharacter,
 } from '../utils/glbPreviewPreload';
 import AssetLibLazyThumb from './AssetLibLazyThumb';
+import { getCharactersCoalesced } from '../utils/characterLibraryCache';
 import { useIdlePoll } from '../hooks/useIdlePoll';
 import ImageTo3dLibraryHoverPreview from './ImageTo3dLibraryHoverPreview';
 import ImageTo3dInlineGlbPreview from './ImageTo3dInlineGlbPreview';
+import { buildAudioEqBarHeightsPct } from '../utils/audioEqThumb';
 import {
   assetLibBtnIcon,
   assetLibDeleteToolbarBtn,
@@ -47,17 +57,29 @@ import {
   assetLibEditModalCanvasPickScratch,
 } from '../utils/assetLibraryChrome';
 
-/** 本地音无法解码波形时的占位条（横向绿色波纹） */
-const ADD_VOICE_FALLBACK_WAVEFORM_BARS: number[] = Array.from({ length: 56 }, (_, i) => {
-  const t = i / 55;
-  return 0.22 + 0.58 * (0.5 + 0.5 * Math.sin(t * Math.PI * 4.2 + 0.4));
-});
+/**
+ * 添加角色弹窗参考音波形：仅用 URL seed 生成装饰条，绝不 fetch/decodeAudioData。
+ * （整轨解码在 Electron/Windows 上可原生崩溃 0xC0000005，与 try/catch 无关）
+ */
+function buildDecorativeVoiceBars(seed: string, barCount = 56): number[] {
+  return buildAudioEqBarHeightsPct(seed || 'voice', barCount).map((pct) =>
+    Math.max(0.12, Math.min(1, pct / 100)),
+  );
+}
 
 const EMPTY_FOUR_VIEWS: [string, string, string, string] = ['', '', '', ''];
 
 function pathToPreviewUrl(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
-  return `local-resource://${normalized}`;
+  let normalized = filePath.replace(/\\/g, '/').replace(/^\/([a-zA-Z]:)/, '$1');
+  if (/^[a-zA-Z]\//.test(normalized)) {
+    normalized = `${normalized[0].toUpperCase()}:${normalized.slice(1)}`;
+  }
+  const encoded = normalized.split('/').map((part, index) => {
+    if (index === 0 && /^[a-zA-Z]:$/.test(part)) return part;
+    if (/[\u4e00-\u9fa5\s]/.test(part)) return encodeURIComponent(part);
+    return part;
+  });
+  return `local-resource://${encoded.join('/')}`;
 }
 
 function isImageFilePath(filePath: string): boolean {
@@ -73,29 +95,41 @@ function avatarFromViewImages(views: readonly string[]): string {
   return '';
 }
 
+/** 将四视图槽位 URL 规范为可预览 / 可反推的地址 */
+function normalizeCharacterViewImageUrl(url: string): string {
+  const trimmed = (url || '').trim();
+  if (!trimmed) return '';
+  if (
+    trimmed.startsWith('local-resource://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('data:') ||
+    trimmed.startsWith('file://')
+  ) {
+    return trimmed;
+  }
+  return pathToPreviewUrl(trimmed);
+}
+
 function characterViewImageUrlForPreview(c: Character, slot: number): string {
   const vi = c.viewImages || [];
   const url = (typeof vi[slot] === 'string' ? vi[slot] : '').trim();
-  if (!url) return '';
-  if (
-    url.startsWith('local-resource://') ||
-    url.startsWith('http://') ||
-    url.startsWith('https://') ||
-    url.startsWith('data:')
-  ) {
-    return url;
-  }
-  const normalized = url.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (m) => m.substring(1));
-  return `local-resource://${normalized}`;
+  if (url) return normalizeCharacterViewImageUrl(url);
+  const locals = c.localViewPaths || [];
+  const lp = typeof locals[slot] === 'string' ? locals[slot].trim() : '';
+  return lp ? pathToPreviewUrl(lp) : '';
 }
+
+const CHARACTER_LIB_REVERSE_NODE_ID = 'character-library-image-reverse';
 
 function characterHasViewImages(c: Character): boolean {
   const vi = c.viewImages || [];
-  return vi.some((s) => (s || '').trim().length > 0);
+  if (vi.some((s) => (s || '').trim().length > 0)) return true;
+  return (c.localViewPaths || []).some((s) => (s || '').trim().length > 0);
 }
 
-/** 悬停四视图单格边长（原 72px 的 3 倍） */
-const FOUR_VIEW_PREVIEW_CELL = 216;
+/** 悬停四视图单格高度（略大于旧版 216，更易看清定妆细节） */
+const FOUR_VIEW_PREVIEW_CELL = 300;
 /** 预览区与资产侧栏间距 */
 const FOUR_VIEW_PREVIEW_SIDE_GAP = '1cm';
 
@@ -194,8 +228,9 @@ function CharacterFourViewHoverPreview({
   );
 }
 
-/** 添加角色弹窗：横向绿色声波纹（decodeAudioWaveform 峰值） */
-function CharacterAddVoiceWaveformStrip({ bars }: { bars: number[] }) {
+/** 添加角色弹窗：横向装饰声波纹（seed 条高，不解码音频） */
+function CharacterAddVoiceWaveformStrip({ seed }: { seed: string }) {
+  const bars = buildDecorativeVoiceBars(seed);
   const n = Math.max(1, bars.length);
   const vbW = 200;
   const vbH = 36;
@@ -264,6 +299,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
   const { showAlert, showConfirm } = useDarkAlert();
   const { locale } = useAppLocale();
   const libT = assetLibraryT(locale);
+  const { cloudMap } = useNxModelPricing();
   const [characters, setCharacters] = useState<Character[]>([]);
   const [gallerySearch, setGallerySearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -284,11 +320,17 @@ const CharacterList: React.FC<CharacterListProps> = ({
   const [addVoiceDataUrl, setAddVoiceDataUrl] = useState('');
   const [addVoiceLabel, setAddVoiceLabel] = useState('');
   const [addViewImages, setAddViewImages] = useState<[string, string, string, string]>(() => [...EMPTY_FOUR_VIEWS]);
+  const [addImageDescription, setAddImageDescription] = useState('');
+  const [addReverseModel, setAddReverseModel] = useState<ImageReverseCaptionModel>(IMAGE_REVERSE_DEFAULT_MODEL);
+  const [addReverseSlot, setAddReverseSlot] = useState<number | null>(null);
+  /** 弹窗内反推错误（列表顶栏 toast 会被模态遮住） */
+  const [addReverseError, setAddReverseError] = useState<string | null>(null);
+  const reversePendingRef = useRef<{
+    resolve: (text: string) => void;
+    reject: (err: string) => void;
+  } | null>(null);
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [addModalVoicePlaying, setAddModalVoicePlaying] = useState(false);
-  /** 参考音解码后的波形柱（0–1），用于横向波纹展示 */
-  const [addVoiceWaveformBars, setAddVoiceWaveformBars] = useState<number[] | null>(null);
-  const [addVoiceWaveformBusy, setAddVoiceWaveformBusy] = useState(false);
   const addVoiceInputRef = useRef<HTMLInputElement>(null);
   const addViewInputRef = useRef<HTMLInputElement>(null);
   const addViewSlotIndexRef = useRef(0);
@@ -313,6 +355,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
     voice: string;
     voiceLabel: string;
     views: [string, string, string, string];
+    imageDescription: string;
     editingCharacterId: string | null;
   } | null>(null);
 
@@ -320,9 +363,13 @@ const CharacterList: React.FC<CharacterListProps> = ({
   const loadCharacters = useCallback(async () => {
     try {
       if (window.electronAPI) {
-        const chars = await window.electronAPI.getCharacters();
-        // 按创建时间倒序排序（最新的在前）
-        const sortedChars = chars.sort((a, b) => b.createdAt - a.createdAt);
+        const chars = await Promise.race([
+          getCharactersCoalesced<Character>(),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => reject(new Error('getCharacters timeout')), 8000);
+          }),
+        ]);
+        const sortedChars = [...chars].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         setCharacters(sortedChars);
       }
     } catch (error) {
@@ -353,13 +400,15 @@ const CharacterList: React.FC<CharacterListProps> = ({
       return resolveImageTo3dLibraryThumbUrl(character);
     }
     if (character.localAvatarPath) {
-      return `local-resource://${character.localAvatarPath.replace(/\\/g, '/').replace(/^\/[a-zA-Z]:/, (match) => match.substring(1))}`;
+      return pathToPreviewUrl(character.localAvatarPath);
     }
     if (character.avatar?.startsWith('local-resource://') || character.avatar?.startsWith('data:')) {
       return character.avatar;
     }
     const fromViews = avatarFromViewImages(character.viewImages || []);
-    if (fromViews) return fromViews;
+    if (fromViews) return normalizeCharacterViewImageUrl(fromViews);
+    const localView = (character.localViewPaths || []).find((p) => String(p || '').trim());
+    if (localView) return pathToPreviewUrl(String(localView));
     return character.avatar || '';
   };
 
@@ -460,6 +509,15 @@ const CharacterList: React.FC<CharacterListProps> = ({
   useEffect(() => {
     loadCharacters();
   }, [loadCharacters, refreshTrigger]); // 当 refreshTrigger 变化时也刷新
+
+  useEffect(() => {
+    const unsub = window.electronAPI?.onCharactersUpdated?.(() => {
+      void loadCharacters();
+    });
+    return () => {
+      unsub?.();
+    };
+  }, [loadCharacters]);
 
   useEffect(() => {
     if (viewMode !== 'gallery') setGalleryHovered3dId(null);
@@ -764,50 +822,6 @@ const CharacterList: React.FC<CharacterListProps> = ({
     }
   }, [showAddModal, stopAddModalVoicePreview]);
 
-  /** 有参考音 URL 时解码整段为真实波形（与 VideoSplice 同源 decodeAudioWaveform） */
-  useEffect(() => {
-    const url = addVoiceDataUrl.trim();
-    if (!url) {
-      setAddVoiceWaveformBars(null);
-      setAddVoiceWaveformBusy(false);
-      return;
-    }
-    /** 画布/本机参考音多为 local-resource；fetch+decodeAudioData 整段易在 Chromium 中原生崩溃（0xC0000005），仅对远程/data 做波形 */
-    if (url.startsWith('local-resource://') || url.startsWith('file://')) {
-      setAddVoiceWaveformBars(null);
-      setAddVoiceWaveformBusy(false);
-      return;
-    }
-    const MAX_DATA_URL_CHARS_FOR_WAVEFORM = 12 * 1024 * 1024;
-    if (url.startsWith('data:') && url.length > MAX_DATA_URL_CHARS_FOR_WAVEFORM) {
-      setAddVoiceWaveformBars(null);
-      setAddVoiceWaveformBusy(false);
-      return;
-    }
-    let cancelled = false;
-    const tid = window.setTimeout(() => {
-      if (cancelled) return;
-      setAddVoiceWaveformBusy(true);
-      setAddVoiceWaveformBars(null);
-      const BAR_COUNT = 72;
-      const trimEndSec = 60 * 60 * 2;
-      decodeAudioWaveform(url, 0, trimEndSec, BAR_COUNT)
-        .then((bars) => {
-          if (!cancelled && Array.isArray(bars) && bars.length > 0) setAddVoiceWaveformBars(bars);
-        })
-        .catch(() => {
-          if (!cancelled) setAddVoiceWaveformBars(null);
-        })
-        .finally(() => {
-          if (!cancelled) setAddVoiceWaveformBusy(false);
-        });
-    }, 120);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(tid);
-    };
-  }, [addVoiceDataUrl]);
-
   const resetAddCharacterForm = useCallback(() => {
     stopAddModalVoicePreview();
     setAddModalEditingCharacterId(null);
@@ -815,7 +829,137 @@ const CharacterList: React.FC<CharacterListProps> = ({
     setAddVoiceDataUrl('');
     setAddVoiceLabel('');
     setAddViewImages([...EMPTY_FOUR_VIEWS]);
+    setAddImageDescription('');
+    setAddReverseModel(IMAGE_REVERSE_DEFAULT_MODEL);
+    setAddReverseSlot(null);
+    setAddReverseError(null);
+    if (reversePendingRef.current) {
+      reversePendingRef.current.reject('cancelled');
+      reversePendingRef.current = null;
+    }
   }, [stopAddModalVoicePreview]);
+
+  const reversePriceLabel = useMemo(() => {
+    const value = getImageReverseDisplayPrice(
+      normalizeImageReverseCaptionModel(addReverseModel),
+      cloudMap,
+    );
+    return value == null ? ({ ok: false as const }) : ({ ok: true as const, value });
+  }, [addReverseModel, cloudMap]);
+
+  const applyReverseResult = useCallback(
+    (payload: { text?: string; error?: string } | null | undefined) => {
+      const err = String(payload?.error || '').trim();
+      if (err) {
+        setAddReverseError(err);
+        reversePendingRef.current?.reject(err);
+        reversePendingRef.current = null;
+        return;
+      }
+      const text = String(payload?.text || '').trim();
+      if (text) {
+        setAddImageDescription(text);
+        setAddReverseError(null);
+        reversePendingRef.current?.resolve(text);
+        reversePendingRef.current = null;
+        return;
+      }
+      const emptyMsg = libT.roleReverseEmpty;
+      setAddReverseError(emptyMsg);
+      reversePendingRef.current?.reject(emptyMsg);
+      reversePendingRef.current = null;
+    },
+    [libT.roleReverseEmpty],
+  );
+
+  const { status: reverseAiStatus, execute: executeImageReverse } = useAI({
+    nodeId: CHARACTER_LIB_REVERSE_NODE_ID,
+    modelId: 'chat',
+    onComplete: (payload) => {
+      applyReverseResult(payload);
+    },
+    onError: (err) => {
+      const msg = String(err || libT.roleReverseFailed).trim() || libT.roleReverseFailed;
+      setAddReverseError(msg);
+      reversePendingRef.current?.reject(msg);
+      reversePendingRef.current = null;
+    },
+  });
+  const isReversing = reverseAiStatus === 'START' || reverseAiStatus === 'PROCESSING';
+
+  const runReverseForViewSlot = useCallback(
+    async (slot: number) => {
+      const imageUrl = normalizeCharacterViewImageUrl(String(addViewImages[slot] || ''));
+      if (!imageUrl) {
+        const msg = libT.roleReverseNeedImage;
+        setAddReverseError(msg);
+        showAlert(msg);
+        return;
+      }
+      if (isReversing || addSubmitting) return;
+      setAddReverseSlot(slot);
+      setAddReverseError(null);
+      const model = normalizeImageReverseCaptionModel(addReverseModel);
+      const question =
+        locale === 'en'
+          ? 'Describe this character’s appearance, clothing, and vibe in detail for reuse as a character look description.'
+          : '请详细描述该角色的外貌、服装与气质，便于作为角色形象描述复用。';
+
+      const resultPromise = new Promise<string>((resolve, reject) => {
+        reversePendingRef.current = { resolve, reject };
+      });
+
+      try {
+        await executeImageReverse({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: question },
+                { type: 'image_url', image_url: { url: imageUrl } },
+              ],
+            },
+          ],
+          max_tokens: 800,
+          stream: false,
+          nodeTitle: 'character-image-reverse',
+        });
+        // invoke 可能在 SUCCESS 事件发出前就返回，再等回调写入描述
+        const text = await Promise.race([
+          resultPromise,
+          new Promise<string>((_, reject) => {
+            window.setTimeout(() => reject(new Error(libT.roleReverseFailed)), 180_000);
+          }),
+        ]);
+        if (text) setAddImageDescription(text);
+      } catch (e) {
+        const msg =
+          e instanceof Error && e.message && e.message !== 'cancelled'
+            ? e.message
+            : libT.roleReverseFailed;
+        console.error('[角色素材] 图像反推失败:', e);
+        if (msg !== 'cancelled') {
+          setAddReverseError(msg);
+          showAlert(msg);
+        }
+        if (reversePendingRef.current) {
+          reversePendingRef.current = null;
+        }
+      }
+    },
+    [
+      addViewImages,
+      addReverseModel,
+      addSubmitting,
+      isReversing,
+      executeImageReverse,
+      locale,
+      libT.roleReverseNeedImage,
+      libT.roleReverseFailed,
+      showAlert,
+    ],
+  );
 
   const openAddCharacterModal = useCallback(() => {
     resetAddCharacterForm();
@@ -831,10 +975,14 @@ const CharacterList: React.FC<CharacterListProps> = ({
       const vUrl = resolveCharacterVoiceUrlForDrag(character);
       setAddVoiceDataUrl(vUrl || '');
       setAddVoiceLabel(vUrl ? libT.roleVoiceSelected : '');
-      const vi = character.viewImages || [];
-      setAddViewImages(
-        [0, 1, 2, 3].map((i) => (typeof vi[i] === 'string' ? vi[i] : '').trim()) as [string, string, string, string]
-      );
+      const nextViews = [0, 1, 2, 3].map((i) =>
+        characterViewImageUrlForPreview(character, i),
+      ) as [string, string, string, string];
+      setAddViewImages(nextViews);
+      setAddImageDescription(String(character.imageDescription || '').trim());
+      setAddReverseModel(IMAGE_REVERSE_DEFAULT_MODEL);
+      setAddReverseSlot(nextViews.findIndex((u) => !!u));
+      setAddReverseError(null);
       setShowAddModal(true);
     },
     [stopAddModalVoicePreview, libT.roleVoiceSelected],
@@ -975,6 +1123,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
           avatar,
           voiceClip: addVoiceDataUrl.trim() ? addVoiceDataUrl.trim() : '',
           viewImages: [...addViewImages],
+          imageDescription: addImageDescription.trim(),
         });
         await loadCharacters();
         setShowAddModal(false);
@@ -990,6 +1139,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
           undefined,
           addVoiceDataUrl || undefined,
           [...addViewImages],
+          addImageDescription.trim() || undefined,
         );
         await loadCharacters();
         setShowAddModal(false);
@@ -1009,6 +1159,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
     addNickname,
     addVoiceDataUrl,
     addViewImages,
+    addImageDescription,
     loadCharacters,
     resetAddCharacterForm,
   ]);
@@ -1083,6 +1234,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
       voice: addVoiceDataUrl,
       voiceLabel: addVoiceLabel,
       views: [...addViewImages],
+      imageDescription: addImageDescription,
       editingCharacterId: addModalEditingCharacterId,
     };
     setShowAddModal(false);
@@ -1099,6 +1251,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
           setAddVoiceLabel(d.voiceLabel);
         }
         setAddViewImages([...(d.views || EMPTY_FOUR_VIEWS)] as [string, string, string, string]);
+        setAddImageDescription(d.imageDescription || '');
         setAddModalEditingCharacterId(d.editingCharacterId ?? null);
       }
     } finally {
@@ -1111,6 +1264,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
     addVoiceDataUrl,
     addVoiceLabel,
     addViewImages,
+    addImageDescription,
     addModalEditingCharacterId,
     stopAddModalVoicePreview,
   ]);
@@ -1124,6 +1278,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
         voice: addVoiceDataUrl,
         voiceLabel: addVoiceLabel,
         views: [...addViewImages],
+        imageDescription: addImageDescription,
         editingCharacterId: addModalEditingCharacterId,
       };
       setShowAddModal(false);
@@ -1135,8 +1290,12 @@ const CharacterList: React.FC<CharacterListProps> = ({
           setAddVoiceDataUrl(d.voice);
           setAddVoiceLabel(d.voiceLabel);
           const base = [...(d.views || EMPTY_FOUR_VIEWS)] as [string, string, string, string];
-          if (url?.trim()) base[slot] = url.trim();
+          if (url?.trim()) {
+            base[slot] = url.trim();
+            setAddReverseSlot(slot);
+          }
           setAddViewImages(base);
+          setAddImageDescription(d.imageDescription || '');
           setAddModalEditingCharacterId(d.editingCharacterId ?? null);
         }
       } finally {
@@ -1150,12 +1309,13 @@ const CharacterList: React.FC<CharacterListProps> = ({
       addVoiceDataUrl,
       addVoiceLabel,
       addViewImages,
+      addImageDescription,
       addModalEditingCharacterId,
       stopAddModalVoicePreview,
     ],
   );
 
-  if (loading) {
+  if (loading && characters.length === 0) {
     return (
       <div className={`h-full flex items-center justify-center ${isDarkMode ? 'text-white/60' : 'text-gray-600'}`}>
         <div className="text-sm">加载中...</div>
@@ -1673,7 +1833,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
             }}
           >
             <div
-              className={`relative w-full max-w-lg rounded-2xl border p-4 shadow-xl overflow-hidden ${assetLibEditModalPanel(isDarkMode)}`}
+              className={`relative w-full max-w-5xl rounded-2xl border p-5 shadow-xl overflow-hidden max-h-[92vh] overflow-y-auto ${assetLibEditModalPanel(isDarkMode)}`}
               onClick={(e) => e.stopPropagation()}
             >
               {!isDarkMode ? (
@@ -1716,15 +1876,17 @@ const CharacterList: React.FC<CharacterListProps> = ({
                     className={`w-full px-2 py-1.5 rounded-lg border text-sm outline-none transition-shadow disabled:opacity-50 ${assetLibEditModalInput(isDarkMode)}`}
                   />
                 </div>
-                <div className="min-w-0 flex flex-col max-w-md">
-                  <label
-                    htmlFor="add-character-voice-input"
-                    className={`block text-xs mb-1.5 font-semibold ${
-                      isDarkMode ? 'text-white/80' : 'text-[var(--scratch-sound)]'
-                    }`}
-                  >
-                    {libT.roleUploadVoice}
-                  </label>
+                {/* 左：参考音 · 右：形象描述（等宽等高） */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-stretch min-h-[220px]">
+                  <div className="min-w-0 flex flex-col h-full">
+                    <label
+                      htmlFor="add-character-voice-input"
+                      className={`block text-xs mb-1.5 font-semibold shrink-0 ${
+                        isDarkMode ? 'text-white/80' : 'text-[var(--scratch-sound)]'
+                      }`}
+                    >
+                      {libT.roleUploadVoice}
+                    </label>
                     <input
                       ref={addVoiceInputRef}
                       id="add-character-voice-input"
@@ -1735,7 +1897,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       aria-label={libT.roleUploadVoice}
                       title={libT.roleUploadVoice}
                     />
-                    <div className="flex flex-1 flex-col gap-2">
+                    <div className="flex flex-1 flex-col gap-2 min-h-0">
                       {!addVoiceDataUrl ? (
                         <button
                           type="button"
@@ -1743,7 +1905,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                           disabled={addSubmitting}
                           title={libT.roleUploadVoiceOptional}
                           aria-label={libT.roleUploadVoice}
-                          className={`w-full min-h-[2.75rem] rounded-xl border-2 border-dashed flex items-center justify-center gap-2 px-2 transition-colors disabled:opacity-50 ${
+                          className={`w-full flex-1 min-h-[7rem] rounded-xl border-2 border-dashed flex items-center justify-center gap-2 px-2 transition-colors disabled:opacity-50 ${
                             isDarkMode
                               ? 'border-white/20 hover:border-sky-500/60 hover:bg-white/5 text-white/70'
                               : 'border-[var(--scratch-sound)]/55 bg-fuchsia-50/90 text-fuchsia-800/75 hover:border-[var(--scratch-sound)]'
@@ -1760,7 +1922,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                             disabled={addSubmitting}
                             title={addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
                             aria-label={addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
-                            className={`w-full min-h-[2.75rem] rounded-xl border-2 px-2 py-1 flex items-center justify-center transition-colors disabled:opacity-50 ${
+                            className={`w-full flex-1 min-h-[7rem] rounded-xl border-2 px-2 py-2 flex items-center justify-center transition-colors disabled:opacity-50 ${
                               addModalVoicePlaying
                                 ? isDarkMode
                                   ? 'border-sky-400/90 ring-2 ring-sky-400/45 bg-sky-500/15'
@@ -1773,19 +1935,9 @@ const CharacterList: React.FC<CharacterListProps> = ({
                             <span className="sr-only">
                               {addModalVoicePlaying ? libT.roleStopPreview : libT.rolePreviewVoice}
                             </span>
-                            {addVoiceWaveformBusy ? (
-                              <Loader2 className="h-6 w-6 shrink-0 animate-spin text-sky-400" aria-hidden />
-                            ) : (
-                              <CharacterAddVoiceWaveformStrip
-                                bars={
-                                  addVoiceWaveformBars && addVoiceWaveformBars.length > 0
-                                    ? addVoiceWaveformBars
-                                    : ADD_VOICE_FALLBACK_WAVEFORM_BARS
-                                }
-                              />
-                            )}
+                            <CharacterAddVoiceWaveformStrip seed={addVoiceDataUrl || addVoiceLabel || 'voice'} />
                           </button>
-                          <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start justify-between gap-2 shrink-0">
                             <span
                               className={`text-xs min-w-0 flex-1 line-clamp-2 ${
                                 isDarkMode ? 'text-white/55' : 'text-fuchsia-800/75'
@@ -1817,7 +1969,7 @@ const CharacterList: React.FC<CharacterListProps> = ({
                           onClick={() => void handlePickVoiceFromCanvas()}
                           disabled={addSubmitting}
                           title={libT.roleVoicePickTitle}
-                          className={`mt-auto w-full py-2 px-2 text-xs font-medium disabled:opacity-50 ${assetLibBtnPrimary(
+                          className={`mt-auto w-full py-2 px-2 text-xs font-medium shrink-0 disabled:opacity-50 ${assetLibBtnPrimary(
                             isDarkMode,
                             '!w-full',
                             assetLibEditModalCanvasPickScratch(isDarkMode, 0),
@@ -1828,6 +1980,105 @@ const CharacterList: React.FC<CharacterListProps> = ({
                       )}
                     </div>
                   </div>
+
+                  <div className="min-w-0 flex flex-col h-full">
+                    <label className={`block text-xs font-medium mb-1.5 shrink-0 ${assetLibEditModalLabel(isDarkMode)}`}>
+                      {libT.roleImageDescLabel}
+                    </label>
+                    <textarea
+                      value={addImageDescription}
+                      onChange={(e) => setAddImageDescription(e.target.value)}
+                      placeholder={libT.roleImageDescPlaceholder}
+                      disabled={addSubmitting || isReversing}
+                      className={`w-full flex-1 min-h-[7rem] px-2 py-1.5 rounded-lg border text-sm outline-none transition-shadow resize-none disabled:opacity-50 ${assetLibEditModalInput(isDarkMode)}`}
+                    />
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 shrink-0">
+                      <select
+                        value={normalizeImageReverseCaptionModel(addReverseModel)}
+                        onChange={(e) =>
+                          setAddReverseModel(normalizeImageReverseCaptionModel(e.target.value))
+                        }
+                        disabled={addSubmitting || isReversing}
+                        title={libT.roleReverseModelLabel}
+                        className={`px-2 py-1 rounded-lg text-xs flex-shrink-0 max-w-[140px] outline-none disabled:opacity-50 ${
+                          isDarkMode
+                            ? 'bg-white/[0.06] text-white border border-white/10'
+                            : 'bg-black/[0.04] text-gray-900 border border-black/10'
+                        }`}
+                      >
+                        <option value={LLM_CHAT_MODEL_GPT56_TERRA}>
+                          {locale === 'en' ? 'LLM-5.6' : '大语言模型-5.6'}
+                        </option>
+                        <option value="joy-caption-two">Joy Caption Two</option>
+                      </select>
+                      {reversePriceLabel.ok ? (
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
+                            isDarkMode
+                              ? 'text-amber-200/90 bg-amber-500/15 border-amber-400/25'
+                              : 'text-amber-700 bg-amber-50 border-amber-200'
+                          }`}
+                          title={libT.roleReversePriceTitle}
+                        >
+                          {reversePriceLabel.value}
+                          {locale === 'en' ? ' ' : ''}
+                          {libT.roleReverseCreditsSuffix}
+                        </span>
+                      ) : (
+                        <span
+                          className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+                            isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+                          }`}
+                          title={libT.roleReverseNoPrice}
+                        >
+                          {libT.roleReverseNoPrice}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={
+                          addSubmitting ||
+                          isReversing ||
+                          !addViewImages.some((u) => String(u || '').trim())
+                        }
+                        onClick={() => {
+                          const selected =
+                            addReverseSlot != null && String(addViewImages[addReverseSlot] || '').trim()
+                              ? addReverseSlot
+                              : addViewImages.findIndex((u) => String(u || '').trim());
+                          if (selected < 0) {
+                            setExportImportMsg(libT.roleReverseNeedImage);
+                            setTimeout(() => setExportImportMsg(null), 2000);
+                            return;
+                          }
+                          void runReverseForViewSlot(selected);
+                        }}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium shrink-0 disabled:opacity-45 disabled:cursor-not-allowed transition-colors ${
+                          isDarkMode
+                            ? 'bg-sky-500/90 hover:bg-sky-400 text-white'
+                            : 'bg-sky-600 hover:bg-sky-500 text-white'
+                        }`}
+                        title={libT.roleReverseRun}
+                      >
+                        {isReversing ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                        ) : null}
+                        {isReversing ? libT.roleReversing : libT.roleReverseRun}
+                      </button>
+                    </div>
+                    {addReverseError ? (
+                      <p
+                        className={`text-[11px] mt-1 shrink-0 ${
+                          isDarkMode ? 'text-rose-300/90' : 'text-rose-600'
+                        }`}
+                        role="alert"
+                      >
+                        {addReverseError}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+
                 <div>
                   <span
                     className={`block text-xs font-semibold mb-1.5 ${
@@ -1846,49 +2097,92 @@ const CharacterList: React.FC<CharacterListProps> = ({
                     aria-label="为四视图槽位选择图片"
                     title="选择四视图图片"
                   />
-                  <div className="grid grid-cols-4 gap-2">
+                  <div className="grid grid-cols-4 gap-1">
                     {[0, 1, 2, 3].map((slot) => (
-                      <div key={slot} className="flex min-w-0 flex-col gap-2">
+                      <div key={slot} className="flex min-w-0 flex-col gap-1">
                         <button
                           type="button"
-                          disabled={addSubmitting}
-                          title={`点击上传视图 ${slot + 1}`}
-                          aria-label={`上传角色四视图第 ${slot + 1} 格`}
+                          disabled={addSubmitting || isReversing}
+                          title={
+                            addViewImages[slot]
+                              ? libT.roleReverseClickImageTitle
+                              : `点击上传视图 ${slot + 1}`
+                          }
+                          aria-label={
+                            addViewImages[slot]
+                              ? libT.roleReverseClickImageTitle
+                              : `上传角色四视图第 ${slot + 1} 格`
+                          }
                           onClick={() => {
+                            if (addViewImages[slot]) {
+                              setAddReverseSlot(slot);
+                              return;
+                            }
                             addViewSlotIndexRef.current = slot;
                             addViewInputRef.current?.click();
                           }}
-                          className={`relative aspect-square w-full max-h-24 rounded-lg border-2 border-dashed overflow-hidden flex items-center justify-center transition-colors disabled:opacity-50 ${
-                            isDarkMode
-                              ? 'border-white/20 hover:border-blue-500/50 hover:bg-white/5 text-white/50'
-                              : 'border-[var(--scratch-looks)]/45 hover:border-[var(--scratch-looks)] bg-violet-50/50 text-[var(--scratch-looks)]/70'
+                          className={`relative aspect-[9/16] w-full rounded-md border overflow-hidden flex items-center justify-center transition-colors disabled:opacity-50 ${
+                            addReverseSlot === slot && addViewImages[slot]
+                              ? isDarkMode
+                                ? 'border-sky-400 ring-2 ring-sky-400/50'
+                                : 'border-sky-500 ring-2 ring-sky-300/60'
+                              : isDarkMode
+                                ? 'border-white/15 hover:border-blue-500/50 bg-black/30 text-white/50'
+                                : 'border-[var(--scratch-looks)]/40 hover:border-[var(--scratch-looks)] bg-violet-50/40 text-[var(--scratch-looks)]/70'
                           }`}
                         >
                           {addViewImages[slot] ? (
-                            <img
-                              src={addViewImages[slot]}
-                              alt=""
-                              className="absolute inset-0 h-full w-full object-cover"
-                            />
+                            <>
+                              <img
+                                src={addViewImages[slot]}
+                                alt=""
+                                className="absolute inset-0 h-full w-full object-cover"
+                              />
+                              {isReversing && addReverseSlot === slot ? (
+                                <span className="absolute inset-0 flex items-center justify-center bg-black/45">
+                                  <Loader2 className="h-5 w-5 animate-spin text-white" aria-hidden />
+                                </span>
+                              ) : null}
+                            </>
                           ) : (
                             <Plus className="h-6 w-6 opacity-70" aria-hidden />
                           )}
                         </button>
-                        {requestViewSlotPickFromCanvas && (
-                          <button
-                            type="button"
-                            onClick={() => void handlePickViewSlotFromCanvas(slot)}
-                            disabled={addSubmitting}
-                            title={libT.roleViewPickTitle}
-                            className={`w-full shrink-0 py-2 px-1 text-[11px] font-medium leading-tight disabled:opacity-50 ${assetLibBtnPrimary(
-                              isDarkMode,
-                              '!w-full !py-2 !px-1 !text-[11px]',
-                              assetLibEditModalCanvasPickScratch(isDarkMode, slot + 1),
-                            )}`}
-                          >
-                            {libT.roleViewPickFromCanvas}
-                          </button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {addViewImages[slot] ? (
+                            <button
+                              type="button"
+                              disabled={addSubmitting || isReversing}
+                              title={libT.roleReplaceShort}
+                              onClick={() => {
+                                addViewSlotIndexRef.current = slot;
+                                addViewInputRef.current?.click();
+                              }}
+                              className={`flex-1 shrink-0 py-0.5 text-[10px] font-medium disabled:opacity-50 ${
+                                isDarkMode
+                                  ? 'text-sky-300/90 hover:bg-white/5 rounded'
+                                  : 'text-[var(--scratch-looks)] hover:bg-violet-50 rounded'
+                              }`}
+                            >
+                              {libT.roleReplaceShort}
+                            </button>
+                          ) : null}
+                          {requestViewSlotPickFromCanvas && (
+                            <button
+                              type="button"
+                              onClick={() => void handlePickViewSlotFromCanvas(slot)}
+                              disabled={addSubmitting || isReversing}
+                              title={libT.roleViewPickTitle}
+                              className={`flex-1 shrink-0 py-1 px-0.5 text-[10px] font-medium leading-tight disabled:opacity-50 ${assetLibBtnPrimary(
+                                isDarkMode,
+                                '!w-full !py-1 !px-0.5 !text-[10px]',
+                                assetLibEditModalCanvasPickScratch(isDarkMode, slot + 1),
+                              )}`}
+                            >
+                              {libT.roleViewPickFromCanvas}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>

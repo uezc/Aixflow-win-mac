@@ -1,5 +1,5 @@
 import React, { forwardRef, useImperativeHandle, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
-import { normalizeVideoUrl } from '../utils/normalizeVideoUrl';
+import { normalizeVideoUrl, toElectronVideoElementSrc } from '../utils/normalizeVideoUrl';
 import { useDarkAlert } from '../contexts/DarkAlertContext';
 
 export interface VideoPreviewRef {
@@ -22,8 +22,8 @@ export interface VideoPreviewRef {
   seekTo: (sec: number) => void;
   setVolume: (volume: number) => void;
   getVolume: () => number;
-  /** 画布 transform 下通过 body 壳全屏播放 */
-  openPortalFullscreen: () => void;
+  /** 画布 transform 下通过 body 壳全屏播放；成功打开返回 true */
+  openPortalFullscreen: () => boolean;
   /** 当前 <video> 元素（色度预览等） */
   getVideoElement: () => HTMLVideoElement | null;
 }
@@ -87,6 +87,212 @@ function pointInNativeVideoFullscreenControlSlot(clientX: number, clientY: numbe
   return xFromRight > 28 && xFromRight < 108;
 }
 
+/** 顶栏放大等场景：节点内 <video> 未挂载时，用 URL 直接开 body 浮层预览 */
+let standalonePortalShell: HTMLDivElement | null = null;
+let standalonePortalEnteredNativeFs = false;
+let standalonePortalCleanup: (() => void) | null = null;
+
+function teardownStandaloneVideoPortal(): void {
+  const shell = standalonePortalShell;
+  const cleanup = standalonePortalCleanup;
+  standalonePortalCleanup = null;
+  standalonePortalEnteredNativeFs = false;
+  standalonePortalShell = null;
+  try {
+    cleanup?.();
+  } catch {
+    /* ignore */
+  }
+  if (!shell) return;
+  try {
+    shell.remove();
+  } catch {
+    /* ignore */
+  }
+}
+
+export type OpenVideoUrlPortalFullscreenOptions = {
+  src: string;
+  startAtSec?: number;
+  exitLabel?: string;
+  muted?: boolean;
+};
+
+/**
+ * 不依赖节点内 VideoPreview 挂载：在 body 上挂 CSS fixed 全屏壳 + 临时 video。
+ * 与 openPortalFullscreen（挪动已有 video）互补；成功返回 true。
+ */
+export function openVideoUrlPortalFullscreen(opts: OpenVideoUrlPortalFullscreenOptions): boolean {
+  const src = (opts.src || '').trim();
+  if (!src || typeof document === 'undefined') return false;
+  if (standalonePortalShell || document.querySelector('[data-nexflow-portal-video-fs="1"]')) {
+    return false;
+  }
+
+  const shell = document.createElement('div');
+  shell.dataset.nexflowPortalVideoFs = '1';
+  Object.assign(shell.style, {
+    position: 'fixed',
+    inset: '0',
+    zIndex: '100050',
+    background: '#000',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.setAttribute('aria-label', opts.exitLabel || 'Exit fullscreen');
+  closeBtn.textContent = '\u00D7';
+  Object.assign(closeBtn.style, {
+    position: 'absolute',
+    top: '12px',
+    right: '12px',
+    zIndex: '2',
+    width: '44px',
+    height: '44px',
+    borderRadius: '10px',
+    background: 'rgba(255,255,255,0.12)',
+    color: '#fff',
+    border: 'none',
+    cursor: 'pointer',
+    fontSize: '26px',
+    lineHeight: '44px',
+    padding: '0',
+  });
+
+  const vid = document.createElement('video');
+  vid.src = src;
+  vid.controls = true;
+  vid.playsInline = true;
+  vid.loop = true;
+  vid.muted = !!opts.muted;
+  if (src.startsWith('http://') || src.startsWith('https://')) {
+    vid.crossOrigin = 'anonymous';
+  }
+  Object.assign(vid.style, {
+    width: '100%',
+    height: '100%',
+    maxWidth: '100vw',
+    maxHeight: '100vh',
+    objectFit: 'contain',
+  });
+
+  const startAt =
+    typeof opts.startAtSec === 'number' && Number.isFinite(opts.startAtSec) && opts.startAtSec > 0
+      ? opts.startAtSec
+      : 0;
+  if (startAt > 0) {
+    const applySeek = () => {
+      try {
+        const d = vid.duration;
+        const hi = Number.isFinite(d) && d > 0 ? Math.max(0, d - 1e-6) : startAt;
+        vid.currentTime = Math.min(Math.max(0, startAt), hi);
+      } catch {
+        /* ignore */
+      }
+    };
+    vid.addEventListener('loadedmetadata', applySeek, { once: true });
+  }
+
+  const exitPortal = () => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => void | Promise<void>;
+    };
+    const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement;
+    if (fsEl === shell) {
+      const docEx = document.exitFullscreen?.();
+      if (docEx !== undefined) {
+        void Promise.resolve(docEx).catch(() => teardownStandaloneVideoPortal());
+        return;
+      }
+      void Promise.resolve(doc.webkitExitFullscreen?.()).catch(() => teardownStandaloneVideoPortal());
+      return;
+    }
+    teardownStandaloneVideoPortal();
+  };
+
+  closeBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    exitPortal();
+  };
+  shell.onclick = (ev) => {
+    if (ev.target === shell) exitPortal();
+  };
+
+  const onFsChange = () => {
+    const doc = document as Document & { webkitFullscreenElement?: Element | null };
+    const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement;
+    if (fsEl && fsEl === shell) {
+      standalonePortalEnteredNativeFs = true;
+      return;
+    }
+    if (fsEl) return;
+    if (!standalonePortalEnteredNativeFs) return;
+    if (standalonePortalShell === shell) teardownStandaloneVideoPortal();
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape') return;
+    if (standalonePortalShell !== shell) return;
+    if (standalonePortalEnteredNativeFs) return;
+    e.preventDefault();
+    e.stopPropagation();
+    teardownStandaloneVideoPortal();
+  };
+
+  shell.appendChild(closeBtn);
+  shell.appendChild(vid);
+  document.body.appendChild(shell);
+  standalonePortalShell = shell;
+  standalonePortalEnteredNativeFs = false;
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+  window.addEventListener('keydown', onKeyDown, true);
+  standalonePortalCleanup = () => {
+    document.removeEventListener('fullscreenchange', onFsChange);
+    document.removeEventListener('webkitfullscreenchange', onFsChange);
+    window.removeEventListener('keydown', onKeyDown, true);
+    try {
+      vid.pause();
+      vid.removeAttribute('src');
+      vid.load();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  void vid.play().catch(() => {});
+
+  const sh = shell as unknown as {
+    requestFullscreen?: (opts?: FullscreenOptions) => Promise<void>;
+    webkitRequestFullscreen?: () => void;
+  };
+  try {
+    if (typeof sh.requestFullscreen === 'function') {
+      void Promise.resolve(sh.requestFullscreen())
+        .then(() => {
+          if (standalonePortalShell === shell) standalonePortalEnteredNativeFs = true;
+        })
+        .catch(() => {
+          /* keep CSS overlay */
+        });
+    } else if (typeof sh.webkitRequestFullscreen === 'function') {
+      try {
+        sh.webkitRequestFullscreen();
+        standalonePortalEnteredNativeFs = true;
+      } catch {
+        /* keep CSS overlay */
+      }
+    }
+  } catch {
+    /* keep CSS overlay */
+  }
+
+  return true;
+}
+
 /**
  * VideoPreview 组件
  * - 支持 ref 与 isPaused，用于 LOD：缩小时或离屏时暂停，避免大纹理导致 GPU 崩溃
@@ -119,7 +325,10 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
   const videoElRef = useRef<HTMLVideoElement>(null);
   const videoHostRef = useRef<HTMLDivElement>(null);
   const portalShellRef = useRef<HTMLDivElement | null>(null);
+  /** 仅当浏览器原生 Fullscreen API 真正进入后为 true；CSS 浮层模式勿被 fullscreenchange 误拆 */
+  const portalEnteredNativeFsRef = useRef(false);
   const savedVideoStyleRef = useRef('');
+  const savedVideoControlsRef = useRef(false);
   const showAlert = useDarkAlert().showAlert;
   const decodedNotifySentRef = React.useRef(false);
   const pendingRvfcRef = React.useRef<number | null>(null);
@@ -688,16 +897,8 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     };
   }, [releaseVideo, captureCurrentFrame, onLastFrameCapture]);
 
-  // Electron 下 <video> 对 local-resource:// 可能无法正确加载（协议流式响应），改为使用 file:// 以可靠播放
-  const displaySrc = React.useMemo(() => {
-    if (!cleanSrc?.startsWith('local-resource://')) return cleanSrc;
-    if (typeof window !== 'undefined' && (window as any).electronAPI) {
-      const pathPart = cleanSrc.replace(/^local-resource:\/\/+/, '');
-      const fileUrl = pathPart ? `file:///${pathPart.replace(/\\/g, '/')}` : cleanSrc;
-      return fileUrl;
-    }
-    return cleanSrc;
-  }, [cleanSrc]);
+  // Electron 下 <video> 对 local-resource:// 偶发异常时转 file:///；必须带中文分段 encode
+  const displaySrc = React.useMemo(() => toElectronVideoElementSrc(cleanSrc) || cleanSrc, [cleanSrc]);
   
   // 判断是否为远程 URL，需要添加 crossOrigin
   const isRemoteUrl = cleanSrc.startsWith('http://') || cleanSrc.startsWith('https://');
@@ -816,10 +1017,12 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     const host = videoHostRef.current;
     const vid = videoElRef.current;
     if (!shell) return;
+    portalEnteredNativeFsRef.current = false;
     try {
       if (host && vid && vid.parentNode === shell) {
         host.appendChild(vid);
         vid.style.cssText = savedVideoStyleRef.current;
+        vid.controls = savedVideoControlsRef.current;
       }
     } catch (_) {
       /* ignore */
@@ -832,11 +1035,26 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     portalShellRef.current = null;
   }, [flushPlaybackTime]);
 
-  const openPortalFullscreenLayer = useCallback(() => {
-      if (!fixFullscreenForTransformedParent) return;
+  const openPortalFullscreenLayer = useCallback((): boolean => {
+      if (!fixFullscreenForTransformedParent) return false;
       const host = videoHostRef.current;
       const vid = videoElRef.current;
-      if (!host || !vid || portalShellRef.current) return;
+      if (!host || !vid || portalShellRef.current) return false;
+      // 顶栏 URL 浮层已开时勿再叠一层
+      if (standalonePortalShell || document.querySelector('[data-nexflow-portal-video-fs="1"]')) {
+        return false;
+      }
+      // releaseVideo 后可能清空 src；放大前按当前源补回，避免黑屏
+      const liveSrc = (vid.currentSrc || vid.getAttribute('src') || '').trim();
+      const wantSrc = (cleanSrcRef.current || '').trim();
+      if (!liveSrc && wantSrc) {
+        try {
+          vid.src = wantSrc;
+          vid.load();
+        } catch {
+          /* ignore */
+        }
+      }
       const shell = document.createElement('div');
       shell.dataset.nexflowPortalVideoFs = '1';
       Object.assign(shell.style, {
@@ -868,20 +1086,40 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
         lineHeight: '44px',
         padding: '0',
       });
-      closeBtn.onclick = () => {
-        const docEx = document.exitFullscreen?.();
-        if (docEx !== undefined) {
-          void Promise.resolve(docEx);
+      const exitPortal = () => {
+        const doc = document as Document & {
+          webkitFullscreenElement?: Element | null;
+          webkitExitFullscreen?: () => void | Promise<void>;
+        };
+        const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement;
+        if (fsEl === shell) {
+          const docEx = document.exitFullscreen?.();
+          if (docEx !== undefined) {
+            void Promise.resolve(docEx).catch(() => restorePortalFullscreen());
+            return;
+          }
+          void Promise.resolve(doc.webkitExitFullscreen?.()).catch(() => restorePortalFullscreen());
           return;
         }
-        const wf = (document as unknown as { webkitExitFullscreen?: () => void | Promise<void> }).webkitExitFullscreen;
-        void Promise.resolve(wf?.());
+        restorePortalFullscreen();
+      };
+      closeBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        exitPortal();
+      };
+      // 点击黑边关闭（点到 video 不关）
+      shell.onclick = (ev) => {
+        if (ev.target === shell) exitPortal();
       };
       shell.appendChild(closeBtn);
       document.body.appendChild(shell);
       portalShellRef.current = shell;
+      portalEnteredNativeFsRef.current = false;
       savedVideoStyleRef.current = vid.style.cssText;
+      savedVideoControlsRef.current = vid.controls;
       shell.appendChild(vid);
+      // 节点内常用 controls=false（外挂播放条）；进浮层后打开原生控件便于观看
+      vid.controls = true;
       Object.assign(vid.style, {
         width: '100%',
         height: '100%',
@@ -889,24 +1127,33 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
         maxHeight: '100vh',
         objectFit: 'contain',
       });
+      void vid.play().catch(() => {});
       const sh = shell as unknown as {
         requestFullscreen?: (opts?: FullscreenOptions) => Promise<void>;
         webkitRequestFullscreen?: () => void;
       };
-      let p: Promise<void> | void | undefined;
+      // 原生 FS 在 Electron / transform 祖先下常失败；CSS fixed 壳才是可靠体验，失败时切勿拆层
       try {
         if (typeof sh.requestFullscreen === 'function') {
-          p = sh.requestFullscreen();
+          void Promise.resolve(sh.requestFullscreen())
+            .then(() => {
+              if (portalShellRef.current === shell) portalEnteredNativeFsRef.current = true;
+            })
+            .catch(() => {
+              /* keep CSS overlay */
+            });
         } else if (typeof sh.webkitRequestFullscreen === 'function') {
-          sh.webkitRequestFullscreen();
+          try {
+            sh.webkitRequestFullscreen();
+            portalEnteredNativeFsRef.current = true;
+          } catch (_) {
+            /* keep CSS overlay */
+          }
         }
       } catch (_) {
-        restorePortalFullscreen();
-        return;
+        /* keep CSS overlay */
       }
-      void Promise.resolve(p).catch(() => {
-        restorePortalFullscreen();
-      });
+      return true;
   }, [
       fixFullscreenForTransformedParent,
       portalFullscreenExitTitle,
@@ -956,8 +1203,14 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
     const doc = document as Document & { webkitFullscreenElement?: Element | null };
     const onFsChange = () => {
       const fsEl = document.fullscreenElement ?? doc.webkitFullscreenElement;
-      if (fsEl) return;
       const shell = portalShellRef.current;
+      if (fsEl && shell && fsEl === shell) {
+        portalEnteredNativeFsRef.current = true;
+        return;
+      }
+      if (fsEl) return;
+      // 仅在「曾进入原生全屏」后退出时拆层；纯 CSS 浮层靠关闭钮 / Esc
+      if (!portalEnteredNativeFsRef.current) return;
       const vid = videoElRef.current;
       if (shell && vid?.parentNode === shell) {
         restorePortalFullscreen();
@@ -969,6 +1222,20 @@ export const VideoPreview = forwardRef<VideoPreviewRef, VideoPreviewProps>(funct
       document.removeEventListener('fullscreenchange', onFsChange);
       document.removeEventListener('webkitfullscreenchange', onFsChange);
     };
+  }, [fixFullscreenForTransformedParent, restorePortalFullscreen]);
+
+  useEffect(() => {
+    if (!fixFullscreenForTransformedParent) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (!portalShellRef.current) return;
+      if (portalEnteredNativeFsRef.current) return; // 原生 FS 由浏览器 Esc 退出
+      e.preventDefault();
+      e.stopPropagation();
+      restorePortalFullscreen();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [fixFullscreenForTransformedParent, restorePortalFullscreen]);
 
   useEffect(() => {

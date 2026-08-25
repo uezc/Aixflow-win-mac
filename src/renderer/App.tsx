@@ -314,7 +314,7 @@ const App: React.FC = () => {
       e.stopPropagation();
       if (window.electronAPI?.toggleFullscreen) {
         window.electronAPI.toggleFullscreen().catch((err) => {
-          console.error('鍒囨崲鍏ㄥ睆澶辫触:', err);
+          console.error('切换全屏失败:', err);
         });
       }
     };
@@ -338,7 +338,7 @@ const App: React.FC = () => {
     }
   }, [isActivated]);
 
-  // 濡傛灉姝ｅ湪妫€鏌ユ縺娲荤姸鎬侊紝鏄剧ず鍔犺浇
+  // 如果正在检查激活状态，显示加载
   if (checkingActivation) {
     return (
       <ErrorBoundary>
@@ -346,14 +346,14 @@ const App: React.FC = () => {
         <div className="min-h-screen bg-black flex items-center justify-center">
           <div className="text-center">
             <div className="w-8 h-8 border-4 border-apple-blue border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-white/60">姝ｅ湪妫€鏌ユ縺娲荤姸鎬?..</p>
+            <p className="text-white/60">正在检查激活状态...</p>
           </div>
         </div>
       </ErrorBoundary>
     );
   }
 
-  // 涓荤晫闈細甯﹁矾鐢憋紙/admin 鏃犻渶婵€娲诲嵆鍙闂級
+  // 主界面：带路由（/admin 无需激活即可访问）
   return (
     <ErrorBoundary>
       <TechCursor />

@@ -5,6 +5,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
+import { forceClearVoiceModalLock } from '../utils/voiceModalGate';
 
 /**
  * AI 状态类型
@@ -69,6 +70,8 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
   
   const [status, setStatus] = useState<AIStatus>('idle');
   const [payload, setPayload] = useState<AIStatusPacket['payload'] | null>(null);
+  /** 用户主动取消后忽略随后到达的「已取消」ERROR，避免弹窗打扰 */
+  const userCancelledRef = useRef(false);
   
   // 使用 ref 存储回调，避免闭包问题
   const callbacksRef = useRef({ onStatusUpdate, onComplete, onError });
@@ -445,6 +448,13 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         callbacksRef.current.onComplete?.(payload);
       } else if (packet.status === 'ERROR') {
         const payload = callbackPacket.payload as { error?: string; nxAuthRequired?: boolean } | undefined;
+        const errMsg = String(payload?.error || packet.payload?.error || '');
+        const isCancelErr = /已取消|cancell?ed|aborted/i.test(errMsg);
+        if (userCancelledRef.current && isCancelErr) {
+          setStatus('idle');
+          setPayload(null);
+          return;
+        }
         promptNxSaasLoginIfNeeded(payload?.error, payload?.nxAuthRequired);
         callbacksRef.current.onError?.(packet.payload?.error || 'Unknown error');
       }
@@ -484,6 +494,7 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
     // ✅ 修复：状态源头检查 - 确保 setStatus('START') 是立即触发同步更新的
     // 重置状态（进入一次新的调用）
     // 使用 flushSync 确保状态立即同步更新（如果可用）
+    userCancelledRef.current = false;
     setStatus('START');
     setPayload(null);
     
@@ -539,11 +550,24 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
     }
   }, [modelId, nodeId]);
 
-  // 取消 AI 调用（当前版本仅重置状态，未来可扩展为真正的取消）
+  // 取消 AI 调用：重置 UI，并真正 abort 主进程 FC LLM
   const cancel = useCallback(() => {
+    userCancelledRef.current = true;
     setStatus('idle');
     setPayload(null);
-  }, []);
+    try {
+      void window.electronAPI?.abortFcLlm?.();
+    } catch {
+      /* ignore */
+    }
+    forceClearVoiceModalLock();
+    // 立刻通知外层清掉「生成中」遮罩/进度（不必等主进程 ERROR 回包）
+    callbacksRef.current.onStatusUpdate?.({
+      nodeId: nodeId.trim(),
+      status: 'ERROR',
+      payload: { error: '已取消' },
+    });
+  }, [nodeId]);
 
   return {
     status,

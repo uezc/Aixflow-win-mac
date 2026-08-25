@@ -5,11 +5,14 @@ import { settingsT } from '../i18n/settingsI18n';
 type MediaOssRouteToggleProps = {
   isDarkMode?: boolean;
   disabled?: boolean;
+  /** 窄顶栏：用短文案，减小占位 */
+  compact?: boolean;
 };
 
 export default function MediaOssRouteToggle({
   isDarkMode = true,
   disabled = false,
+  compact = false,
 }: MediaOssRouteToggleProps) {
   const { locale } = useAppLocale();
   const t = settingsT(locale);
@@ -75,11 +78,12 @@ export default function MediaOssRouteToggle({
           e.stopPropagation();
           void handleSelect('cn');
         }}
-        className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-wait disabled:opacity-45 ${
+        className={`rounded-full whitespace-nowrap ${compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]'} font-medium transition-colors disabled:cursor-wait disabled:opacity-45 ${
           region === 'cn' ? activeClass : idleClass
         }`}
       >
-        {region === 'cn' ? '●' : '○'} {t.regionRouteChinaOptimized}
+        {region === 'cn' ? '●' : '○'}{' '}
+        {compact ? t.regionRouteChinaOptimizedShort : t.regionRouteChinaOptimized}
       </button>
       <button
         type="button"
@@ -88,11 +92,12 @@ export default function MediaOssRouteToggle({
           e.stopPropagation();
           void handleSelect('hk');
         }}
-        className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-wait disabled:opacity-45 ${
+        className={`rounded-full whitespace-nowrap ${compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]'} font-medium transition-colors disabled:cursor-wait disabled:opacity-45 ${
           region === 'hk' ? activeClass : idleClass
         }`}
       >
-        {region === 'hk' ? '●' : '○'} {t.regionRouteGlobal}
+        {region === 'hk' ? '●' : '○'}{' '}
+        {compact ? t.regionRouteGlobalShort : t.regionRouteGlobal}
       </button>
     </div>
   );

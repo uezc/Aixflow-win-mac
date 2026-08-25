@@ -54,6 +54,7 @@ export function buildLlmChatPayload(modelId, innerBody, messages) {
   };
   if (innerBody.temperature != null) payload.temperature = innerBody.temperature;
   if (innerBody.max_tokens != null) payload.max_tokens = innerBody.max_tokens;
+  if (innerBody.response_format != null) payload.response_format = innerBody.response_format;
 
   if (isRunningHubLlmModel(model)) {
     if (payload.temperature == null) payload.temperature = 1;

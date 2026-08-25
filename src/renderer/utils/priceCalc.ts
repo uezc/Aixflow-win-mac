@@ -38,7 +38,7 @@ export interface VideoPriceParams {
   /** Grok video3 图生视频：秒数 6–30（字符串与节点 data 一致） */
   durationGrok3?: string;
   resolutionGrok3?: '720p';
-  resolutionRhartV31?: '720p' | '1080p' | '4k';
+  resolutionRhartV31?: '720p' | '1080p' | '4k' | '1920p' | '720' | '1280' | '1920';
   resolutionWan26?: '720p' | '1080p';
   durationWan26Flash?: string;
   enableAudio?: boolean;
@@ -50,6 +50,9 @@ export interface VideoPriceParams {
   resolutionLtx23Lipsync?: string;
   durationLtx23T2v?: string;
   resolutionLtx23T2v?: string;
+  /** MiniMax-H3 文生/图生/多参/音参：仅 720p → megapixels 0.9；音参为映射后的计费档 6|10|15|20 */
+  durationMinimaxH3?: '6' | '10' | '15' | '20';
+  resolutionMinimaxH3?: '720p';
   /** WanAnimate 角色替换：与 buildVideoBillingModelId / VideoProvider 一致 */
   resolutionWanAnimate?: '720p' | '1080p';
   wanAnimateClipSec?: '5' | '8' | '10' | '15';
@@ -57,4 +60,8 @@ export interface VideoPriceParams {
   durationSeedance?: '5' | '10' | '15';
   resolutionGeminiOmni?: '720p' | '1080p' | '4k';
   durationGeminiOmni?: '6' | '8' | '10';
+  /** 视频超分放大：目标分辨率 */
+  targetResolution?: '720p' | '1080p' | '2k' | '4k';
+  /** 视频超分放大：输入视频时长（秒）；计费 Quantity = max(ceil(时长), 5) */
+  mediaDurationSec?: number;
 }

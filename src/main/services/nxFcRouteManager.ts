@@ -31,22 +31,31 @@ export function getStoredNxFcRoute(): NxFcRoute {
   return raw === 'beijing' ? 'beijing' : 'hk';
 }
 
+let appliedFcEndpoint = '';
+
 export function applyNxFcRoute(route: NxFcRoute): string {
   const hk = getHongKongFcEndpoint();
   const beijing = getBeijingFcEndpoint();
+  let next = '';
   if (route === 'beijing' && beijing) {
-    const next = setAliyunFcRuntimeOverride(beijing);
-    resetNxFcAxios();
-    return next;
+    next = setAliyunFcRuntimeOverride(beijing);
+  } else if (route === 'hk' && hk) {
+    next = setAliyunFcRuntimeOverride(hk);
+  } else {
+    clearAliyunFcRuntimeOverride();
+    next = getAliyunFcInitUserUrl();
   }
-  if (route === 'hk' && hk) {
-    const next = setAliyunFcRuntimeOverride(hk);
+  const normalized = String(next || '')
+    .trim()
+    .replace(/\/init-user\/?$/, '')
+    .replace(/\/run-task\/?$/, '')
+    .replace(/\/$/, '');
+  // 线路未变时勿 reset axios：否则 keepAlive 被拆、代理提示刷屏，听写/轮询易 ECONNRESET
+  if (normalized && normalized !== appliedFcEndpoint) {
+    appliedFcEndpoint = normalized;
     resetNxFcAxios();
-    return next;
   }
-  clearAliyunFcRuntimeOverride();
-  resetNxFcAxios();
-  return getAliyunFcInitUserUrl();
+  return next;
 }
 
 function normalizeFcBase(endpoint: string): string {

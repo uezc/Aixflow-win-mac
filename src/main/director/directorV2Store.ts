@@ -4,6 +4,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { getProjectFolderPath } from '../utils/projectFolderHelper.js';
@@ -71,6 +72,8 @@ export async function directorV2SaveSession(
   try {
     const root = await resolveRoot(projectId);
     if (!root) return { ok: false, error: '项目目录不存在' };
+    // 迁移旧数据：把内嵌的 base64 图片/声音提取为文件、替换为 local-resource:// 路径（避免 session 巨大卡顿/OOM）
+    extractSessionDataUrls(session, root);
     const snapshot = {
       schemaVersion: 'director-domain.v2',
       saved_at: Date.now(),
@@ -100,7 +103,16 @@ export async function directorV2LoadSession(
     const root = await resolveRoot(projectId);
     if (!root) return { ok: false, error: '项目目录不存在' };
     const snap = readJsonIfExists<{ session?: unknown }>(path.join(root, 'session.json'));
-    if (snap?.session) return { ok: true, session: snap.session };
+    if (snap?.session) {
+      // 迁移旧数据：加载时就把内嵌 base64 提取为文件（否则老草稿每次切步都带着几十 MB 的 base64 卡顿/OOM）
+      if (extractSessionDataUrls(snap.session, root)) {
+        atomicWriteJson(
+          path.join(root, 'session.json'),
+          { ...snap, saved_at: Date.now(), session: snap.session },
+        );
+      }
+      return { ok: true, session: snap.session };
+    }
 
     // 碎片恢复
     const bible = readJsonIfExists(path.join(root, 'bible.json'));
@@ -387,5 +399,119 @@ export async function directorV2UpsertCastLibrary(
     return { ok: true, library: merged };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+const MIME_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+  'image/bmp': '.bmp',
+  'image/avif': '.avif',
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/wave': '.wav',
+  'audio/ogg': '.ogg',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/aac': '.aac',
+  'audio/flac': '.flac',
+  'audio/webm': '.webm',
+};
+
+/** 把上传的图片/声音二进制写到项目目录，返回 local-resource:// 路径（避免把 base64 塞进 session 导致卡顿/OOM） */
+export async function directorV2SaveAssetFile(
+  projectId: string,
+  opts: { kind: 'image' | 'audio'; filename: string; mime?: string; data: ArrayBuffer | Uint8Array },
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+  try {
+    const root = await resolveRoot(projectId);
+    if (!root) return { ok: false, error: '项目目录不存在' };
+    const rawName =
+      String(opts.filename || '').replace(/\.[^.]+$/, '') || (opts.kind === 'audio' ? 'voice' : 'image');
+    const stem = safeFileStem(rawName, String(Date.now()).slice(-8));
+    const mime = String(opts.mime || '').split(';')[0].trim().toLowerCase();
+    const ext =
+      MIME_EXT[mime] ||
+      path.extname(String(opts.filename || '')).toLowerCase() ||
+      (opts.kind === 'audio' ? '.mp3' : '.png');
+    const sub = opts.kind === 'audio' ? 'voices' : 'characters';
+    const destDir = path.join(root, 'assets', sub);
+    fs.mkdirSync(destDir, { recursive: true });
+    const dest = path.join(destDir, `${stem}${ext}`);
+    const bytes = opts.data instanceof Uint8Array ? opts.data : new Uint8Array(opts.data);
+    fs.writeFileSync(dest, bytes);
+    return { ok: true, url: fsPathToLocalResourceUrl(dest) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function dataUrlToFile(dataUrl: string, root: string, kind: 'image' | 'audio'): string | null {
+  const m = /^data:([^;]+);base64,([\s\S]+)$/.exec(String(dataUrl || '').trim());
+  if (!m) return null;
+  const mime = String(m[1] || '').split(';')[0].trim().toLowerCase();
+  const ext = MIME_EXT[mime] || (kind === 'audio' ? '.mp3' : '.png');
+  try {
+    const buf = Buffer.from(m[2], 'base64');
+    // 用内容哈希做文件名：同一张图重复出现只落一份，且迁移幂等（save/load 都跑不会产生重复文件）
+    const stem = `${kind === 'audio' ? 'voice' : 'image'}-${crypto
+      .createHash('md5')
+      .update(m[2])
+      .digest('hex')
+      .slice(0, 14)}`;
+    const destDir = path.join(root, 'assets', kind === 'audio' ? 'voices' : 'characters');
+    fs.mkdirSync(destDir, { recursive: true });
+    const dest = path.join(destDir, `${stem}${ext}`);
+    fs.writeFileSync(dest, buf);
+    return fsPathToLocalResourceUrl(dest);
+  } catch {
+    return null;
+  }
+}
+
+/** 递归把 session 里内嵌的 data:image / data:audio base64 提取为文件、替换为 local-resource:// 路径。返回是否发生迁移。 */
+function extractSessionDataUrls(node: unknown, root: string): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) {
+    let changed = false;
+    for (const item of node) if (extractSessionDataUrls(item, root)) changed = true;
+    return changed;
+  }
+  const rec = node as Record<string, unknown>;
+  let changed = false;
+  for (const key of Object.keys(rec)) {
+    const v = rec[key];
+    if (typeof v === 'string' && (v.startsWith('data:image/') || v.startsWith('data:audio/'))) {
+      const kind = v.startsWith('data:audio/') ? 'audio' : 'image';
+      const url = dataUrlToFile(v, root, kind);
+      if (url) {
+        rec[key] = url;
+        changed = true;
+      }
+    } else if (v && typeof v === 'object') {
+      if (extractSessionDataUrls(v, root)) changed = true;
+    }
+  }
+  return changed;
+}
+
+/**
+ * 加载工程图时的一键迁移：把 nodes 里（含各节点 directorDomain）内嵌的 data:image / data:audio
+ * base64 提取为 director-v2/assets 下的文件、替换为 local-resource:// 路径，
+ * 避免短剧草稿整图几十 MB 塞进内存导致切步卡顿/OOM。返回是否发生了迁移（调用方据此回写 data.json）。
+ */
+export function directorV2MigrateGraphDataUrls(
+  nodes: unknown,
+  projectFolderPath: string,
+): boolean {
+  try {
+    const root = path.join(projectFolderPath, ROOT);
+    return extractSessionDataUrls(nodes, root);
+  } catch {
+    return false;
   }
 }

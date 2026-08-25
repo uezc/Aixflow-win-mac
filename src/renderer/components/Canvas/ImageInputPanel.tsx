@@ -8,6 +8,7 @@ import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { micLevelCssVars } from '../../utils/micInputLevel';
 import VoiceMicGlyph from './VoiceMicGlyph';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { isModelNotPricedError } from '../../utils/priceCalc';
 import { getImageDisplayPrice } from '../../utils/cloudModelPricing';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
@@ -395,11 +396,9 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   });
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
   const hideScrollbarsForVoice = isDictationActive || micVoiceBusy;
@@ -604,12 +603,8 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   const getMaxRefImages = (m: string): number => getImageModelMaxRefs(m);
   const maxRefImages = getMaxRefImages(model);
   const imagePriceLabel = useMemo(() => {
-    try {
-      return { ok: true as const, value: getImageDisplayPrice({ model, resolution }, cloudMap) };
-    } catch (e) {
-      if (isModelNotPricedError(e)) return { ok: false as const };
-      throw e;
-    }
+    const value = getImageDisplayPrice({ model, resolution }, cloudMap);
+    return value == null ? ({ ok: false as const }) : ({ ok: true as const, value });
   }, [model, resolution, cloudMap]);
 
   const modelOptions = useMemo(
@@ -628,7 +623,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
     onModelChange?.(modelOptions[0].value);
   }, [isImageToImageMode, model, modelOptions, onModelChange]);
 
-  /** 下架 / 未知活跃目录外模型 → 默认 banana-2.0 */
+  /** 下架 / 未知活跃目录外模型 → 默认全能图片 G-2.0 */
   useEffect(() => {
     const next = normalizeImageModelIfRetired(model);
     if (next !== model) {
@@ -1083,11 +1078,13 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   }, [flushPromptSync, composePromptWithCapsules, localPrompt, model, aspectRatio, resolution, seedreamV5Resolution, seedreamWidth, seedreamHeight, orderedInputImages, executeAI, isImageToImageMode, onStart, onProgressChange, onProgressMessageChange, projectId, isSeedreamV5, usesTierResolution, it.generatingImage, showAlert, onErrorTask]);
 
   // 图生图模式时，必须有图片数据才能运行；有参考图但模型仅文生时禁用（等自动切模型）
+  // 无 OTS 云端价禁止生成（禁止本地价回退）
   const isRunDisabled =
     aiStatus === 'PROCESSING' ||
     !composePromptWithCapsules(localPrompt).trim() ||
     (isImageToImageMode && orderedInputImages.length === 0) ||
-    (isImageToImageMode && !imageModelSupportsI2I(model));
+    (isImageToImageMode && !imageModelSupportsI2I(model)) ||
+    !imagePriceLabel.ok;
 
   const TAG_ROW_HEIGHT = 30;
   const INPUT_BOX_HEIGHT = 88;

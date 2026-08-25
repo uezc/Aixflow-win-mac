@@ -49,11 +49,15 @@ async function main() {
       `cd ~ && wget -O ${zipName} "${urlFixed}" && unzip -o ${zipName} && ` +
       `sudo cp site/index.html /var/www/aixflow/public/index.html && ` +
       `sudo cp site/recharge.html /var/www/aixflow/public/recharge.html && ` +
+      `sudo cp site/installer.html /var/www/aixflow/public/installer.html && ` +
       `sudo cp site/icon.png /var/www/aixflow/icon.png && ` +
       `sudo cp -r site/assets/* /var/www/aixflow/assets/ && ` +
-      `ls /var/www/aixflow/public/recharge.html /var/www/aixflow/assets/aixflowLanding-*.js /var/www/aixflow/assets/aixflowRecharge-*.js`,
+      `ls /var/www/aixflow/public/recharge.html /var/www/aixflow/public/installer.html /var/www/aixflow/assets/aixflowLanding-*.js /var/www/aixflow/assets/aixflowRecharge-*.js /var/www/aixflow/assets/aixflowInstaller-*.js`,
   );
-  console.log(`\n验证: https://aixflow.com.cn/ 与 https://aixflow.ai/`);
+  console.log(
+    `\n验证: https://aixflow.com.cn/ （「下载安装」应直链 Aixflow-Installer-*.exe 玻璃安装器）、https://aixflow.ai/\n` +
+      `NSIS Setup 为后备；installer.html 仅为可选辅助页。`,
+  );
 }
 
 main().catch((e) => {

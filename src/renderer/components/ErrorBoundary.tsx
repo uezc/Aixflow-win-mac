@@ -46,6 +46,12 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   handleReset = () => {
+    const msg = String(this.state.error?.message || '');
+    // 热更新后常见 ReferenceError：仅 setState 仍跑旧模块，必须整页重载
+    if (/is not defined|is not a function|Cannot find module|Failed to fetch dynamically imported module/i.test(msg)) {
+      window.location.reload();
+      return;
+    }
     this.setState({
       hasError: false,
       error: null,

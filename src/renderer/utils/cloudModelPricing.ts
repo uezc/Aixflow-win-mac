@@ -1,18 +1,14 @@
 import type { NxModelConfigRow } from './nxModelConfigPricingCache';
+import { DEFAULT_IMAGE_MODEL } from '../config/imageModelUiPolicy';
 import {
-  getImagePrice,
-  getVideoPrice,
-  getAudioPrice,
-  getImageReversePrice,
   isModelNotPricedError,
   yuanbaoCostFromTableDimensions,
-  cnyRetailToYuanbaoInt,
   resolveImageBillingModelId,
-  IMAGE_BILLING_MULTIPLIER_BY_MODEL,
 } from './priceCalc';
 import type { VideoPriceParams } from './priceCalc';
 import { buildVideoBillingModelId, getVideoBillingQuantity } from './videoBillingSku';
-import { resolveModelYuanbao } from '../../shared/yuanbaoModelBilling';
+import { imageTo3dAppIdForModel, resolveImageTo3dModelId } from '../../shared/imageTo3dModels';
+export { TRELLIS2_IMAGE_TO_3D_APP_ID } from '../../shared/imageTo3dModels';
 
 /**
  * 运营公式（与 Tablestore nx_model_config 一致）：
@@ -20,6 +16,8 @@ import { resolveModelYuanbao } from '../../shared/yuanbaoModelBilling';
  * - Base_Price / Multiplier / Yuanbao_Rate：表列 base_price、multiplier、yuanbao_rate
  * - Quantity：图片/音频/反推多为 1；视频为「秒数」或与具体 SKU 行约定（见 getVideoQuantityForCloudKey）
  * yuanbao_rate 缺省或非正时回退 10（1 元 = 10 元宝）
+ *
+ * **计价规则（强制）：只认 OTS `nx_model_config`。取不到云端价则返回 null，禁止回退本地 cost_table。**
  */
 export const DEFAULT_YUANBAO_RATE_FALLBACK = 10;
 
@@ -98,80 +96,77 @@ function pickRow(map: Record<string, NxModelConfigRow> | null | undefined, id: s
   return undefined;
 }
 
-/** 无云端行时：与 FC getFinalPrice 一致，零售价(CNY)→元宝（cnyRetailToYuanbaoInt，默认倍率 10） */
-function localRetailCnyToYuanbao(cnyRetail: number, quantity = 1): number {
-  const c = Number(cnyRetail);
-  const q = Math.max(1, Number(quantity) || 1);
-  if (!Number.isFinite(c) || c <= 0) return 1;
-  return Math.max(1, cnyRetailToYuanbaoInt(c * q));
+function assertCloudMap(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+): cloudMap is Record<string, NxModelConfigRow> {
+  return !!cloudMap && typeof cloudMap === 'object';
 }
 
-/** banana / nano 与面板一致：无 resolution 时按 1k 档计价，避免误用 default 与 1k 混档 */
-function effectiveImageResolutionForFallback(model: string, resolution: string | undefined): string | undefined {
-  const m = String(model || '').trim();
-  const r = String(resolution ?? '').trim();
-  if (r) return r;
-  if (m === 'banana-2.0' || m === 'nano-banana' || m === 'rhart-image-g-2' || m === 'rhart-image-g') return '1k';
-  if (m === 'seedream-v5') return '2k';
-  if (m === 'youchuan-text-to-image-v81') return '1k';
-  if (m === 'z-image' || m === 'lens' || m === 'flux2-klein') return '1080p';
-  return undefined;
-}
-
-/** 无云端表时图片：与 FC getFinalPrice 一致（getImagePrice 含 markup × IMAGE_BILLING_MULTIPLIER × 扣费倍率） */
-function localImageYuanbaoFallback(
-  params: { model: string; resolution?: string; quantity?: number },
-): number {
-  const m = String(params.model || '').trim();
-  const qty = Math.max(1, Number(params.quantity) > 0 ? Number(params.quantity) : 1);
-  const res = effectiveImageResolutionForFallback(m, params.resolution);
-  const key = resolveImageBillingModelId(m);
-  const mult = IMAGE_BILLING_MULTIPLIER_BY_MODEL[key] ?? 1;
-  const cnyRetail = getImagePrice({ model: m, resolution: res }, {});
-  return Math.max(1, cnyRetailToYuanbaoInt(cnyRetail * mult * qty));
+/** 仅查 OTS 行；无表/无行返回 null（禁止本地价；渲染路径绝不抛错） */
+function requireOtsYuanbao(
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+  keys: string[],
+  quantity: number,
+  _modelHint: string,
+  _kind: string,
+): number | null {
+  try {
+    if (!assertCloudMap(cloudMap)) return null;
+    const qty = Math.max(1, Number(quantity) || 1);
+    for (const k of keys) {
+      const id = String(k || '').trim();
+      if (!id) continue;
+      const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
+      if (y != null) return y;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export function getImageDisplayPrice(
   params: { model: string; resolution?: string; quantity?: number },
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
-): number {
+): number | null {
   const qty = Math.max(1, Number(params.quantity) > 0 ? Number(params.quantity) : 1);
   const m = String(params.model || '').trim();
   const r = String(params.resolution || '').trim().toLowerCase();
-  /** 有分辨率时先查「model-resolution」主键（与 OTS 如 banana-2.0-2k 一致），再回退裸 model，避免一档价盖住分档价 */
+  /** 有分辨率时先查「model-resolution」主键（与 OTS 如 banana-2.0-2k 一致），再回退裸 model */
   const keys = r ? [`${m}-${r}`, m] : [m];
-  for (const k of keys) {
-    const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, k), qty);
-    if (y != null) return y;
-  }
-  return localImageYuanbaoFallback(params);
+  return requireOtsYuanbao(cloudMap, keys, qty, m, 'image');
 }
 
-export function getVideoDisplayPrice(params: VideoPriceParams, cloudMap: Record<string, NxModelConfigRow> | null | undefined): number {
-  const model = String(params.model || '').trim();
-  const data = params as unknown as Record<string, unknown>;
-  const sku = buildVideoBillingModelId(model, data);
-  const uiSeconds = getVideoBillingQuantity(model, data);
-  const order = [sku, model].filter(Boolean);
-  for (const k of order) {
-    const q = getVideoQuantityForCloudKey(k, uiSeconds);
-    const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, k), q);
-    if (y != null) return y;
+export function getVideoDisplayPrice(
+  params: VideoPriceParams,
+  cloudMap: Record<string, NxModelConfigRow> | null | undefined,
+): number | null {
+  try {
+    const model = String(params.model || '').trim();
+    const data = params as unknown as Record<string, unknown>;
+    const sku = buildVideoBillingModelId(model, data);
+    const uiSeconds = getVideoBillingQuantity(model, data);
+    if (!assertCloudMap(cloudMap)) return null;
+    const order = [sku, model].filter(Boolean);
+    for (const k of order) {
+      const q = getVideoQuantityForCloudKey(k, uiSeconds);
+      const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, k), q);
+      if (y != null) return y;
+    }
+    return null;
+  } catch {
+    return null;
   }
-  return localRetailCnyToYuanbao(getVideoPrice(params as unknown as Record<string, unknown>), 1);
 }
 
 export function getAudioDisplayPrice(
   model: string,
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
+): number | null {
   const m = String(model || '').trim();
   if (m === 'ai-voice-cover') return 0;
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, m), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(getAudioPrice(m), qty);
+  return requireOtsYuanbao(cloudMap, [m], quantity, m, 'audio');
 }
 
 /** 与 LLMInputPanel / FC 默认对话模型一致（sync_to_tablestore nx_model_config） */
@@ -204,15 +199,12 @@ export function getImageReverseDisplayPrice(
   model: ImageReverseCaptionModel | string,
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
+): number | null {
   const id = normalizeImageReverseCaptionModel(model);
   if (id === LLM_CHAT_MODEL_GPT56_TERRA) {
-    return getLlmChatDisplayPrice(cloudMap, qty, LLM_CHAT_MODEL_GPT56_TERRA);
+    return getLlmChatDisplayPrice(cloudMap, quantity, LLM_CHAT_MODEL_GPT56_TERRA);
   }
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(getImageReversePrice(id), qty);
+  return requireOtsYuanbao(cloudMap, [id], quantity, id, 'reverse');
 }
 
 /** 普通对话可选模型 */
@@ -233,25 +225,15 @@ export const LLM_CHAT_MODEL_LABELS: Record<string, string> = {
 };
 
 /**
- * 普通对话单次运行预估元宝：优先该 model id 的 nx_model_config 行，
- * 否则 MODEL_YUANBAO_RATES；勿把其它模型误回退成 gpt-3.5-turbo 的表价（Terra 等会显示偏低）。
+ * 普通对话单次运行预估元宝：仅认该 model id 的 nx_model_config 行。
  */
 export function getLlmChatDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
   modelId: string = LLM_CHAT_DISPLAY_MODEL_ID,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
+): number | null {
   const id = String(modelId || '').trim() || LLM_CHAT_DISPLAY_MODEL_ID;
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
-  if (y != null) return y;
-  const rate = resolveModelYuanbao(id, 0);
-  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
-  if (id !== LLM_CHAT_DISPLAY_MODEL_ID) {
-    const yDefault = yuanbaoCostFromCloudRow(pickRow(cloudMap, LLM_CHAT_DISPLAY_MODEL_ID), qty);
-    if (yDefault != null) return yDefault;
-  }
-  return localRetailCnyToYuanbao(0.01, qty);
+  return requireOtsYuanbao(cloudMap, [id], quantity, id, 'llm');
 }
 
 /** 云端录音文件转写（百炼 fun-asr）nx_model_config / 回退表主键 */
@@ -261,79 +243,63 @@ export const FILE_TRANSCRIBE_MODEL_ID = 'fun-asr';
 export const VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID = 'viapi-segment-video-body';
 
 /**
- * 云端文件转写单次预估元宝：优先 nx_model_config `fun-asr`，
- * 否则 MODEL_YUANBAO_RATES（默认 5），再回退 AUDIO_MODEL_CNY 0.5 元。
+ * 云端文件转写单次预估元宝：仅认 nx_model_config `fun-asr`。
  */
 export function getFileTranscribeDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, FILE_TRANSCRIBE_MODEL_ID), qty);
-  if (y != null) return y;
-  const rate = resolveModelYuanbao(FILE_TRANSCRIBE_MODEL_ID, 0);
-  if (rate.yuanbao > 0) return Math.max(1, Math.round(rate.yuanbao * qty));
-  return localRetailCnyToYuanbao(0.5, qty);
+): number | null {
+  return requireOtsYuanbao(cloudMap, [FILE_TRANSCRIBE_MODEL_ID], quantity, FILE_TRANSCRIBE_MODEL_ID, 'audio');
 }
 
 /**
  * 智能抠像预估元宝（秒级）：billableSeconds = max(1, ceil(秒))；
  * cost = max(1, ceil(unitCostPerMinute * billableSeconds / 60))。
- * 优先 nx_model_config `viapi-segment-video-body`（base_price 为「元/分钟」，应填 2；× yuanbao_rate10 = 20 元宝/分钟），
- * 否则 20 元宝/分钟，再回退零售 2.0 元/分钟。
+ * 仅认 nx_model_config `viapi-segment-video-body`。
  */
 export function getViapiSegmentVideoBodyDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   durationSec = 1,
-): number {
+): number | null {
   const billableSeconds = Math.max(1, Math.ceil(Math.max(0, Number(durationSec) || 0)));
-  const unitFromCloud = yuanbaoCostFromCloudRow(
-    pickRow(cloudMap, VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID),
+  const unitFromCloud = requireOtsYuanbao(
+    cloudMap,
+    [VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID],
     1,
+    VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID,
+    'video',
   );
-  if (unitFromCloud != null) {
-    return Math.max(1, Math.ceil((unitFromCloud * billableSeconds) / 60));
-  }
-  const rate = resolveModelYuanbao(VIAPI_SEGMENT_VIDEO_BODY_MODEL_ID, 0);
-  if (rate.yuanbao > 0) {
-    return Math.max(1, Math.ceil((rate.yuanbao * billableSeconds) / 60));
-  }
-  const unitFallback = localRetailCnyToYuanbao(2.0, 1);
-  return Math.max(1, Math.ceil((unitFallback * billableSeconds) / 60));
+  if (unitFromCloud == null) return null;
+  return Math.max(1, Math.ceil((unitFromCloud * billableSeconds) / 60));
 }
 
 /**
- * 视频分析单次预估：优先表主键 RunningHub 应用 ID，其次 video-analysis；无表时按 VIDEO 类默认 base 0.1 元。
+ * 视频分析单次预估：仅认表主键 RunningHub 应用 ID 或 video-analysis。
  */
 export function getVideoAnalysisDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  for (const id of [VIDEO_ANALYSIS_APP_ID, 'video-analysis']) {
-    const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
-    if (y != null) return y;
-  }
-  return localRetailCnyToYuanbao(0.1, qty);
+): number | null {
+  return requireOtsYuanbao(
+    cloudMap,
+    [VIDEO_ANALYSIS_APP_ID, 'video-analysis'],
+    quantity,
+    VIDEO_ANALYSIS_APP_ID,
+    'video',
+  );
 }
 
 /**
  * SORA2 角色创建单次预估（画布「角色」节点 / upload-character-video）：
- * 优先 nx_model_config 主键 `sora-2-character-plugin`（插件算力 / RunningHub）或 `sora-2-character-core`（核心算力 / BLTCY），
- * 其次回退 `sora-2-character`；无表时与视频分析一致按种子 base 0.1 元折算元宝。
+ * 仅认 nx_model_config 主键。
  */
 export function getSora2CharacterDisplayPrice(
   channel: 'plugin' | 'core',
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
+): number | null {
   const specific = channel === 'core' ? 'sora-2-character-core' : 'sora-2-character-plugin';
-  for (const id of [specific, 'sora-2-character']) {
-    const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, id), qty);
-    if (y != null) return y;
-  }
-  return localRetailCnyToYuanbao(0.1, qty);
+  return requireOtsYuanbao(cloudMap, [specific, 'sora-2-character'], quantity, specific, 'video');
 }
 
 /** RunningHub 抠图应用 ID（与 matting.ts、sync_to_tablestore 一致） */
@@ -352,27 +318,23 @@ export const VIDEO_SUBTITLE_WATERMARK_AI_APP_ID = '2082682378039943169';
 export const CHARACTER_MULTI_ANGLE_AI_APP_ID = '1990056102572290049';
 /** 图片转 3D（GLB）RunningHub AI App — Hy3D 经典 */
 export const IMAGE_TO_3D_AI_APP_ID = '2059618241806430209';
-export { TRELLIS2_IMAGE_TO_3D_APP_ID } from '../../shared/imageTo3dModels';
-import { imageTo3dAppIdForModel, resolveImageTo3dModelId } from '../../shared/imageTo3dModels';
 
 /**
- * 抠图 / 去水印单次预估：nx_model_config 主键为 RunningHub 应用 ID；无表时按种子 base 0.01 元（sync BASE_PRICE_CNY）。
+ * 抠图 / 去水印等：仅认 nx_model_config 主键为 RunningHub 应用 ID。
  */
 function getRunningHubImageAuxDisplayPrice(
   appId: string,
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, String(appId).trim()), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(0.01, qty);
+): number | null {
+  const id = String(appId).trim();
+  return requireOtsYuanbao(cloudMap, [id], quantity, id, 'image');
 }
 
 export function getMattingDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
+): number | null {
   return getRunningHubImageAuxDisplayPrice(MATTING_AI_APP_ID, cloudMap, quantity);
 }
 
@@ -380,7 +342,7 @@ export function getImageTo3dDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
   modelId?: string | null,
-): number {
+): number | null {
   const appId = imageTo3dAppIdForModel(resolveImageTo3dModelId(modelId));
   return getRunningHubImageAuxDisplayPrice(appId, cloudMap, quantity);
 }
@@ -388,59 +350,58 @@ export function getImageTo3dDisplayPrice(
 export function getWatermarkRemovalDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
+): number | null {
   return getRunningHubImageAuxDisplayPrice(WATERMARK_REMOVAL_AI_APP_ID, cloudMap, quantity);
 }
 
 export function getImageUpscaleV3DisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, IMAGE_UPSCALE_V3_AI_APP_ID), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(0.05, qty);
+): number | null {
+  return requireOtsYuanbao(cloudMap, [IMAGE_UPSCALE_V3_AI_APP_ID], quantity, IMAGE_UPSCALE_V3_AI_APP_ID, 'image');
 }
 
 export function getVideoWatermarkRemovalDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
+): number | null {
   return getRunningHubImageAuxDisplayPrice(VIDEO_WATERMARK_REMOVAL_AI_APP_ID, cloudMap, quantity);
 }
 
 export function getVideoDepthConvertDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, VIDEO_DEPTH_CONVERT_AI_APP_ID), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(0.15, qty);
+): number | null {
+  return requireOtsYuanbao(cloudMap, [VIDEO_DEPTH_CONVERT_AI_APP_ID], quantity, VIDEO_DEPTH_CONVERT_AI_APP_ID, 'video');
 }
 
 export function getVideoSubtitleWatermarkDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, VIDEO_SUBTITLE_WATERMARK_AI_APP_ID), qty);
-  if (y != null) return y;
-  return localRetailCnyToYuanbao(0.15, qty);
+): number | null {
+  return requireOtsYuanbao(
+    cloudMap,
+    [VIDEO_SUBTITLE_WATERMARK_AI_APP_ID],
+    quantity,
+    VIDEO_SUBTITLE_WATERMARK_AI_APP_ID,
+    'video',
+  );
 }
 
 /**
- * 人物多角度单次预估：nx_model_config 主键为 RunningHub 应用 ID `1990056102572290049`；
- * 无表时按 cost_table 中该 ID 的零售价（与 getImagePrice/markup 一致），勿误用当前画布文生图模型价。
+ * 人物多角度单次预估：仅认 nx_model_config 主键。
  */
 export function getCharacterMultiAngleDisplayPrice(
   cloudMap: Record<string, NxModelConfigRow> | null | undefined,
   quantity = 1,
-): number {
-  const qty = Math.max(1, Number(quantity) || 1);
-  const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, CHARACTER_MULTI_ANGLE_AI_APP_ID), qty);
-  if (y != null) return y;
-  return localImageYuanbaoFallback({ model: CHARACTER_MULTI_ANGLE_AI_APP_ID, quantity: qty });
+): number | null {
+  return requireOtsYuanbao(
+    cloudMap,
+    [CHARACTER_MULTI_ANGLE_AI_APP_ID],
+    quantity,
+    CHARACTER_MULTI_ANGLE_AI_APP_ID,
+    'image',
+  );
 }
 
 export function getNodeDisplayPrice(
@@ -470,13 +431,18 @@ export function getNodeDisplayPrice(
         throw e;
       }
     }
-    return getLlmChatDisplayPrice(cloudMap, 1);
+    try {
+      return getLlmChatDisplayPrice(cloudMap, 1, String(data.model || LLM_CHAT_DISPLAY_MODEL_ID));
+    } catch (e) {
+      if (isModelNotPricedError(e)) return null;
+      throw e;
+    }
   }
   try {
     if (nodeType === 'image') {
       return getImageDisplayPrice(
         {
-          model: String(data.model || 'banana-2.0'),
+          model: String(data.model || DEFAULT_IMAGE_MODEL),
           resolution: typeof data.resolution === 'string' ? data.resolution : undefined,
           quantity: imageQty,
         },
@@ -504,3 +470,6 @@ export function getNodeDisplayPrice(
   }
   return null;
 }
+
+/** @deprecated 仅兼容旧 import；图片计费 id 仍走 resolveImageBillingModelId */
+export { resolveImageBillingModelId };

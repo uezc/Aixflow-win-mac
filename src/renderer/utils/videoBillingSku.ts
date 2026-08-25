@@ -28,6 +28,11 @@ export const GROK3_STABLE_DURATION_SEC_OPTIONS = [6, 10] as const;
 /** LTX2.3 图生/文生可选时长（秒） */
 export const LTX23_DURATION_SEC_OPTIONS = [5, 10, 15] as const;
 
+/** MiniMax-H3 文生/图生/多参可选时长（秒） */
+export const MINIMAX_H3_DURATION_SEC_OPTIONS = [6, 10, 15, 20] as const;
+/** MiniMax-H3 音参计费档：按参考音时长向上取整到档（无 5s） */
+export const MINIMAX_H3_AUDIO_DURATION_SEC_OPTIONS = [6, 10, 15, 20] as const;
+
 /** Seedance 2.0 Fast 多模态视频可选时长（秒） */
 export const SEEDANCE_DURATION_SEC_OPTIONS = [5, 10, 15] as const;
 
@@ -169,6 +174,8 @@ export function normalizeGeminiOmniFlashDurationChoice(
 }
 
 export type Ltx23DurationChoice = `${(typeof LTX23_DURATION_SEC_OPTIONS)[number]}`;
+export type MinimaxH3DurationChoice = `${(typeof MINIMAX_H3_DURATION_SEC_OPTIONS)[number]}`;
+export type MinimaxH3AudioDurationChoice = `${(typeof MINIMAX_H3_AUDIO_DURATION_SEC_OPTIONS)[number]}`;
 
 export function normalizeLtx23DurationSec(raw: string | number | undefined, fallback = 10): number {
   const allowed = LTX23_DURATION_SEC_OPTIONS;
@@ -193,6 +200,65 @@ export function normalizeLtx23DurationChoice(
   fallback = 10,
 ): Ltx23DurationChoice {
   return String(normalizeLtx23DurationSec(raw, fallback)) as Ltx23DurationChoice;
+}
+
+export function normalizeMinimaxH3DurationSec(raw: string | number | undefined, fallback = 10): number {
+  const allowed = MINIMAX_H3_DURATION_SEC_OPTIONS;
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if ((allowed as readonly number[]).includes(n)) return n;
+  if (!Number.isFinite(n)) return fallback;
+  let best: number = fallback;
+  let minDist = Infinity;
+  for (const v of allowed) {
+    const d = Math.abs(v - n);
+    if (d < minDist) {
+      minDist = d;
+      best = v;
+    }
+  }
+  return best;
+}
+
+export function normalizeMinimaxH3DurationChoice(
+  raw: string | number | undefined,
+  fallback = 10,
+): MinimaxH3DurationChoice {
+  return String(normalizeMinimaxH3DurationSec(raw, fallback)) as MinimaxH3DurationChoice;
+}
+
+/**
+ * 参考音实际秒数 → 计费档：≥ 实际秒的最小档；>20 封顶 20；读不到保守 20。
+ */
+export function mapMinimaxH3AudioBillingDurationSec(
+  actualSec: number | undefined | null,
+): (typeof MINIMAX_H3_AUDIO_DURATION_SEC_OPTIONS)[number] {
+  const tiers = MINIMAX_H3_AUDIO_DURATION_SEC_OPTIONS;
+  const n = Number(actualSec);
+  if (!Number.isFinite(n) || n <= 0) return 20;
+  for (const t of tiers) {
+    if (t >= n) return t;
+  }
+  return 20;
+}
+
+/** 规范化已选/已映射的计费档（向上取整请用 mapMinimaxH3AudioBillingDurationSec） */
+export function normalizeMinimaxH3AudioDurationSec(
+  raw: string | number | undefined,
+  fallback = 20,
+): number {
+  const allowed = MINIMAX_H3_AUDIO_DURATION_SEC_OPTIONS;
+  const n = parseInt(String(raw ?? '').trim(), 10);
+  if ((allowed as readonly number[]).includes(n)) return n;
+  if (n === 5) return 6;
+  if (!Number.isFinite(n)) return fallback;
+  return mapMinimaxH3AudioBillingDurationSec(n);
+}
+
+export function normalizeMinimaxH3AudioDurationChoice(
+  raw: string | number | undefined,
+  fallback = 20,
+): MinimaxH3AudioDurationChoice {
+  return String(normalizeMinimaxH3AudioDurationSec(raw, fallback)) as MinimaxH3AudioDurationChoice;
 }
 
 export function normalizeGrok3StableDurationSec(raw: string | number | undefined, fallback = 10): number {
@@ -351,6 +417,16 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
   }
 
+  // Wan animate2：按原视频秒数计费；SKU 仅分辨率，Quantity = mediaDurationSec（ceil）
+  if (m === 'wan-animate-2') {
+    const resRaw = String(input.resolutionWanAnimate ?? '').trim().toLowerCase();
+    const resSeg =
+      resRaw === '1080p' || resRaw === '1080' || resRaw === '1920x1080' || resRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    return joinKey('wan', 'animate', '2', resSeg);
+  }
+
   if (m === 'hey-gem') {
     return joinKey('hey', 'gem', 'plus');
   }
@@ -469,6 +545,32 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
     return joinKey('ltx', '2-3', res, dur);
   }
 
+  if (m === 'minimax-h3-t2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
+    return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
+  }
+  if (m === 'minimax-h3-i2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
+    return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
+  }
+  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  if (m === 'minimax-h3-multi') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
+    return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
+  }
+  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  if (m === 'minimax-h3-audio') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3AudioDurationSec(
+      input.durationMinimaxH3 as string | number | undefined,
+      20,
+    );
+    return joinKey('minimax', 'h3', 'audio', res, `${durSec}s`);
+  }
+
   if (m === 'ltx-2.3-hdr-multi') {
     const resRaw =
       input.resolutionLtx23HdrMulti != null && String(input.resolutionLtx23HdrMulti).trim() !== ''
@@ -494,12 +596,27 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
   }
 
   if (m === 'rh-video-start-end') {
-    const resRaw = input.resolutionRhartV31 != null && String(input.resolutionRhartV31).trim() !== '' ? lc(String(input.resolutionRhartV31)) : '';
-    const res = resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    const resRaw =
+      input.resolutionRhartV31 != null && String(input.resolutionRhartV31).trim() !== ''
+        ? lc(String(input.resolutionRhartV31))
+        : '';
+    // OTS: ltx-2-3-start-end-{720p|1080p|1920p}-{5s|10s|15s}；旧 4k→1920p
+    const res =
+      resRaw === '720' || resRaw === '720p'
+        ? '720p'
+        : resRaw === '1920' || resRaw === '1920p' || resRaw === '4k' || resRaw === '2160p'
+          ? '1920p'
+          : '1080p'; // 含 1080 / 1280 / 1080p
     const d = parseInt(String(input.duration ?? ''), 10);
     const durNum = Number.isFinite(d) && d > 0 ? Math.max(5, Math.min(15, d)) : 5;
     const dur = durNum >= 15 ? '15s' : durNum >= 10 ? '10s' : '5s';
     return joinKey('ltx', '2-3', 'start-end', res, dur);
+  }
+
+  if (m === 'rhart-video-upscaler') {
+    const r = lc(String(input.targetResolution ?? '1080p'));
+    const res = r === '720p' || r === '1080p' || r === '2k' || r === '4k' ? r : '1080p';
+    return joinKey('rhart', 'video', 'upscaler', res);
   }
 
   return lc(model);
@@ -507,11 +624,26 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
 
 export function buildVideoBillingModelId(baseModel: string, input: Record<string, unknown>): string {
   const compositeKey = buildVideoBillingModelIdCore(baseModel, input);
-  console.log('[Pricing] Generated Key:', compositeKey);
   return compositeKey;
 }
 
 export function getVideoBillingQuantity(baseModel: string, input: Record<string, unknown>): number {
+  const m = String(baseModel || '').trim();
+  // 视频超分：按秒基价；Quantity = max(floor(时长), 5)，与播放器时钟对齐
+  if (m === 'rhart-video-upscaler') {
+    const raw =
+      input.mediaDurationSec ?? input.durationRhartVideoUpscaler ?? input.duration ?? 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 5;
+    return Math.max(5, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+  }
+  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))，最长 10 分钟
+  if (m === 'wan-animate-2') {
+    const raw = input.mediaDurationSec ?? input.duration ?? 0;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 1;
+    return Math.max(1, Math.ceil(Math.min(n, 10 * 60) - 1e-9));
+  }
   const sku = buildVideoBillingModelIdCore(baseModel, input);
   const matches = [...sku.matchAll(/-(\d+)s(?=-|$)/gi)];
   if (matches.length === 0) return 1;

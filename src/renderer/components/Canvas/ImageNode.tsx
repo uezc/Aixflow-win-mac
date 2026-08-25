@@ -343,6 +343,17 @@ const formatImagePath = (path: string): string => {
   return `local-resource://${encodedPath}`;
 };
 
+function isLocalDiskMediaUrl(url: string): boolean {
+  const u = (url || '').trim();
+  return (
+    u.startsWith('local-resource://') ||
+    u.startsWith('file:') ||
+    u.startsWith('data:') ||
+    u.startsWith('blob:') ||
+    /^[a-zA-Z]:[\\/]/.test(u)
+  );
+}
+
 function isHttpLikeMediaUrl(url: string): boolean {
   return /^https?:\/\//i.test((url || '').trim());
 }
@@ -1102,9 +1113,27 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     [imgc.imageLoadFailedShort]
   );
   const { cloudMap } = useNxModelPricing();
-  const mattingDisplayYuanbao = useMemo(() => getMattingDisplayPrice(cloudMap), [cloudMap]);
-  const watermarkDisplayYuanbao = useMemo(() => getWatermarkRemovalDisplayPrice(cloudMap), [cloudMap]);
-  const upscaleV3DisplayYuanbao = useMemo(() => getImageUpscaleV3DisplayPrice(cloudMap), [cloudMap]);
+  const mattingDisplayYuanbao = useMemo(() => {
+    try {
+      return getMattingDisplayPrice(cloudMap);
+    } catch {
+      return null;
+    }
+  }, [cloudMap]);
+  const watermarkDisplayYuanbao = useMemo(() => {
+    try {
+      return getWatermarkRemovalDisplayPrice(cloudMap);
+    } catch {
+      return null;
+    }
+  }, [cloudMap]);
+  const upscaleV3DisplayYuanbao = useMemo(() => {
+    try {
+      return getImageUpscaleV3DisplayPrice(cloudMap);
+    } catch {
+      return null;
+    }
+  }, [cloudMap]);
   /** 场景转换360：图生图可用模型（同源目录） */
   const scene360ConvertModelOptions = useMemo(
     () =>
@@ -2105,7 +2134,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           labels: urls.map((_, i) => labelForIndex(i)),
           resolution: data?.resolution ?? '1k',
           aspectRatio: data?.aspectRatio ?? DEFAULT_IMAGE_ASPECT_RATIO,
-          model: data?.model ?? 'banana-2.0',
+          model: data?.model ?? DEFAULT_IMAGE_MODEL,
           seedreamWidth: d?.seedreamWidth ?? 2048,
           seedreamHeight: d?.seedreamHeight ?? 2048,
           avgColorHex: data?.avgColorHex || data?.imageAsset?.avgColorHex || '',
@@ -2649,7 +2678,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
           isUserResized: false,
           resolution: (data?.resolution as string) || '1k',
           aspectRatio: data?.aspectRatio || aspect,
-          model: (data?.model as string) || 'banana-2.0',
+          model: (data?.model as string) || DEFAULT_IMAGE_MODEL,
           seedreamWidth: Number(data?.seedreamWidth) || seedreamDims.width,
           seedreamHeight: Number(data?.seedreamHeight) || seedreamDims.height,
           prompt: '',
@@ -4380,10 +4409,32 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     const priority = calcViewportPriority(distance, isInPrefetchArea, directionalBias);
 
     void (async () => {
+      const formattedImmediate = formatImagePath(primaryPath);
+      const localInstant = isLocalDiskMediaUrl(formattedImmediate);
+      if (localInstant && formattedImmediate) {
+        if (formattedImmediate !== currentImageSrcRef.current) {
+          setCurrentImageSrc(formattedImmediate);
+          currentImageSrcRef.current = formattedImmediate;
+        }
+        setIsImageLoaded(true);
+        setIsImageVisible(true);
+        markImageLoadedInSession(formattedImmediate);
+      }
+
       const primarySrc = await resolveImageSrcForElectronDisplay(primaryPath, projectId);
       const previewSrc = previewImagePath ? await resolveImageSrcForElectronDisplay(previewImagePath, projectId) : '';
       if (cancelled) return;
       const src = primarySrc;
+      if (localInstant) {
+        if (src && src !== currentImageSrcRef.current) {
+          setCurrentImageSrc(src);
+          currentImageSrcRef.current = src;
+          markImageLoadedInSession(src);
+        }
+        setIsImageLoaded(true);
+        setIsImageVisible(true);
+        return;
+      }
       const sameSrc = src === currentImageSrcRef.current;
       if (sameSrc && (isImageLoadedRef.current || isImageLoadedInSession(src))) {
         if (!isImageLoadedRef.current) setIsImageLoaded(true);

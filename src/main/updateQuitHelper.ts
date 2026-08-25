@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { app, BrowserWindow } from 'electron';
+import { BrowserWindow } from 'electron';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,15 +37,18 @@ export function destroyAllApplicationWindows(): void {
 }
 
 /**
- * 应用内更新：先落盘/关窗/结束子进程，再 app.exit(0)。
- * 安装包由 electron-updater 的 autoInstallOnAppQuit 在进程退出时拉起（避免 quitAndInstall 先启安装器再退出导致「无法关闭」）。
+ * 应用内更新安装前准备：落盘钩子 / 关窗 / 结束子进程。
+ * 不在此处 exit——应由调用方再执行 quitAndInstall(true, true)，
+ * 以便静默安装仍带 --force-run，安装完成后自动拉起应用。
+ *
+ * 说明：仅依赖 autoInstallOnAppQuit + app.exit(0) 时，electron-updater
+ * 会走 install(true, false)，NSIS 无 --force-run，表现为「更新后闪退/不再启动」。
  */
-export async function prepareAndExitForUpdate(): Promise<void> {
+export async function prepareForUpdateInstall(): Promise<void> {
   if (beforeUpdateQuitHook) {
     await beforeUpdateQuitHook();
   }
   destroyAllApplicationWindows();
   await killBundledChildProcesses();
   await new Promise((r) => setTimeout(r, 400));
-  app.exit(0);
 }

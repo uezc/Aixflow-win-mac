@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   CLIP_LAYOUT_MIN,
   normalizeClipLayout,
@@ -24,16 +24,58 @@ export type ClipLayoutTransformOverlayProps = {
   className?: string;
 };
 
+function layoutFromDrag(
+  handle: HandleId,
+  origin: ClipLayout,
+  dx: number,
+  dy: number,
+): ClipLayout {
+  let x = origin.x;
+  let y = origin.y;
+  let w = origin.w;
+  let h = origin.h;
+
+  if (handle === 'move') {
+    x = origin.x + dx;
+    y = origin.y + dy;
+    x = Math.max(0, Math.min(1 - w, x));
+    y = Math.max(0, Math.min(1 - h, y));
+  } else {
+    const right = origin.x + origin.w;
+    const bottom = origin.y + origin.h;
+    if (handle.includes('w')) {
+      const nx = Math.max(0, Math.min(right - CLIP_LAYOUT_MIN, origin.x + dx));
+      w = right - nx;
+      x = nx;
+    }
+    if (handle.includes('e')) {
+      w = Math.max(CLIP_LAYOUT_MIN, Math.min(1 - origin.x, origin.w + dx));
+    }
+    if (handle.includes('n')) {
+      const ny = Math.max(0, Math.min(bottom - CLIP_LAYOUT_MIN, origin.y + dy));
+      h = bottom - ny;
+      y = ny;
+    }
+    if (handle.includes('s')) {
+      h = Math.max(CLIP_LAYOUT_MIN, Math.min(1 - origin.y, origin.h + dy));
+    }
+  }
+  return normalizeClipLayout({ x, y, w, h });
+}
+
 /**
  * 预览区「位置」变换框：拖拽平移；边/角手柄缩放尺寸。
  * 框对应裁切后画面在画布上的占位（layout）；缩放不改 crop。
+ * 拖拽期间用本地 draft 保证蓝框跟手；pointerup 再强制提交最终 layout，避免父级重渲染丢最后一帧。
  */
 const ClipLayoutTransformOverlay: React.FC<ClipLayoutTransformOverlayProps> = ({
   layout,
   onChange,
   className = '',
 }) => {
-  const L = normalizeClipLayout(layout);
+  const propLayout = normalizeClipLayout(layout);
+  const [draft, setDraft] = useState<ClipLayout | null>(null);
+  const L = draft ?? propLayout;
   const dragRef = useRef<{
     handle: HandleId;
     startX: number;
@@ -41,7 +83,15 @@ const ClipLayoutTransformOverlay: React.FC<ClipLayoutTransformOverlayProps> = ({
     origin: ClipLayout;
     boxW: number;
     boxH: number;
+    last: ClipLayout;
   } | null>(null);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    if (dragRef.current) return;
+    setDraft(null);
+  }, [propLayout.x, propLayout.y, propLayout.w, propLayout.h]);
 
   const onPointerDown = useCallback(
     (handle: HandleId) => (e: React.PointerEvent) => {
@@ -52,14 +102,17 @@ const ClipLayoutTransformOverlay: React.FC<ClipLayoutTransformOverlayProps> = ({
       ) as HTMLElement | null;
       const rect = parent?.getBoundingClientRect();
       if (!rect?.width || !rect?.height) return;
+      const origin = normalizeClipLayout(layout);
       dragRef.current = {
         handle,
         startX: e.clientX,
         startY: e.clientY,
-        origin: normalizeClipLayout(layout),
+        origin,
         boxW: rect.width,
         boxH: rect.height,
+        last: origin,
       };
+      setDraft(origin);
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
 
       const onMove = (ev: PointerEvent) => {
@@ -67,41 +120,16 @@ const ClipLayoutTransformOverlay: React.FC<ClipLayoutTransformOverlayProps> = ({
         if (!d) return;
         const dx = (ev.clientX - d.startX) / d.boxW;
         const dy = (ev.clientY - d.startY) / d.boxH;
-        const o = d.origin;
-        let x = o.x;
-        let y = o.y;
-        let w = o.w;
-        let h = o.h;
-
-        if (d.handle === 'move') {
-          x = o.x + dx;
-          y = o.y + dy;
-          x = Math.max(0, Math.min(1 - w, x));
-          y = Math.max(0, Math.min(1 - h, y));
-        } else {
-          const right = o.x + o.w;
-          const bottom = o.y + o.h;
-          if (d.handle.includes('w')) {
-            const nx = Math.max(0, Math.min(right - CLIP_LAYOUT_MIN, o.x + dx));
-            w = right - nx;
-            x = nx;
-          }
-          if (d.handle.includes('e')) {
-            w = Math.max(CLIP_LAYOUT_MIN, Math.min(1 - o.x, o.w + dx));
-          }
-          if (d.handle.includes('n')) {
-            const ny = Math.max(0, Math.min(bottom - CLIP_LAYOUT_MIN, o.y + dy));
-            h = bottom - ny;
-            y = ny;
-          }
-          if (d.handle.includes('s')) {
-            h = Math.max(CLIP_LAYOUT_MIN, Math.min(1 - o.y, o.h + dy));
-          }
-        }
-        onChange(normalizeClipLayout({ x, y, w, h }));
+        const next = layoutFromDrag(d.handle, d.origin, dx, dy);
+        d.last = next;
+        setDraft(next);
+        // 实时写入，预览媒体壳与蓝框同步；松手时再强制提交一次
+        onChangeRef.current(next);
       };
 
       const onUp = (ev: PointerEvent) => {
+        const d = dragRef.current;
+        const finalLayout = d?.last ?? normalizeClipLayout(layout);
         dragRef.current = null;
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
@@ -111,13 +139,15 @@ const ClipLayoutTransformOverlay: React.FC<ClipLayoutTransformOverlayProps> = ({
         } catch {
           /* ignore */
         }
+        onChangeRef.current(finalLayout);
+        setDraft(null);
       };
 
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
       window.addEventListener('pointercancel', onUp);
     },
-    [layout, onChange],
+    [layout],
   );
 
   const handleCls =

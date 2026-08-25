@@ -4,6 +4,7 @@
 import React, { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { PromptMentionCandidate } from '../../utils/promptMentionCandidates';
+import { AudioEqThumb } from './AudioEqThumb';
 
 export type AtMentionMenuProps = {
   open: boolean;
@@ -95,6 +96,12 @@ export const AtMentionMenu: React.FC<AtMentionMenuProps> = ({
               <span className="at-mention-visual">
                 {item.thumbUrl ? (
                   <img className="at-mention-thumb" src={item.thumbUrl} alt="" draggable={false} />
+                ) : item.type === 'audio' ? (
+                  <AudioEqThumb
+                    seed={item.nodeId || item.insertText || item.refLabel || item.label || 'audio'}
+                    className="at-mention-thumb"
+                    isDarkMode
+                  />
                 ) : (
                   <span className="at-mention-thumb mention-ref-thumb-fallback">
                     {(item.refLabel || item.label || '?').slice(0, 2)}

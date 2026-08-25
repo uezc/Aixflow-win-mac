@@ -48,6 +48,8 @@ export type LlmInputPanelStrings = {
   chatModelLabel: string;
   /** 普通对话：发送按钮 */
   send: string;
+  /** 运行中：点此取消生成 */
+  cancelGenerating: string;
   /** 展开人设区 */
   expandPersona: string;
   /** 收起人设区 */
@@ -103,6 +105,7 @@ const zh: LlmInputPanelStrings = {
   imageSourceBadge: '【图片】',
   chatModelLabel: '模型',
   send: '发送',
+  cancelGenerating: '取消生成',
   expandPersona: '人设',
   collapsePersona: '收起人设',
   chatModelGpt35: '大语言模型-3.5',
@@ -156,6 +159,7 @@ const en: LlmInputPanelStrings = {
   imageSourceBadge: '[Image]',
   chatModelLabel: 'Model',
   send: 'Send',
+  cancelGenerating: 'Cancel generation',
   expandPersona: 'Persona',
   collapsePersona: 'Hide persona',
   chatModelGpt35: 'GPT-3.5',

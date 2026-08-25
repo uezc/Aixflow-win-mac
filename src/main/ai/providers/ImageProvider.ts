@@ -155,6 +155,27 @@ function extractImageUrlsFromRhPoll(queryResult: Record<string, unknown>): strin
   return extractImageUrlsFromResults(queryResult.results);
 }
 
+function isRetryableImageQueryError(err: unknown): boolean {
+  const code = String((err as { code?: string })?.code || '');
+  const msg = err instanceof Error ? err.message : String(err || '');
+  if (
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ECONNABORTED' ||
+    code === 'ENOTFOUND' ||
+    code === 'EAI_AGAIN' ||
+    code === 'ENETUNREACH'
+  ) {
+    return true;
+  }
+  return /ECONNRESET|socket hang up|ETIMEDOUT|ECONNREFUSED|ECONNABORTED|EAI_AGAIN|network error|Failed to fetch|Client network socket disconnected/i.test(
+    msg,
+  );
+}
+
+const MAX_SUCCESS_WITHOUT_URL_ROUNDS = 24;
+
 /** 多图结果（如 MJ V7 四宫格）逐张落盘，避免仅首张本地化后 outputImages 被压成单张 */
 async function downloadRhOutputImagesToLocal(
   outputImageUrls: string[],
@@ -342,8 +363,12 @@ export class ImageProvider extends BaseProvider {
   }
 
   /** 轮询 RH 状态；ledger 仅在 SUCCESS 后由 syncLedgerAfterRhImageSuccess 一次性回写 */
-  private rhQueryPoll(rhTaskId: string, fcPollId: string): Promise<Record<string, unknown>> {
-    return rhQueryPollImage(rhTaskId, fcPollId);
+  private rhQueryPoll(
+    rhTaskId: string,
+    fcPollId: string,
+    rhRegion?: 'cn' | 'ai',
+  ): Promise<Record<string, unknown>> {
+    return rhQueryPollImage(rhTaskId, fcPollId, undefined, rhRegion ? { rhRegion } : undefined);
   }
 
   /**
@@ -438,7 +463,7 @@ export class ImageProvider extends BaseProvider {
     try {
       // 解析输入参数（imageInput 已在上面定义）
       const { 
-        model = 'banana-2.0', 
+        model = 'rhart-image-g-2', 
         prompt, 
         aspect_ratio
       } = imageInput;
@@ -935,6 +960,12 @@ export class ImageProvider extends BaseProvider {
         const perfStartI2I = Date.now();
         let perfCreateDoneI2I = 0;
         let perfForwardDoneI2I = 0;
+        const rhRegionI2I: 'cn' | 'ai' | undefined =
+          model === 'banana-2.0' || model === 'rhart-image-g-2'
+            ? 'ai'
+            : model === 'seedream-v5'
+              ? 'cn'
+              : undefined;
         console.log('[图片生成] Sending Request via FC...', submitUrl);
         let submitResult: Record<string, unknown>;
         try {
@@ -943,12 +974,6 @@ export class ImageProvider extends BaseProvider {
             aspectRatio: (submitPayload as { aspectRatio?: string }).aspectRatio,
           });
           perfCreateDoneI2I = Date.now();
-          const rhRegionI2I: 'cn' | 'ai' | undefined =
-            model === 'banana-2.0' || model === 'rhart-image-g-2'
-              ? 'ai'
-              : model === 'seedream-v5'
-                ? 'cn'
-                : undefined;
           submitResult = await this.rhPostCharge(
             submitUrl,
             submitPayload as Record<string, unknown>,
@@ -997,6 +1022,7 @@ export class ImageProvider extends BaseProvider {
         let outputImageUrls: string[] = [];
         const maxPollingAttempts = 120;
         let pollingAttempts = 0;
+        let successWithoutUrlRounds = 0;
         const pollStartTime = Date.now();
         let perfPollDoneI2I = 0;
 
@@ -1020,9 +1046,10 @@ export class ImageProvider extends BaseProvider {
             const queryResult = await this.rhQueryPoll(
               String(rhTaskIdI2I),
               `${fcGenIdI2I}:poll:${pollingAttempts}`,
+              rhRegionI2I,
             );
             const status = resolveRhPollStatus(queryResult as Record<string, unknown>);
-            const rawStatus = String(queryResult.status ?? '');
+            const rawStatus = String(queryResult.status ?? queryResult.taskStatus ?? '');
 
             console.log(`[图片生成] 任务状态: ${rawStatus || status}, taskId: ${String(rhTaskIdI2I)}`);
 
@@ -1030,7 +1057,15 @@ export class ImageProvider extends BaseProvider {
               outputImageUrls = extractImageUrlsFromRhPoll(queryResult as Record<string, unknown>);
               imageUrl = outputImageUrls[0] ?? null;
               if (!imageUrl) {
-                throw new Error('任务完成但未返回结果');
+                successWithoutUrlRounds += 1;
+                console.warn(
+                  `[图片生成] SUCCESS 但未解析到图片 URL，继续查询 (${successWithoutUrlRounds}/${MAX_SUCCESS_WITHOUT_URL_ROUNDS}) taskId=${String(rhTaskIdI2I)}`,
+                );
+                if (successWithoutUrlRounds >= MAX_SUCCESS_WITHOUT_URL_ROUNDS) {
+                  throw new Error('任务完成但未返回结果');
+                }
+                pollingAttempts++;
+                continue;
               }
               perfPollDoneI2I = Date.now();
               if (ledgerIdI2I) {
@@ -1071,8 +1106,7 @@ export class ImageProvider extends BaseProvider {
             if (queryError && typeof queryError === 'object' && 'response' in queryError) {
               continue;
             }
-            const code = (queryError as { code?: string })?.code;
-            if (code === 'ETIMEDOUT' || code === 'ECONNREFUSED') {
+            if (isRetryableImageQueryError(queryError)) {
               continue;
             }
             throw queryError;
@@ -1661,6 +1695,7 @@ export class ImageProvider extends BaseProvider {
       let outputImageUrls: string[] = [];
       const maxPollingAttempts = 120;
       let pollingAttempts = 0;
+      let successWithoutUrlRounds = 0;
       const pollStartTimeText = Date.now();
       let perfPollDoneTxt = 0;
 
@@ -1684,17 +1719,28 @@ export class ImageProvider extends BaseProvider {
           const queryResult = await this.rhQueryPoll(
             String(rhTaskIdTxt),
             `${fcGenIdTxt}:poll:${pollingAttempts}`,
+            rhRegionTxt,
           );
           const qd = queryResult as Record<string, unknown>;
           const status = resolveRhPollStatus(qd);
-          const rawStatus = String(queryResult.status ?? '');
+          const rawStatus = String(queryResult.status ?? queryResult.taskStatus ?? '');
 
           console.log(`[图片生成] 任务状态: ${rawStatus || status}, taskId: ${String(rhTaskIdTxt)}`);
 
           if (status === 'SUCCESS') {
             outputImageUrls = extractImageUrlsFromRhPoll(qd);
             imageUrl = outputImageUrls[0] ?? null;
-            if (!imageUrl) throw new Error('任务完成但未返回结果');
+            if (!imageUrl) {
+              successWithoutUrlRounds += 1;
+              console.warn(
+                `[图片生成] SUCCESS 但未解析到图片 URL，继续查询 (${successWithoutUrlRounds}/${MAX_SUCCESS_WITHOUT_URL_ROUNDS}) taskId=${String(rhTaskIdTxt)}`,
+              );
+              if (successWithoutUrlRounds >= MAX_SUCCESS_WITHOUT_URL_ROUNDS) {
+                throw new Error('任务完成但未返回结果');
+              }
+              pollingAttempts++;
+              continue;
+            }
             perfPollDoneTxt = Date.now();
             if (ledgerIdTxt) {
               void syncLedgerAfterRhImageSuccess(String(rhTaskIdTxt), ledgerIdTxt);
@@ -1738,18 +1784,13 @@ export class ImageProvider extends BaseProvider {
         } catch (queryError: any) {
           console.error(`[图片生成] 查询任务状态时出错:`, queryError);
           pollingAttempts++;
-          
-          // 如果是网络错误，继续重试；如果是业务错误，抛出异常
           if (queryError.response && queryError.response.status !== 200) {
-            // 业务错误，继续重试
             continue;
-          } else if (queryError.code === 'ETIMEDOUT' || queryError.code === 'ECONNREFUSED') {
-            // 网络错误，继续重试
-            continue;
-          } else {
-            // 其他错误，抛出异常
-            throw queryError;
           }
+          if (isRetryableImageQueryError(queryError)) {
+            continue;
+          }
+          throw queryError;
         }
       }
 

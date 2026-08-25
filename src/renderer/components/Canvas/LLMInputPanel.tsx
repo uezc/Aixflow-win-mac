@@ -1,9 +1,10 @@
 // @ts-nocheck
 /* eslint-disable react/forbid-dom-props */
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Save, Play, Trash2, Loader2, ArrowUp, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { Save, Play, Trash2, Loader2, ArrowUp, ChevronDown, ChevronUp, X, Square } from 'lucide-react';
 import { useAI } from '../../hooks/useAI';
 import { isModelNotPricedError } from '../../utils/priceCalc';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import {
   getImageReverseDisplayPrice,
   getLlmChatDisplayPrice,
@@ -62,6 +63,8 @@ interface LLMInputPanelProps {
   onPersonaChange?: (personaName: string | null) => void;
   /** 点击运行立即调用，用于显示进度条动画 */
   onRunStart?: () => void;
+  /** 取消生成：立刻清掉节点「生成中」态 */
+  onCancelRun?: () => void;
   /** 普通对话选用的聊天模型（如 gpt-3.5-turbo） */
   chatModel?: string;
   onChatModelChange?: (model: string) => void;
@@ -478,6 +481,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   onOutputTextChange,
   onPersonaChange,
   onRunStart,
+  onCancelRun,
   chatModel = LLM_CHAT_DISPLAY_MODEL_ID,
   onChatModelChange,
 }) => {
@@ -488,6 +492,8 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   /** IME 输入法组合状态：组合中不立即同步到父级，避免中文输入被截断 */
   const [userInputComposing, setUserInputComposing] = useState(false);
   const [userInputLocal, setUserInputLocal] = useState('');
+  /** 听写过程中只改本地草稿，避免每字 setNodes 把画布卡死 */
+  const [voiceDraft, setVoiceDraft] = useState<string | null>(null);
   const [inputTextComposing, setInputTextComposing] = useState(false);
   const [inputTextLocal, setInputTextLocal] = useState('');
   const [savePromptNameComposing, setSavePromptNameComposing] = useState(false);
@@ -660,9 +666,17 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
       return prev ? `${prev}\n` : '';
     },
     onLiveText: (full) => {
+      setVoiceDraft(full);
+    },
+    onCommitted: (_dictation, full) => {
+      setVoiceDraft(null);
       onUserInputChange(full);
     },
     onError: (message) => {
+      setVoiceDraft((d) => {
+        if (d != null) onUserInputChange(d);
+        return null;
+      });
       showAlert(message);
     },
     onMicDenied: () => {
@@ -670,24 +684,40 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     },
   });
 
+  const persistVoiceDraft = useCallback(() => {
+    setVoiceDraft((d) => {
+      if (d != null) onUserInputChange(d);
+      return null;
+    });
+  }, [onUserInputChange]);
+
+  const stopDictationSafe = useCallback(async () => {
+    const text = await stopRealtimeDictation();
+    persistVoiceDraft();
+    return text;
+  }, [stopRealtimeDictation, persistVoiceDraft]);
+
+  const cancelDictationSafe = useCallback(() => {
+    cancelRealtimeDictation();
+    persistVoiceDraft();
+  }, [cancelRealtimeDictation, persistVoiceDraft]);
+
   const micVoiceBusy = dictationStatus === 'connecting' || dictationStatus === 'stopping';
   const micVoiceStopping = dictationStatus === 'stopping';
   const micInputLocked = isDictationActive || micVoiceBusy;
 
   const { pointerHandlers: personaMicPointerHandlers } = useDictationPushToTalk({
     start: startRealtimeDictation,
-    stop: stopRealtimeDictation,
-    cancel: cancelRealtimeDictation,
+    stop: stopDictationSafe,
+    cancel: cancelDictationSafe,
     status: dictationStatus,
-    disabled: micVoiceStopping,
+    disabled: false,
   });
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
   /** 与 VideoInputPanel 提示词区麦克风同款：小方角、输入框内右上角；按住说话 */
@@ -695,7 +725,6 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
     <button
       type="button"
       {...personaMicPointerHandlers}
-      disabled={micVoiceStopping}
       style={
         dictationStatus === 'listening' || dictationStatus === 'connecting'
           ? micLevelCssVars(dictationInputLevel)
@@ -740,7 +769,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   );
 
   // AI Hook
-  const { status: aiStatus, execute: executeAI } = useAI({
+  const { status: aiStatus, execute: executeAI, cancel: cancelAI } = useAI({
     nodeId,
     modelId: 'chat',
     onStatusUpdate: (packet) => {
@@ -1056,30 +1085,42 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
   // 处理运行中状态：除了 idle/SUCCESS/ERROR 之外的状态都视为运行中（包括 START / PROCESSING）
   // 按钮禁用逻辑：只基于当前模块自己的状态
   const isProcessing = aiStatus !== 'idle' && aiStatus !== 'SUCCESS' && aiStatus !== 'ERROR';
-  const isRunDisabled =
-    isProcessing || (!hasUserContent && !(isImageReverseMode && imageUrlForReverse) && !(isVideoAnalysisMode && videoUrlForAnalysis));
-
   const reversePriceLabel = useMemo(() => {
     if (!isImageReverseMode) return null;
-    try {
-      return {
-        ok: true as const,
-        value: getImageReverseDisplayPrice(
-          normalizeImageReverseCaptionModel(reverseCaptionModel),
-          cloudMap,
-        ),
-      };
-    } catch (e) {
-      if (isModelNotPricedError(e)) return { ok: false as const };
-      throw e;
-    }
+    const value = getImageReverseDisplayPrice(
+      normalizeImageReverseCaptionModel(reverseCaptionModel),
+      cloudMap,
+    );
+    return value == null ? ({ ok: false as const }) : ({ ok: true as const, value });
   }, [isImageReverseMode, reverseCaptionModel, cloudMap]);
 
   /** 普通对话 / 视频分析：与图片节点一致的金色元宝预估（反推模式用 reversePriceLabel） */
-  const runPriceYuanbao = useMemo(() => {
+  const runPriceLabel = useMemo(() => {
     if (isImageReverseMode) return null;
-    return isVideoAnalysisMode ? getVideoAnalysisDisplayPrice(cloudMap) : getLlmChatDisplayPrice(cloudMap);
+    const value = isVideoAnalysisMode
+      ? getVideoAnalysisDisplayPrice(cloudMap)
+      : getLlmChatDisplayPrice(cloudMap);
+    return value == null ? ({ ok: false as const }) : ({ ok: true as const, value });
   }, [isImageReverseMode, isVideoAnalysisMode, cloudMap]);
+
+  const runPriceYuanbao = runPriceLabel?.ok ? runPriceLabel.value : null;
+
+  const contentMissing =
+    !hasUserContent && !(isImageReverseMode && imageUrlForReverse) && !(isVideoAnalysisMode && videoUrlForAnalysis);
+  const priceBlocked = isImageReverseMode
+    ? reversePriceLabel != null && !reversePriceLabel.ok
+    : runPriceLabel != null && !runPriceLabel.ok;
+  /** 运行中改为「取消」可点；空内容/无定价时禁用发送 */
+  const isRunDisabled = isProcessing ? false : contentMissing || priceBlocked;
+
+  const handleRunOrCancel = useCallback(() => {
+    if (isProcessing) {
+      cancelAI();
+      onCancelRun?.();
+      return;
+    }
+    void handleExecuteAI();
+  }, [isProcessing, cancelAI, onCancelRun, handleExecuteAI]);
 
   return (
     <div className="relative flex w-full flex-col">
@@ -1226,20 +1267,22 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
           ) : null}
           <button
             type="button"
-            onClick={handleExecuteAI}
+            onClick={handleRunOrCancel}
             disabled={isRunDisabled}
             className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-              isRunDisabled
-                ? isDarkMode
-                  ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
-                  : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
-                : 'bg-green-500 text-white hover:bg-green-600'
+              isProcessing
+                ? 'bg-rose-500 text-white hover:bg-rose-600'
+                : isRunDisabled
+                  ? isDarkMode
+                    ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                    : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                  : 'bg-green-500 text-white hover:bg-green-600'
             }`}
-            title={lt.runVideoAnalysis}
-            aria-label={lt.runVideoAnalysis}
+            title={isProcessing ? lt.cancelGenerating : lt.runVideoAnalysis}
+            aria-label={isProcessing ? lt.cancelGenerating : lt.runVideoAnalysis}
           >
             {isProcessing ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <Square className="w-3 h-3" fill="currentColor" strokeWidth={0} />
             ) : (
               <Play className="w-3.5 h-3.5" strokeWidth={2.5} />
             )}
@@ -1254,7 +1297,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
         <textarea
           ref={userInputRef}
           data-nexflow-dictation-target="1"
-          value={userInputComposing ? userInputLocal : (userInput ?? '')}
+          value={voiceDraft != null ? voiceDraft : userInputComposing ? userInputLocal : (userInput ?? '')}
           readOnly={micInputLocked}
           onCompositionStart={(e) => {
             setUserInputComposing(true);
@@ -1396,20 +1439,22 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
         ) : null}
         <button
           type="button"
-          onClick={handleExecuteAI}
+          onClick={handleRunOrCancel}
           disabled={isRunDisabled}
           className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-            isRunDisabled
-              ? isDarkMode
-                ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
-                : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
-              : 'bg-green-500 text-white hover:bg-green-600'
+            isProcessing
+              ? 'bg-rose-500 text-white hover:bg-rose-600'
+              : isRunDisabled
+                ? isDarkMode
+                  ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                  : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                : 'bg-green-500 text-white hover:bg-green-600'
           }`}
-          title={lt.runImageReverse}
-          aria-label={lt.runImageReverse}
+          title={isProcessing ? lt.cancelGenerating : lt.runImageReverse}
+          aria-label={isProcessing ? lt.cancelGenerating : lt.runImageReverse}
         >
           {isProcessing ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <Square className="w-3 h-3" fill="currentColor" strokeWidth={0} />
           ) : (
             <Play className="w-3.5 h-3.5" strokeWidth={2.5} />
           )}
@@ -1470,7 +1515,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
                 <textarea
                   ref={userInputRef}
                   data-nexflow-dictation-target="1"
-                  value={userInputComposing ? userInputLocal : (userInput ?? '')}
+                  value={voiceDraft != null ? voiceDraft : userInputComposing ? userInputLocal : (userInput ?? '')}
                   readOnly={micInputLocked}
                   onCompositionStart={(e) => {
                     setUserInputComposing(true);
@@ -1491,7 +1536,7 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
                   }}
                   onKeyDown={(e) => {
                     if (micInputLocked) return;
-                    if (e.key !== 'Enter' || e.shiftKey || isRunDisabled) return;
+                    if (e.key !== 'Enter' || e.shiftKey || isProcessing || isRunDisabled) return;
                     if (userInputComposing || e.nativeEvent.isComposing || e.keyCode === 229) return;
                     e.preventDefault();
                     void handleExecuteAI();
@@ -1590,22 +1635,24 @@ const LLMInputPanel: React.FC<LLMInputPanelProps> = ({
 
             <button
               type="button"
-              onClick={handleExecuteAI}
+              onClick={handleRunOrCancel}
               disabled={isRunDisabled}
               className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-                isRunDisabled
-                  ? isDarkMode
-                    ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
-                    : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
-                  : isDarkMode
-                    ? 'bg-white text-black hover:bg-white/90'
-                    : 'bg-gray-900 text-white hover:bg-gray-800'
+                isProcessing
+                  ? 'bg-rose-500 text-white hover:bg-rose-600'
+                  : isRunDisabled
+                    ? isDarkMode
+                      ? 'bg-white/[0.08] text-white/25 cursor-not-allowed'
+                      : 'bg-black/[0.06] text-gray-400 cursor-not-allowed'
+                    : isDarkMode
+                      ? 'bg-white text-black hover:bg-white/90'
+                      : 'bg-gray-900 text-white hover:bg-gray-800'
               }`}
-              title={lt.send}
-              aria-label={lt.send}
+              title={isProcessing ? lt.cancelGenerating : lt.send}
+              aria-label={isProcessing ? lt.cancelGenerating : lt.send}
             >
               {isProcessing ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <Square className="w-3 h-3" fill="currentColor" strokeWidth={0} />
               ) : (
                 <ArrowUp className="w-3.5 h-3.5" strokeWidth={2.5} />
               )}

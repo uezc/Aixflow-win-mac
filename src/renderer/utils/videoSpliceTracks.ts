@@ -197,6 +197,9 @@ function mergeBuiltClipsIntoTracks<T extends TimelineClipLike>(
         startTime: useBuiltTiming ? builtClip.startTime : prev.startTime,
         id: prev.id,
         sourceNodeId: builtClip.sourceNodeId || prev.sourceNodeId,
+        ...((builtClip as { hasAlpha?: boolean }).hasAlpha || (prev as { hasAlpha?: boolean }).hasAlpha
+          ? { hasAlpha: true as const }
+          : {}),
         trimStart: builtClip.trimStart ?? prev.trimStart,
         trimEnd: builtClip.trimEnd ?? prev.trimEnd,
         lockTrim: builtClip.lockTrim ?? prev.lockTrim,

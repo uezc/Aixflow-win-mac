@@ -71,7 +71,14 @@ export function resolveMentionKind(node: MentionCanvasNode): PromptMentionKind |
     return 'text';
   }
   if (t === 'image' || t === 'photoCollage' || t === 'imageTo3d' || t === 'gridMap') return 'image';
-  if (t === 'video' || t === 'videoSplice' || t === 'wanAnimate' || t === 'heyGem' || t === 'director') {
+  if (
+    t === 'video' ||
+    t === 'videoSplice' ||
+    t === 'wanAnimate' ||
+    t === 'heyGem' ||
+    t === 'director' ||
+    t === 'directorDrama'
+  ) {
     return 'video';
   }
   if (t === 'audio' || t === 'rvcTrain') return 'audio';
@@ -161,11 +168,14 @@ function buildInsertText(opts: {
     if (body) return body;
     return `@${label}`;
   }
-  if (kind === 'image' && preferSeedanceTag && refLabel) {
+  if ((kind === 'image' || kind === 'audio') && preferSeedanceTag && refLabel) {
     const m = refLabel.match(/(\d+)\s*$/);
     if (m) {
       const n = Number(m[1]);
       if (Number.isFinite(n) && n >= 1) {
+        if (kind === 'audio') {
+          return opts.locale === 'en' ? `@Audio${n}` : `@音频${n}`;
+        }
         return opts.locale === 'en' ? `@Image${n}` : `@图片${n}`;
       }
     }
@@ -207,12 +217,20 @@ export function applyMentionInsert(
   return { next, cursor: parsed.atIndex + text.length + spacer.length };
 }
 
+export type MentionInputAudioRef = {
+  url?: string;
+  nodeId?: string;
+  name?: string;
+};
+
 export type BuildMentionCandidatesOptions = {
   targetNodeId: string;
   nodes: MentionCanvasNode[];
   edges: MentionCanvasEdge[];
   /** 当前面板已挂载的参考图（上游连线带入，对齐 Seedance @图片N） */
   orderedInputImages?: string[];
+  /** 当前面板已挂载的参考音（上游连线带入，对齐 @音频N） */
+  orderedInputAudios?: MentionInputAudioRef[];
   locale?: string;
   query?: string;
   preferSeedanceTag?: boolean;
@@ -238,6 +256,7 @@ export function buildPromptMentionCandidates(opts: BuildMentionCandidatesOptions
     nodes,
     edges,
     orderedInputImages = [],
+    orderedInputAudios = [],
     locale,
     query = '',
     preferSeedanceTag = false,
@@ -248,6 +267,7 @@ export function buildPromptMentionCandidates(opts: BuildMentionCandidatesOptions
   const counters: Record<PromptMentionKind, number> = { text: 0, image: 0, video: 0, audio: 0 };
   const out: PromptMentionCandidate[] = [];
   const seen = new Set<string>();
+  const coveredAudioNodeIds = new Set<string>();
 
   const push = (c: PromptMentionCandidate) => {
     if (seen.has(c.id)) return;
@@ -281,6 +301,35 @@ export function buildPromptMentionCandidates(opts: BuildMentionCandidatesOptions
     });
   });
 
+  // 1b) 当前节点已接入参考音（连线带入 / 面板 connectedAudios）→ @音频N
+  orderedInputAudios.forEach((a, i) => {
+    const u = normalizeText(a?.url);
+    const nodeId = normalizeText(a?.nodeId);
+    // 允许无 URL 的占位（仍按连接路数编号，便于 @ 结构化引用）
+    if (!u && !nodeId && !normalizeText(a?.name)) return;
+    counters.audio += 1;
+    const n = counters.audio;
+    const refLabel = `${typeLabel('audio', locale)}${n}`;
+    if (nodeId) coveredAudioNodeIds.add(nodeId);
+    push({
+      id: `ref-audio-${i}`,
+      origin: 'ref',
+      type: 'audio',
+      label: refLabel,
+      refLabel,
+      thumbUrl: undefined,
+      nodeId: nodeId || undefined,
+      insertText: buildInsertText({
+        kind: 'audio',
+        label: refLabel,
+        refLabel,
+        locale,
+        preferSeedanceTag: true,
+      }),
+      subtitle: locale === 'en' ? 'Reference audio' : '参考音',
+    });
+  });
+
   // 2) 入边源节点（文本/图片/视频/音频等）
   for (const e of edges) {
     if (e.target !== targetNodeId) continue;
@@ -288,6 +337,8 @@ export function buildPromptMentionCandidates(opts: BuildMentionCandidatesOptions
     if (!src || src.id === targetNodeId) continue;
     const kind = resolveMentionKind(src);
     if (!kind) continue;
+    // 已作为面板参考音列出的音频源不再重复占号
+    if (kind === 'audio' && coveredAudioNodeIds.has(src.id)) continue;
     const mediaOrText = kind === 'text' ? pickTextContent(src) : pickMediaUrl(src, kind);
     if (!mediaOrText) continue;
     counters[kind] += 1;
@@ -308,7 +359,7 @@ export function buildPromptMentionCandidates(opts: BuildMentionCandidatesOptions
         refLabel,
         content: kind === 'text' ? mediaOrText : undefined,
         locale,
-        preferSeedanceTag,
+        preferSeedanceTag: preferSeedanceTag || kind === 'audio',
       }),
       subtitle: typeLabel(kind, locale),
     });

@@ -10,11 +10,17 @@ export type VideoInputPanelStrings = {
   aspect11Square: string;
   aspectAdaptive: string;
   durationLabel: string;
+  /** 只读计费档（如口型同步按参考音映射） */
+  billingDurationLabel: string;
   durationChooseTitle: string;
   durationFixed8s: string;
   /** 全能视频V3.1-pro 首尾帧（海外） */
   modelRhartV31ProSe: string;
   modelRhartV31ProSeTitle: string;
+  /** MiniMax-H3 口型同步（minimax-h3-audio） */
+  modelMinimaxH3Audio: string;
+  modelMinimaxH3AudioTitle: string;
+  modelMinimaxH3AudioNeedRefAudio: string;
   resolutionLabel: string;
   shotLabel: string;
   shotTitle: string;
@@ -34,6 +40,11 @@ export type VideoInputPanelStrings = {
   sora2Core: string;
   refImagesTitle: (cur: number, max: number) => string;
   refImagesBadge: (cur: number, max: number) => string;
+  /** MiniMax H3 全能参考：图/音槽容量徽标 */
+  minimaxH3MultiRefBadge: (img: number, aud: number) => string;
+  minimaxH3MultiRefTitle: (img: number, aud: number) => string;
+  /** MiniMax H3 全能参考：右侧栏标题 */
+  minimaxH3MultiRefColumn: string;
   priceTooltip: string;
   creditsSuffix: string;
   noPricingYet: string;
@@ -41,7 +52,12 @@ export type VideoInputPanelStrings = {
   promptVideoDesc: string;
   promptAction: string;
   refImageColumn: string;
+  refVideoColumn: string;
   audioConnected: string;
+  /** 已连接 N 路音频（含数量） */
+  audioConnectedCount: (n: number) => string;
+  /** 提交仅取第 1 路时的紧凑提示 */
+  audioUseFirstHint: string;
   audioNeedConnect: string;
   /** Seedance Mini：参考音可选 */
   audioRefOptional: string;
@@ -52,6 +68,10 @@ export type VideoInputPanelStrings = {
   wanAnimateVideoNeedConnect: string;
   wanAnimateImageNeedConnect: string;
   wanAnimateSlotRefImageLabel: string;
+  /** Wan animate2 视频换人：提示词选填 */
+  wanAnimate2InputLabel: string;
+  wanAnimate2PromptOptionalLabel: string;
+  wanAnimate2PromptOptionalPlaceholder: string;
   /** HeyGem 数字人：参考视频 + 驱动音频 */
   heyGemInputLabel: string;
   heyGemNoPromptHint: string;
@@ -106,6 +126,11 @@ export type VideoInputPanelStrings = {
   /** Seedance 多模态：点击参考图插入 @图片N */
   seedanceRefImageThumbTitle: (n: number) => string;
   appendSeedanceImageTag: (n: number) => string;
+  /** 参考音缩略标签：点击插入 @音频N */
+  refAudioThumbTitle: (n: number) => string;
+  refAudioThumbAlt: (n: number) => string;
+  appendAudioTag: (n: number) => string;
+  refAudioColumn: string;
   modeLipsync: string;
   modeImageToVideo: string;
   modeMultimodalVideo: string;
@@ -127,6 +152,27 @@ export type VideoInputPanelStrings = {
   titleLtxT2vDuration: string;
   titleLtxT2vResolution: string;
   titleLtxT2vAspect: string;
+  titleMinimaxH3Duration: string;
+  titleMinimaxH3AudioBillingDuration: string;
+  titleMinimaxH3Resolution: string;
+  titleMinimaxH3Aspect: string;
+  /** MiniMax-H3：一键优化提示词 */
+  optimizePromptButton: string;
+  optimizePromptBusy: string;
+  optimizePromptCancel: string;
+  optimizePromptShortcutHint: string;
+  optimizePromptNeedText: string;
+  optimizePromptEmptyResult: string;
+  optimizePromptFailed: string;
+  optimizePromptGuideMissing: string;
+  /** MiniMax-H3：选择用于优化的大语言模型 */
+  optimizePromptChatModelHint: string;
+  /** MiniMax-H3：查看/恢复优化前原文 */
+  optimizePromptOriginalButton: string;
+  optimizePromptOriginalTitle: string;
+  optimizePromptOriginalEmpty: string;
+  optimizePromptOriginalRestore: string;
+  optimizePromptOriginalClose: string;
   titleRhartGDuration: string;
   titleHailuoDuration: string;
   titleKlingO1Duration: string;
@@ -179,6 +225,9 @@ export type VideoInputPanelStrings = {
   videoSubtitleWatermarkFailed: string;
   videoSubtitleWatermarkPriceTitle: string;
   videoSubtitleWatermarkProgress: (credits: string) => string;
+  /** 卡拉OK字幕（与去字幕/水印入口严格分开） */
+  karaokeSubtitlesTitle: string;
+  karaokeNeedLyricsHint: string;
   /** 画布节点内视频：原生全屏在 transform 下失效，用自定义入口 */
   previewVideoFullscreen: string;
   previewVideoExitFullscreen: string;
@@ -237,6 +286,22 @@ export type VideoInputPanelStrings = {
   /** 悬停价：时长未知时的兜底文案 */
   videoSmartMattingPriceFallback: string;
   videoSmartMattingPriceTitle: string;
+  /** 视频超分放大（工具栏） */
+  videoUpscaleButton: string;
+  videoUpscaleTitle: string;
+  videoUpscaleNeedVideo: string;
+  videoUpscaleRunning: string;
+  videoUpscaleFailed: string;
+  videoUpscaleNodeLabel: string;
+  videoUpscalePickRes: string;
+  videoUpscaleConfirm: string;
+  videoUpscaleCancel: string;
+  videoUpscalePriceLabel: (credits: string, billableSec: string) => string;
+  videoUpscalePriceFallback: string;
+  videoUpscaleTooLong: string;
+  /** 悬停菜单：识别时长（与播放器一致）+ 计费秒数 */
+  videoUpscaleDurationLine: (clock: string, billableSec: string) => string;
+  videoUpscaleDurationUnknown: string;
 };
 
 const zh: VideoInputPanelStrings = {
@@ -249,11 +314,16 @@ const zh: VideoInputPanelStrings = {
   aspect11Square: '1:1',
   aspectAdaptive: '自适应',
   durationLabel: '时长:',
+  billingDurationLabel: '计费时长:',
   durationChooseTitle: '选择视频时长',
   durationFixed8s: '8s',
   modelRhartV31ProSe: '全能视频V3.1-pro-首尾帧生视频',
   modelRhartV31ProSeTitle:
     '首尾帧；海外站；首帧必填、尾帧可选；时长仅 8s；比例 16:9/9:16；分辨率 720p/1080p/4k',
+  modelMinimaxH3Audio: 'MiniMax-H3 口型同步',
+  modelMinimaxH3AudioTitle:
+    '1–5 张参考图 + 必填参考音；720P；成片时长跟参考音；计费按 6/10/15/20 秒档向上取整',
+  modelMinimaxH3AudioNeedRefAudio: 'MiniMax-H3 口型同步需连接参考音',
   resolutionLabel: '分辨率:',
   shotLabel: '镜头:',
   shotTitle: '单镜头 / 多镜头',
@@ -273,6 +343,10 @@ const zh: VideoInputPanelStrings = {
   sora2Core: '核心',
   refImagesTitle: (cur, max) => `参考图数量/最多支持几张图：${cur}/${max}`,
   refImagesBadge: (cur, max) => `参考图 ${cur}/${max}`,
+  minimaxH3MultiRefBadge: (img, aud) => `图 ${img}/9 · 音 ${aud}/3`,
+  minimaxH3MultiRefTitle: (img, aud) =>
+    `参考素材容量：图 ${img}/9 · 音 ${aud}/3（最多 9 张图、3 路参考音）`,
+  minimaxH3MultiRefColumn: '参考图 / 参考音',
   priceTooltip:
     '预估元宝 = base_price×multiplier×yuanbao_rate×Quantity；视频 Quantity 为秒数（整条 SKU 行则为 1）',
   creditsSuffix: '元宝',
@@ -281,7 +355,10 @@ const zh: VideoInputPanelStrings = {
   promptVideoDesc: '提示词（视频描述）',
   promptAction: '动作提示词',
   refImageColumn: '参考图',
+  refVideoColumn: '参考视频',
   audioConnected: '✓ 已连接音频',
+  audioConnectedCount: (n) => `✓ 已连接 ${n} 路音频`,
+  audioUseFirstHint: '将使用第 1 路',
   audioNeedConnect: '⚠ 请连接音频节点',
   audioRefOptional: '可连接参考音',
   wanAnimateInputLabel: '角色替换',
@@ -290,6 +367,9 @@ const zh: VideoInputPanelStrings = {
   wanAnimateVideoNeedConnect: '⚠ 请连接参考视频节点',
   wanAnimateImageNeedConnect: '⚠ 请连接 1 张角色参考图',
   wanAnimateSlotRefImageLabel: '角色参考图',
+  wanAnimate2InputLabel: '视频换人',
+  wanAnimate2PromptOptionalLabel: '提示词（选填）',
+  wanAnimate2PromptOptionalPlaceholder: '可选：补充换人效果说明，不填也可生成',
   heyGemInputLabel: '数字人',
   heyGemNoPromptHint: '在模块内设置参考视频与驱动音频即可生成，无需填写提示词（Plus 48G 显存）。',
   heyGemVideoConnected: '✓ 已设置参考视频',
@@ -342,6 +422,10 @@ const zh: VideoInputPanelStrings = {
   appendImageSubject: (n) => `图${n}主体`,
   seedanceRefImageThumbTitle: (n) => `参考图 ${n}，点击插入 @图片${n}`,
   appendSeedanceImageTag: (n) => `@图片${n}`,
+  refAudioThumbTitle: (n) => `参考音 ${n}，点击插入 @音频${n}`,
+  refAudioThumbAlt: (n) => `参考音 ${n}`,
+  appendAudioTag: (n) => `@音频${n}`,
+  refAudioColumn: '参考音',
   modeLipsync: '对口型',
   modeImageToVideo: '图生视频',
   modeMultimodalVideo: '多模态视频（文/图）',
@@ -363,6 +447,25 @@ const zh: VideoInputPanelStrings = {
   titleLtxT2vDuration: 'LTX2.3 文生视频时长',
   titleLtxT2vResolution: 'LTX2.3 文生视频分辨率',
   titleLtxT2vAspect: 'LTX2.3 文生视频比例',
+  titleMinimaxH3Duration: 'MiniMax-H3 时长',
+  titleMinimaxH3AudioBillingDuration:
+    '按参考音实际时长向上取整到 6/10/15/20 秒计费档；读不到时长时按 20s；超过 20s 封顶 20s',
+  titleMinimaxH3Resolution: 'MiniMax-H3 分辨率（仅 720P=0.9）',
+  titleMinimaxH3Aspect: 'MiniMax-H3 比例',
+  optimizePromptButton: '优化提示词',
+  optimizePromptBusy: '优化中…',
+  optimizePromptCancel: '取消',
+  optimizePromptShortcutHint: 'Ctrl+Shift+H',
+  optimizePromptNeedText: '请先填写提示词再优化',
+  optimizePromptEmptyResult: '优化结果无效，请重试或稍后再试',
+  optimizePromptFailed: '优化提示词失败',
+  optimizePromptGuideMissing: '本地 H3 skill 指南缺失，请检查 resources/skills/minimax-h3',
+  optimizePromptChatModelHint: '选择用于优化提示词的大语言模型（与视频生成模型分开）',
+  optimizePromptOriginalButton: '原文',
+  optimizePromptOriginalTitle: '优化前原文',
+  optimizePromptOriginalEmpty: '暂无优化前原文（请先成功执行一次「优化提示词」）',
+  optimizePromptOriginalRestore: '恢复到输入框',
+  optimizePromptOriginalClose: '关闭',
   titleRhartGDuration: '全能视频G 时长',
   titleHailuoDuration: '海螺-02 时长',
   titleKlingO1Duration: '可灵o1 时长',
@@ -411,6 +514,8 @@ const zh: VideoInputPanelStrings = {
   videoSubtitleWatermarkFailed: '视频去字幕/水印失败',
   videoSubtitleWatermarkPriceTitle: '单次预估元宝以 nx_model_config 中 RunningHub 应用 ID 2082682378039943169 为准',
   videoSubtitleWatermarkProgress: (c) => `视频去字幕/水印中…（约 ${c} 元宝）`,
+  karaokeSubtitlesTitle: '卡拉OK字幕',
+  karaokeNeedLyricsHint: '请从导演台打开，或在本模块附带歌词工程后再试',
   previewVideoFullscreen: '全屏观看',
   previewVideoExitFullscreen: '退出全屏',
   videoFrameSplitButton: '视频拆帧',
@@ -464,6 +569,21 @@ const zh: VideoInputPanelStrings = {
   videoSmartMattingPriceFallback: '价格按视频时长计算',
   videoSmartMattingPriceTitle:
     '预估元宝按秒计费：优先 nx_model_config「viapi-segment-video-body」（元/分钟），否则本地 20 元宝/分钟',
+  videoUpscaleButton: '超分放大',
+  videoUpscaleTitle: '视频超分放大：按目标分辨率与时长计费（最短 5 秒）',
+  videoUpscaleNeedVideo: '请先上传或生成视频后再超分放大',
+  videoUpscaleRunning: '超分放大中…',
+  videoUpscaleFailed: '超分放大失败',
+  videoUpscaleNodeLabel: '超分放大',
+  videoUpscalePickRes: '选择目标分辨率',
+  videoUpscaleConfirm: '开始超分',
+  videoUpscaleCancel: '取消',
+  videoUpscalePriceLabel: (c, s) => `约 ${c} 元宝（计费 ${s} 秒）`,
+  videoUpscalePriceFallback: '价格按视频时长与分辨率计算',
+  videoUpscaleTooLong: '视频超分最长支持 10 分钟',
+  videoUpscaleDurationLine: (clock, billableSec) =>
+    `识别时长 ${clock} · 计费 ${billableSec} 秒`,
+  videoUpscaleDurationUnknown: '识别时长：读取中…',
 };
 
 const en: VideoInputPanelStrings = {
@@ -476,11 +596,16 @@ const en: VideoInputPanelStrings = {
   aspect11Square: '1:1',
   aspectAdaptive: 'Adaptive',
   durationLabel: 'Duration:',
+  billingDurationLabel: 'Billing duration:',
   durationChooseTitle: 'Video duration',
   durationFixed8s: '8s',
   modelRhartV31ProSe: 'All-in-One Video V3.1-pro (Start–End)',
   modelRhartV31ProSeTitle:
     'Start–end frames; overseas; first frame required, last optional; 8s only; 16:9/9:16; 720p/1080p/4k',
+  modelMinimaxH3Audio: 'MiniMax-H3 Lip Sync',
+  modelMinimaxH3AudioTitle:
+    '1–5 ref images + required ref audio; 720P; output follows audio; bill ceil to 6/10/15/20s',
+  modelMinimaxH3AudioNeedRefAudio: 'MiniMax-H3 Lip Sync requires reference audio',
   resolutionLabel: 'Resolution:',
   shotLabel: 'Shots:',
   shotTitle: 'Single / multi shot',
@@ -500,6 +625,10 @@ const en: VideoInputPanelStrings = {
   sora2Core: 'Core',
   refImagesTitle: (cur, max) => `Reference images: ${cur} / ${max} max`,
   refImagesBadge: (cur, max) => `Refs ${cur}/${max}`,
+  minimaxH3MultiRefBadge: (img, aud) => `Img ${img}/9 · Aud ${aud}/3`,
+  minimaxH3MultiRefTitle: (img, aud) =>
+    `Reference slots: Img ${img}/9 · Aud ${aud}/3 (max 9 images, 3 audio)`,
+  minimaxH3MultiRefColumn: 'Image / Audio',
   priceTooltip: 'Estimated credits from pricing table (duration may multiply quantity).',
   creditsSuffix: 'credits',
   noPricingYet: 'No price',
@@ -507,7 +636,10 @@ const en: VideoInputPanelStrings = {
   promptVideoDesc: 'Prompt (video description)',
   promptAction: 'Action prompt',
   refImageColumn: 'References',
+  refVideoColumn: 'Video',
   audioConnected: '✓ Audio connected',
+  audioConnectedCount: (n) => `✓ ${n} audio link${n === 1 ? '' : 's'}`,
+  audioUseFirstHint: 'Uses 1st',
   audioNeedConnect: '⚠ Connect an audio node',
   audioRefOptional: 'Optional reference audio',
   wanAnimateInputLabel: 'Character replace',
@@ -516,6 +648,9 @@ const en: VideoInputPanelStrings = {
   wanAnimateVideoNeedConnect: '⚠ Connect a reference video node',
   wanAnimateImageNeedConnect: '⚠ Connect 1 character reference image',
   wanAnimateSlotRefImageLabel: 'Character reference',
+  wanAnimate2InputLabel: 'Video face swap',
+  wanAnimate2PromptOptionalLabel: 'Prompt (optional)',
+  wanAnimate2PromptOptionalPlaceholder: 'Optional: describe the swap effect; leave empty to generate',
   heyGemInputLabel: 'HeyGem',
   heyGemNoPromptHint: 'Set reference video and driving audio in this module — no prompt required (Plus 48G VRAM).',
   heyGemVideoConnected: '✓ Reference video ready',
@@ -568,6 +703,10 @@ const en: VideoInputPanelStrings = {
   appendImageSubject: (n) => `Image ${n} subject`,
   seedanceRefImageThumbTitle: (n) => `Reference ${n}, click to insert @Image${n}`,
   appendSeedanceImageTag: (n) => `@Image${n}`,
+  refAudioThumbTitle: (n) => `Reference audio ${n}, click to insert @Audio${n}`,
+  refAudioThumbAlt: (n) => `Reference audio ${n}`,
+  appendAudioTag: (n) => `@Audio${n}`,
+  refAudioColumn: 'Audio',
   modeLipsync: 'Lip-sync',
   modeImageToVideo: 'Image to video',
   modeMultimodalVideo: 'Multimodal video (text/image)',
@@ -589,6 +728,25 @@ const en: VideoInputPanelStrings = {
   titleLtxT2vDuration: 'LTX2.3 text-to-video duration',
   titleLtxT2vResolution: 'LTX2.3 text-to-video resolution',
   titleLtxT2vAspect: 'LTX2.3 text-to-video aspect',
+  titleMinimaxH3Duration: 'MiniMax-H3 duration',
+  titleMinimaxH3AudioBillingDuration:
+    'Ceil ref-audio length to 6/10/15/20s billing tier; unread → 20s; over 20s capped at 20s',
+  titleMinimaxH3Resolution: 'MiniMax-H3 resolution (720P=0.9 only)',
+  titleMinimaxH3Aspect: 'MiniMax-H3 aspect ratio',
+  optimizePromptButton: 'Optimize prompt',
+  optimizePromptBusy: 'Optimizing…',
+  optimizePromptCancel: 'Cancel',
+  optimizePromptShortcutHint: 'Ctrl+Shift+H',
+  optimizePromptNeedText: 'Enter a prompt before optimizing',
+  optimizePromptEmptyResult: 'Invalid optimize result — please retry',
+  optimizePromptFailed: 'Failed to optimize prompt',
+  optimizePromptGuideMissing: 'Local H3 skill guide missing (resources/skills/minimax-h3)',
+  optimizePromptChatModelHint: 'LLM used to optimize the prompt (separate from video generation)',
+  optimizePromptOriginalButton: 'Original',
+  optimizePromptOriginalTitle: 'Prompt before optimize',
+  optimizePromptOriginalEmpty: 'No saved original yet — run Optimize prompt once',
+  optimizePromptOriginalRestore: 'Restore to input',
+  optimizePromptOriginalClose: 'Close',
   titleRhartGDuration: 'Video G duration',
   titleHailuoDuration: 'Hailuo duration',
   titleKlingO1Duration: 'Kling O1 duration',
@@ -636,6 +794,8 @@ const en: VideoInputPanelStrings = {
   videoSubtitleWatermarkFailed: 'Subtitle/watermark removal failed',
   videoSubtitleWatermarkPriceTitle: 'Estimated credits per run: nx_model_config row for app ID 2082682378039943169',
   videoSubtitleWatermarkProgress: (c) => `Removing subtitles/watermark… (~${c} credits)`,
+  karaokeSubtitlesTitle: 'Karaoke subtitles',
+  karaokeNeedLyricsHint: 'Open from Director, or attach a karaoke project on this node',
   previewVideoFullscreen: 'Fullscreen',
   previewVideoExitFullscreen: 'Exit fullscreen',
   videoFrameSplitButton: 'Extract frames',
@@ -690,6 +850,21 @@ const en: VideoInputPanelStrings = {
   videoSmartMattingPriceFallback: 'Price is based on video duration',
   videoSmartMattingPriceTitle:
     'Estimated credits billed per second: prefer nx_model_config「viapi-segment-video-body」(CNY/min), else local 20 credits/min',
+  videoUpscaleButton: 'Upscale',
+  videoUpscaleTitle: 'Video upscale: billed by target resolution × duration (min 5s)',
+  videoUpscaleNeedVideo: 'Add or generate a video before upscaling',
+  videoUpscaleRunning: 'Upscaling…',
+  videoUpscaleFailed: 'Upscale failed',
+  videoUpscaleNodeLabel: 'Upscale',
+  videoUpscalePickRes: 'Target resolution',
+  videoUpscaleConfirm: 'Start',
+  videoUpscaleCancel: 'Cancel',
+  videoUpscalePriceLabel: (c, s) => `About ${c} credits (${s}s billed)`,
+  videoUpscalePriceFallback: 'Price depends on duration and resolution',
+  videoUpscaleTooLong: 'Upscale supports videos up to 10 minutes',
+  videoUpscaleDurationLine: (clock, billableSec) =>
+    `Duration ${clock} · billed ${billableSec}s`,
+  videoUpscaleDurationUnknown: 'Reading duration…',
 };
 
 export function videoInputPanelT(locale: AppLocale): VideoInputPanelStrings {

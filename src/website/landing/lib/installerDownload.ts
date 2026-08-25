@@ -1,10 +1,13 @@
 /**
  * 官网安装包下载：Release 双区域（香港主源 + 北京副本）。
  * - latest.yml / latest-mac.yml
- * - Windows：优先 Aixflow-Windows-Setup-{version}.exe（在线安装，无需解压）；离线 zip 为备用
+ * - Windows：优先 Aixflow-Installer-{version}.exe（玻璃拟态本机安装器）；
+ *   回退 Aixflow-Windows-Setup-{version}.exe（NSIS stub）；再回退离线 zip
+ * - latest.yml 仍指向 NSIS stub（供 electron-updater），玻璃安装器按版本号旁路解析
  *
- * 选源：VITE_DOWNLOAD_REGION=cn|hk|auto
- * auto 默认：aixflow.ai → 香港优先；aixflow.com.cn → 北京优先，失败互相回退
+ * 选源优先级：用户在页面选择的北京/香港线路（localStorage）>
+ * VITE_DOWNLOAD_REGION=cn|hk|auto >
+ * auto：aixflow.ai → 香港优先；aixflow.com.cn → 北京优先；失败互相回退
  * 可覆盖：VITE_RELEASE_CN_WIN_BASE / VITE_RELEASE_HK_WIN_BASE 等
  */
 
@@ -12,6 +15,9 @@ import { getSiteMediaRegion } from './siteRegion';
 
 export type ReleaseDownloadRegion = 'cn' | 'hk';
 export type DownloadRegionMode = ReleaseDownloadRegion | 'auto';
+
+const PREFERRED_REGION_STORAGE_KEY = 'aixflow_download_region';
+const PREFERRED_REGION_EVENT = 'aixflow-download-region';
 
 const HK_WIN_BASE =
   import.meta.env.VITE_RELEASE_HK_WIN_BASE?.trim() ||
@@ -36,11 +42,58 @@ export function getDownloadRegionMode(): DownloadRegionMode {
   return 'auto';
 }
 
-function regionAttemptOrder(mode: DownloadRegionMode): ReleaseDownloadRegion[] {
-  if (mode === 'cn') return ['cn', 'hk'];
-  if (mode === 'hk') return ['hk', 'cn'];
-  // auto：海外站香港优先，国内站北京优先
-  return getSiteMediaRegion() === 'hk' ? ['hk', 'cn'] : ['cn', 'hk'];
+function readStoredDownloadRegion(): ReleaseDownloadRegion | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = String(window.localStorage.getItem(PREFERRED_REGION_STORAGE_KEY) || '')
+      .trim()
+      .toLowerCase();
+    if (v === 'cn' || v === 'hk') return v;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/** 用户选择的安装包下载线路；未选时按站点/构建默认 */
+export function getPreferredDownloadRegion(): ReleaseDownloadRegion {
+  const stored = readStoredDownloadRegion();
+  if (stored) return stored;
+  const mode = getDownloadRegionMode();
+  if (mode === 'cn' || mode === 'hk') return mode;
+  return getSiteMediaRegion();
+}
+
+export function setPreferredDownloadRegion(region: ReleaseDownloadRegion): void {
+  if (region !== 'cn' && region !== 'hk') return;
+  try {
+    window.localStorage.setItem(PREFERRED_REGION_STORAGE_KEY, region);
+  } catch {
+    /* ignore */
+  }
+  try {
+    window.dispatchEvent(new CustomEvent(PREFERRED_REGION_EVENT, { detail: region }));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function subscribeDownloadRegion(
+  callback: (region: ReleaseDownloadRegion) => void,
+): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handler = () => callback(getPreferredDownloadRegion());
+  window.addEventListener(PREFERRED_REGION_EVENT, handler);
+  window.addEventListener('storage', handler);
+  return () => {
+    window.removeEventListener(PREFERRED_REGION_EVENT, handler);
+    window.removeEventListener('storage', handler);
+  };
+}
+
+function regionAttemptOrder(preferred?: ReleaseDownloadRegion): ReleaseDownloadRegion[] {
+  const first = preferred ?? getPreferredDownloadRegion();
+  return first === 'hk' ? ['hk', 'cn'] : ['cn', 'hk'];
 }
 
 function basesForRegion(region: ReleaseDownloadRegion): { winBase: string; macBase: string } {
@@ -90,6 +143,45 @@ export function parseInstallerFileNameFromLatestYml(text: string): string {
   return '';
 }
 
+/** 从 latest.yml 的 files[].size 取首个匹配文件名的字节数 */
+export function parseInstallerSizeFromLatestYml(text: string, fileName: string): number | null {
+  if (!fileName) return null;
+  const lines = text.split('\n');
+  let inTarget = false;
+  for (const line of lines) {
+    const urlMatch = line.match(/^\s*(?:-\s*)?url:\s*(.+)\s*$/);
+    if (urlMatch) {
+      inTarget = stripYamlQuotes(urlMatch[1]) === fileName;
+      continue;
+    }
+    if (!inTarget) continue;
+    const sizeMatch = line.match(/^\s*size:\s*(\d+)\s*$/);
+    if (sizeMatch) {
+      const n = Number(sizeMatch[1]);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    if (/^\s*-\s/.test(line) || /^[a-zA-Z]/.test(line)) inTarget = false;
+  }
+  return null;
+}
+
+export type InstallerArtifact = {
+  url: string;
+  fileName: string;
+  version: string;
+  size: number | null;
+  platform: InstallerPlatform;
+  region: ReleaseDownloadRegion;
+};
+
+export function formatInstallerBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '—';
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${Math.floor(n)} B`;
+}
+
 function buildObjectUrl(base: string, fileName: string): string {
   const normalized = base.replace(/\/+$/, '') + '/';
   return normalized + encodeURIComponent(fileName);
@@ -127,42 +219,107 @@ async function headObjectExists(url: string): Promise<boolean> {
   }
 }
 
-async function resolveWindowsFromRegion(region: ReleaseDownloadRegion): Promise<string | null> {
+async function headContentLength(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, { method: 'HEAD', cache: 'no-store', mode: 'cors' });
+    if (!res.ok) return null;
+    const raw = res.headers.get('content-length');
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveWindowsArtifactFromRegion(
+  region: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
   const { winBase } = basesForRegion(region);
   const ymlUrl = LEGACY_YML && region === 'hk' ? LEGACY_YML : `${winBase.replace(/\/+$/, '')}/latest.yml`;
   const text = await fetchLatestYmlText(ymlUrl);
   if (!text) return null;
 
   const version = parseVersionFromLatestYml(text);
+
+  // 1) 玻璃拟态本机安装器（官网默认入口；不改动 latest.yml 以免破坏应用内更新）
+  if (version) {
+    const glassName = `Aixflow-Installer-${version}.exe`;
+    const glassUrl = buildObjectUrl(winBase, glassName);
+    if (await headObjectExists(glassUrl)) {
+      const size = await headContentLength(glassUrl);
+      return {
+        url: withInstallerCacheBust(glassUrl, version),
+        fileName: glassName,
+        version,
+        size,
+        platform: 'windows',
+        region,
+      };
+    }
+  }
+
+  // 2) NSIS stub（后备）
   const fileName = parseInstallerFileNameFromLatestYml(text);
   if (fileName) {
     const stubUrl = buildObjectUrl(winBase, fileName);
-    if (await headObjectExists(stubUrl)) return withInstallerCacheBust(stubUrl, version || fileName);
+    if (await headObjectExists(stubUrl)) {
+      const ymlSize = parseInstallerSizeFromLatestYml(text, fileName);
+      const size = ymlSize ?? (await headContentLength(stubUrl));
+      return {
+        url: withInstallerCacheBust(stubUrl, version || fileName),
+        fileName,
+        version: version || '',
+        size,
+        platform: 'windows',
+        region,
+      };
+    }
   }
+
+  // 3) 离线 zip
   if (version) {
-    const offlineUrl = buildObjectUrl(winBase, `Aixflow-Windows-Offline-${version}.zip`);
-    if (await headObjectExists(offlineUrl)) return withInstallerCacheBust(offlineUrl, version);
+    const offlineName = `Aixflow-Windows-Offline-${version}.zip`;
+    const offlineUrl = buildObjectUrl(winBase, offlineName);
+    if (await headObjectExists(offlineUrl)) {
+      const size = await headContentLength(offlineUrl);
+      return {
+        url: withInstallerCacheBust(offlineUrl, version),
+        fileName: offlineName,
+        version,
+        size,
+        platform: 'windows',
+        region,
+      };
+    }
   }
   return null;
 }
 
-export async function resolveWindowsInstallerUrl(): Promise<string> {
-  const mode = getDownloadRegionMode();
-  for (const region of regionAttemptOrder(mode)) {
-    const url = await resolveWindowsFromRegion(region);
-    if (url) {
-      if (mode === 'auto') {
-        console.info(
-          `[Aixflow] 官网下载：使用${region === 'cn' ? '北京' : '香港'} Release`,
-          url,
-        );
-      }
-      return url;
+export async function resolveWindowsInstallerArtifact(
+  preferred?: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
+  const first = preferred ?? getPreferredDownloadRegion();
+  for (const region of regionAttemptOrder(first)) {
+    const artifact = await resolveWindowsArtifactFromRegion(region);
+    if (artifact) {
+      console.info(
+        `[Aixflow] 官网下载：使用${region === 'cn' ? '北京' : '香港'} Release`,
+        artifact.url,
+      );
+      return artifact;
     }
     console.warn(`[Aixflow] 官网下载：${region === 'cn' ? '北京' : '香港'} Release 不可用，尝试下一源`);
   }
   console.warn('[Aixflow] 无法解析 Windows 安装包链接（北京/香港均失败）');
-  return '';
+  return null;
+}
+
+export async function resolveWindowsInstallerUrl(
+  preferred?: ReleaseDownloadRegion,
+): Promise<string> {
+  const artifact = await resolveWindowsInstallerArtifact(preferred);
+  return artifact?.url || '';
 }
 
 function parseMacArtifactNamesFromLatestMacYml(text: string): string[] {
@@ -210,7 +367,9 @@ async function pickMacArtifactName(names: string[]): Promise<string> {
   return arm || intel || names[0];
 }
 
-async function resolveMacFromRegion(region: ReleaseDownloadRegion): Promise<string | null> {
+async function resolveMacArtifactFromRegion(
+  region: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
   const { macBase } = basesForRegion(region);
   const ymlUrl =
     (region === 'hk' ? import.meta.env.VITE_INSTALLER_LATEST_MAC_YML_URL?.trim() : '') ||
@@ -220,22 +379,66 @@ async function resolveMacFromRegion(region: ReleaseDownloadRegion): Promise<stri
   const names = parseMacArtifactNamesFromLatestMacYml(text);
   const fileName = await pickMacArtifactName(names);
   if (!fileName) return null;
-  return buildObjectUrl(macBase, fileName);
+  const url = buildObjectUrl(macBase, fileName);
+  const version = parseVersionFromLatestYml(text);
+  const ymlSize = parseInstallerSizeFromLatestYml(text, fileName);
+  const size = ymlSize ?? (await headContentLength(url));
+  return {
+    url,
+    fileName,
+    version: version || '',
+    size,
+    platform: 'mac',
+    region,
+  };
 }
 
-export async function resolveMacInstallerUrl(): Promise<string> {
-  const mode = getDownloadRegionMode();
-  for (const region of regionAttemptOrder(mode)) {
-    const url = await resolveMacFromRegion(region);
-    if (url) return url;
+export async function resolveMacInstallerArtifact(
+  preferred?: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
+  const first = preferred ?? getPreferredDownloadRegion();
+  for (const region of regionAttemptOrder(first)) {
+    const artifact = await resolveMacArtifactFromRegion(region);
+    if (artifact) return artifact;
     console.warn(`[Aixflow] Mac 下载：${region === 'cn' ? '北京' : '香港'} Release 不可用，尝试下一源`);
   }
   console.warn('[Aixflow] 无法解析 Mac 安装包链接');
-  return '';
+  return null;
 }
 
-export async function resolveInstallerUrlForPlatform(platform: InstallerPlatform): Promise<string> {
-  return platform === 'mac' ? resolveMacInstallerUrl() : resolveWindowsInstallerUrl();
+export async function resolveMacInstallerUrl(
+  preferred?: ReleaseDownloadRegion,
+): Promise<string> {
+  const artifact = await resolveMacInstallerArtifact(preferred);
+  return artifact?.url || '';
+}
+
+export async function resolveInstallerUrlForPlatform(
+  platform: InstallerPlatform,
+  preferred?: ReleaseDownloadRegion,
+): Promise<string> {
+  return platform === 'mac'
+    ? resolveMacInstallerUrl(preferred)
+    : resolveWindowsInstallerUrl(preferred);
+}
+
+export async function resolveInstallerArtifactForPlatform(
+  platform: InstallerPlatform,
+  preferred?: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
+  return platform === 'mac'
+    ? resolveMacInstallerArtifact(preferred)
+    : resolveWindowsInstallerArtifact(preferred);
+}
+
+/** 只解析指定线路，不回退到另一条（用户自己选更快的源） */
+export async function resolveInstallerArtifactStrict(
+  platform: InstallerPlatform,
+  region: ReleaseDownloadRegion,
+): Promise<InstallerArtifact | null> {
+  return platform === 'mac'
+    ? resolveMacArtifactFromRegion(region)
+    : resolveWindowsArtifactFromRegion(region);
 }
 
 /** 兼容旧引用 */

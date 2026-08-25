@@ -23,7 +23,9 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import {
   useReferenceMicRecording,
 } from '../../hooks/useReferenceMicRecording';
+import { bindPushToTalkPointerHandlers } from '../../utils/pushToTalkPointer';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../../utils/audioSongModels';
 import { isAudioCoverModel } from '../../utils/audioCoverModel';
 import { setAudioNodePlaying } from '../../utils/audioNodePlaybackStore';
@@ -1801,9 +1803,13 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
   );
 
   const [refMicSaving, setRefMicSaving] = useState(false);
+  const refMicHoldingRef = useRef(false);
+  const refMicSavingRef = useRef(false);
+  refMicSavingRef.current = refMicSaving;
 
   const {
     isRecording: isRecordingRefMic,
+    isRecordingRef: isRecordingActiveRef,
     inputLevel: refMicInputLevel,
     startReferenceRecording,
     stopReferenceRecording,
@@ -1819,33 +1825,40 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
     showAlert,
     strings: refMicStrings,
     isDarkMode,
+    shouldAbortAfterMic: () => !refMicHoldingRef.current,
   });
 
-  const handleStopReferenceRecording = useCallback(() => {
-    setRefMicSaving(true);
-    stopReferenceRecording();
-  }, [stopReferenceRecording]);
+  const startReferenceRecordingRef = useRef(startReferenceRecording);
+  startReferenceRecordingRef.current = startReferenceRecording;
+  const stopReferenceRecordingRef = useRef(stopReferenceRecording);
+  stopReferenceRecordingRef.current = stopReferenceRecording;
 
-  const handleReferenceMicInput = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      if (refMicSaving) return;
-      if (isRecordingRefMic) {
-        handleStopReferenceRecording();
-        return;
-      }
-      void startReferenceRecording();
-    },
-    [isRecordingRefMic, refMicSaving, startReferenceRecording, handleStopReferenceRecording],
+  const refMicPttHandlers = useMemo(
+    () =>
+      bindPushToTalkPointerHandlers({
+        onPressStart: () => {
+          if (refMicSavingRef.current) return;
+          refMicHoldingRef.current = true;
+          void startReferenceRecordingRef.current();
+        },
+        onPressEnd: () => {
+          const wasHolding = refMicHoldingRef.current;
+          refMicHoldingRef.current = false;
+          if (!wasHolding) return;
+          if (isRecordingActiveRef.current) {
+            setRefMicSaving(true);
+            stopReferenceRecordingRef.current();
+          }
+        },
+        disabled: () => refMicSavingRef.current,
+      }),
+    [isRecordingActiveRef],
   );
 
   useEffect(() => {
-    const open = isRecordingRefMic || refMicSaving;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isRecordingRefMic && !refMicSaving) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isRecordingRefMic, refMicSaving]);
 
   const handleTrimConfirm = useCallback(async (overrideStart?: number, overrideEnd?: number) => {
@@ -2355,9 +2368,16 @@ const AudioNodeComponent: React.FC<AudioNodeProps> = (props) => {
             {showNodeChrome ? (
               <button
                 type="button"
-                onClick={handleReferenceMicInput}
+                {...refMicPttHandlers}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
                 disabled={refMicSaving}
-                style={isRecordingRefMic ? micLevelCssVars(refMicInputLevel) : undefined}
+                style={{
+                  touchAction: 'none',
+                  ...(isRecordingRefMic ? micLevelCssVars(refMicInputLevel) : {}),
+                }}
                 className={topToolbarIconBtn(
                   isRecordingRefMic,
                   refMicSaving ? 'cursor-wait opacity-70' : '',

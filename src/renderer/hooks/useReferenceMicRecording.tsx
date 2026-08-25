@@ -44,6 +44,8 @@ export function useReferenceMicRecording({
   shouldAbortAfterMic,
 }: UseReferenceMicRecordingOptions) {
   const [isRecording, setIsRecording] = useState(false);
+  const isRecordingRef = useRef(false);
+  const startInFlightRef = useRef(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const recordChunksRef = useRef<Blob[]>([]);
@@ -228,14 +230,12 @@ export function useReferenceMicRecording({
   }, []);
 
   const startReferenceRecording = useCallback(async () => {
-    if (isRecording) {
-      stopReferenceRecording();
-      return;
-    }
+    if (isRecordingRef.current || startInFlightRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia) {
       showAlert(strings.micPermissionDenied);
       return;
     }
+    startInFlightRef.current = true;
     discardRecordingRef.current = false;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -295,10 +295,12 @@ export function useReferenceMicRecording({
         stream.getTracks().forEach((t) => t.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
+        isRecordingRef.current = false;
         setIsRecording(false);
         if (discardRecordingRef.current) {
           discardRecordingRef.current = false;
           recordChunksRef.current = [];
+          onRecordingFailed?.();
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 120));
@@ -306,12 +308,13 @@ export function useReferenceMicRecording({
         recordChunksRef.current = [];
         const recordedSec =
           recordStartedAtRef.current > 0
-            ? Math.max(0.1, (performance.now() - recordStartedAtRef.current) / 1000)
+            ? (performance.now() - recordStartedAtRef.current) / 1000
             : 0;
         recordStartedAtRef.current = 0;
         const mimeType = mr.mimeType || 'audio/webm';
         const blob = new Blob(chunks, { type: mimeType });
-        if (blob.size < 256) {
+        const tooShort = recordedSec < 0.4 || blob.size < 256;
+        if (tooShort) {
           showAlert(strings.recordTooShort);
           onRecordingFailed?.();
           return;
@@ -321,7 +324,7 @@ export function useReferenceMicRecording({
           header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3;
         if (!hasWebmHeader) {
           console.warn('[useReferenceMicRecording] invalid webm header', Array.from(header));
-          showAlert(strings.micSaveFailed);
+          showAlert(recordedSec < 1 ? strings.recordTooShort : strings.micSaveFailed);
           onRecordingFailed?.();
           return;
         }
@@ -360,8 +363,10 @@ export function useReferenceMicRecording({
           onRecordingFailed?.();
         }
       };
-      mr.start(250);
+      // 不分片：松开时整段写入一个 Blob，短按时比 timeslice 更容易得到完整 webm 头
+      mr.start();
       recordStartedAtRef.current = performance.now();
+      isRecordingRef.current = true;
       setIsRecording(true);
       if (shouldAbortAfterMic?.()) {
         discardRecordingRef.current = true;
@@ -375,6 +380,7 @@ export function useReferenceMicRecording({
     } catch (e) {
       console.error('[useReferenceMicRecording] getUserMedia', e);
       recordingVisualizerActiveRef.current = false;
+      isRecordingRef.current = false;
       if (waveformRafRef.current != null) {
         cancelAnimationFrame(waveformRafRef.current);
         waveformRafRef.current = null;
@@ -385,15 +391,16 @@ export function useReferenceMicRecording({
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
       showAlert(strings.micPermissionDenied);
+      onRecordingFailed?.();
+    } finally {
+      startInFlightRef.current = false;
     }
   }, [
-    isRecording,
     onSaved,
     onRecordingFailed,
     projectId,
     showAlert,
     shouldAbortAfterMic,
-    stopReferenceRecording,
     strings.micPermissionDenied,
     strings.micSaveFailed,
     strings.recordTooShort,
@@ -401,6 +408,7 @@ export function useReferenceMicRecording({
 
   return {
     isRecording,
+    isRecordingRef,
     /** 0–1 麦克风输入电平 */
     inputLevel,
     waveCanvasRef,

@@ -87,6 +87,7 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { flowEmptyCanvasT } from '../../i18n/flowEmptyCanvasI18n';
 import { canvasShortcutsT } from '../../i18n/canvasShortcutsI18n';
 import { VIDEO_NODE_DEFAULT_H, VIDEO_NODE_DEFAULT_W } from '../../utils/nodeSizeFromAspectRatio';
+import { forceClearVoiceModalLock } from '../../utils/voiceModalGate';
 import 'reactflow/dist/style.css';
 
 /** 与 Workspace pickCharacterLibraryAvatarUrlFromNode 一致：可点选参考图的 image / character 模块 */
@@ -264,6 +265,9 @@ const MAX_CANVAS_SIZE = 8000;
 const DOT_GAP_DEFAULT = 60;
 const DOT_GAP_MIN = 20;
 const DOT_GAP_MAX = 180;
+/** 画布缩放上限：原 1 再 ×3，便于放大看清导演台文字 */
+const CANVAS_MIN_ZOOM = 0.1;
+const CANVAS_MAX_ZOOM = 3;
 /** 缩放滑块：独立订阅 zoom，避免 FlowContent 在缩放时全树重渲染导致卡顿 */
 const ZoomSlider = memo(function ZoomSlider({ isDarkMode }: { isDarkMode: boolean }) {
   const zoom = useStore((s) => s.transform?.[2] ?? 1);
@@ -278,7 +282,7 @@ const ZoomSlider = memo(function ZoomSlider({ isDarkMode }: { isDarkMode: boolea
   }, []);
   const applyZoom = useCallback((v: number) => {
     const vp = getViewport();
-    const snapped = Math.max(0.1, Math.min(1, Math.round(v * 100) / 100));
+    const snapped = Math.max(CANVAS_MIN_ZOOM, Math.min(CANVAS_MAX_ZOOM, Math.round(v * 100) / 100));
     setViewport({ ...vp, zoom: snapped });
   }, [getViewport, setViewport]);
   const onSliderChange = useCallback((v: number) => {
@@ -296,8 +300,8 @@ const ZoomSlider = memo(function ZoomSlider({ isDarkMode }: { isDarkMode: boolea
       </span>
       <input
         type="range"
-        min={0.1}
-        max={1}
+        min={CANVAS_MIN_ZOOM}
+        max={CANVAS_MAX_ZOOM}
         step={0.01}
         value={sliderZoom}
         onChange={(e) => onSliderChange(parseFloat(e.target.value))}
@@ -639,7 +643,7 @@ interface FlowContentProps {
   flowContentApiRef?: React.MutableRefObject<{
     screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number };
     getLastMousePosition: () => { x: number; y: number };
-    fitView: (opts?: { duration?: number; padding?: number }) => void;
+    fitView: (opts?: { duration?: number; padding?: number; nodeIds?: string[] }) => void;
   } | null>;
   onPerformanceModeChange?: (enabled: boolean) => void;
   onOpenProjects?: () => void;
@@ -779,16 +783,35 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   const [isPanOrZooming, setIsPanOrZooming] = useState(false);
   // 注意：禁止用 state 回写 ref。MoveStart 先置 ref=true，若中途因 setGlobalInteracting
   // 触发重渲染而把 ref 同步回 false，transform 防抖会失效，导致每帧重渲染 FlowContent。
+  /** 同步 DOM：在 React 提交前关掉节点内 backdrop-filter，避免首帧横条伪影 */
+  const syncCanvasDraggingDom = useCallback(
+    (on: boolean) => {
+      if (typeof document !== 'undefined') {
+        document.body.classList.toggle('nexflow-canvas-dragging', on);
+      }
+      const host = reactFlowWrapper.current;
+      if (!host) return;
+      host.classList.toggle('is-dragging', on);
+      host.querySelector('.nexflow-canvas-stack')?.classList.toggle('is-dragging', on);
+      host.querySelectorAll<HTMLElement>('.custom-node-container').forEach((el) => {
+        el.classList.toggle('is-dragging', on);
+      });
+    },
+    [reactFlowWrapper],
+  );
+
   const setPanOrZooming = useCallback((next: boolean) => {
     isPanOrZoomingRef.current = next;
     const host = reactFlowWrapper.current;
     if (host) {
-      // 挂在外层 wrapper：CSS `.react-flow-wrapper--interacting …` 立即生效，不依赖本次 setState 提交
+      // 挂在外层 wrapper：CSS `.react-flow-wrapper--interacting …` 立刻生效，不依赖本次 setState 提交
       host.classList.toggle('react-flow-wrapper--interacting', next);
       host.querySelector('.nexflow-canvas-stack')?.classList.toggle('react-flow-wrapper--interacting', next);
     }
+    // 平移首帧就同步 is-dragging / body class，不必等 setGlobalInteracting 的 React 提交
+    if (next) syncCanvasDraggingDom(true);
     setIsPanOrZooming((prev) => (prev === next ? prev : next));
-  }, [reactFlowWrapper]);
+  }, [reactFlowWrapper, syncCanvasDraggingDom]);
   const viewportWidth = useStore((s) => s.width ?? 800);
   const viewportHeight = useStore((s) => s.height ?? 600);
   const hasPlayingAudioNodes = useHasPlayingAudioNodes();
@@ -828,7 +851,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       canvasEngine.setTransform(t[0], t[1], t[2]);
 
       // 选框：与 AI Canvas 一样只写 :root 的 --rf-zoom-inv；zoom 未变时跳过，减少缩放抖动
-      const z = Math.max(0.1, t[2] || 1);
+      const z = Math.max(CANVAS_MIN_ZOOM, t[2] || 1);
       if (Math.abs(z - lastRfZoomCssRef.current) > 0.00005) {
         lastRfZoomCssRef.current = z;
         const rootStyle = document.documentElement.style;
@@ -841,7 +864,10 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       if (isPanOrZoomingRef.current) return;
 
       const currentZoom = t[2];
-      const snappedZoom = Math.max(0.1, Math.min(1, Math.round(currentZoom / ZOOM_STEP) * ZOOM_STEP));
+      const snappedZoom = Math.max(
+        CANVAS_MIN_ZOOM,
+        Math.min(CANVAS_MAX_ZOOM, Math.round(currentZoom / ZOOM_STEP) * ZOOM_STEP),
+      );
       if (Math.abs(currentZoom - snappedZoom) > 0.0001) {
         setViewport({ x: t[0], y: t[1], zoom: snappedZoom });
       }
@@ -865,6 +891,31 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   const reactFlowInstanceRef = useRef<ReactFlowInstance | null>(null);
   // 跟踪是否已经执行过初始 fitView
   const hasInitialFitViewRef = useRef(false);
+  const prevNodeCountRef = useRef(0);
+
+  const focusNodes = useCallback(
+    (targetNodes: Node[], opts?: { duration?: number; padding?: number }) => {
+      if (!reactFlowInstanceRef.current || targetNodes.length === 0) return;
+      const duration =
+        typeof opts?.duration === 'number' && opts.duration >= 0 ? opts.duration : FIT_VIEW_DURATION;
+      const padding =
+        typeof opts?.padding === 'number' && opts.padding >= 0 ? opts.padding : 0.2;
+      isFitViewAnimatingRef.current = true;
+      reactFlowInstanceRef.current.fitView({
+        nodes: targetNodes,
+        padding,
+        includeHiddenNodes: false,
+        duration,
+      });
+      setTimeout(() => {
+        isFitViewAnimatingRef.current = false;
+      }, duration + 50);
+    },
+    [],
+  );
+
+  const focusNodesRef = useRef(focusNodes);
+  focusNodesRef.current = focusNodes;
   const nodesRef = useRef<Node[]>(nodes);
   nodesRef.current = nodes;
   // 小地图容器 ref，用于点击时换算画布坐标
@@ -1147,24 +1198,10 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     targetNodes: Node[] = nodes,
     opts?: { duration?: number; padding?: number },
   ) => {
-    if (!reactFlowInstanceRef.current || targetNodes.length === 0) {
-      return;
-    }
-    const duration =
-      typeof opts?.duration === 'number' && opts.duration >= 0 ? opts.duration : FIT_VIEW_DURATION;
     const padding =
-      typeof opts?.padding === 'number' && opts.padding >= 0 ? opts.padding : 0.2;
-    isFitViewAnimatingRef.current = true;
-    // 传入完整 nodes，避免断头台过滤时只拟合可见节点；fitView 根据传入节点计算边界
-    reactFlowInstanceRef.current.fitView({
-      nodes: targetNodes,
-      padding,
-      includeHiddenNodes: false,
-      duration,
-    });
-    setTimeout(() => {
-      isFitViewAnimatingRef.current = false;
-    }, duration + 50); // 略长于动画，确保结束后才恢复 zoom 步进
+      opts?.padding ??
+      (targetNodes.length === 1 ? 0.38 : 0.2);
+    focusNodesRef.current(targetNodes, { ...opts, padding });
   }, [nodes]);
   
   // 一键归位按钮点击处理；动画结束后触发 onFitViewComplete（用于自动截取项目卡片图）
@@ -1755,18 +1792,36 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     return () => clearTimeout(timer);
   }, []);
 
-  // 进入画布后自动执行一次一键归位：使用 centerNodes 确保与按钮行为一致，并受 isFitViewAnimatingRef 保护
+  // 空画布 → 首个模块：自动一键归位聚焦；清空后重置以便下次再触发
   useEffect(() => {
-    if (nodes.length > 0 && reactFlowInstanceRef.current && !hasInitialFitViewRef.current) {
-      const timer = setTimeout(() => {
-        if (reactFlowInstanceRef.current && !hasInitialFitViewRef.current) {
-          hasInitialFitViewRef.current = true;
-          centerNodes(nodes);
-        }
-      }, 250);
-      return () => clearTimeout(timer);
+    const prev = prevNodeCountRef.current;
+    prevNodeCountRef.current = nodes.length;
+    if (nodes.length === 0) {
+      hasInitialFitViewRef.current = false;
+      return;
     }
-  }, [nodes.length, nodes, centerNodes]);
+    const isFirstModule = prev === 0 && nodes.length >= 1;
+    const shouldFit =
+      isFirstModule || (!hasInitialFitViewRef.current && nodes.length > 0);
+    if (!shouldFit) return;
+
+    const padding = nodes.length === 1 ? 0.38 : 0.2;
+    const duration = isFirstModule ? 600 : FIT_VIEW_DURATION;
+    const run = () => {
+      if (!reactFlowInstanceRef.current) return;
+      hasInitialFitViewRef.current = true;
+      focusNodesRef.current(nodes, { duration, padding });
+    };
+    const t1 = window.setTimeout(run, isFirstModule ? 60 : 250);
+    let t2: number | undefined;
+    if (isFirstModule) {
+      t2 = window.setTimeout(run, 380);
+    }
+    return () => {
+      window.clearTimeout(t1);
+      if (t2 != null) window.clearTimeout(t2);
+    };
+  }, [nodes.length, nodes]);
 
   // 首次进入时自动激活一个可见的视频节点，使 poster 显示并可播放（避免全部灰块/加载态）
   // 使用 nodes 而非 nodeInternals，避免订阅 store 导致 setActiveVideoNodeId 触发循环更新
@@ -1821,7 +1876,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     const ns = nodesRef.current;
     if (ns.length > 0 && !hasInitialFitViewRef.current) {
       hasInitialFitViewRef.current = true;
-      setTimeout(() => centerNodesRef.current?.(ns), 250);
+      const padding = ns.length === 1 ? 0.38 : 0.2;
+      window.setTimeout(() => focusNodesRef.current(ns, { padding }), 250);
     }
   }, []);
   
@@ -2401,13 +2457,30 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     hasActivatedMoveInteractionRef.current = true;
     beginVisualInteractionLock();
     setGlobalInteracting(true);
+    syncCanvasDraggingDom(true);
     setVideoExtractQueuePaused(true);
-  }, [beginVisualInteractionLock]);
+  }, [beginVisualInteractionLock, syncCanvasDraggingDom]);
 
   /** 仅在确有平移/拖拽/全局交互锁时复位；勿在每次普通点击上 reset（会抢 click、加剧卡顿） */
   const forceEndPanInteraction = useCallback(() => {
     // 无论锁状态如何，先恢复 sharp，避免「锁已清但预览队列仍暂停」导致上传/资源区假死
     window.electronAPI?.setSharpQueuePaused?.(false).catch(() => undefined);
+
+    // 关键：refs/全局锁可能已清，但 DOM 仍挂着 interacting/is-dragging
+    // → CSS 对 .react-flow__node { pointer-events:none }，导演台整页点不动；Esc/切窗也会因为早退无效
+    const host = reactFlowWrapper.current;
+    if (host) {
+      host.classList.remove('is-dragging', 'react-flow-wrapper--interacting');
+      host
+        .querySelector('.nexflow-canvas-stack')
+        ?.classList.remove('is-dragging', 'react-flow-wrapper--interacting');
+      host.querySelectorAll<HTMLElement>('.custom-node-container.is-dragging').forEach((el) => {
+        el.classList.remove('is-dragging');
+      });
+    }
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('nexflow-canvas-dragging');
+    }
 
     const snap = getGlobalInteractionSnapshot();
     const hadPan = isPanOrZoomingRef.current || hasActivatedMoveInteractionRef.current;
@@ -2416,7 +2489,11 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       snap.isGlobalInteracting ||
       snap.isInteracting ||
       snap.visualLockState !== 'unlocked';
-    if (!hadPan && !hadNodeDrag && !locked) return;
+    if (!hadPan && !hadNodeDrag && !locked) {
+      // DOM 已剥；若 React 平移态仍真，再对齐一次
+      if (isPanOrZoomingRef.current) setPanOrZooming(false);
+      return;
+    }
 
     setPanOrZooming(false);
     canvasEngine.setPanning(false);
@@ -2441,8 +2518,9 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     // 必须走 setGlobalVisualLockState，保证 isVisualInteractionLocked 与 visualLockState 同步
     setGlobalVisualLockState('unlocked');
     setGlobalInteracting(false);
+    syncCanvasDraggingDom(false);
     resetGlobalInteractionLocks();
-  }, [canvasEngine, setPanOrZooming]);
+  }, [canvasEngine, reactFlowWrapper, setPanOrZooming, syncCanvasDraggingDom]);
 
   useEffect(() => {
     const onKeyUp = (e: KeyboardEvent) => {
@@ -2471,8 +2549,17 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     /** Esc：紧急解除画布交互锁 + 清语音弹窗标记（透明遮罩/假死自救） */
     const onEscUnlock = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      const host = reactFlowWrapper.current;
+      const domStuck = !!(
+        host?.classList.contains('is-dragging') ||
+        host?.classList.contains('react-flow-wrapper--interacting') ||
+        host?.querySelector('.nexflow-canvas-stack.is-dragging, .nexflow-canvas-stack.react-flow-wrapper--interacting') ||
+        document.body.classList.contains('nexflow-canvas-dragging') ||
+        document.querySelector('.panel-option-dropdown-backdrop')
+      );
       const snap = getGlobalInteractionSnapshot();
       const interacting =
+        domStuck ||
         isPanOrZoomingRef.current ||
         hasActivatedMoveInteractionRef.current ||
         hasActivatedNodeDragInteractionRef.current ||
@@ -2480,8 +2567,20 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
         snap.isInteracting ||
         snap.visualLockState !== 'unlocked';
       forceEndPanInteraction();
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-      if (interacting) {
+      forceClearVoiceModalLock();
+      try {
+        window.dispatchEvent(new CustomEvent('nexflow-force-end-dictation'));
+      } catch {
+        /* ignore */
+      }
+      try {
+        document
+          .querySelectorAll('.panel-option-dropdown-backdrop, .panel-option-dropdown-menu')
+          .forEach((el) => el.parentElement?.removeChild(el));
+      } catch {
+        /* ignore */
+      }
+      if (interacting || domStuck) {
         // 阻止 Workspace 同一次 Esc 再弹「退出确认」
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -2494,8 +2593,15 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       buttonsRef.current = e.buttons;
     };
     const onWatchdog = () => {
+      const host = reactFlowWrapper.current;
+      const domStuck = !!(
+        host?.classList.contains('is-dragging') ||
+        host?.classList.contains('react-flow-wrapper--interacting') ||
+        document.body.classList.contains('nexflow-canvas-dragging')
+      );
       const snap = getGlobalInteractionSnapshot();
       const interacting =
+        domStuck ||
         isPanOrZoomingRef.current ||
         hasActivatedMoveInteractionRef.current ||
         hasActivatedNodeDragInteractionRef.current ||
@@ -2524,6 +2630,14 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
     window.addEventListener('resize', onWindowResize);
     document.addEventListener('visibilitychange', onVisibility);
     const watchdogId = window.setInterval(onWatchdog, 500);
+    // 挂载即清一次可能残留的交互 class（热更新 / 上次未卸干净）
+    forceEndPanInteraction();
+    try {
+      (window as Window & { __nexflowForceUnlockUi?: () => void }).__nexflowForceUnlockUi =
+        forceEndPanInteraction;
+    } catch {
+      /* ignore */
+    }
     return () => {
       window.clearInterval(watchdogId);
       window.removeEventListener('keyup', onKeyUp, true);
@@ -2536,8 +2650,14 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       window.removeEventListener('blur', onWindowBlur);
       window.removeEventListener('resize', onWindowResize);
       document.removeEventListener('visibilitychange', onVisibility);
+      try {
+        const w = window as Window & { __nexflowForceUnlockUi?: () => void };
+        if (w.__nexflowForceUnlockUi === forceEndPanInteraction) delete w.__nexflowForceUnlockUi;
+      } catch {
+        /* ignore */
+      }
     };
-  }, [forceEndPanInteraction]);
+  }, [forceEndPanInteraction, reactFlowWrapper]);
 
   // 向父组件暴露 screenToFlowPosition、fitView、getLastMousePosition
   useEffect(() => {
@@ -2547,15 +2667,25 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       getLastMousePosition: () => (reactFlowWrapper.current as any)?.lastMousePosition ?? { x: 0, y: 0 },
       fitView: (opts) => {
         const duration = opts?.duration ?? FIT_VIEW_DURATION;
-        isFitViewAnimatingRef.current = true;
-        reactFlowInstanceRef.current?.fitView({
-          duration,
-          padding: opts?.padding ?? 0.2,
-          includeHiddenNodes: false,
-        });
-        window.setTimeout(() => {
-          isFitViewAnimatingRef.current = false;
-        }, duration + 50);
+        const padding = opts?.padding ?? (nodesRef.current.length === 1 ? 0.38 : 0.2);
+        const ids = opts?.nodeIds?.filter(Boolean);
+        const targets =
+          ids && ids.length > 0
+            ? nodesRef.current.filter((n) => ids.includes(n.id))
+            : nodesRef.current;
+        if (targets.length > 0) {
+          focusNodesRef.current(targets, { duration, padding });
+        } else {
+          isFitViewAnimatingRef.current = true;
+          reactFlowInstanceRef.current?.fitView({
+            duration,
+            padding,
+            includeHiddenNodes: false,
+          });
+          window.setTimeout(() => {
+            isFitViewAnimatingRef.current = false;
+          }, duration + 50);
+        }
       },
     };
     return () => {
@@ -2739,14 +2869,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
   }, [reactFlowWrapper, emergencyUnloadCount, perfLevel, isGlobalInteracting]);
 
   useEffect(() => {
-    const host = reactFlowWrapper.current;
-    if (!host) return;
-    const nodesEls = host.querySelectorAll<HTMLElement>('.custom-node-container');
-    nodesEls.forEach((el) => {
-      if (isGlobalInteracting) el.classList.add('is-dragging');
-      else el.classList.remove('is-dragging');
-    });
-  }, [isGlobalInteracting, nodes.length]);
+    syncCanvasDraggingDom(isGlobalInteracting);
+  }, [isGlobalInteracting, nodes.length, syncCanvasDraggingDom]);
 
   useEffect(() => {
     if (!isGlobalInteracting || SILENCE_PERF_MONITOR || TAPNOW_INTERACTION_SUSPEND) {
@@ -2927,6 +3051,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
               hasActivatedNodeDragInteractionRef.current = true;
               beginVisualInteractionLock();
               setGlobalInteracting(true);
+              syncCanvasDraggingDom(true);
               setImageLoadMaxParallel(perfLevel >= 2 ? 1 : 2);
               setVideoExtractQueuePaused(true);
               // 不 pause sharp，避免侧栏缩略图/上传被拖拽锁死
@@ -2982,8 +3107,8 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
           onSelectionStart={(e) => e.preventDefault()}
           panOnScroll={false}
           deleteKeyCode={['Delete', 'Backspace']}
-          minZoom={0.1}
-          maxZoom={1}
+          minZoom={CANVAS_MIN_ZOOM}
+          maxZoom={CANVAS_MAX_ZOOM}
           zoomOnScroll={true}
           zoomOnPinch={true}
           zoomOnDoubleClick={false}
@@ -3016,7 +3141,10 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             canvasEngine.requestUpdate();
             const vp = getViewport();
             const ZOOM_STEP = 0.01;
-            const snappedZoom = Math.max(0.1, Math.min(1, Math.round(vp.zoom / ZOOM_STEP) * ZOOM_STEP));
+            const snappedZoom = Math.max(
+              CANVAS_MIN_ZOOM,
+              Math.min(CANVAS_MAX_ZOOM, Math.round(vp.zoom / ZOOM_STEP) * ZOOM_STEP),
+            );
             if (Math.abs(vp.zoom - snappedZoom) > 0.0001) {
               setViewport({ x: vp.x, y: vp.y, zoom: snappedZoom });
             }
@@ -3119,7 +3247,7 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
                 ? 'nexflow-frosted-glass-dark hover:bg-white/15 text-white/80'
                 : 'nexflow-frosted-glass-light hover:bg-white/60 text-gray-700'
             }`}
-            title={emptyCanvas.fitViewTitle}
+            title={nodes.length === 1 ? emptyCanvas.fitViewSingleTitle : emptyCanvas.fitViewTitle}
           >
             <Maximize2 className="w-5 h-5" />
           </button>

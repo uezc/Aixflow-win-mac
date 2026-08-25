@@ -121,13 +121,24 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
     return () => io.disconnect();
   }, []);
 
+  const srcLooksLikeImage = /\.(png|jpe?g|gif|webp|bmp)(?:$|[?#])/i.test(String(clip.src || ''));
+  const treatAsImage = clip.type === 'image' || (clip.type === 'video' && srcLooksLikeImage);
+
   useEffect(() => {
-    if (clip.type === 'image') {
+    if (treatAsImage) {
       let cancelled = false;
+      setFrames([]);
       setLoading(true);
       setLoadError(null);
+      setImageSrc('');
+      const rawSrc = String(clip.src || '').trim();
+      if (!rawSrc) {
+        setLoading(false);
+        setLoadError('未绑定素材');
+        return;
+      }
       const load = async () => {
-        const rawUrl = normalizeVideoUrl(clip.src);
+        const rawUrl = normalizeVideoUrl(rawSrc);
         try {
           const url = projectId ? await mapProjectPath(rawUrl, projectId) : rawUrl;
           if (!cancelled) {
@@ -147,10 +158,11 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
       };
     }
 
-    if (clip.type !== 'video' || !clip.src) {
+    if (clip.type !== 'video' || !String(clip.src || '').trim()) {
       setFrames([]);
+      setImageSrc('');
       setLoading(false);
-      setLoadError(clip.src ? null : '无视频源');
+      setLoadError(String(clip.src || '').trim() ? null : '未绑定素材');
       return;
     }
 
@@ -234,6 +246,7 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
     clip.id,
     clip.src,
     clip.type,
+    treatAsImage,
     clip.trimStart,
     clip.trimEnd,
     clip.duration,
@@ -246,7 +259,7 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
   ]);
 
   const cells =
-    clip.type === 'image' && imageSrc
+    treatAsImage && imageSrc
       ? Array.from({ length: frameCount }, (_, i) => (
           <div key={i} className="h-full flex-1 overflow-hidden min-w-0">
             <img
@@ -254,6 +267,11 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
               alt=""
               draggable={false}
               className="h-full w-full object-cover pointer-events-none select-none"
+              onError={() => {
+                setImageSrc('');
+                setLoadError('图片加载失败');
+                setLoading(false);
+              }}
             />
           </div>
         ))
@@ -286,7 +304,12 @@ export const TimelineClipFilmstrip: React.FC<Props> = ({
             <span>加载胶片…</span>
           </div>
         ) : null}
-        {!cells && !loading && loadError ? (
+        {!cells && !loading && loadError === '未绑定素材' ? (
+          <div className="flex h-full w-full items-center justify-center bg-zinc-900/95 px-1 text-center text-[10px] text-amber-200/90">
+            未绑定素材
+          </div>
+        ) : null}
+        {!cells && !loading && loadError && loadError !== '未绑定素材' ? (
           <button
             type="button"
             className="flex h-full w-full items-center justify-center gap-1.5 bg-zinc-900/95 text-[10px] text-amber-200/90 hover:bg-zinc-800 nodrag nopan"

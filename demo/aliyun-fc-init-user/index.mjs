@@ -19,6 +19,7 @@ import {
   resolveRhRegionForQuery,
   rhAuthErrorMessage,
   forceOverseasByBillingOrPath,
+  buildRunningHubForwardUrl,
 } from './lib/runningHubTarget.mjs';
 import { resolveLlmUpstream, buildLlmChatPayload } from './lib/llmUpstream.mjs';
 
@@ -154,10 +155,10 @@ function extractModelIdFromForward(path, bodyObj) {
   return '';
 }
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-/** 单用户每分钟最多 run-task 次数（防刷） */
-const RATE_LIMIT_MAX = 5;
+/** 单用户每分钟最多 run-task 次数。故事+分批剧本远超 5 次，过低会误伤成 RATE_LIMIT_EXCEEDED */
+const RATE_LIMIT_MAX = Math.max(5, parseInt(process.env.NX_RATE_LIMIT_MAX || '20', 10) || 20);
 const BLTCY_CHAT_URL = 'https://api.bltcy.ai/v1/chat/completions';
-const API_TIMEOUT_MS = 120000;
+const API_TIMEOUT_MS = 180000;
 const ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '30m';
 const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '7d';
 
@@ -519,12 +520,11 @@ function checkAlipayPaySecret(reqHeaders, body) {
 }
 
 function resolveForwardUrl(provider, path, rhTarget) {
-  const p = normalizeRhPath(path);
   if (provider === 'runninghub') {
-    const base = (rhTarget?.base || pickRunningHubTarget(path).base).replace(/\/$/, '');
-    return `${base}${p}`;
+    return buildRunningHubForwardUrl(path, rhTarget || pickRunningHubTarget(path));
   }
   if (provider === 'bltcy') {
+    const p = normalizeRhPath(path);
     const base = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
     return `${base}${p}`;
   }
@@ -798,8 +798,64 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
         }
         const arr = await srcRes.arrayBuffer();
         const buf = Buffer.from(arr);
-        const filename = String(ufu.filename || 'file.bin');
-        const contentType = String(ufu.contentType || 'application/octet-stream');
+        if (!buf.length) {
+          const e = new Error('UPLOAD_FROM_URL_EMPTY_BODY');
+          e.response = { status: 400, data: {} };
+          throw e;
+        }
+        let filename = String(ufu.filename || 'file.bin');
+        const srcCt = String(srcRes.headers.get('content-type') || '')
+          .split(';')[0]
+          .trim();
+        const hintCt = String(ufu.contentType || '').trim();
+        // 魔数纠偏：扩展名 .mp3 但实际是 WAV/M4A 时，按真实容器改名，避免 RH LoadAudio 静默失效
+        const magic =
+          buf.length >= 12 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33
+            ? 'mp3'
+            : buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0
+              ? 'mp3'
+              : buf.length >= 12 &&
+                  buf[0] === 0x52 &&
+                  buf[1] === 0x49 &&
+                  buf[2] === 0x46 &&
+                  buf[3] === 0x46 &&
+                  buf.toString('ascii', 8, 12) === 'WAVE'
+                ? 'wav'
+                : buf.length >= 4 && buf.toString('ascii', 0, 4) === 'fLaC'
+                  ? 'flac'
+                  : buf.length >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53
+                    ? 'ogg'
+                    : buf.length >= 12 && buf.toString('ascii', 4, 8) === 'ftyp'
+                      ? 'mp4'
+                      : '';
+        if (magic === 'wav' && !/\.wav$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.wav';
+        } else if (magic === 'flac' && !/\.flac$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.flac';
+        } else if (magic === 'ogg' && !/\.ogg$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.ogg';
+        } else if (magic === 'mp4' && !/\.(m4a|mp4|aac)$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.m4a';
+        } else if (magic === 'mp3' && !/\.mp3$/i.test(filename)) {
+          filename = filename.replace(/\.[^.]+$/, '') + '.mp3';
+        }
+        const lowerName = filename.toLowerCase();
+        let contentType = hintCt || srcCt || 'application/octet-stream';
+        if (lowerName.endsWith('.mp3')) contentType = 'audio/mpeg';
+        else if (lowerName.endsWith('.wav')) contentType = 'audio/wav';
+        else if (lowerName.endsWith('.flac')) contentType = 'audio/flac';
+        else if (lowerName.endsWith('.ogg')) contentType = 'audio/ogg';
+        else if (lowerName.endsWith('.m4a')) contentType = 'audio/mp4';
+        else if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) contentType = 'image/jpeg';
+        else if (lowerName.endsWith('.png')) contentType = 'image/png';
+        else if (lowerName.endsWith('.webp')) contentType = 'image/webp';
+        else if (lowerName.endsWith('.mp4')) contentType = 'video/mp4';
+        else if (!hintCt && srcCt) contentType = srcCt;
+        if (magic) {
+          console.log(
+            `[RH] uploadFromUrl magic=${magic} filename=${filename} bytes=${buf.length} ct=${contentType}`,
+          );
+        }
         const fieldName = String(ufu.fieldName || 'file');
         const blob = new Blob([buf], { type: contentType });
         const form = new FormData();
@@ -2234,6 +2290,8 @@ async function handleRequest(req) {
       } catch (e) {
         console.warn('[billing] listModelConfig (asr file) skipped:', e?.message || e);
       }
+      /** 与客户端 getFileTranscribeDisplayPrice / MODEL_YUANBAO_RATES 对齐：按次至少 10 元宝 */
+      const ASR_FILE_MIN_YUANBAO = 10;
       let cost;
       try {
         cost = getFinalPrice(ASR_FILE_BILLING_MODEL_ID, {
@@ -2243,10 +2301,15 @@ async function handleRequest(req) {
         });
       } catch (e) {
         if (isModelNotPricedError(e)) {
-          cost = 5;
+          cost = ASR_FILE_MIN_YUANBAO;
         } else {
           throw e;
         }
+      }
+      {
+        const n = Math.round(Number(cost));
+        // 禁止 0/NaN 旁路；OTS 旧价 0.5 元→5 元宝时抬到价签 10
+        cost = Number.isFinite(n) && n >= ASR_FILE_MIN_YUANBAO ? n : ASR_FILE_MIN_YUANBAO;
       }
       const billingTaskId = `asr_file_${crypto.randomUUID()}`;
       const billingUser = await dbModule.getUserById(userId);
@@ -2290,6 +2353,16 @@ async function handleRequest(req) {
             body: JSON.stringify({ error: 'USER_FROZEN', message: '账号已冻结' }),
           };
         }
+        if (msg === 'INVALID_AMOUNT') {
+          return {
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({
+              error: 'INVALID_AMOUNT',
+              message: '云端转写计价无效，无法扣费',
+            }),
+          };
+        }
         throw e;
       }
       console.log(
@@ -2327,15 +2400,37 @@ async function handleRequest(req) {
       }
       try {
         const payload = JSON.parse(result.body || '{}');
+        const bal = Number(deductResult?.balance);
+        payload.charged = true;
         payload.cost = cost;
-        payload.balance = deductResult?.balance;
+        payload.balance = Number.isFinite(bal) ? bal : deductResult?.balance;
         payload.billingModelId = ASR_FILE_BILLING_MODEL_ID;
+        payload.billingTaskId = billingTaskId;
+        console.log(
+          `[asr/file-transcribe] charged=true cost=${cost} balance=${payload.balance} task=${billingTaskId}`,
+        );
         return {
           ...result,
           body: JSON.stringify(payload),
         };
       } catch {
-        return result;
+        // 业务 body 异常时仍回传扣费字段，避免客户端误判「未扣费」
+        const bal = Number(deductResult?.balance);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            ok: true,
+            text: '',
+            segments: [],
+            hasWordTimestamps: false,
+            charged: true,
+            cost,
+            balance: Number.isFinite(bal) ? bal : deductResult?.balance,
+            billingModelId: ASR_FILE_BILLING_MODEL_ID,
+            billingTaskId,
+          }),
+        };
       }
     }
 
@@ -2623,16 +2718,42 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /transactions — 最近流水（需 Bearer）
+    // POST /transactions — 流水分页（需 Bearer；body: limit, page）
     if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
       }
-      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 20));
+      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 30));
+      const page = Math.max(1, parseInt(body.page, 10) || 1);
       try {
+        const pagedFn = dbModule.listTransactionsForUserPaged;
+        if (typeof pagedFn === 'function') {
+          const result = await pagedFn(userId, { limit: lim, page });
+          return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify({
+              items: result.items || [],
+              page: result.page ?? page,
+              pageSize: result.pageSize ?? lim,
+              total: result.total ?? 0,
+              hasMore: !!result.hasMore,
+            }),
+          };
+        }
         const items = await dbModule.listRecentTransactionsForUser(userId, lim);
-        return { statusCode: 200, headers, body: JSON.stringify({ items }) };
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            items,
+            page: 1,
+            pageSize: lim,
+            total: Array.isArray(items) ? items.length : 0,
+            hasMore: false,
+          }),
+        };
       } catch (e) {
         console.error('[transactions]', e?.stack ?? e);
         return {
@@ -2713,7 +2834,10 @@ async function handleRequest(req) {
         return {
           statusCode: 429,
           headers,
-          body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+          body: JSON.stringify({
+            error: 'RATE_LIMIT_EXCEEDED',
+            message: '请求过于频繁，请稍后再试',
+          }),
         };
       }
       try {
@@ -2826,7 +2950,10 @@ async function handleRequest(req) {
       return {
         statusCode: 429,
         headers,
-        body: JSON.stringify({ error: 'RATE_LIMIT_EXCEEDED' }),
+        body: JSON.stringify({
+          error: 'RATE_LIMIT_EXCEEDED',
+          message: '请求过于频繁，请稍后再试',
+        }),
       };
     }
 

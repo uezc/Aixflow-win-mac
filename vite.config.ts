@@ -29,6 +29,10 @@ export default defineConfig(({ mode }) => {
           aixflowLanding: path.resolve(__dirname, 'public/index.html'),
           /** 充值套餐公示页（支付宝电脑网站支付合规） */
           aixflowRecharge: path.resolve(__dirname, 'public/recharge.html'),
+          /** 官网玻璃拟态下载安装器（与 Electron InstallerDownloadWizard 同款） */
+          aixflowInstaller: path.resolve(__dirname, 'public/installer.html'),
+          /** 卡拉OK 方案 A：离屏字幕烧录层 */
+          karaokeBurnOverlay: path.resolve(__dirname, 'karaoke-burn-overlay.html'),
         },
       },
     },

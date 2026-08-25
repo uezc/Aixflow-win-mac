@@ -17,6 +17,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { app } from 'electron';
 
+/** 须在 app ready 前：抬高渲染/主进程 V8 堆，避免导演台大工程 ~4GB OOM 闪退 */
+try {
+  app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
+} catch {
+  /* ignore */
+}
+
 const __dirnameEnv = path.dirname(fileURLToPath(import.meta.url));
 
 function stripBom(buf: Buffer): Buffer {

@@ -13,6 +13,7 @@ import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import { GRID_MAP_MAX_SIDE } from './GridMapNode';
 import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../../constants/rvcTrainLayout';
 import { HEYGEM_SHELL_W, HEYGEM_SHELL_H } from './VideoNode';
+import { CHARACTER_CARD_H, CHARACTER_CARD_W } from './CharacterNode';
 
 export interface EdgeCanvasLayerHandle {
   redraw: (activeNodeId?: string | null) => void;
@@ -55,10 +56,11 @@ const NODE_DEFAULT_FLOW_SIZE: Record<string, { w: number; h: number }> = {
   wanAnimate: { w: VIDEO_NODE_DEFAULT_W, h: VIDEO_NODE_DEFAULT_H },
   heyGem: { w: HEYGEM_SHELL_W, h: HEYGEM_SHELL_H },
   image: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
-  text: { w: IMAGE_NODE_DEFAULT_W, h: IMAGE_NODE_DEFAULT_H },
+  text: { w: scaleModulePx(280), h: scaleModulePx(160) },
+  minimalistText: { w: scaleModulePx(280), h: scaleModulePx(160) },
   llm: { w: scaleModulePx(280), h: scaleModulePx(160) },
   textSplit: { w: scaleModulePx(240), h: scaleModulePx(200) },
-  character: { w: scaleModulePx(624), h: scaleModulePx(468) },
+  character: { w: CHARACTER_CARD_W, h: CHARACTER_CARD_H },
   digitalHuman: { w: scaleModulePx(624), h: scaleModulePx(468) },
   audio: { w: scaleModulePx(280), h: scaleModulePx(160) },
   gridMap: { w: GRID_MAP_MAX_SIDE, h: GRID_MAP_MAX_SIDE },

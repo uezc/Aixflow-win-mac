@@ -134,6 +134,10 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
   >([]);
   const [txLoading, setTxLoading] = useState(false);
   const [txError, setTxError] = useState('');
+  const [txPage, setTxPage] = useState(1);
+  const [txPageSize] = useState(30);
+  const [txTotal, setTxTotal] = useState(0);
+  const [txHasMore, setTxHasMore] = useState(false);
   /** 账单大窗 */
   const [billModalOpen, setBillModalOpen] = useState(false);
   /** 协议阅读弹窗（本地 md，不落库） */
@@ -142,14 +146,15 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
   const loginT = loginPageT(locale);
   const legalT = legalUiT(locale);
 
-  const loadTransactions = useCallback(async () => {
+  const loadTransactions = useCallback(async (page = 1) => {
     if (!window.electronAPI?.nxCloudGetTransactions) return;
     const tt = settingsT(locale);
+    const pageNo = Math.max(1, Math.floor(Number(page) || 1));
     setTxLoading(true);
     setTxError('');
     try {
-      const { items } = await window.electronAPI.nxCloudGetTransactions(30);
-      const rows = Array.isArray(items) ? items : [];
+      const result = await window.electronAPI.nxCloudGetTransactions(txPageSize, pageNo);
+      const rows = Array.isArray(result?.items) ? result.items : [];
       setTxList(
         rows
           .filter((row) => {
@@ -157,15 +162,26 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
             const type = String(row.type ?? '').toLowerCase();
             return type !== 'alipay_trade_ref' && !txId.startsWith('alipay_trade_');
           })
-          .slice(0, 30),
+          .sort((a, b) => {
+            const ta = Number(a.created_at) || Date.parse(String(a.created_at || '')) || 0;
+            const tb = Number(b.created_at) || Date.parse(String(b.created_at || '')) || 0;
+            const na = ta > 0 && ta < 1e12 ? ta * 1000 : ta;
+            const nb = tb > 0 && tb < 1e12 ? tb * 1000 : tb;
+            return nb - na;
+          }),
       );
+      setTxPage(Number(result?.page) > 0 ? Math.floor(Number(result.page)) : pageNo);
+      setTxTotal(Number.isFinite(Number(result?.total)) ? Math.max(0, Math.floor(Number(result.total))) : rows.length);
+      setTxHasMore(!!result?.hasMore);
     } catch (e: unknown) {
       setTxError(e instanceof Error ? e.message : tt.loadTxFailed);
       setTxList([]);
+      setTxTotal(0);
+      setTxHasMore(false);
     } finally {
       setTxLoading(false);
     }
-  }, [locale]);
+  }, [locale, txPageSize]);
 
   const loggedOutCloudDefaults = useCallback(
     () => ({
@@ -199,6 +215,9 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
         isFirstRecharge: s.isFirstRecharge === true,
         directRechargeEnabled: s.directRechargeEnabled === true,
       });
+      if (!s.loggedIn && lastEm) {
+        setEmail((prev) => (prev.trim() ? prev : lastEm));
+      }
     } catch {
       setCloud(loggedOutCloudDefaults());
     }
@@ -208,7 +227,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
   useEffect(() => {
     const onSettled = () => {
       void refreshCloudState();
-      void loadTransactions();
+      void loadTransactions(1);
       setRechargeModalOpen(false);
       setRechargeError('');
     };
@@ -294,9 +313,12 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
 
   useEffect(() => {
     if (cloud?.loggedIn && window.electronAPI?.nxCloudGetTransactions) {
-      void loadTransactions();
+      void loadTransactions(1);
     } else {
       setTxList([]);
+      setTxPage(1);
+      setTxTotal(0);
+      setTxHasMore(false);
     }
   }, [cloud?.loggedIn, loadTransactions]);
 
@@ -641,7 +663,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
 
   const openBillModal = () => {
     setBillModalOpen(true);
-    void loadTransactions();
+    void loadTransactions(1);
   };
 
   const openRechargeModal = () => {
@@ -661,9 +683,7 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
       await window.electronAPI.nxCloudRedeemCoupon(couponCode);
       setCouponCode('');
       await refreshCloudState();
-      void loadTransactions();
-    } catch (e: unknown) {
-      setCouponError(formatCloudAuthError(e, locale));
+      void loadTransactions(1);
     } finally {
       setCouponBusy(false);
     }
@@ -1419,7 +1439,19 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
         txList={txList}
         txLoading={txLoading}
         txError={txError}
-        onRefresh={loadTransactions}
+        page={txPage}
+        pageSize={txPageSize}
+        total={txTotal}
+        hasMore={txHasMore}
+        onRefresh={() => loadTransactions(txPage)}
+        onPrevPage={() => {
+          if (txPage <= 1 || txLoading) return;
+          void loadTransactions(txPage - 1);
+        }}
+        onNextPage={() => {
+          if (!txHasMore || txLoading) return;
+          void loadTransactions(txPage + 1);
+        }}
       />
       <EcommerceLoginShell
         locale={locale}

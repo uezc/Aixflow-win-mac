@@ -1,15 +1,46 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Mic } from 'lucide-react';
 import { normalizeVideoUrl, toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
+import { attachAudioPreviewGain, resumeAudioPreviewContext } from '../../utils/audioPreviewGain';
 
 const WAVE_BAR_COUNT = 72;
 const WAVE_STRIP_MIN_H_PX = 120;
 const WAVE_TRACK_MIN_H_PX = 104;
 
+/** compact+waveOnly：固定条宽/间距，居中短段（密度不变） */
+const PACK_BAR_W_PX = 2.5;
+const PACK_GAP_PX = 3;
+const PACK_BAR_COUNT_MIN = 12;
+const PACK_BAR_COUNT_MAX = 160;
+/** 波形占用内容宽比例（两端留白，约 55%–70%） */
+const PACK_SPAN_RATIO = 0.62;
+
 const waveBarGradient = (isDarkMode: boolean) =>
   isDarkMode
     ? 'bg-gradient-to-t from-[#14081f] via-violet-800 to-violet-300'
     : 'bg-gradient-to-t from-violet-950 via-violet-600 to-violet-200';
+
+function packBarCountForWidth(contentWidthPx: number): number {
+  const span = Math.max(0, Number(contentWidthPx) || 0) * PACK_SPAN_RATIO;
+  if (span <= 0) return PACK_BAR_COUNT_MIN;
+  const step = PACK_BAR_W_PX + PACK_GAP_PX;
+  const n = Math.floor((span + PACK_GAP_PX) / step);
+  return Math.min(PACK_BAR_COUNT_MAX, Math.max(PACK_BAR_COUNT_MIN, n));
+}
+
+/** 纺锤包络：两端矮、中间高（sin 半波，略抬底以免两端消失） */
+function packSpindleEnvelope(index: number, count: number): number {
+  const n = Math.max(1, count);
+  const t = (index + 0.5) / n;
+  return 0.12 + 0.88 * Math.sin(Math.PI * t);
+}
+
+/** 与 ResizeObserver contentRect 一致：不含左右 padding */
+function readPackContentWidth(el: HTMLElement): number {
+  const cs = getComputedStyle(el);
+  const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  return Math.max(0, el.clientWidth - pad);
+}
 
 function normalizePlayableAudioUrl(url: string): string {
   const raw = String(url || '').trim();
@@ -63,16 +94,41 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
 }: ReferenceAudioWaveStripProps) {
   const isCompact = variant === 'compact';
   const compactWaveOnly = isCompact && waveOnly;
-  /** 歌词分段小卡：波形在模块内居中、条间距均匀 */
+  /** compact+waveOnly：固定条宽/间距，按内容宽×PACK_SPAN_RATIO 生成 bar 并居中 */
   const centeredPack = compactWaveOnly && !dense && !emphasized;
   const denseH = Number(minHeightPx) > 0 ? Number(minHeightPx) : 38;
-  // 矮条：够辨识即可；表行多时 56–72 根 span 会显著拖垮布局/合成
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const previewCtxRef = useRef<AudioContext | null>(null);
+  const packTrackRef = useRef<HTMLDivElement>(null);
+  const [packTrackW, setPackTrackW] = useState(0);
+
+  useLayoutEffect(() => {
+    if (!centeredPack) {
+      setPackTrackW(0);
+      return;
+    }
+    const el = packTrackRef.current;
+    if (!el) return;
+    const apply = (w: number) => {
+      setPackTrackW((prev) => (Math.abs(prev - w) < 0.5 ? prev : w));
+    };
+    apply(readPackContentWidth(el));
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? readPackContentWidth(el);
+      apply(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [centeredPack, src, dense, emphasized, minHeightPx]);
+
+  // 矮条：够辨识即可；表行多时过多 span 会拖垮布局/合成（pack 模式按宽度封顶）
   const barCount = dense
     ? denseH >= 44
       ? 36
       : 28
     : centeredPack
-      ? 18
+      ? packBarCountForWidth(packTrackW)
       : isCompact
         ? emphasized
           ? 36
@@ -99,7 +155,6 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
         : isCompact
           ? 'max-w-[2.5px]'
           : 'max-w-[3px]';
-  const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const playbackUrl = useMemo(() => normalizePlayableAudioUrl(src), [src]);
   const clipStart = Math.max(0, Number(clipStartSec) || 0);
@@ -169,9 +224,17 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
             }
           }
         }
-        void a.play().catch((err) => {
-          console.warn('[ReferenceAudioWaveStrip] play failed', err);
-        });
+        if (!previewCtxRef.current) {
+          previewCtxRef.current = attachAudioPreviewGain(a);
+        }
+        void (async () => {
+          await resumeAudioPreviewContext(previewCtxRef.current);
+          try {
+            await a.play();
+          } catch (err) {
+            console.warn('[ReferenceAudioWaveStrip] play failed', err);
+          }
+        })();
       } else {
         a.pause();
       }
@@ -192,7 +255,10 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
     }
     return Array.from({ length: barCount }, (_, i) => {
       h = (Math.imul(h, 1103515245) + 12345 + i) >>> 0;
-      return lo + (h % Math.max(1, hi - lo + 1));
+      const raw = lo + (h % Math.max(1, hi - lo + 1));
+      if (!centeredPack) return raw;
+      // 纺锤：随机起伏 × 两端细中间宽
+      return Math.max(2, Math.round(raw * packSpindleEnvelope(i, barCount)));
     });
   }, [playbackUrl, barCount, trackMinH, isCompact, dense, centeredPack, clipStart, clipEnd, hasClip]);
 
@@ -248,15 +314,16 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
             : emptyTrackBg;
         return (
           <div
-            className="nodrag w-full overflow-hidden rounded-md cursor-not-allowed opacity-55"
+            className="nodrag w-full min-w-0 overflow-hidden rounded-md cursor-not-allowed opacity-55"
             style={{ minHeight: stripMinH, height: dense || centeredPack ? stripMinH : undefined }}
             title={emptyTitle}
             aria-label={emptyTitle}
           >
             <div
+              ref={centeredPack ? packTrackRef : undefined}
               className={`${
                 centeredPack
-                  ? 'flex w-full h-full items-center justify-center gap-[3px] rounded-lg px-2 py-1'
+                ? 'flex w-full h-full min-w-0 items-center justify-center gap-[3px] overflow-hidden rounded-lg px-2 py-1'
                   : `grid w-full min-w-0 items-end gap-px ${
                       dense ? 'h-full rounded-md px-0.5 py-0' : 'rounded-lg px-1.5 py-1'
                     }`
@@ -357,7 +424,7 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
         onPointerDown={(e) => e.stopPropagation()}
         title={playTitle}
         aria-label={playTitle}
-        className={`nodrag nopan w-full overflow-hidden text-left transition-opacity ${
+        className={`nodrag nopan w-full min-w-0 overflow-hidden text-left transition-opacity ${
           compactWaveOnly
             ? 'cursor-pointer hover:opacity-95 active:opacity-90'
             : `cursor-pointer hover:opacity-95 active:opacity-90 ${outerBorder}`
@@ -388,11 +455,12 @@ const ReferenceAudioWaveStrip = memo(function ReferenceAudioWaveStripInner({
           </>
         ) : null}
         <div
+          ref={centeredPack ? packTrackRef : undefined}
           className={`min-w-0 ${
             dense
               ? 'grid w-full h-full items-end gap-px rounded-md px-0.5 py-0'
               : centeredPack
-                ? 'flex w-full h-full items-center justify-center gap-[3px] rounded-lg px-2 py-1'
+                ? 'flex w-full h-full min-w-0 items-center justify-center gap-[3px] overflow-hidden rounded-lg px-2 py-1'
                 : compactWaveOnly
                   ? 'grid w-full items-end gap-px rounded-lg px-1.5 py-1'
                   : isCompact

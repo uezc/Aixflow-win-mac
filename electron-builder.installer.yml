@@ -1,0 +1,28 @@
+appId: com.aixflow.installer
+productName: Aixflow Installer
+copyright: Aixflow
+directories:
+  output: release/glass-installer
+  buildResources: build
+files:
+  - from: dist-glass-installer
+    filter:
+      - '**/*'
+extraMetadata:
+  name: aixflow-installer
+  main: main/index.js
+asar: true
+electronLanguages:
+  - en-US
+  - zh-CN
+win:
+  icon: build/icon.ico
+  signAndEditExecutable: false
+  requestedExecutionLevel: requireAdministrator
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: Aixflow-Installer-${version}.${ext}
+portable:
+  artifactName: Aixflow-Installer-${version}.${ext}

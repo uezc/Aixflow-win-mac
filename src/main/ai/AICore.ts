@@ -14,6 +14,7 @@ import { pollRunningHubVideoUntilTerminal } from '../utils/runningHubVideoQueryR
 import { pollRunningHubImageUntilTerminal } from '../utils/runningHubImageQueryResume.js';
 import { pollRunningHubAudioUntilTerminal } from '../utils/runningHubAudioQueryResume.js';
 import { isRvcModelPackageUrl } from '../../shared/rvcVoiceTrainUtils.js';
+import { NEXFLOW_MAX_TASK_CONCURRENCY } from '../../shared/nexflowTaskConcurrency.js';
 
 /** 熔断器：连续超时阈值 */
 const CIRCUIT_BREAKER_TIMEOUT_THRESHOLD = 3;
@@ -22,7 +23,7 @@ const CIRCUIT_BREAKER_LOCK_MS = 2 * 60 * 1000;
 
 /**
  * AI 核心调度器
- * 支持并发控制：最多20个并行的Image模块请求
+ * 支持并发控制：全类型 ai:invoke 合计最多 NEXFLOW_MAX_TASK_CONCURRENCY 路并行
  * 熔断器：连续 3 次 AI 请求超时后，2 分钟内不允许提交新任务
  */
 export class AICore {
@@ -35,10 +36,21 @@ export class AICore {
   /** 防止同一 nodeId+rhTaskId 重复触发恢复轮询 */
   private resumeRunningHubPollInFlight = new Set<string>();
 
-  // 并发控制：最多20个并行的Image模块请求
-  private readonly MAX_CONCURRENT_IMAGE_REQUESTS = 20;
-  private activeImageRequests = 0;
-  private imageRequestQueue: Array<{
+  /**
+   * PROCESSING 节流：多路视频轮询时每几秒就刷一次 IPC，
+   * 会拖垮渲染进程（分镜台 + 画布节点同时重渲）。
+   */
+  private processingThrottleByNodeId = new Map<
+    string,
+    { at: number; progress: number; text: string }
+  >();
+  private static readonly PROCESSING_MIN_INTERVAL_MS = 2000;
+  private static readonly PROCESSING_MIN_PROGRESS_DELTA = 5;
+
+  // 全局并发控制：生图/生视频/LLM 等 ai:invoke 合计上限
+  private readonly maxConcurrentTasks = NEXFLOW_MAX_TASK_CONCURRENCY;
+  private activeTaskCount = 0;
+  private taskRequestQueue: Array<{
     params: AIInvokeParams;
     resolve: () => void;
     reject: (error: Error) => void;
@@ -97,40 +109,32 @@ export class AICore {
     }
 
     console.log(`[AICore] 收到任务提交: modelId=${modelId}, nodeId=${nodeId}`);
-
-    // 如果是 Image 模块，需要并发控制（限制最多20个并发）
-    if (modelId === 'image') {
-      return this.invokeWithConcurrencyControl(params);
-    }
-
-    // 其他模块（Video、Chat等）直接执行，完全独立，不阻塞其他任务
-    console.log(`[AICore] 模块 ${modelId} 直接执行，不阻塞其他任务`);
-    return this.executeInvoke(params);
+    return this.invokeWithConcurrencyControl(params);
   }
 
   /**
-   * 带并发控制的调用（用于 Image 模块）
+   * 带并发控制的调用（全类型 ai:invoke 共享队列）
    */
   private async invokeWithConcurrencyControl(params: AIInvokeParams): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      // 如果当前并发数未达到上限，直接执行
-      if (this.activeImageRequests < this.MAX_CONCURRENT_IMAGE_REQUESTS) {
-        this.activeImageRequests++;
+      if (this.activeTaskCount < this.maxConcurrentTasks) {
+        this.activeTaskCount++;
         this.executeInvoke(params)
           .then(() => {
-            this.activeImageRequests--;
-            this.processImageQueue();
+            this.activeTaskCount--;
+            this.processTaskQueue();
             resolve();
           })
           .catch((error) => {
-            this.activeImageRequests--;
-            this.processImageQueue();
+            this.activeTaskCount--;
+            this.processTaskQueue();
             reject(error);
           });
       } else {
-        // 加入队列等待
-        console.log(`[并发控制] Image 请求 ${params.nodeId} 加入队列，当前并发数: ${this.activeImageRequests}/${this.MAX_CONCURRENT_IMAGE_REQUESTS}`);
-        this.imageRequestQueue.push({
+        console.log(
+          `[并发控制] ${params.modelId} 请求 ${params.nodeId} 加入队列，当前并发数: ${this.activeTaskCount}/${this.maxConcurrentTasks}`,
+        );
+        this.taskRequestQueue.push({
           params,
           resolve,
           reject,
@@ -139,36 +143,36 @@ export class AICore {
     });
   }
 
-  /**
-   * 处理队列中的 Image 请求
-   */
-  private processImageQueue(): void {
-    if (this.imageRequestQueue.length === 0) {
+  /** 处理队列中的等待任务 */
+  private processTaskQueue(): void {
+    if (this.taskRequestQueue.length === 0) {
       return;
     }
 
-    if (this.activeImageRequests >= this.MAX_CONCURRENT_IMAGE_REQUESTS) {
+    if (this.activeTaskCount >= this.maxConcurrentTasks) {
       return;
     }
 
-    const next = this.imageRequestQueue.shift();
+    const next = this.taskRequestQueue.shift();
     if (!next) {
       return;
     }
 
-    this.activeImageRequests++;
-    console.log(`[并发控制] 从队列中取出 Image 请求 ${next.params.nodeId}，当前并发数: ${this.activeImageRequests}/${this.MAX_CONCURRENT_IMAGE_REQUESTS}`);
-    
+    this.activeTaskCount++;
+    console.log(
+      `[并发控制] 从队列取出 ${next.params.modelId} 请求 ${next.params.nodeId}，当前并发数: ${this.activeTaskCount}/${this.maxConcurrentTasks}`,
+    );
+
     this.executeInvoke(next.params)
       .then(() => {
-        this.activeImageRequests--;
+        this.activeTaskCount--;
         next.resolve();
-        this.processImageQueue();
+        this.processTaskQueue();
       })
       .catch((error) => {
-        this.activeImageRequests--;
+        this.activeTaskCount--;
         next.reject(error);
-        this.processImageQueue();
+        this.processTaskQueue();
       });
   }
 
@@ -368,6 +372,40 @@ export class AICore {
       this.normalizeRvcModelPayload(normalizedPacket.payload as Record<string, unknown>);
     }
 
+    // PROCESSING 节流：同 node 2s 内且进度未明显变化则跳过（SUCCESS/ERROR/START 不节流）
+    if (normalizedPacket.status === 'PROCESSING' && normalizedPacket.nodeId) {
+      const payload = (normalizedPacket.payload || {}) as { progress?: number; text?: string };
+      const progress = Number(payload.progress);
+      const text = String(payload.text || '').trim();
+      const now = Date.now();
+      const prev = this.processingThrottleByNodeId.get(normalizedPacket.nodeId);
+      const progressOk = Number.isFinite(progress);
+      if (prev) {
+        const elapsed = now - prev.at;
+        const progressDelta = progressOk ? Math.abs(progress - prev.progress) : 0;
+        const textChanged = text !== prev.text;
+        if (
+          elapsed < AICore.PROCESSING_MIN_INTERVAL_MS &&
+          progressDelta < AICore.PROCESSING_MIN_PROGRESS_DELTA &&
+          !textChanged
+        ) {
+          return;
+        }
+      }
+      this.processingThrottleByNodeId.set(normalizedPacket.nodeId, {
+        at: now,
+        progress: progressOk ? progress : prev?.progress ?? 0,
+        text,
+      });
+    } else if (
+      normalizedPacket.nodeId &&
+      (normalizedPacket.status === 'SUCCESS' ||
+        normalizedPacket.status === 'ERROR' ||
+        normalizedPacket.status === 'START')
+    ) {
+      this.processingThrottleByNodeId.delete(normalizedPacket.nodeId);
+    }
+
     // 先立即发送状态更新（不等待资源下载），确保 UI 及时响应
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       // 调试日志：记录发送的状态更新，确保路径正确编码
@@ -375,25 +413,29 @@ export class AICore {
       const textLength = (normalizedPacket.payload as any)?.text?.length || 0;
       const hasLocalPath = !!(normalizedPacket.payload as any)?.localPath;
       const localPath = (normalizedPacket.payload as any)?.localPath || 'none';
+      // PROCESSING 刷屏会拖慢控制台 I/O；仅偶发打印
+      const shouldLog =
+        normalizedPacket.status !== 'PROCESSING' ||
+        Math.random() < 0.08;
 
-      // 确保 localPath 是字符串格式（避免编码问题）
-      if (hasLocalPath && typeof localPath === 'string') {
-        // 验证路径格式
-        try {
-          const normalizedPath = localPath.replace(/\\/g, '/');
-          console.log(`[AICore] 发送状态更新: nodeId=${normalizedPacket.nodeId}, status=${normalizedPacket.status}, hasPayload=${!!normalizedPacket.payload}, hasText=${hasText}, textLength=${textLength}, hasLocalPath=${hasLocalPath}, localPath=${normalizedPath}`);
-        } catch (error) {
-          console.error(`[AICore] 路径编码错误:`, error);
+      if (shouldLog) {
+        if (hasLocalPath && typeof localPath === 'string') {
+          try {
+            const normalizedPath = localPath.replace(/\\/g, '/');
+            console.log(`[AICore] 发送状态更新: nodeId=${normalizedPacket.nodeId}, status=${normalizedPacket.status}, hasPayload=${!!normalizedPacket.payload}, hasText=${hasText}, textLength=${textLength}, hasLocalPath=${hasLocalPath}, localPath=${normalizedPath}`);
+          } catch (error) {
+            console.error(`[AICore] 路径编码错误:`, error);
+          }
+        } else {
+          const errPreview =
+            normalizedPacket.status === 'ERROR'
+              ? String((normalizedPacket.payload as { error?: unknown })?.error ?? '').slice(0, 500)
+              : '';
+          console.log(
+            `[AICore] 发送状态更新: nodeId=${normalizedPacket.nodeId}, status=${normalizedPacket.status}, hasPayload=${!!normalizedPacket.payload}, hasText=${hasText}, textLength=${textLength}, hasLocalPath=${hasLocalPath}` +
+              (errPreview ? `, error=${errPreview}` : ''),
+          );
         }
-      } else {
-        const errPreview =
-          normalizedPacket.status === 'ERROR'
-            ? String((normalizedPacket.payload as { error?: unknown })?.error ?? '').slice(0, 500)
-            : '';
-        console.log(
-          `[AICore] 发送状态更新: nodeId=${normalizedPacket.nodeId}, status=${normalizedPacket.status}, hasPayload=${!!normalizedPacket.payload}, hasText=${hasText}, textLength=${textLength}, hasLocalPath=${hasLocalPath}` +
-            (errPreview ? `, error=${errPreview}` : ''),
-        );
       }
 
       // 确保 payload 中的路径是字符串格式

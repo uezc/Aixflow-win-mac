@@ -3,6 +3,22 @@
  * 自动将中文项目路径替换为英文映射路径，解决 local-resource 协议编码问题
  */
 
+const projectPathPairCache = new Map<string, Promise<{ original: string; mapped: string }>>();
+
+function getProjectPathPair(projectId: string): Promise<{ original: string; mapped: string }> {
+  const hit = projectPathPairCache.get(projectId);
+  if (hit) return hit;
+  const pending = Promise.all([
+    window.electronAPI!.getProjectOriginalPath(projectId),
+    window.electronAPI!.getProjectMappedPath(projectId),
+  ]).then(([originalPath, mappedPath]) => ({
+    original: String(originalPath || ''),
+    mapped: String(mappedPath || ''),
+  }));
+  projectPathPairCache.set(projectId, pending);
+  return pending;
+}
+
 /**
  * 将包含中文项目路径的 URL 转换为映射路径
  * @param url 原始 URL（可能包含中文路径）
@@ -20,11 +36,7 @@ export async function mapProjectPath(url: string, projectId?: string): Promise<s
   }
   
   try {
-    // 获取项目的原始路径和映射路径
-    const [originalPath, mappedPath] = await Promise.all([
-      window.electronAPI.getProjectOriginalPath(projectId),
-      window.electronAPI.getProjectMappedPath(projectId),
-    ]);
+    const { original: originalPath, mapped: mappedPath } = await getProjectPathPair(projectId);
     
     if (!originalPath || !mappedPath) {
       return url;

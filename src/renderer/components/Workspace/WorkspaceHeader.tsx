@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FolderOpen, Sun, Moon, Maximize2, Settings, GitBranch, Workflow, Undo2, Redo2, Coins, Globe, ChevronDown, Check, Archive, RotateCcw, MousePointer2, Minus, Bug } from 'lucide-react';
+import { ArrowLeft, FolderOpen, Sun, Moon, Maximize2, Settings, GitBranch, Workflow, Undo2, Redo2, Coins, Globe, ChevronDown, Check, MousePointer2, Minus, Bug, MoreHorizontal } from 'lucide-react';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { APP_LOCALE_OPTIONS, appLocaleNativeLabel, type AppLocale } from '../../i18n/settingsI18n';
@@ -14,25 +14,41 @@ import {
   type TechCursorShape,
 } from '../../utils/techCursorPrefs';
 
-function hdrTextBtn(isDarkMode: boolean, scratch: ScratchColorId, extra = '') {
+/** 顶栏密度：宽屏完整 / 中等收紧 / 窄窗溢出菜单 */
+type HeaderDensity = 'full' | 'compact' | 'minimal';
+
+function densityFromWidth(width: number): HeaderDensity {
+  if (width >= 1320) return 'full';
+  if (width >= 980) return 'compact';
+  return 'minimal';
+}
+
+function hdrTextBtn(isDarkMode: boolean, scratch: ScratchColorId, extra = '', compact = false) {
+  const pad = compact ? 'gap-1.5 px-2 py-1 text-xs' : 'gap-2 px-3 py-1.5 text-sm';
   if (isDarkMode) {
-    return `flex items-center gap-2 px-3 py-1.5 apple-button-secondary rounded-lg text-white/60 hover:text-white transition-all text-sm ${extra}`.trim();
+    return `flex items-center ${pad} apple-button-secondary rounded-lg text-white/60 hover:text-white transition-all whitespace-nowrap shrink-0 ${extra}`.trim();
   }
-  return `flex items-center gap-2 px-3 py-1.5 rounded-lg transition-all text-sm scratch-float-btn ${scratchTintClass(scratch)} ${extra}`.trim();
+  return `flex items-center ${pad} rounded-lg transition-all whitespace-nowrap shrink-0 scratch-float-btn ${scratchTintClass(scratch)} ${extra}`.trim();
 }
 
 function hdrRoundBtn(isDarkMode: boolean, scratch: ScratchColorId) {
   if (isDarkMode) {
-    return 'flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/[0.08] text-white/90 transition-colors hover:bg-white/[0.14] hover:text-white disabled:cursor-not-allowed disabled:opacity-35';
+    return 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/20 bg-white/[0.08] text-white/90 transition-colors hover:bg-white/[0.14] hover:text-white disabled:cursor-not-allowed disabled:opacity-35';
   }
-  return `flex h-9 w-9 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 scratch-float-btn ${scratchTintClass(scratch)}`;
+  return `flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-35 scratch-float-btn ${scratchTintClass(scratch)}`;
 }
 
 function hdrIconBtn(isDarkMode: boolean, scratch: ScratchColorId) {
   if (isDarkMode) {
-    return 'flex items-center justify-center w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors';
+    return 'flex items-center justify-center w-8 h-8 shrink-0 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-colors';
   }
-  return `flex items-center justify-center w-8 h-8 rounded-lg transition-colors scratch-float-btn ${scratchTintClass(scratch)}`;
+  return `flex items-center justify-center w-8 h-8 shrink-0 rounded-lg transition-colors scratch-float-btn ${scratchTintClass(scratch)}`;
+}
+
+function hdrMenuItemClass(isDarkMode: boolean) {
+  return isDarkMode
+    ? 'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-white/75 transition-colors hover:bg-white/10 hover:text-white'
+    : 'flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-900';
 }
 
 function settingsPopupClass(isDarkMode: boolean) {
@@ -241,11 +257,15 @@ function LanguageMenu({
   setLocale,
   wc,
   isDarkMode,
+  iconOnly = false,
+  compact = false,
 }: {
   locale: AppLocale;
   setLocale: (next: AppLocale) => void;
   wc: WorkspaceChromeStrings;
   isDarkMode: boolean;
+  iconOnly?: boolean;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -262,20 +282,22 @@ function LanguageMenu({
   }, [open]);
 
   return (
-    <div className="relative">
+    <div className="relative shrink-0">
       <button
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={hdrTextBtn(isDarkMode, 'looks')}
+        className={iconOnly ? hdrIconBtn(isDarkMode, 'looks') : hdrTextBtn(isDarkMode, 'looks', '', compact)}
         title={wc.languageMenuTitle}
         aria-haspopup="listbox"
         aria-expanded={open ? 'true' : 'false'}
         aria-label={wc.languageMenuTitle}
       >
         <Globe className="w-4 h-4 shrink-0" aria-hidden />
-        <span className="text-xs font-medium">{appLocaleNativeLabel(locale)}</span>
-        <ChevronDown className={`w-3.5 h-3.5 shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden />
+        {!iconOnly && <span className="text-xs font-medium">{appLocaleNativeLabel(locale)}</span>}
+        {!iconOnly && (
+          <ChevronDown className={`w-3.5 h-3.5 shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden />
+        )}
       </button>
       {open && (
         <div
@@ -493,11 +515,9 @@ export interface WorkspaceHeaderProps {
   canvasDotGap?: number;
   setCanvasDotGap?: (value: number) => void;
   onOpenFolder: () => void | Promise<void>;
-  /** 手动备份 data.json / data.json.bak 到项目 backups/ */
-  onBackupProject?: () => void | Promise<void>;
-  /** 当 data.json.bak 节点更多时，从备份恢复工程 */
-  onRestoreFromBackup?: () => void | Promise<void>;
   onNavigateBack?: () => void;
+  /** false：草稿未进入完成，隐藏返回按钮 */
+  navigateBackEnabled?: boolean;
   onUndo?: () => void;
   onRedo?: () => void;
   canUndo?: boolean;
@@ -529,9 +549,8 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
   canvasDotGap = 60,
   setCanvasDotGap,
   onOpenFolder,
-  onBackupProject,
-  onRestoreFromBackup,
   onNavigateBack,
+  navigateBackEnabled = true,
   onUndo,
   onRedo,
   canUndo = false,
@@ -547,11 +566,72 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
   const wc = workspaceChromeT(locale);
   const lafLowBalance =
     lafBalance !== null && Number.isFinite(lafBalance) && lafBalance <= 10;
+  const headerRef = useRef<HTMLDivElement>(null);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const morePopupRef = useRef<HTMLDivElement>(null);
+  const [density, setDensity] = useState<HeaderDensity>('full');
+  const [moreOpen, setMoreOpen] = useState(false);
+  const compact = density !== 'full';
+  const minimal = density === 'minimal';
+  const iconOnlySecondary = density !== 'full';
+
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const apply = (w: number) => setDensity(densityFromWidth(w));
+    apply(el.clientWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? el.clientWidth;
+      apply(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!minimal) setMoreOpen(false);
+  }, [minimal]);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const el = e.target as Node;
+      if (morePopupRef.current?.contains(el) || moreBtnRef.current?.contains(el)) return;
+      setMoreOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [moreOpen]);
+
+  const openBugFeedback = () => {
+    const api = window.electronAPI;
+    const title = wc.bugFeedback;
+    void (api?.openInAppBrowser
+      ? api.openInAppBrowser(
+          'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
+          title,
+        )
+      : api?.openExternalUrl?.(
+          'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
+        ));
+  };
+
+  const morePopupShell = isDarkMode
+    ? 'absolute right-0 top-full mt-1 z-[100] min-w-[220px] max-w-[min(320px,calc(100vw-1rem))] rounded-xl border border-white/20 bg-gray-900/95 backdrop-blur-sm py-2 px-1.5 shadow-xl'
+    : 'absolute right-0 top-full mt-1 z-[100] min-w-[220px] max-w-[min(320px,calc(100vw-1rem))] rounded-xl border border-gray-200/90 bg-white py-2 px-1.5 shadow-lg shadow-gray-300/25';
+
   return (
-    <div className="h-14 apple-panel flex items-center justify-between px-4 flex-shrink-0 relative z-[100] overflow-visible" style={{ pointerEvents: 'auto' }}>
-      {/* 左侧：返回项目列表 + 打开项目文件夹 */}
-      <div className="flex items-center gap-4">
-        {onNavigateBack && (
+    <div
+      ref={headerRef}
+      className={`h-14 apple-panel flex items-center min-w-0 flex-shrink-0 relative z-[100] overflow-visible ${
+        compact ? 'gap-2 px-2.5' : 'gap-3 px-4'
+      }`}
+      style={{ pointerEvents: 'auto' }}
+    >
+      {/* 左侧：返回 / 工程操作 / 撤销重做 */}
+      <div className={`flex items-center min-w-0 shrink ${compact ? 'gap-1.5' : 'gap-3'}`}>
+        {onNavigateBack && navigateBackEnabled && (
           <button
             type="button"
             onClick={(e) => {
@@ -559,55 +639,43 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
               onNavigateBack();
             }}
             onMouseDown={(e) => e.stopPropagation()}
-            className={hdrTextBtn(isDarkMode, 'motion', 'nodrag nopan')}
+            className={hdrTextBtn(isDarkMode, 'motion', 'nodrag nopan', compact)}
             style={{ pointerEvents: 'auto' }}
+            title={wc.backToProjects}
           >
-            <ArrowLeft className="w-4 h-4" />
-            <span>{wc.backToProjects}</span>
+            <ArrowLeft className="w-4 h-4 shrink-0" />
+            <span>{compact ? wc.backToProjectsShort : wc.backToProjects}</span>
           </button>
+        )}
+        {onNavigateBack && !navigateBackEnabled && (
+          <span
+            className={`flex items-center ${compact ? 'gap-1.5 px-2 py-1 text-xs' : 'gap-2 px-3 py-1.5 text-sm'} whitespace-nowrap shrink-0 ${
+              isDarkMode ? 'text-white/40' : 'text-gray-400'
+            }`}
+            title={wc.canvasEnteringTitle}
+          >
+            <ArrowLeft className="w-4 h-4 shrink-0 opacity-50" />
+            <span>{compact ? wc.canvasEnteringShort : wc.canvasEntering}</span>
+          </span>
         )}
         {projectId && (
           <>
-            <button
-              onClick={onOpenFolder}
-              className={hdrTextBtn(isDarkMode, 'sensing')}
-              title={wc.openProjectFolderTitle}
-            >
-              <FolderOpen className="w-4 h-4" />
-              <span>{wc.openProjectFolder}</span>
-            </button>
-            {onBackupProject && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void onBackupProject();
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                className={hdrTextBtn(isDarkMode, 'events', 'nodrag nopan')}
-                title={wc.backupProjectTitle}
-              >
-                <Archive className="w-4 h-4" />
-                <span>{wc.backupProjectButton}</span>
-              </button>
-            )}
-            {onRestoreFromBackup && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void onRestoreFromBackup();
-                }}
-                onMouseDown={(e) => e.stopPropagation()}
-                className={hdrTextBtn(isDarkMode, 'operators', 'nodrag nopan')}
-                title={wc.restoreFromBackupTitle}
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>{wc.restoreFromBackupButton}</span>
-              </button>
+            {!minimal && (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenFolder}
+                  className={hdrTextBtn(isDarkMode, 'sensing', '', compact)}
+                  title={wc.openProjectFolderTitle}
+                  aria-label={wc.openProjectFolder}
+                >
+                  <FolderOpen className="w-4 h-4 shrink-0" />
+                  {!iconOnlySecondary && <span>{wc.openProjectFolder}</span>}
+                </button>
+              </>
             )}
             {onUndo != null && onRedo != null && (
-              <div className="flex items-center gap-1.5 nodrag nopan">
+              <div className="flex items-center gap-1.5 nodrag nopan shrink-0">
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onUndo(); }}
@@ -636,80 +704,78 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
         )}
       </div>
 
-      {/* 右侧：设置 + 明暗切换（暗黑模式下设置紧挨切换按钮左侧）+ API 状态指示灯 */}
-      <div className="flex items-center gap-[20px]">
-        <div className="flex items-center gap-2">
-          <TutorialVideosEntry
-            strings={wc}
-            isDarkMode={isDarkMode}
-            buttonClassName={hdrTextBtn(isDarkMode, 'sensing', 'nodrag nopan')}
-          />
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              const api = window.electronAPI;
-              const title = wc.bugFeedback;
-              void (api?.openInAppBrowser
-                ? api.openInAppBrowser(
-                    'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
-                    title,
-                  )
-                : api?.openExternalUrl?.(
-                    'https://my.feishu.cn/wiki/WKXnwDtPeiN5dXkv1Grc8vXSnfh?from=from_copylink',
-                  ));
-            }}
-            onMouseDown={(e) => e.stopPropagation()}
-            className={hdrTextBtn(isDarkMode, 'variables', 'nodrag nopan')}
-            title={wc.bugFeedbackTitle}
-            aria-label={wc.bugFeedback}
-          >
-            <Bug className="w-4 h-4" />
-            <span>{wc.bugFeedback}</span>
-          </button>
-          <MediaOssRouteToggle isDarkMode={isDarkMode} />
-          {isDarkMode ? (
-            <>
-              <DarkModeSettings
-                wc={wc}
-                isDarkMode={isDarkMode}
-                dotSize={darkDotSize}
-                setDotSize={setDarkDotSize}
-                canvasDotGap={canvasDotGap}
-                setCanvasDotGap={setCanvasDotGap}
-                edgeColor={edgeColor}
-                setEdgeColor={setEdgeColor}
-                edgePathStyle={edgePathStyle}
-                setEdgePathStyle={setEdgePathStyle}
-              />
-              <button
-                onClick={() => setIsDarkMode(!isDarkMode)}
-                className={hdrTextBtn(isDarkMode, 'events')}
-                title={wc.switchToLightMode}
-              >
-                <Moon className="w-4 h-4" />
-              </button>
-            </>
-          ) : (
-            <>
-              <LightModeColorSettings
-                wc={wc}
-                isDarkMode={isDarkMode}
-                lightCanvasBgColor={lightCanvasBgColor}
-                setLightCanvasBgColor={setLightCanvasBgColor}
-                lightDotsColor={lightDotsColor}
-                setLightDotsColor={setLightDotsColor}
-                lightDotSize={lightDotSize}
-                setLightDotSize={setLightDotSize}
-                canvasDotGap={canvasDotGap}
-                setCanvasDotGap={setCanvasDotGap}
-                edgeColor={edgeColor}
-                setEdgeColor={setEdgeColor}
-                edgePathStyle={edgePathStyle}
-                setEdgePathStyle={setEdgePathStyle}
-              />
+      {/* 右侧：常驻控件 + 窄窗「更多」 */}
+      <div className={`flex items-center ml-auto shrink-0 ${compact ? 'gap-1.5' : 'gap-3'}`}>
+        {!minimal && (
+          <div className={`flex items-center ${compact ? 'gap-1' : 'gap-2'}`}>
+            <TutorialVideosEntry
+              strings={wc}
+              isDarkMode={isDarkMode}
+              hideLabel={iconOnlySecondary}
+              buttonClassName={hdrTextBtn(isDarkMode, 'sensing', 'nodrag nopan', compact)}
+            />
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                openBugFeedback();
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className={hdrTextBtn(isDarkMode, 'variables', 'nodrag nopan', compact)}
+              title={wc.bugFeedbackTitle}
+              aria-label={wc.bugFeedback}
+            >
+              <Bug className="w-4 h-4 shrink-0" />
+              {!iconOnlySecondary && <span>{wc.bugFeedback}</span>}
+            </button>
+            <MediaOssRouteToggle isDarkMode={isDarkMode} compact={compact} />
+          </div>
+        )}
+
+        {isDarkMode ? (
+          <>
+            <DarkModeSettings
+              wc={wc}
+              isDarkMode={isDarkMode}
+              dotSize={darkDotSize}
+              setDotSize={setDarkDotSize}
+              canvasDotGap={canvasDotGap}
+              setCanvasDotGap={setCanvasDotGap}
+              edgeColor={edgeColor}
+              setEdgeColor={setEdgeColor}
+              edgePathStyle={edgePathStyle}
+              setEdgePathStyle={setEdgePathStyle}
+            />
+            <button
+              type="button"
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={hdrTextBtn(isDarkMode, 'events', '', compact)}
+              title={wc.switchToLightMode}
+            >
+              <Moon className="w-4 h-4 shrink-0" />
+            </button>
+          </>
+        ) : (
+          <>
+            <LightModeColorSettings
+              wc={wc}
+              isDarkMode={isDarkMode}
+              lightCanvasBgColor={lightCanvasBgColor}
+              setLightCanvasBgColor={setLightCanvasBgColor}
+              lightDotsColor={lightDotsColor}
+              setLightDotsColor={setLightDotsColor}
+              lightDotSize={lightDotSize}
+              setLightDotSize={setLightDotSize}
+              canvasDotGap={canvasDotGap}
+              setCanvasDotGap={setCanvasDotGap}
+              edgeColor={edgeColor}
+              setEdgeColor={setEdgeColor}
+              edgePathStyle={edgePathStyle}
+              setEdgePathStyle={setEdgePathStyle}
+            />
+            {!compact && (
               <div className="flex items-center gap-2 w-[144px] shrink-0">
-                <span className="text-xs flex-shrink-0 text-white" title={wc.brightnessTitle}>
+                <span className="text-xs flex-shrink-0 text-white whitespace-nowrap" title={wc.brightnessTitle}>
                   {wc.brightness} {Math.round(lightBrightness * 100)}%
                 </span>
                 <input
@@ -723,64 +789,163 @@ const WorkspaceHeader = React.memo(function WorkspaceHeader({
                   title={wc.brightnessSliderTitle}
                 />
               </div>
-              <button
-                onClick={() => setIsDarkMode(!isDarkMode)}
-                className={hdrTextBtn(isDarkMode, 'motion')}
-                style={{ marginLeft: 18 }}
-                title={wc.switchToDarkMode}
-              >
-                <Sun className="w-4 h-4" />
-              </button>
-            </>
-          )}
-        </div>
-        <LanguageMenu locale={locale} setLocale={setLocale} wc={wc} isDarkMode={isDarkMode} />
-        {/* 窗口全屏切换（F11 快捷键也可切换） */}
+            )}
+            <button
+              type="button"
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={hdrTextBtn(isDarkMode, 'motion', '', compact)}
+              title={wc.switchToDarkMode}
+            >
+              <Sun className="w-4 h-4 shrink-0" />
+            </button>
+          </>
+        )}
+
+        {!minimal && (
+          <LanguageMenu
+            locale={locale}
+            setLocale={setLocale}
+            wc={wc}
+            isDarkMode={isDarkMode}
+            iconOnly={iconOnlySecondary}
+            compact={compact}
+          />
+        )}
+
         <button
+          type="button"
           onClick={() => window.electronAPI?.toggleFullscreen?.().catch((err: unknown) => console.error('切换全屏失败:', err))}
-          className={hdrTextBtn(isDarkMode, 'sensing')}
+          className={hdrTextBtn(isDarkMode, 'sensing', '', compact)}
           title={wc.fullscreenTitle}
+          aria-label={wc.fullscreenTitle}
         >
-          <Maximize2 className="w-4 h-4" />
+          <Maximize2 className="w-4 h-4 shrink-0" />
         </button>
-        <div className="flex items-center gap-1.5 flex-wrap justify-end">
-          <button
-            type="button"
-            onClick={() => onLafClick?.()}
-            className={`${hdrTextBtn(isDarkMode, 'control')} ${
-              lafLowBalance ? 'nx-laf-balance-low !text-red-100 hover:!brightness-95' : ''
-            }`}
-            title={lafLowBalance ? wc.headerLowBalanceTitle : wc.headerRefreshBalanceTitle}
-          >
-            <Coins className="w-4 h-4 shrink-0 text-amber-400" aria-hidden />
-            <span className="text-white/80">{wc.headerCloudCredits}</span>
-            {lafStatus !== 'success' && lafBalance === null && (
-              <span className="text-white/60 text-xs">{wc.headerConnectingCloud}</span>
-            )}
-            {lafBalance !== null && (
-              <span
-                className={`text-xs inline-flex items-baseline gap-0.5 overflow-hidden min-w-[3ch] cursor-help ${
-                  lafLowBalance ? 'text-red-400' : 'text-white/60'
-                }`}
-                title={wc.headerCreditsTooltip}
+
+        <button
+          type="button"
+          onClick={() => onLafClick?.()}
+          className={`${hdrTextBtn(isDarkMode, 'control', '', compact)} ${
+            lafLowBalance ? 'nx-laf-balance-low !text-red-100 hover:!brightness-95' : ''
+          }`}
+          title={lafLowBalance ? wc.headerLowBalanceTitle : wc.headerRefreshBalanceTitle}
+        >
+          <Coins className="w-4 h-4 shrink-0 text-amber-400" aria-hidden />
+          {!compact && <span className="text-white/80">{wc.headerCloudCredits}</span>}
+          {lafStatus !== 'success' && lafBalance === null && (
+            <span className="text-white/60 text-xs whitespace-nowrap">
+              {compact ? '…' : wc.headerConnectingCloud}
+            </span>
+          )}
+          {lafBalance !== null && (
+            <span
+              className={`text-xs inline-flex items-baseline gap-0.5 overflow-hidden min-w-[3ch] cursor-help whitespace-nowrap ${
+                lafLowBalance ? 'text-red-400' : 'text-white/60'
+              }`}
+              title={wc.headerCreditsTooltip}
+            >
+              <AnimatePresence mode="wait">
+                <motion.span
+                  key={lafBalance}
+                  initial={{ y: 8, opacity: 0.6, scale: 0.95 }}
+                  animate={{ y: 0, opacity: 1, scale: 1 }}
+                  exit={{ y: -8, opacity: 0.6, scale: 0.95 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                  className="inline-block tabular-nums font-medium"
+                >
+                  {lafBalance}
+                </motion.span>
+              </AnimatePresence>
+              <span> {wc.headerCurrencyUnit}</span>
+            </span>
+          )}
+        </button>
+
+        {minimal && (
+          <div className="relative shrink-0">
+            <button
+              ref={moreBtnRef}
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMoreOpen((o) => !o);
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              className={hdrTextBtn(isDarkMode, 'variables', 'nodrag nopan', true)}
+              title={wc.headerMoreMenuTitle}
+              aria-label={wc.headerMoreMenu}
+              aria-haspopup="menu"
+              aria-expanded={moreOpen ? 'true' : 'false'}
+            >
+              <MoreHorizontal className="w-4 h-4 shrink-0" />
+              <span>{wc.headerMoreMenu}</span>
+            </button>
+            {moreOpen && (
+              <div
+                ref={morePopupRef}
+                role="menu"
+                aria-label={wc.headerMoreMenuTitle}
+                className={morePopupShell}
+                style={isDarkMode ? { boxShadow: '0 8px 32px rgba(0,0,0,0.4)' } : undefined}
+                onMouseDown={(e) => e.stopPropagation()}
               >
-                <AnimatePresence mode="wait">
-                  <motion.span
-                    key={lafBalance}
-                    initial={{ y: 8, opacity: 0.6, scale: 0.95 }}
-                    animate={{ y: 0, opacity: 1, scale: 1 }}
-                    exit={{ y: -8, opacity: 0.6, scale: 0.95 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 35 }}
-                    className="inline-block tabular-nums font-medium"
+                <div className="flex flex-col gap-0.5">
+                  {projectId && (
+                    <>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={hdrMenuItemClass(isDarkMode)}
+                        onClick={() => {
+                          setMoreOpen(false);
+                          onOpenFolder();
+                        }}
+                      >
+                        <FolderOpen className="w-4 h-4 shrink-0" />
+                        <span>{wc.openProjectFolder}</span>
+                      </button>
+                      <div className={`my-1 h-px ${isDarkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+                    </>
+                  )}
+                  <div className="px-1 py-0.5" onClick={() => setMoreOpen(false)}>
+                    <TutorialVideosEntry
+                      strings={wc}
+                      isDarkMode={isDarkMode}
+                      hideLabel={false}
+                      buttonClassName={`${hdrMenuItemClass(isDarkMode)} !rounded-lg`}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className={hdrMenuItemClass(isDarkMode)}
+                    onClick={() => {
+                      setMoreOpen(false);
+                      openBugFeedback();
+                    }}
                   >
-                    {lafBalance}
-                  </motion.span>
-                </AnimatePresence>
-                <span> {wc.headerCurrencyUnit}</span>
-              </span>
+                    <Bug className="w-4 h-4 shrink-0" />
+                    <span>{wc.bugFeedback}</span>
+                  </button>
+                  <div className={`my-1 h-px ${isDarkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+                  <div className="px-1.5 py-1">
+                    <MediaOssRouteToggle isDarkMode={isDarkMode} compact />
+                  </div>
+                  <div className="px-1 py-0.5">
+                    <LanguageMenu
+                      locale={locale}
+                      setLocale={setLocale}
+                      wc={wc}
+                      isDarkMode={isDarkMode}
+                      iconOnly={false}
+                      compact
+                    />
+                  </div>
+                </div>
+              </div>
             )}
-          </button>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

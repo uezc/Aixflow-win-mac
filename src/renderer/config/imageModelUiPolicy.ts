@@ -50,7 +50,7 @@ export const RETIRED_IMAGE_MODEL_IDS = [
 
 const RETIRED_SET = new Set<string>(RETIRED_IMAGE_MODEL_IDS);
 
-export const DEFAULT_IMAGE_MODEL = 'banana-2.0' as const;
+export const DEFAULT_IMAGE_MODEL = 'rhart-image-g-2' as const;
 
 export function isRetiredImageModel(model: string | undefined | null): boolean {
   return RETIRED_SET.has(String(model ?? '').trim());

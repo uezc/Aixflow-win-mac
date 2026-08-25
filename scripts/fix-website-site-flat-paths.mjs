@@ -11,7 +11,7 @@ function fix(html) {
     .replace(/(href|src)="\.\.\/icon\.png"/g, '$1="./icon.png"');
 }
 
-for (const f of ['index.html', 'recharge.html']) {
+for (const f of ['index.html', 'recharge.html', 'installer.html']) {
   const p = path.join(dir, f);
   if (!fs.existsSync(p)) {
     console.error(`[fix-flat] missing ${p}`);

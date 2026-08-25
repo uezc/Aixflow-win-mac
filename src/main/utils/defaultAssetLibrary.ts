@@ -139,9 +139,49 @@ export function getBundledDefaultAssetLibraryDir(): string {
   return path.join(app.getAppPath(), 'resources', 'default-asset-library');
 }
 
-function serializedLibraryHasNonPortablePaths(data: unknown): boolean {
+/**
+ * 仅当绝对路径落在「当前 userData 之外」时视为不可移植（例如误把开发机路径打进用户配置）。
+ * 用户自建角色会写成 local-resource://C:/Users/.../AppData/...，绝不能因此整库覆盖。
+ */
+function serializedLibraryHasAlienAbsolutePaths(data: unknown, userDataPath: string): boolean {
   const s = JSON.stringify(data || '');
-  return /[A-Za-z]:[\\/]/.test(s) || /local-resource:\/\/[A-Za-z]:/i.test(s);
+  const userDataNorm = userDataPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const re = /(?:local-resource:\/\/)?([A-Za-z]:[\\/][^"\\]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    let p = m[1].replace(/\\/g, '/');
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* keep raw */
+    }
+    const pNorm = p.toLowerCase();
+    if (pNorm === userDataNorm || pNorm.startsWith(`${userDataNorm}/`)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** 按 id 合并：保留已有条目（含用户自建），仅追加内置库中缺失的 id */
+function mergeLibraryById(
+  existing: Record<string, unknown>[],
+  bundled: Record<string, unknown>[],
+  hydrate: (raw: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const out: Record<string, unknown>[] = [];
+  for (const item of existing) {
+    const id = String((item as { id?: unknown })?.id || '').trim();
+    if (id) seen.add(id);
+    out.push(item);
+  }
+  for (const raw of bundled) {
+    const id = String((raw as { id?: unknown })?.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(hydrate(raw));
+  }
+  return out;
 }
 
 /** store 中仍含未解析的 bundled-imports/ 相对路径（会导致 useTexture 崩溃） */
@@ -168,6 +208,41 @@ export function repairAssetLibraryInStore(store: typeof NexflowStore): void {
   if (JSON.stringify(prevScenes) !== JSON.stringify(scenes)) {
     store.set('sceneLibrary', scenes);
     console.log('[默认资产库] 已修复场景路径', scenes.length, '条');
+  }
+}
+
+/** 整库覆盖前把当前角色/场景快照写入 userData/lost-asset-library，便于找回 */
+function archiveAssetLibraryToLostFolder(
+  store: typeof NexflowStore,
+  reason: string,
+): string | null {
+  try {
+    const characters = (store.get('characters') as unknown[] | undefined) || [];
+    const sceneLibrary = (store.get('sceneLibrary') as unknown[] | undefined) || [];
+    if (characters.length === 0 && sceneLibrary.length === 0) return null;
+    const lostDir = path.join(app.getPath('userData'), 'lost-asset-library');
+    fs.mkdirSync(lostDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(lostDir, `asset-library-${stamp}.json`);
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          reason,
+          archivedAt: new Date().toISOString(),
+          characters,
+          sceneLibrary,
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+    console.log('[默认资产库] 覆盖前已归档到', file, `角色 ${characters.length} / 场景 ${sceneLibrary.length}`);
+    return file;
+  } catch (e) {
+    console.warn('[默认资产库] 归档到 lost-asset-library 失败:', e);
+    return null;
   }
 }
 
@@ -200,49 +275,71 @@ export function importDefaultAssetLibraryIfNeeded(store: typeof NexflowStore): v
 
   const bundleSyncedAt = String(manifest.syncedAt || '').trim();
   const lastSyncedAt = String(store.get(BUNDLE_SYNCED_AT_KEY) || '').trim();
-  const existingChars = (store.get('characters') as unknown[] | undefined) || [];
-  const existingScenes = (store.get('sceneLibrary') as unknown[] | undefined) || [];
+  const existingChars = ((store.get('characters') as Record<string, unknown>[] | undefined) || []).slice();
+  const existingScenes = ((store.get('sceneLibrary') as Record<string, unknown>[] | undefined) || []).slice();
+  const userDataPath = app.getPath('userData');
   const libraryBroken =
-    serializedLibraryHasNonPortablePaths(existingChars) ||
-    serializedLibraryHasNonPortablePaths(existingScenes);
+    serializedLibraryHasAlienAbsolutePaths(existingChars, userDataPath) ||
+    serializedLibraryHasAlienAbsolutePaths(existingScenes, userDataPath);
   const libraryHasGhostImports =
     serializedHasUnresolvedBundledImports(existingChars) ||
     serializedHasUnresolvedBundledImports(existingScenes);
-  const libraryEmpty =
-    (existingChars.length === 0 && existingScenes.length === 0) || libraryBroken;
+  /** 仅真正空库才整库注入；用户自建后绝不能因本机绝对路径被当成「空」 */
+  const libraryEmpty = existingChars.length === 0 && existingScenes.length === 0;
   const bundleUpdated = Boolean(bundleSyncedAt && bundleSyncedAt !== lastSyncedAt);
 
-  if (!libraryEmpty && !bundleUpdated && !libraryHasGhostImports) return;
+  if (!libraryEmpty && !bundleUpdated && !libraryHasGhostImports && !libraryBroken) return;
 
-  const userDataPath = app.getPath('userData');
   const filesDir = path.join(bundledDir, 'files');
   if (fs.existsSync(filesDir)) {
-    copyDirRecursive(filesDir, userDataPath, bundleUpdated || libraryHasGhostImports);
+    copyDirRecursive(filesDir, userDataPath, bundleUpdated || libraryHasGhostImports || libraryBroken);
   }
 
-  const shouldReplaceLibrary = libraryEmpty || bundleUpdated;
-  if (shouldReplaceLibrary && chars.length > 0) {
-    store.set(
-      'characters',
-      chars.map((c) => hydrateCharacter(c, userDataPath)),
-    );
-  }
-  if (shouldReplaceLibrary && scenes.length > 0) {
-    store.set(
-      'sceneLibrary',
-      scenes.map((s) => hydrateScene(s, userDataPath)),
-    );
+  if (libraryEmpty || libraryBroken) {
+    // 空库或确认指向他机路径：用内置库整库恢复（覆盖前先归档，避免用户卡彻底丢失）
+    if (!libraryEmpty) {
+      archiveAssetLibraryToLostFolder(
+        store,
+        libraryBroken ? 'replace-alien-paths' : 'replace-before-default-inject',
+      );
+    }
+    if (chars.length > 0) {
+      store.set(
+        'characters',
+        chars.map((c) => hydrateCharacter(c, userDataPath)),
+      );
+    }
+    if (scenes.length > 0) {
+      store.set(
+        'sceneLibrary',
+        scenes.map((s) => hydrateScene(s, userDataPath)),
+      );
+    }
+  } else if (bundleUpdated) {
+    // 内置包更新：只追加缺失的默认项，保留用户自建角色/场景
+    if (chars.length > 0) {
+      store.set(
+        'characters',
+        mergeLibraryById(existingChars, chars, (c) => hydrateCharacter(c, userDataPath)),
+      );
+    }
+    if (scenes.length > 0) {
+      store.set(
+        'sceneLibrary',
+        mergeLibraryById(existingScenes, scenes, (s) => hydrateScene(s, userDataPath)),
+      );
+    }
   } else if (libraryHasGhostImports) {
     repairAssetLibraryInStore(store);
   }
   if (bundleSyncedAt) store.set(BUNDLE_SYNCED_AT_KEY, bundleSyncedAt);
   store.set('defaultAssetLibraryImported', true);
   console.log(
-    '[默认资产库] 已注入角色',
+    '[默认资产库] 已处理角色内置',
     chars.length,
     '条，场景',
     scenes.length,
     '条',
-    libraryBroken ? '（已覆盖不可移植的旧路径数据）' : '',
+    libraryBroken ? '（已覆盖他机不可移植路径）' : bundleUpdated && !libraryEmpty ? '（已合并，保留用户条目）' : '',
   );
 }

@@ -32,10 +32,16 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
   onPreview,
   isDarkMode,
 }) => {
-  const [mappedImageUrl, setMappedImageUrl] = React.useState<string | null>(null);
+  const [mappedImageUrl, setMappedImageUrl] = React.useState<string | null>(() => {
+    const raw =
+      Array.isArray(task.outputImages) && task.outputImages.length > 0
+        ? task.outputImages[0]
+        : task.localFilePath || task.imageUrl || '';
+    return formatImagePath(raw || '') || null;
+  });
   const [mappedImageUrls, setMappedImageUrls] = React.useState<string[]>([]);
   const [showAll, setShowAll] = React.useState(false);
-  const [inView, setInView] = React.useState(false);
+  const [inView, setInView] = React.useState(true);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   const thumbGridLayout = useMemo(
@@ -67,7 +73,6 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
   }, []);
 
   React.useEffect(() => {
-    if (!inView) return;
     const srcsRaw = Array.isArray(task.outputImages) && task.outputImages.length > 0
       ? task.outputImages
       : task.localFilePath
@@ -79,9 +84,13 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
       setMappedImageUrls([]);
       return;
     }
+    setMappedImageUrls(srcs);
+    setMappedImageUrl(srcs[0] || null);
+    if (!inView) return;
+    if (!projectId) return;
     Promise.all(
       srcs.map(async (u) => {
-        if (projectId && u.startsWith('local-resource://')) {
+        if (u.startsWith('local-resource://')) {
           try {
             const mapped = await mapProjectPath(u, projectId);
             return mapped || u;
@@ -160,7 +169,6 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
                     src={img}
                     alt={`${task.nodeTitle || ''}-${idx + 1}`}
                     className="w-full h-full object-cover"
-                    loading="lazy"
                     draggable={false}
                   />
                 </button>
@@ -172,7 +180,6 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
             src={mappedImageUrl}
             alt={task.nodeTitle || ''}
             className="w-full h-32 object-cover cursor-pointer"
-            loading="lazy"
             onClick={() => handlePreview()}
             onError={async (e) => {
               const img = e.target as HTMLImageElement;

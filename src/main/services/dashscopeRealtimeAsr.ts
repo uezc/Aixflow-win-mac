@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import { getNxFcAxios, getFcBaseUrlForClient } from './nxFcClient.js';
+import { withFcRouteFailover } from './nxFcRouteManager.js';
 
 export type AsrRealtimeEvent =
   | { type: 'started'; sessionId: string }
@@ -31,10 +32,14 @@ type ActiveSession = {
   ws: WebSocket;
   taskStarted: boolean;
   closed: boolean;
+  /** 已向服务端发送的 PCM 字节数（用于避免无音频 finish → EmptyAudio） */
+  bytesSent: number;
   /** 已确认的最终句子拼接 */
   committedText: string;
   /** 当前句中间结果 */
   partialText: string;
+  /** 已定稿的 sentence_id，防止同一句 final 被拼两次 */
+  lastFinalizedSentenceId: number;
 };
 
 let active: ActiveSession | null = null;
@@ -82,35 +87,40 @@ async function fetchSessionTicket(): Promise<SessionTicket> {
       code: 'NO_FC',
     });
   }
-  const axios = getNxFcAxios();
   try {
-    const res = await axios.post('/asr/realtime-session', {}, { timeout: 15000 });
-    const data = res.data || {};
-    const authorization = String(data.authorization || '').trim();
-    const wsUrl = String(data.wsUrl || '').trim();
-    const model = String(data.model || 'fun-asr-realtime').trim() || 'fun-asr-realtime';
-    const sampleRate = Number(data.sampleRate) || 16000;
-    const format = String(data.format || 'pcm').trim() || 'pcm';
-    if (!authorization || !wsUrl) {
-      throw Object.assign(new Error('云端返回的语音识别会话无效'), { code: 'BAD_TICKET' });
-    }
-    return { authorization, wsUrl, model, sampleRate, format };
+    return await withFcRouteFailover(async () => {
+      const axios = getNxFcAxios();
+      const res = await axios.post('/asr/realtime-session', {}, { timeout: 20000 });
+      const data = res.data || {};
+      const authorization = String(data.authorization || '').trim();
+      const wsUrl = String(data.wsUrl || '').trim();
+      const model = String(data.model || 'fun-asr-realtime').trim() || 'fun-asr-realtime';
+      const sampleRate = Number(data.sampleRate) || 16000;
+      const format = String(data.format || 'pcm').trim() || 'pcm';
+      if (!authorization || !wsUrl) {
+        throw Object.assign(new Error('云端返回的语音识别会话无效'), { code: 'BAD_TICKET' });
+      }
+      return { authorization, wsUrl, model, sampleRate, format };
+    });
   } catch (e: unknown) {
     const ax = e as { response?: { status?: number; data?: unknown }; message?: string; code?: string };
-    if (ax.code && ax.message && !ax.response) {
-      throw e;
-    }
     if (ax.response) {
       const mapped = mapFcError(ax.response.status || 500, ax.response.data);
       throw Object.assign(new Error(mapped.message), { code: mapped.code });
     }
     const msg = ax.message || String(e);
-    if (/ETIMEDOUT|ENOTFOUND|ECONNREFUSED|network/i.test(msg)) {
-      throw Object.assign(new Error('网络异常，无法连接云端语音服务，请检查网络后重试'), {
-        code: 'NETWORK',
-      });
+    const code = String(ax.code || '');
+    if (
+      /ETIMEDOUT|ENOTFOUND|ECONNREFUSED|ECONNRESET|ECONNABORTED|network|socket hang up/i.test(
+        `${msg} ${code}`,
+      )
+    ) {
+      throw Object.assign(
+        new Error('网络异常，无法连接云端语音服务。请检查网络或稍后重试；若长期超时可配置可用代理后重启'),
+        { code: 'NETWORK' },
+      );
     }
-    throw Object.assign(new Error(msg || '获取语音识别会话失败'), { code: 'UNKNOWN' });
+    throw Object.assign(new Error(msg || '获取语音识别会话失败'), { code: code || 'UNKNOWN' });
   }
 }
 
@@ -156,6 +166,25 @@ function sendFinishTask(session: ActiveSession): void {
   }
 }
 
+/**
+ * 句与句拼接：Fun-ASR 常在句边界把最后一个字再送进下一句（「三」+「三二」→「三三二」）。
+ * 同一句的完整重发则直接丢弃。
+ */
+function appendAsrSentence(prev: string, next: string): string {
+  const a = prev || '';
+  const b = next || '';
+  if (!a) return b;
+  if (!b) return a;
+  if (b.startsWith(a)) return b;
+  const max = Math.min(a.length, b.length);
+  for (let n = max; n >= 1; n--) {
+    if (a.slice(-n) !== b.slice(0, n)) continue;
+    if (n === b.length) return b.length >= 2 ? a : `${a}${b}`;
+    return `${a}${b.slice(n)}`;
+  }
+  return `${a}${b}`;
+}
+
 function handleServerMessage(session: ActiveSession, raw: WebSocket.RawData): void {
   let message: Record<string, unknown>;
   try {
@@ -174,20 +203,24 @@ function handleServerMessage(session: ActiveSession, raw: WebSocket.RawData): vo
     const payload = (message.payload || {}) as Record<string, unknown>;
     const output = (payload.output || {}) as Record<string, unknown>;
     const sentence = (output.sentence || {}) as Record<string, unknown>;
+    if (sentence.heartbeat === true) return;
     const text = String(sentence.text || '').trim();
     const sentenceEnd = sentence.sentence_end === true;
+    const sentenceId = Number(sentence.sentence_id) || 0;
     if (!text) return;
     if (sentenceEnd) {
-      session.committedText = session.committedText
-        ? `${session.committedText}${text}`
-        : text;
+      if (sentenceId > 0 && sentenceId === session.lastFinalizedSentenceId) {
+        broadcast({ type: 'final', sessionId: session.id, text: session.committedText });
+        return;
+      }
+      session.committedText = appendAsrSentence(session.committedText, text);
+      if (sentenceId > 0) session.lastFinalizedSentenceId = sentenceId;
       session.partialText = '';
       broadcast({ type: 'final', sessionId: session.id, text: session.committedText });
     } else {
+      if (sentenceId > 0 && sentenceId === session.lastFinalizedSentenceId) return;
       session.partialText = text;
-      const combined = session.committedText
-        ? `${session.committedText}${text}`
-        : text;
+      const combined = appendAsrSentence(session.committedText, text);
       broadcast({ type: 'partial', sessionId: session.id, text: combined });
     }
     return;
@@ -218,6 +251,9 @@ function handleServerMessage(session: ActiveSession, raw: WebSocket.RawData): vo
     let friendly = errMsg;
     if (/Arrearage|Insufficient|余额|quota|Quota/i.test(errMsg + errCode)) {
       friendly = '语音识别额度不足或账号欠费，请稍后重试';
+    } else if (/EmptyAudio|NO_VALID_AUDIO|NO_SPEECH|SILENCE|empty.?audio/i.test(errMsg + errCode)) {
+      // 松开过快 / 未采到有效人声：不当成硬错误弹「EmptyAudio」
+      friendly = '没有听清有效语音，请按住麦克风再说一会儿';
     }
     broadcast({ type: 'error', sessionId: session.id, message: friendly, code: errCode });
   }
@@ -241,6 +277,7 @@ function forceCloseSession(reason?: string): void {
 }
 
 export async function asrRealtimeStart(): Promise<{ ok: true; sessionId: string } | { ok: false; message: string; code?: string }> {
+  // 不再因 LLM 占用而拒绝听写：否则生成故事期间/超时残留 busy 时，所有话筒都会静默失败
   if (active && !active.closed) {
     forceCloseSession();
   }
@@ -266,8 +303,10 @@ export async function asrRealtimeStart(): Promise<{ ok: true; sessionId: string 
     ws,
     taskStarted: false,
     closed: false,
+    bytesSent: 0,
     committedText: '',
     partialText: '',
+    lastFinalizedSentenceId: 0,
   };
   active = session;
 
@@ -323,7 +362,8 @@ export async function asrRealtimeStart(): Promise<{ ok: true; sessionId: string 
   });
 
   if (!started) {
-    forceCloseSession(session.closed ? undefined : '语音识别启动超时，请检查网络后重试');
+    // 不广播 error：渲染进程会通过返回值弹一次；再广播会在会话已就绪时重复弹窗并把指针锁死
+    forceCloseSession();
     return { ok: false, message: '语音识别启动超时，请检查网络后重试', code: 'TIMEOUT' };
   }
 
@@ -340,7 +380,10 @@ export function asrRealtimeSendAudio(sessionId: string, pcmBase64: string): { ok
   }
   try {
     const buf = Buffer.from(pcmBase64, 'base64');
-    if (buf.length > 0) session.ws.send(buf);
+    if (buf.length > 0) {
+      session.ws.send(buf);
+      session.bytesSent += buf.length;
+    }
     return { ok: true };
   } catch (e: unknown) {
     return { ok: false, message: e instanceof Error ? e.message : '发送音频失败' };
@@ -354,12 +397,17 @@ export async function asrRealtimeStop(
   if (!session || session.id !== sessionId) {
     return { ok: true, text: '' };
   }
+  // 未送出任何 PCM 就 finish → DashScope EmptyAudio；改静默取消
+  if (!session.closed && session.taskStarted && session.bytesSent < 3200) {
+    forceCloseSession();
+    return { ok: true, text: '' };
+  }
   if (!session.closed && session.taskStarted) {
     sendFinishTask(session);
     await new Promise<void>((resolve) => {
       const t0 = Date.now();
       const timer = setInterval(() => {
-        if (!active || active.id !== sessionId || active.closed || Date.now() - t0 > 8000) {
+        if (!active || active.id !== sessionId || active.closed || Date.now() - t0 > 1800) {
           clearInterval(timer);
           resolve();
         }

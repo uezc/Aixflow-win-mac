@@ -5,6 +5,7 @@ import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { bindPushToTalkPointerHandlers } from '../../utils/pushToTalkPointer';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import VoiceMicGlyph from './VoiceMicGlyph';
 import { useAI } from '../../hooks/useAI';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
@@ -101,6 +102,9 @@ interface AudioInputPanelProps {
   isTextConnected?: boolean;
   /** 上游参考音已连入 */
   isAudioConnected?: boolean;
+  /** 多路参考音（Doubao 最多 3；有值时优先用于标签与提交） */
+  connectedReferenceAudios?: Array<{ url: string; name: string; nodeId?: string }>;
+  referenceAudioUrls?: string[];
   /** 上游原曲已连入 */
   isSourceSongConnected?: boolean;
   onStart?: () => void;
@@ -188,6 +192,8 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   projectId,
   isTextConnected = false,
   isAudioConnected = false,
+  connectedReferenceAudios,
+  referenceAudioUrls,
   isSourceSongConnected = false,
   onStart,
   onErrorTask,
@@ -282,12 +288,55 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     !(sourceSongAudioUrl || '').trim() &&
     !hasRvcCoverModel;
 
-  const referenceAudioDisplayName = useMemo(() => {
-    const fromUrl = displayNameFromAudioUrl(referenceAudioUrl || '');
-    if (fromUrl) return fromUrl;
-    if (isAudioConnected) return at.linkedRefAudioTag;
-    return '';
-  }, [referenceAudioUrl, isAudioConnected, at.linkedRefAudioTag]);
+  const DOUBAO_MAX_REF = 3;
+
+  /** 多路参考音展示列表（最多 3）；单路时退回旧逻辑 */
+  const referenceAudioTags = useMemo(() => {
+    const fromConnected = Array.isArray(connectedReferenceAudios)
+      ? connectedReferenceAudios
+          .map((a, i) => {
+            const url = String(a?.url || '').trim();
+            if (!url) return null;
+            const name =
+              String(a?.name || '').trim() ||
+              displayNameFromAudioUrl(url) ||
+              at.linkedRefAudioTagN(i + 1);
+            return { url, name };
+          })
+          .filter(Boolean) as Array<{ url: string; name: string }>
+      : [];
+    if (fromConnected.length > 0) return fromConnected.slice(0, DOUBAO_MAX_REF);
+    const fromUrls = Array.isArray(referenceAudioUrls)
+      ? referenceAudioUrls
+          .map((u, i) => {
+            const url = String(u || '').trim();
+            if (!url) return null;
+            return {
+              url,
+              name: displayNameFromAudioUrl(url) || at.linkedRefAudioTagN(i + 1),
+            };
+          })
+          .filter(Boolean) as Array<{ url: string; name: string }>
+      : [];
+    if (fromUrls.length > 0) return fromUrls.slice(0, DOUBAO_MAX_REF);
+    const single = (referenceAudioUrl || '').trim();
+    if (single) {
+      return [
+        {
+          url: single,
+          name: displayNameFromAudioUrl(single) || at.linkedRefAudioTag,
+        },
+      ];
+    }
+    if (isAudioConnected) return [{ url: '', name: at.linkedRefAudioTag }];
+    return [];
+  }, [
+    connectedReferenceAudios,
+    referenceAudioUrls,
+    referenceAudioUrl,
+    isAudioConnected,
+    at,
+  ]);
 
   const audioModelOptions = useMemo(() => {
     if (!isVoiceCloneTtsMode) return baseAudioModelOptions;
@@ -444,11 +493,9 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
   });
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
   const renderVoiceMicButton = (target: 'text' | 'lyrics' | 'styleDesc') => {
@@ -702,11 +749,21 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         // 已去掉面板「模型名称」输入：优先已有值，否则回退节点展示名（Workspace 会注入 title）
         requestParams.rvcTrainModelName = (rvcTrainModelName || '').trim() || 'audio';
       } else if (isDoubaoSeedAudio) {
-        let refUrl = (referenceAudioUrl || '').trim();
-        if (refUrl.startsWith('local-resource://') || refUrl.startsWith('file://')) {
-          refUrl = refUrl.replace(/%5C/gi, '/').replace(/^local-resource:\/\/+/, 'local-resource://').replace(/^file:\/\/+/, 'file://');
-        }
+        const normalizeLocal = (u: string) =>
+          u.startsWith('local-resource://') || u.startsWith('file://')
+            ? u
+                .replace(/%5C/gi, '/')
+                .replace(/^local-resource:\/\/+/, 'local-resource://')
+                .replace(/^file:\/\/+/, 'file://')
+            : u;
+        const multiUrls = referenceAudioTags
+          .map((t) => normalizeLocal(String(t.url || '').trim()))
+          .filter(Boolean)
+          .slice(0, DOUBAO_MAX_REF);
+        let refUrl = multiUrls[0] || (referenceAudioUrl || '').trim();
+        if (refUrl) refUrl = normalizeLocal(refUrl);
         requestParams.model = DOUBAO_SEED_AUDIO_MODEL_ID;
+        if (multiUrls.length > 0) requestParams.doubaoAudioUrls = multiUrls;
         if (refUrl) requestParams.referenceAudioUrl = refUrl;
         requestParams.speechRate = clampDoubaoSpeechRate(speechRate);
         requestParams.loudnessRate = clampDoubaoLoudnessRate(loudnessRate);
@@ -731,10 +788,17 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
     } catch (error) {
       console.error('音频生成失败:', error);
     }
-  }, [flushTextSync, localText, model, isIndexTts2, isDoubaoSeedAudio, isAudioCover, isRvcTrain, isRhartSong, songName, styleDesc, lyrics, sourceSongAudioUrl, referenceAudioUrl, speechRate, loudnessRate, effectiveRvcCoverModel, rvcTrainModelName, outputModelUrl, outputModelRemoteUrl, coverReferenceAudioUrl, libraryRvcVoiceId, coverPitch, coverIndexRate, coverVocalMixPct, coverAccompanimentMixPct, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId, showAlert, showConfirm, locale, at]);
+  }, [flushTextSync, localText, model, isIndexTts2, isDoubaoSeedAudio, isAudioCover, isRvcTrain, isRhartSong, songName, styleDesc, lyrics, sourceSongAudioUrl, referenceAudioUrl, referenceAudioTags, speechRate, loudnessRate, effectiveRvcCoverModel, rvcTrainModelName, outputModelUrl, outputModelRemoteUrl, coverReferenceAudioUrl, libraryRvcVoiceId, coverPitch, coverIndexRate, coverVocalMixPct, coverAccompanimentMixPct, voiceId, speed, volume, pitch, emotion, executeAI, onStart, projectId, showAlert, showConfirm, locale, at]);
+
+  const audioPriceOk = (() => {
+    if (isAudioCover) return true;
+    if (!model) return false;
+    return getAudioDisplayPrice(model, cloudMap) != null;
+  })();
 
   const isRunDisabled =
     aiStatus === 'PROCESSING' ||
+    !audioPriceOk ||
     (isRhartSong
       ? !(songName ?? '').trim() || !(styleDesc ?? '').trim() || !(lyrics ?? '').trim()
       : isAudioCover
@@ -809,6 +873,18 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         );
       }
       const price = getAudioDisplayPrice(model, cloudMap);
+      if (price == null) {
+        return (
+          <span
+            className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
+              isDarkMode ? 'text-white/45 bg-white/10' : 'text-gray-500 bg-gray-100'
+            }`}
+            title={at.noPricingTitle}
+          >
+            {at.noPricingYet}
+          </span>
+        );
+      }
       return (
         <span
           className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 tabular-nums border ${
@@ -918,28 +994,49 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         </div>
       )}
 
-      {/* 参考音 / 文本 / 原曲 @ 标签同一排 */}
-      {(isTextConnected || isSourceSongConnected || !!referenceAudioDisplayName || isAudioConnected) && (
+      {/* 参考音 / 文本 / 原曲 @ 标签同一排（多路参考音逐条展示） */}
+      {(isTextConnected ||
+        isSourceSongConnected ||
+        referenceAudioTags.length > 0 ||
+        isAudioConnected) && (
         <div className="mb-1 flex flex-wrap items-center gap-1.5 flex-shrink-0">
-          {referenceAudioDisplayName ? (
-            <span
-              className={`inline-flex items-center max-w-[220px] px-1.5 py-0.5 rounded-md text-[11px] font-semibold truncate ${
-                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
-              }`}
-              title={referenceAudioUrl || at.linkedRefAudioTagTitle}
-            >
-              @{referenceAudioDisplayName}
-            </span>
-          ) : isAudioConnected ? (
+          {referenceAudioTags.length > 1 ? (
             <span
               className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
-                isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+                isDarkMode ? 'bg-sky-500/20 text-sky-200/90' : 'bg-sky-50 text-sky-800'
               }`}
-              title={at.linkedRefAudioTagTitle}
+              title={at.linkedRefAudioCountBadge(referenceAudioTags.length, DOUBAO_MAX_REF)}
             >
-              @{at.linkedRefAudioTag}
+              {at.linkedRefAudioCountBadge(referenceAudioTags.length, DOUBAO_MAX_REF)}
             </span>
           ) : null}
+          {referenceAudioTags.length > 0
+            ? referenceAudioTags.map((tag, idx) => (
+                <span
+                  key={`${tag.url || 'ref'}-${idx}`}
+                  className={`inline-flex items-center max-w-[220px] px-1.5 py-0.5 rounded-md text-[11px] font-semibold truncate ${
+                    isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+                  }`}
+                  title={
+                    tag.url ||
+                    (referenceAudioTags.length > 1
+                      ? at.linkedRefAudioTagTitleN(idx + 1, DOUBAO_MAX_REF)
+                      : at.linkedRefAudioTagTitle)
+                  }
+                >
+                  @{tag.name}
+                </span>
+              ))
+            : isAudioConnected ? (
+                <span
+                  className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                    isDarkMode ? 'bg-sky-500/25 text-sky-300' : 'bg-sky-100 text-sky-700'
+                  }`}
+                  title={at.linkedRefAudioTagTitle}
+                >
+                  @{at.linkedRefAudioTag}
+                </span>
+              ) : null}
           {isTextConnected ? (
             <span
               className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-[11px] font-semibold ${

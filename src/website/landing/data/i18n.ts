@@ -13,6 +13,12 @@ export type SiteCopy = {
   navDownload: string;
   navContact: string;
   langToggleAria: string;
+  downloadRouteAria: string;
+  downloadRouteBeijing: string;
+  downloadRouteHongKong: string;
+  downloadRouteHint: string;
+  downloadBeijing: string;
+  downloadHongKong: string;
   heroBrand: string;
   heroEyebrow: string;
   heroLine1: string;
@@ -86,6 +92,12 @@ const ZH: SiteCopy = {
   navDownload: '下载',
   navContact: '联系',
   langToggleAria: '切换语言',
+  downloadRouteAria: '选择安装包下载线路',
+  downloadRouteBeijing: '北京线路',
+  downloadRouteHongKong: '香港线路',
+  downloadRouteHint: '同一版本，请选更快的线路：国内通常北京更快，海外通常香港更快。',
+  downloadBeijing: '北京线路下载',
+  downloadHongKong: '香港线路下载',
   heroBrand: '地心引力聚合平台Aixflow',
   heroEyebrow: 'AI工作流与内容生产平台',
   heroLine1: '一体化AI生产系统',
@@ -96,7 +108,7 @@ const ZH: SiteCopy = {
   heroP2c: '从单点工具到完整生产线。',
   heroP3: '为创作者、团队与企业打造。',
   viewRecharge: '查看充值套餐',
-  startUsing: '开始使用',
+  startUsing: '下载安装',
   preparingDownload: '准备下载…',
   installerUnavailable: '安装包暂不可用',
   downloadTitleWin: 'Windows 安装包',
@@ -223,6 +235,12 @@ const EN: SiteCopy = {
   navDownload: 'Download',
   navContact: 'Contact',
   langToggleAria: 'Switch language',
+  downloadRouteAria: 'Choose installer download region',
+  downloadRouteBeijing: 'Beijing',
+  downloadRouteHongKong: 'Hong Kong',
+  downloadRouteHint: 'Same version. Pick the faster route: Beijing is usually faster in mainland China; Hong Kong is usually faster overseas.',
+  downloadBeijing: 'Download via Beijing',
+  downloadHongKong: 'Download via Hong Kong',
   heroBrand: 'Aixflow by Gravity',
   heroEyebrow: 'AI workflow & content production',
   heroLine1: 'All-in-one AI production',
@@ -233,7 +251,7 @@ const EN: SiteCopy = {
   heroP2c: 'from single tools to a full production line.',
   heroP3: 'Built for creators, teams, and businesses.',
   viewRecharge: 'View credit packs',
-  startUsing: 'Get started',
+  startUsing: 'Download & Install',
   preparingDownload: 'Preparing download…',
   installerUnavailable: 'Installer unavailable',
   downloadTitleWin: 'Windows installer',

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import type { useAppUpdate } from '../hooks/useAppUpdate';
 import InstallerDownloadWizard from './InstallerDownloadWizard';
@@ -30,9 +30,8 @@ export default function AppUpdatePanel({ update, align = 'right', trailing }: Ap
     updateInstalling,
     updateDownloadError,
     lastCheckResult,
-    handleCheckUpdate,
-    handleInstallUpdate,
   } = update;
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   /** 与「交流群」入口同高同字号 */
   const footerCtrlBtnClass =
@@ -50,8 +49,7 @@ export default function AppUpdatePanel({ update, align = 'right', trailing }: Ap
     );
   }
 
-  const busy = updateChecking || updateDownloading || updateInstalling;
-  const canInstall = Boolean(updateAvailable) && !busy;
+  const canInstall = Boolean(updateAvailable) && !updateChecking && !updateDownloading && !updateInstalling;
 
   let buttonLabel = withVersion(t.checkUpdate, appVersion);
   let buttonTitle: string | undefined = appVersion ? `${t.currentVersion} v${appVersion}` : undefined;
@@ -77,20 +75,15 @@ export default function AppUpdatePanel({ update, align = 'right', trailing }: Ap
     buttonLabel = withVersion(t.alreadyLatest, appVersion);
   }
 
-  const onPrimaryClick = () => {
-    if (canInstall) {
-      void handleInstallUpdate();
-      return;
-    }
-    void handleCheckUpdate();
-  };
-
   const PrimaryIcon = canInstall ? Download : RefreshCw;
 
-  /** 单行：更新按钮（文案含版本/状态）+ 可选 trailing（交流群） */
   return (
     <>
-      <InstallerDownloadWizard update={update} />
+      <InstallerDownloadWizard
+        update={update}
+        open={wizardOpen || updateDownloading || updateInstalling}
+        onClose={() => setWizardOpen(false)}
+      />
       <div
         className={`flex min-w-0 flex-nowrap items-center gap-1.5 sm:gap-2 ${
           align === 'right' ? 'justify-end' : 'justify-start'
@@ -98,8 +91,8 @@ export default function AppUpdatePanel({ update, align = 'right', trailing }: Ap
       >
         <button
           type="button"
-          onClick={onPrimaryClick}
-          disabled={busy}
+          onClick={() => setWizardOpen(true)}
+          disabled={updateInstalling}
           title={buttonTitle}
           className={canInstall ? footerCtrlBtnReadyClass : footerCtrlBtnClass}
         >

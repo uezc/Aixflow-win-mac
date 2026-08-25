@@ -144,8 +144,8 @@ function resolveTaskPreviewKind(task: {
   audioUrl?: string;
   localFilePath?: string;
 }): 'video' | 'audio' | 'other' {
-  if (task.taskType === 'audio' && task.audioUrl) return 'audio';
-  if (task.taskType === 'video' && task.videoUrl) {
+  if (task.taskType === 'audio' && (task.audioUrl || task.localFilePath)) return 'audio';
+  if (task.taskType === 'video' && (task.videoUrl || task.localFilePath)) {
     // 误标：音频 SUCCESS 被写成 video + mp3 URL
     if (taskLooksLikeAudioMedia(task)) return 'audio';
     return 'video';
@@ -401,14 +401,21 @@ const TaskCard = React.memo(function TaskCard({
                 ) : null}
               </button>
             ) : (
-              <div className={canPlace ? 'pointer-events-none' : undefined}>
+              <div
+                className={
+                  canPlace && resolveTaskPreviewKind(task) !== 'audio'
+                    ? 'pointer-events-none'
+                    : undefined
+                }
+              >
                 {(() => {
                   const kind = resolveTaskPreviewKind(task);
-                  if (kind === 'video' && task.videoUrl) {
+                  if (kind === 'video' && (task.videoUrl || task.localFilePath)) {
                     return (
                       <TaskMediaPreview
                         task={task}
                         isDarkMode={isDarkMode}
+                        projectId={projectId}
                         onPreviewVideo={onPreviewImage}
                         onPreviewAudio={onPreviewAudio}
                       />
@@ -424,6 +431,7 @@ const TaskCard = React.memo(function TaskCard({
                       <TaskMediaPreview
                         task={audioTask}
                         isDarkMode={isDarkMode}
+                        projectId={projectId}
                         onPreviewVideo={onPreviewImage}
                         onPreviewAudio={onPreviewAudio}
                       />

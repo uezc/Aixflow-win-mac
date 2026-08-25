@@ -1,3 +1,6 @@
+/** 取消进行中的 FC LLM（导演/LLM 节点取消） */
+export function abortInFlightFcLlm(): { aborted: boolean };
+
 export function callFCGenericTask(opts: {
   type?: string;
   taskId: string;

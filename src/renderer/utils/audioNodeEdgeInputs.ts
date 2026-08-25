@@ -7,8 +7,44 @@ import {
   resolveRvcCoverModelPath,
 } from './audioCoverModel';
 import { isRvcTrainModel, RVC_VOICE_TRAIN_MODEL_ID } from './audioRvcTrainModel';
-import { isAudioSongModel } from './audioSongModels';
+import { isAudioSongModel, resolveAudioConnectedDisplayName } from './audioSongModels';
 import { resolveRvcTrainNickname } from './rvcTrainCanvasPlacement';
+import { getCharacterVoiceClipUrl } from './connectionRules';
+
+/** Doubao / 多参考音展示：已连接的参考音（最多 3） */
+export type ConnectedReferenceAudioInfo = {
+  url: string;
+  name: string;
+  nodeId: string;
+};
+
+const DOUBAO_MAX_REF_AUDIOS = 3;
+
+/** 按入边顺序收集参考音 URL（去重，最多 max） */
+export function collectReferenceAudiosFromEdges(
+  targetNodeId: string,
+  nodes: Node[],
+  edges: Edge[],
+  max = DOUBAO_MAX_REF_AUDIOS,
+): ConnectedReferenceAudioInfo[] {
+  const out: ConnectedReferenceAudioInfo[] = [];
+  const seen = new Set<string>();
+  for (const e of edges) {
+    if (e.target !== targetNodeId) continue;
+    const source = nodes.find((n) => n.id === e.source);
+    if (!source || source.type !== 'audio') continue;
+    const url = pickAudioUrlFromAudioSourceNode(source);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      url,
+      name: resolveAudioConnectedDisplayName(source.data as Parameters<typeof resolveAudioConnectedDisplayName>[0]),
+      nodeId: source.id,
+    });
+    if (out.length >= max) break;
+  }
+  return out;
+}
 
 export function pickAudioUrlFromAudioSourceNode(sourceNode: Node | undefined): string {
   if (!sourceNode || sourceNode.type !== 'audio') return '';
@@ -67,6 +103,22 @@ function findRvcTrainSourceNode(targetNodeId: string, nodes: Node[], edges: Edge
   return undefined;
 }
 
+/** 角色卡入边：有声音片段即取参考音（取第一条有效 URL；不依赖勾选） */
+function pickCharacterTransmitAudioFromEdges(
+  targetNodeId: string,
+  nodes: Node[],
+  edges: Edge[],
+): string {
+  for (const e of edges) {
+    if (e.target !== targetNodeId) continue;
+    const source = nodes.find((n) => n.id === e.source);
+    if (source?.type !== 'character') continue;
+    const url = getCharacterVoiceClipUrl(source.data as Record<string, unknown>);
+    if (url) return url;
+  }
+  return '';
+}
+
 /** 翻唱原曲：取最长 audio 入边 */
 export function pickCoverSourceSongUrl(entries: AudioEdgeEntry[]): string {
   if (entries.length === 0) return '';
@@ -116,6 +168,9 @@ export function normalizeAudioUrlForApi(url: string): string {
 export type AudioIncomingPatch = {
   sourceSongAudioUrl?: string;
   referenceAudioUrl?: string;
+  /** Doubao 等多段参考音（最多 3）；有值时 referenceAudioUrl 为第 1 路 */
+  referenceAudioUrls?: string[];
+  connectedReferenceAudios?: ConnectedReferenceAudioInfo[];
   model?: string;
   coverPitch?: number;
   coverRhVolume?: number;
@@ -241,7 +296,6 @@ export function buildAudioIncomingPatchFromEdges(
         referenceAudioUrl: '',
       };
     }
-    const hasText = String(existingData?.text ?? '').trim().length > 0;
     if (isAudioSongModel(existingModel)) {
       return { referenceAudioUrl: sourceSongAudioUrl, sourceSongAudioUrl: '' };
     }
@@ -254,18 +308,41 @@ export function buildAudioIncomingPatchFromEdges(
         rvcTrainModelName: rvcName,
       };
     }
-    if (!hasText) {
-      return {
-        referenceAudioUrl: sourceSongAudioUrl,
-        sourceSongAudioUrl: '',
-        model: existingModel || 'index-tts2',
-      };
-    }
+    // Index-TTS / Doubao：按入边顺序最多 3 路参考音（Doubao 可用多段；Index 仍取第 1 路）
+    // 多路时不强制改模型，仅写入列表供面板标签 / Doubao 提交使用
+    const connectedRefs = collectReferenceAudiosFromEdges(targetNodeId, nodes, edges, DOUBAO_MAX_REF_AUDIOS);
+    const refUrls = connectedRefs.map((r) => r.url);
+    const firstRef = refUrls[0] || sourceSongAudioUrl;
     return {
-      referenceAudioUrl: sourceSongAudioUrl,
+      referenceAudioUrl: firstRef,
+      referenceAudioUrls: refUrls.length > 0 ? refUrls : undefined,
+      connectedReferenceAudios: connectedRefs.length > 0 ? connectedRefs : undefined,
       sourceSongAudioUrl: '',
       model: existingModel || 'index-tts2',
     };
   }
+
+  // 角色卡 → 音频：有 voiceClip/referenceAudioUrl 即写入参考音；无声音不写空、不覆盖
+  const characterAudioUrl = pickCharacterTransmitAudioFromEdges(targetNodeId, nodes, edges);
+  if (characterAudioUrl) {
+    if (isAudioSongModel(existingModel)) {
+      return { referenceAudioUrl: characterAudioUrl, sourceSongAudioUrl: '' };
+    }
+    if (isRvcTrainModel(existingModel)) {
+      const rvcName = String(existingData?.rvcTrainModelName ?? existingData?.title ?? '').trim();
+      return {
+        referenceAudioUrl: characterAudioUrl,
+        sourceSongAudioUrl: '',
+        model: RVC_VOICE_TRAIN_MODEL_ID,
+        rvcTrainModelName: rvcName,
+      };
+    }
+    return {
+      referenceAudioUrl: characterAudioUrl,
+      sourceSongAudioUrl: '',
+      model: existingModel || 'index-tts2',
+    };
+  }
+  // 已连角色但无声音片段：不写空参考音（避免清掉用户手填/历史参考音）
   return null;
 }

@@ -55,12 +55,27 @@ async function main() {
   const version = parseVersion(text);
   console.log('[verify-website-download] latest.yml version:', version, '| CORS:', acaoYml || '(none)');
 
+  const glassName = version ? `Aixflow-Installer-${version}.exe` : '';
+  if (glassName) {
+    const glassUrl = WIN_BASE + encodeURIComponent(glassName);
+    const glass = await headOk(glassUrl);
+    if (glass.ok) {
+      console.log(
+        '[verify-website-download] 官网将下载玻璃安装器:',
+        glassName,
+        '| CORS:',
+        glass.acao || '(none)',
+      );
+      return;
+    }
+  }
+
   const exe = parseExeName(text);
   if (exe) {
     const stubUrl = WIN_BASE + encodeURIComponent(exe);
     const stub = await headOk(stubUrl);
     if (stub.ok) {
-      console.log('[verify-website-download] 官网将下载在线 stub:', exe, '| CORS:', stub.acao || '(none)');
+      console.log('[verify-website-download] 官网将下载在线 stub（后备）:', exe, '| CORS:', stub.acao || '(none)');
       return;
     }
   }

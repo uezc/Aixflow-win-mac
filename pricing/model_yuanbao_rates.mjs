@@ -26,8 +26,8 @@ export const MODEL_YUANBAO_RATES = Object.freeze({
   'video-4k': { yuanbao: 100, tier: 'high', label: '4K视频' },
   // 音频 / 3D
   'tts-basic': { yuanbao: 5, tier: 'medium', label: 'TTS配音' },
-  /** 云端录音文件转写（百炼 fun-asr）；按次固定价，MV 歌曲分析 / AI识别 */
-  'fun-asr': { yuanbao: 5, tier: 'medium', label: '云端转写' },
+  /** 云端录音文件转写（百炼 fun-asr / enable_words）；按次固定价，字级时间轴 / AI识别 */
+  'fun-asr': { yuanbao: 10, tier: 'medium', label: '云端转写' },
   /** 阿里云 VIAPI 视频人像智能抠像；元宝/分钟（与 cost_table 2.0 元/分钟 ×10 对齐；按秒折算扣费） */
   'viapi-segment-video-body': { yuanbao: 20, tier: 'high', label: '智能抠像/分钟' },
   'music-gen': { yuanbao: 15, tier: 'medium', label: '音乐生成' },

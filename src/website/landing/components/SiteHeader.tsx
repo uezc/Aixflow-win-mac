@@ -21,14 +21,18 @@ export function SiteHeader() {
           <a href="./recharge.html" className="rounded-full px-3 py-1.5 transition hover:bg-white/10 hover:text-white">
             {t.navRecharge}
           </a>
-          <a href="./index.html#download" className="rounded-full px-3 py-1.5 transition hover:bg-white/10 hover:text-white">
+          <a
+            href="./index.html#download"
+            className="rounded-full px-3 py-1.5 transition hover:bg-white/10 hover:text-white"
+            title={t.downloadRouteHint}
+          >
             {t.navDownload}
           </a>
           <a href="./index.html#contact" className="rounded-full px-3 py-1.5 transition hover:bg-white/10 hover:text-white">
             {t.navContact}
           </a>
           <div
-            className="ml-1 flex items-center rounded-full border border-white/15 bg-white/5 p-0.5"
+            className="flex items-center rounded-full border border-white/15 bg-white/5 p-0.5"
             role="group"
             aria-label={t.langToggleAria}
           >

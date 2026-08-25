@@ -248,9 +248,16 @@ export class ChatProvider extends BaseProvider {
                 // HTTP/HTTPS URL 直接使用，无需转换
                 console.log(`[ChatProvider] 使用远程图片 URL: ${imageUrl}`);
                 return item;
+              } else if (imageUrl.startsWith('data:image/')) {
+                // 角色库等场景可能直接传 base64 data URL，FC 可原样转发
+                console.log(`[ChatProvider] 使用 Base64 图片 data URL，长度: ${imageUrl.length}`);
+                return {
+                  ...item,
+                  image_url: { url: imageUrl },
+                };
               } else {
                 // 未知协议，记录警告
-                console.warn(`[ChatProvider] 未知的图片 URL 协议: ${imageUrl}`);
+                console.warn(`[ChatProvider] 未知的图片 URL 协议: ${imageUrl.substring(0, 80)}`);
                 return item;
               }
             }
@@ -311,7 +318,14 @@ export class ChatProvider extends BaseProvider {
         onStatus({
           nodeId,
           status: 'SUCCESS',
-          payload: { text: content, localPath: localPath || undefined, finishReason },
+          payload: {
+            text: content,
+            localPath: localPath || undefined,
+            finishReason,
+            ...(chatInput.directorChatRequestId
+              ? { directorChatRequestId: chatInput.directorChatRequestId }
+              : {}),
+          },
         });
         return;
       } catch (fcError: any) {
@@ -321,14 +335,25 @@ export class ChatProvider extends BaseProvider {
           onStatus({
             nodeId,
             status: 'ERROR',
-            payload: { error: '请先登录 Aixflow 云端账号', nxAuthRequired: true },
+            payload: {
+              error: '请先登录 Aixflow 云端账号',
+              nxAuthRequired: true,
+              ...(chatInput.directorChatRequestId
+                ? { directorChatRequestId: chatInput.directorChatRequestId }
+                : {}),
+            },
           });
           throw fcError;
         }
         onStatus({
           nodeId,
           status: 'ERROR',
-          payload: buildFcErrorPayload(fcError, fcError instanceof Error ? fcError.message : 'LLM 调用失败'),
+          payload: {
+            ...buildFcErrorPayload(fcError, fcError instanceof Error ? fcError.message : 'LLM 调用失败'),
+            ...(chatInput.directorChatRequestId
+              ? { directorChatRequestId: chatInput.directorChatRequestId }
+              : {}),
+          },
         });
         throw fcError;
       }
@@ -337,10 +362,33 @@ export class ChatProvider extends BaseProvider {
       
       if (error instanceof Error) {
         errorMessage = error.message;
+        const ax = error as {
+          response?: { status?: number; data?: { errorMessage?: string; message?: string; error?: string } };
+        };
+        const fcDetail = String(
+          ax.response?.data?.errorMessage ||
+            ax.response?.data?.message ||
+            ax.response?.data?.error ||
+            '',
+        ).trim();
+        if (ax.response?.status === 502 || ax.response?.status === 503 || ax.response?.status === 504) {
+          errorMessage = fcDetail
+            ? `HTTP ${ax.response.status}: ${fcDetail}`
+            : `Request failed with status code ${ax.response.status}`;
+        }
         
         // 处理连接超时错误
-        if (errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timeout')) {
+        if (/Function timed out|timed out after \d+ seconds/i.test(errorMessage + fcDetail)) {
+          errorMessage =
+            fcDetail ||
+            'Function timed out after 120 seconds（云端函数执行超时）';
+        } else if (errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timeout')) {
           errorMessage = '连接超时：请检查网络后重试，或确认云端服务可用。';
+        } else if (
+          /RATE_LIMIT|status code 429/i.test(errorMessage) ||
+          ax.response?.status === 429
+        ) {
+          errorMessage = '请求过于频繁，请等待约 1 分钟后再试';
         } else if (errorMessage.includes('ECONNREFUSED')) {
           errorMessage = '连接被拒绝：请检查网络或云端服务状态。';
         } else if (errorMessage.includes('ENOTFOUND')) {
@@ -361,7 +409,7 @@ export class ChatProvider extends BaseProvider {
         },
       };
       onStatus(errorPacket);
-      throw error;
+      throw new Error(errorMessage);
     }
   }
 }

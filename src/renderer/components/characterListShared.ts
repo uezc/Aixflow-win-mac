@@ -18,6 +18,8 @@ export interface Character {
   viewImages?: string[];
   /** 本进程写入的视图文件路径，删除角色时清理 */
   localViewPaths?: string[];
+  /** 角色形象文字描述（可手写，或对四视图之一做图像反推写入） */
+  imageDescription?: string;
   /** 缺省为普通角色；imageTo3d 为图片转 3D 入库条目 */
   assetKind?: CharacterAssetKind;
   /** 图片转 3D：生成时参考图 */

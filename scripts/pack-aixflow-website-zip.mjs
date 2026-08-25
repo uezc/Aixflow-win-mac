@@ -45,15 +45,19 @@ function ensureHtmlRelPaths(html) {
 function main() {
   const landingIndex = path.join(dist, 'public', 'index.html');
   const rechargeIndex = path.join(dist, 'public', 'recharge.html');
+  const installerIndex = path.join(dist, 'public', 'installer.html');
   mustExist(landingIndex, '请先执行: npm run build:renderer');
   mustExist(rechargeIndex, '请先执行: npm run build:renderer（需生成 public/recharge.html）');
+  mustExist(installerIndex, '请先执行: npm run build:renderer（需生成 public/installer.html）');
   mustExist(path.join(dist, 'icon.png'));
 
   const landingHtml = fs.readFileSync(landingIndex, 'utf8');
   const rechargeHtml = fs.readFileSync(rechargeIndex, 'utf8');
+  const installerHtml = fs.readFileSync(installerIndex, 'utf8');
   const assetNames = new Set([
     ...assetNamesFromHtml(landingHtml),
     ...assetNamesFromHtml(rechargeHtml),
+    ...assetNamesFromHtml(installerHtml),
   ]);
 
   // 品牌图可能被 JS 动态引用，尽量带上
@@ -70,12 +74,17 @@ function main() {
     console.error('[pack-website] HTML 未引用 aixflowRecharge-*.js');
     process.exit(1);
   }
+  if (![...assetNames].some((n) => /^aixflowInstaller-.*\.js$/i.test(n))) {
+    console.error('[pack-website] HTML 未引用 aixflowInstaller-*.js');
+    process.exit(1);
+  }
 
   const zipPath = path.join(root, 'release', `Aixflow-Website-${version}.zip`);
   fs.mkdirSync(path.dirname(zipPath), { recursive: true });
   const zip = new AdmZip();
   zip.addFile('site/index.html', Buffer.from(ensureHtmlRelPaths(landingHtml), 'utf8'));
   zip.addFile('site/recharge.html', Buffer.from(ensureHtmlRelPaths(rechargeHtml), 'utf8'));
+  zip.addFile('site/installer.html', Buffer.from(ensureHtmlRelPaths(installerHtml), 'utf8'));
   zip.addFile('site/icon.png', fs.readFileSync(path.join(dist, 'icon.png')));
 
   for (const name of assetNames) {
@@ -89,12 +98,18 @@ function main() {
 解压后目录:
   site/index.html
   site/recharge.html   ← 元宝充值套餐公示（支付宝合规）
+  site/installer.html  ← 网页下载辅助（可选，非主入口）
   site/icon.png
   site/assets/
+
+主下载路径（用户点「下载安装」）:
+  直链 OSS Aixflow-Windows-Setup-{version}.exe（NSIS 在线安装 stub，~1MB）
+  本机运行 stub → 下载完整包 → 可选安装路径 → 安装客户端
 
 部署（国内站 nginx，路径保持 ../assets）：
   sudo cp site/index.html /var/www/aixflow/public/index.html
   sudo cp site/recharge.html /var/www/aixflow/public/recharge.html
+  sudo cp site/installer.html /var/www/aixflow/public/installer.html
   sudo cp site/icon.png /var/www/aixflow/icon.png
   sudo cp -r site/assets/* /var/www/aixflow/assets/
 
@@ -108,8 +123,9 @@ function main() {
   https://aixflow.ai/
 
 验证:
-  https://aixflow.com.cn/
+  https://aixflow.com.cn/          ← 「下载安装」应触发 Setup .exe 下载（非打开 installer.html）
   https://aixflow.com.cn/recharge.html
+  https://aixflow.com.cn/installer.html  ← 可选辅助页，非主入口
   https://aixflow.ai/
 
 支付宝合规建议提交: https://aixflow.com.cn/recharge.html

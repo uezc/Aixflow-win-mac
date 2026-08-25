@@ -136,7 +136,7 @@ const ImageTo3dInputPanel: React.FC<ImageTo3dInputPanelProps> = ({
 
   const hasRef = !!inputImageUrl?.trim();
   const hasResultTexture = !!resultTextureUrl?.trim();
-  const isRunDisabled = processing || !hasRef;
+  const isRunDisabled = processing || !hasRef || priceYuanbao == null;
   const progress = panelProgress >= 100 ? 0 : panelProgress;
   const isGenerating = progress > 0 && progress < 100;
   const isBusy = processing || isGenerating;

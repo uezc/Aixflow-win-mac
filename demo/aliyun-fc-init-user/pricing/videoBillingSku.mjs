@@ -11,6 +11,8 @@ import {
   normalizeSeedanceDurationSec,
   normalizeGeminiOmniDurationSec,
   normalizeGeminiOmniFlashDurationSec,
+  normalizeMinimaxH3DurationSec,
+  normalizeMinimaxH3AudioDurationSec,
 } from './cost_table.mjs';
 
 function lc(s) {
@@ -115,6 +117,16 @@ export function buildVideoBillingSkuKey(baseModel, input) {
     const clipRaw = String(input.wanAnimateClipSec ?? '8').trim();
     const sec = clipRaw === '5' || clipRaw === '10' || clipRaw === '15' ? clipRaw : '8';
     return joinKey('wan', 'animate', resSeg, `${sec}s`);
+  }
+
+  // Wan animate2：按原视频秒数计费；SKU 仅分辨率，Quantity = mediaDurationSec（ceil）
+  if (m === 'wan-animate-2') {
+    const resRaw = String(input.resolutionWanAnimate ?? '').trim().toLowerCase();
+    const resSeg =
+      resRaw === '1080p' || resRaw === '1080' || resRaw === '1920x1080' || resRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    return joinKey('wan', 'animate', '2', resSeg);
   }
 
   if (m === 'hey-gem') {
@@ -251,6 +263,29 @@ export function buildVideoBillingSkuKey(baseModel, input) {
     return joinKey('ltx', '2-3', res, dur);
   }
 
+  if (m === 'minimax-h3-t2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
+  }
+  if (m === 'minimax-h3-i2v') {
+    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
+  }
+  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  if (m === 'minimax-h3-multi') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
+    return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
+  }
+  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  if (m === 'minimax-h3-audio') {
+    const res = '720p';
+    const durSec = normalizeMinimaxH3AudioDurationSec(input.durationMinimaxH3, 20);
+    return joinKey('minimax', 'h3', 'audio', res, `${durSec}s`);
+  }
+
   if (m === 'ltx-2.3-hdr-multi') {
     const resRaw =
       input.resolutionLtx23HdrMulti != null && String(input.resolutionLtx23HdrMulti).trim() !== ''
@@ -278,11 +313,23 @@ export function buildVideoBillingSkuKey(baseModel, input) {
       input.resolutionRhartV31 != null && String(input.resolutionRhartV31).trim() !== ''
         ? lc(String(input.resolutionRhartV31))
         : '';
-    const res = resRaw === '720p' || resRaw === '1080p' || resRaw === '4k' ? resRaw : '1080p';
+    const res =
+      resRaw === '720' || resRaw === '720p'
+        ? '720p'
+        : resRaw === '1920' || resRaw === '1920p' || resRaw === '4k' || resRaw === '2160p'
+          ? '1920p'
+          : '1080p';
     const d = parseInt(String(input.duration ?? ''), 10);
     const durNum = Number.isFinite(d) && d > 0 ? Math.max(5, Math.min(15, d)) : 5;
     const dur = durNum >= 15 ? '15s' : durNum >= 10 ? '10s' : '5s';
     return joinKey('ltx', '2-3', 'start-end', res, dur);
+  }
+
+  // 视频超分放大：rhart-video-upscaler-{720p|1080p|2k|4k}
+  if (m === 'rhart-video-upscaler') {
+    const r = lc(String(input.targetResolution ?? '1080p'));
+    const res = r === '720p' || r === '1080p' || r === '2k' || r === '4k' ? r : '1080p';
+    return joinKey('rhart', 'video', 'upscaler', res);
   }
 
   return lc(model);

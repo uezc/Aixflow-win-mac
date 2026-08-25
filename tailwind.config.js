@@ -6,6 +6,8 @@ export default {
     "./manage-my-aixflow-content.html",
     "./src/renderer/**/*.{js,ts,jsx,tsx}",
     "./src/website/**/*.{js,ts,jsx,tsx}",
+    "./src/glass-installer/**/*.{js,ts,jsx,tsx}",
+    "./glass-installer.html",
   ],
   theme: {
     extend: {

@@ -1,9 +1,9 @@
 import React, { useEffect } from 'react';
-import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box, Music2, Mic2, LayoutGrid, Sparkles, SplitSquareHorizontal } from 'lucide-react';
+import { FileText, Image, Video, User, UserRound, Volume2, Brain, SplitSquareVertical, Palette, Film, Layers, Box, Music2, Mic2, LayoutGrid, Sparkles, Clapperboard, SplitSquareHorizontal } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import { contextMenuLabelForType } from '../../i18n/contextMenuI18n';
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../../config/sora2UiPolicy';
-import { HIDE_DIRECTOR_STAGE_UI } from '../../config/directorUiPolicy';
+import { HIDE_DIRECTOR_DRAMA_UI, HIDE_DIRECTOR_STAGE_UI } from '../../config/directorUiPolicy';
 
 interface ContextMenuProps {
   x: number;
@@ -27,6 +27,7 @@ const baseMenuItems = [
   { type: 'gridMap', icon: LayoutGrid },
   { type: 'imageComparer', icon: SplitSquareHorizontal },
   { type: 'director', icon: Sparkles },
+  { type: 'directorDrama', icon: Clapperboard },
   { type: 'imageTo3d', icon: Box },
   { type: 'character', icon: User },
   { type: 'audio', icon: Volume2 },
@@ -34,7 +35,8 @@ const baseMenuItems = [
 
 const visibleBaseMenuItems = baseMenuItems.filter((item) => {
   if (HIDE_SORA2_AND_SORA_CHARACTER_UI && item.type === 'character') return false;
-  if (HIDE_DIRECTOR_STAGE_UI && item.type === 'director') return false;
+  if (HIDE_DIRECTOR_STAGE_UI && (item.type === 'director' || item.type === 'directorDrama')) return false;
+  if (HIDE_DIRECTOR_DRAMA_UI && item.type === 'directorDrama') return false;
   return true;
 });
 

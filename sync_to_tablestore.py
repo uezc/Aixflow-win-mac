@@ -67,6 +67,9 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     "ltx-2.3-lipsync": 1.5,
     "ltx-2.3-i2v": 1.5,
     "ltx-2.3-t2v": 1.5,
+    # MiniMax-H3：占位对齐海螺（720P/6s）；复合 SKU 以 VIDEO_BILLING_SKU_CNY / sync-pricing-to-ots 为准
+    "minimax-h3-t2v": 1.5,
+    "minimax-h3-i2v": 1.5,
     # --- 海螺 6s ---
     "hailuo-02-t2v-standard": 1.5,
     "hailuo-02-i2v-standard": 1.5,
@@ -94,7 +97,7 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     # --- Veo 官方图生：4s + 无声 ---
     "rhart-v3.1-pro-official-i2v": 4.7,
     # --- 音频 ---
-    "fun-asr": 0.5,
+    "fun-asr": 1,
     "rhart-song": 0.5,
     # --- 反推 ---
     "gpt-4o": 0.002422,
@@ -105,6 +108,7 @@ BASE_PRICE_CNY_BY_MODEL_ID: dict[str, float] = {
     # --- 未在 AUDIO_MODEL_CNY：占位 ---
     "speech-2.8-hd": 0.01,
     "index-tts2": 0.01,
+    "doubao-seed-audio-1.0": 0.2,
     # --- RunningHub 应用 ID：无 pricing 细表：占位 ---
     "2021955919764000770": 0.01,
     "2022127885233950721": 0.01,
@@ -276,6 +280,16 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "current_logic": "VIDEO_FLAT_CNY['ltx-2.3-t2v']；run/ai-app/2034994243982336001；FC type=video",
     },
     {
+        "model_id": "minimax-h3-t2v",
+        "function_name": "视频模块-MiniMax-H3 文生视频",
+        "current_logic": "VIDEO_MINIMAX_H3_CNY；run/ai-app/2085682347676102657；megapixels 0.9/2.0；FC type=video",
+    },
+    {
+        "model_id": "minimax-h3-i2v",
+        "function_name": "视频模块-MiniMax-H3 图生视频",
+        "current_logic": "VIDEO_MINIMAX_H3_CNY；run/ai-app/2085687129061019649；media/upload/binary fileName；FC type=video",
+    },
+    {
         "model_id": "speech-2.8-hd",
         "function_name": "音频模块-MiniMax 2.8 HD 语音合成",
         "current_logic": "未在 AUDIO_MODEL_CNY 登记；getAudioPrice 会失败；FC type=audio 粗扣",
@@ -286,9 +300,14 @@ DEFAULT_MODEL_ROWS: list[dict[str, str]] = [
         "current_logic": "未在 AUDIO_MODEL_CNY；run/ai-app/2008113338793857025；FC type=audio",
     },
     {
+        "model_id": "doubao-seed-audio-1.0",
+        "function_name": "音频模块-Doubao 音频生成 1.0",
+        "current_logic": "AUDIO_MODEL_CNY['doubao-seed-audio-1.0']；bytedance/doubao-seed-audio-1.0；FC type=audio",
+    },
+    {
         "model_id": "fun-asr",
         "function_name": "音频模块-云端录音文件转写（百炼 fun-asr）",
-        "current_logic": "AUDIO_MODEL_CNY['fun-asr']=0.5；POST /asr/file-transcribe 按次扣；FC type=audio",
+        "current_logic": "AUDIO_MODEL_CNY['fun-asr']=1；POST /asr/file-transcribe 按次 10 元宝；FC type=audio",
     },
     {
         "model_id": "rhart-song",

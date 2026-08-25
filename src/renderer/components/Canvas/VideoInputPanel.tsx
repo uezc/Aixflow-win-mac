@@ -8,18 +8,37 @@ import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { videoInputPanelT } from '../../i18n/videoInputPanelI18n';
 import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
 import { workspaceChromeT } from '../../i18n/workspaceI18n';
+import {
+  DarkModalFrame,
+  darkModalBtnCancelClass,
+  darkModalBtnOkClass,
+  darkModalFooterClass,
+  darkModalPanelMdClass,
+} from '../darkModalShell';
 import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import VoiceMicGlyph from './VoiceMicGlyph';
 import { AiGenerateDisclaimerTip } from '../legal/AiGenerateDisclaimerTip';
 import { RefImageHoverThumb } from './RefImageHoverThumb';
+import { AudioEqThumb } from './AudioEqThumb';
 import { AtMentionMenu } from './AtMentionMenu';
 import { PromptRichInput, type PromptRichInputHandle } from './PromptRichInput';
 import { usePromptAtMention } from '../../hooks/usePromptAtMention';
 import { resolveRefPillToOrderedIndex } from '../../utils/promptRefPill';
 import { isModelNotPricedError } from '../../utils/priceCalc';
-import { getVideoDisplayPrice } from '../../utils/cloudModelPricing';
+import { getVideoDisplayPrice, LLM_CHAT_DISPLAY_MODEL_ID, LLM_CHAT_MODEL_IDS, LLM_CHAT_MODEL_LABELS } from '../../utils/cloudModelPricing';
+import { PanelOptionDropdown } from './PanelOptionDropdown';
+import { coerceAssistantText } from '../../../shared/directorPipeline/normalize';
+import {
+  buildMinimaxH3OptimizeMessages,
+  isAcceptableMinimaxH3OptimizedPrompt,
+  parseMinimaxH3OptimizedPrompt,
+  recoverMinimaxH3OptimizedPrompt,
+  resolveMinimaxH3BaseSubMode,
+  resolveMinimaxH3OptimizeStructure,
+} from '../../../shared/minimaxH3OptimizePrompt';
 import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
 import {
   DOUBAO_SEED_AUDIO_MODEL_ID,
@@ -30,6 +49,13 @@ import {
   beginDigitalHumanLibraryPick,
   openAssetLibrary,
 } from '../../utils/assetLibraryOpenStore';
+import { basenameFromAudioUrl } from '../../utils/audioSongModels';
+
+export type VideoConnectedAudioInfo = {
+  nodeId: string;
+  name: string;
+  url?: string;
+};
 
 /** 本机路径 → local-resource://（与数字人库上传一致） */
 function pathToLocalResourceUrl(filePath: string): string {
@@ -57,6 +83,8 @@ import {
   GEMINI_OMNI_FLASH_DURATION_SEC_OPTIONS,
   normalizeGeminiOmniDurationChoice,
   normalizeGeminiOmniFlashDurationChoice,
+  mapMinimaxH3AudioBillingDurationSec,
+  normalizeMinimaxH3AudioDurationChoice,
 } from '../../utils/videoBillingSku';
 import { extractSeedanceImageMentionIndices } from '../../utils/seedanceImageMentions';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
@@ -105,12 +133,14 @@ interface VideoInputPanelProps {
   isDarkMode: boolean;
   prompt: string;
   aspectRatio: '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | 'adaptive' | '4:3' | '3:4' | '21:9';
-  model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end';
+  model: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'wan-animate-2' | 'hey-gem' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end' | 'minimax-h3-t2v' | 'minimax-h3-i2v' | 'minimax-h3-multi' | 'minimax-h3-audio' | 'rhart-video-upscaler';
   hd: boolean;
   duration: '5' | '10' | '15' | '25';
   inputImages?: string[]; // 图生视频参考图
-  /** ltx-2.3-lipsync：输入音频 URL（由画布从连线解析传入） */
+  /** ltx-2.3-lipsync / MiniMax H3 全能参考（可选）：输入音频 URL（由画布从连线解析传入） */
   inputAudioUrl?: string;
+  /** 画布连到该视频节点的全部音频入边（展示数量与名称；提交仍取第 1 路 URL） */
+  connectedAudios?: VideoConnectedAudioInfo[];
   isConnected?: boolean;
   projectId?: string; // 项目 ID（用于保存到项目文件夹）
   /** 可灵参考生视频o1：参考视频 URL（由画布从连线解析传入） */
@@ -134,6 +164,11 @@ interface VideoInputPanelProps {
   resolutionLtx23T2v?: '720' | '1280' | '1920';
   onDurationLtx23T2vChange?: (value: '5' | '10' | '15') => void;
   onResolutionLtx23T2vChange?: (value: '720' | '1280' | '1920') => void;
+  /** MiniMax-H3 文生/图生/多参：时长 6|10|15|20；分辨率仅 720P → megapixels 0.9 */
+  durationMinimaxH3?: '6' | '10' | '15' | '20';
+  resolutionMinimaxH3?: '720p';
+  onDurationMinimaxH3Change?: (value: '6' | '10' | '15' | '20') => void;
+  onResolutionMinimaxH3Change?: (value: '720p') => void;
   durationLtx23HdrMulti?: '5' | '10' | '15';
   resolutionLtx23HdrMulti?: '720' | '1280';
   ltx23HdrBackgroundImage?: string;
@@ -153,8 +188,8 @@ interface VideoInputPanelProps {
   enableAudio?: boolean;
   durationVeo31ProOfficial?: '4' | '6' | '8';
   generateAudioVeo31ProOfficial?: boolean;
-  // 全能视频V3.1-fast 文生视频（仅文生，分辨率 720p|1080p|4k）
-  resolutionRhartV31?: '720p' | '1080p' | '4k';
+  // 全能视频V3.1-fast：720p|1080p|4k；LTX2.3 首位帧：720p|1080p|1920p
+  resolutionRhartV31?: '720p' | '1080p' | '4k' | '1920p' | '720' | '1280' | '1920';
   /** Grok video3：时长 6|10|15|30 秒 */
   durationGrok3?: string;
   resolutionGrok3?: '480p' | '720p';
@@ -180,13 +215,16 @@ interface VideoInputPanelProps {
   onEnableAudioChange?: (value: boolean) => void;
   onDurationVeo31ProOfficialChange?: (value: '4' | '6' | '8') => void;
   onGenerateAudioVeo31ProOfficialChange?: (value: boolean) => void;
-  onResolutionRhartV31Change?: (value: '720p' | '1080p' | '4k') => void;
+  onResolutionRhartV31Change?: (value: '720p' | '1080p' | '4k' | '1920p' | '720' | '1280' | '1920') => void;
   onDurationHailuo02Change?: (value: '6' | '10') => void;
   onResolutionHailuoChange?: (value: 'na' | '720p' | '1080p' | '4k') => void;
   onDurationKlingO1Change?: (value: '5' | '10') => void;
   onModeKlingO1Change?: (value: 'std' | 'pro') => void;
   onResolutionWanAnimateChange?: (value: '720p' | '1080p') => void;
   onWanAnimateClipSecChange?: (value: '5' | '8' | '10' | '15') => void;
+  /** 视频超分放大：目标分辨率 */
+  targetResolution?: '720p' | '1080p' | '2k' | '4k';
+  onTargetResolutionChange?: (value: '720p' | '1080p' | '2k' | '4k') => void;
   /** Seedance 2.0 Fast / Mini：720p|1080p（Mini 另支持 480p/2k/4k），时长 5|10|15 秒 */
   resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
   durationSeedance?: '5' | '10' | '15';
@@ -197,9 +235,27 @@ interface VideoInputPanelProps {
   durationGeminiOmni?: '6' | '8' | '10';
   onResolutionGeminiOmniChange?: (value: '720p' | '1080p' | '4k') => void;
   onDurationGeminiOmniChange?: (value: '6' | '8' | '10') => void;
-  onPromptChange: (value: string) => void;
+  /**
+   * 提示词写回。第二参为产生该值的节点 id，避免切节点/卸载时写到错误目标。
+   */
+  onPromptChange: (value: string, sourceNodeId?: string) => void;
+  /** MiniMax-H3：优化提示词成功写回前保存的原文（持久化到节点 data） */
+  promptBeforeOptimize?: string;
+  onPromptBeforeOptimizeChange?: (value: string, sourceNodeId?: string) => void;
+  /** MiniMax-H3：用于「优化提示词」的大语言模型（与视频生成模型分开） */
+  optimizePromptChatModel?: string;
+  onOptimizePromptChatModelChange?: (value: string, sourceNodeId?: string) => void;
+  /**
+   * MiniMax-H3：优化成功时原子写回（prompt + promptBeforeOptimize），
+   * 避免两次 setNodes 竞态导致原文丢失。
+   */
+  onMinimaxH3OptimizeApply?: (payload: {
+    nodeId: string;
+    prompt: string;
+    promptBeforeOptimize: string;
+  }) => void;
   onAspectRatioChange: (value: '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | 'adaptive' | '4:3' | '3:4' | '21:9') => void;
-  onModelChange: (value: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end') => void;
+  onModelChange: (value: 'sora-2' | 'sora-2-pro' | 'kling-v2.6-pro' | 'kling-video-o1' | 'kling-video-o1-i2v' | 'kling-video-o1-start-end' | 'kling-video-o1-ref' | 'wan-2.6' | 'wan-2.6-flash' | 'wan-animate' | 'wan-animate-2' | 'gemini-omni' | 'gemini-omni-flash' | 'seedance-2.0-fast' | 'seedance-2.0-mini' | 'ltx-2.3-lipsync' | 'ltx-2.3-i2v' | 'ltx-2.3-t2v' | 'ltx-2.3-hdr-multi' | 'ltx-2.3-msr-av' | 'rhart-v3.1-fast' | 'rhart-v3.1-fast-se' | 'rhart-v3.1-pro' | 'rhart-v3.1-pro-se' | 'grok-3' | 'rhart-video-x' | 'grok-3-stable' | 'rhart-v3.1-pro-official-i2v' | 'hailuo-02-t2v-standard' | 'hailuo-2.3-t2v-standard' | 'hailuo-02-i2v-standard' | 'hailuo-2.3-i2v-standard' | 'rh-video-start-end' | 'minimax-h3-t2v' | 'minimax-h3-i2v' | 'minimax-h3-multi' | 'minimax-h3-audio' | 'rhart-video-upscaler') => void;
   onHdChange: (value: boolean) => void;
   onDurationChange: (value: '5' | '10' | '15' | '25') => void;
   onOutputVideoChange: (
@@ -248,6 +304,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   isConnected = false,
   projectId,
   onPromptChange,
+  promptBeforeOptimize = '',
+  onPromptBeforeOptimizeChange,
+  optimizePromptChatModel = LLM_CHAT_DISPLAY_MODEL_ID,
+  onOptimizePromptChatModelChange,
+  onMinimaxH3OptimizeApply,
   onAspectRatioChange,
   onModelChange,
   onHdChange,
@@ -306,6 +367,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   keepOriginalSound = false,
   onKeepOriginalSoundChange,
   inputAudioUrl,
+  connectedAudios,
   resolutionLtx23Lipsync = '720', // API 档 720/1280/1920；展示为 720p/1280/1920
   onResolutionLtx23LipsyncChange,
   durationLtx23I2v = '10',
@@ -316,6 +378,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   resolutionLtx23T2v = '720',
   onDurationLtx23T2vChange,
   onResolutionLtx23T2vChange,
+  durationMinimaxH3 = '10',
+  resolutionMinimaxH3 = '720p',
+  onDurationMinimaxH3Change,
+  onResolutionMinimaxH3Change,
   durationLtx23HdrMulti = '15',
   resolutionLtx23HdrMulti = '720',
   ltx23HdrBackgroundImage = '',
@@ -330,6 +396,8 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   wanAnimateClipSec = '8',
   onResolutionWanAnimateChange,
   onWanAnimateClipSecChange,
+  targetResolution = '1080p',
+  onTargetResolutionChange,
   resolutionSeedance = '720p',
   durationSeedance = '10',
   onResolutionSeedanceChange,
@@ -371,6 +439,19 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const prevNodeIdRef = useRef(nodeId);
   const promptInputFocusedRef = useRef(false);
   const [promptComposing, setPromptComposing] = useState(false);
+  const onPromptChangeRef = useRef(onPromptChange);
+  onPromptChangeRef.current = onPromptChange;
+
+  /** 将本地未落盘的提示词写回指定节点（切节点 / 卸载时必须带旧 nodeId） */
+  const flushPromptToNode = useCallback((targetNodeId: string, value: string) => {
+    if (promptDebounceRef.current) {
+      clearTimeout(promptDebounceRef.current);
+      promptDebounceRef.current = null;
+    }
+    if (value === lastSentPromptRef.current) return;
+    lastSentPromptRef.current = value;
+    onPromptChangeRef.current(value, targetNodeId);
+  }, []);
 
   /** HeyGem 一体化：台词 / TTS / 数字人库选择 */
   const [localHeyGemScript, setLocalHeyGemScript] = useState(heyGemScript || '');
@@ -398,13 +479,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   }, [referenceVideoUrl, nodeId]);
 
   useEffect(() => {
-    const nodeIdChanged = prevNodeIdRef.current !== nodeId;
-    prevNodeIdRef.current = nodeId;
+    const prevId = prevNodeIdRef.current;
+    const nodeIdChanged = prevId !== nodeId;
     if (nodeIdChanged) {
-      if (promptDebounceRef.current) {
-        clearTimeout(promptDebounceRef.current);
-        promptDebounceRef.current = null;
-      }
+      // 先把上一节点未防抖落盘的编辑写回旧 nodeId，再切换本地态
+      flushPromptToNode(prevId, localPromptRef.current);
+      prevNodeIdRef.current = nodeId;
       promptInputFocusedRef.current = false;
       lastSentPromptRef.current = prompt;
       setLocalPrompt(prompt);
@@ -415,16 +495,14 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       lastSentPromptRef.current = prompt;
       setLocalPrompt(prompt);
     }
-  }, [prompt, nodeId]);
+  }, [prompt, nodeId, flushPromptToNode]);
 
   useEffect(() => {
     return () => {
-      if (promptDebounceRef.current) {
-        clearTimeout(promptDebounceRef.current);
-        promptDebounceRef.current = null;
-      }
+      // 取消选中卸载时：绝不能只清 debounce 而丢掉用户输入（否则重选会回退到旧优化稿）
+      flushPromptToNode(prevNodeIdRef.current, localPromptRef.current);
     };
-  }, []);
+  }, [flushPromptToNode]);
 
   useEffect(() => {
     if (model === 'ltx-2.3-hdr-multi' || isLtx23MsrAvModel(model)) return;
@@ -530,9 +608,9 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     promptInputRef.current?.setPlainText(next);
     setLocalPrompt(next);
     lastSentPromptRef.current = next;
-    onPromptChange(next);
+    onPromptChange(next, nodeId);
     promptInputRef.current?.focus();
-  }, [localPrompt, onPromptChange]);
+  }, [onPromptChange, localPrompt, nodeId]);
 
   /** 点击参考图缩略图：插入与 @ 菜单相同的缩略图+文字胶囊（序列化 @图片N） */
   const appendRefImageMentionToPrompt = useCallback(
@@ -560,10 +638,10 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         })();
       setLocalPrompt(next);
       lastSentPromptRef.current = next;
-      onPromptChange(next);
+      onPromptChange(next, nodeId);
       promptInputRef.current?.focus();
     },
-    [localPrompt, onPromptChange, vt, orderedInputImages, locale],
+    [onPromptChange, localPrompt, nodeId, vt, orderedInputImages, locale],
   );
 
   const {
@@ -582,7 +660,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       promptInputRef.current?.setPlainText(full);
       setLocalPrompt(full);
       lastSentPromptRef.current = full;
-      onPromptChange(full);
+      onPromptChange(full, nodeId);
     },
     onError: (message) => {
       showAlert(message);
@@ -605,11 +683,9 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   });
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
   const promptVoiceMicButton = (
@@ -746,7 +822,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     </button>
   );
 
-  /** 图+音频同时接入时，仅显示 MSR 图像+声音 / 对口型 */
+  /** 图+音频同时接入时：MSR 图像+声音 / 对口型 / Seedance Mini / H3 多参 */
   const hasImageAndAudio = orderedInputImages.length > 0 && !!(inputAudioUrl || '').trim();
   const isKlingModel = model === 'kling-v2.6-pro';
   const isSora2Model = model === 'sora-2';
@@ -773,11 +849,360 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const isLtx23LipsyncModel = model === 'ltx-2.3-lipsync';
   const isLtx23I2vModel = model === 'ltx-2.3-i2v';
   const isLtx23T2vModel = model === 'ltx-2.3-t2v';
+  const isMinimaxH3T2vModel = model === 'minimax-h3-t2v';
+  const isMinimaxH3I2vModel = model === 'minimax-h3-i2v';
+  const isMinimaxH3MultiModel = model === 'minimax-h3-multi';
+  const isMinimaxH3AudioModel = model === 'minimax-h3-audio';
+  /** 文生/图生/多参有时长下拉；口型同步不展示计费档 UI（后台仍按参考音映射） */
+  const isMinimaxH3DurationModel =
+    isMinimaxH3T2vModel || isMinimaxH3I2vModel || isMinimaxH3MultiModel;
+  const isMinimaxH3Model = isMinimaxH3DurationModel || isMinimaxH3AudioModel;
+
+  const OPTIMIZE_CHAT_MODEL_OPTIONS = useMemo(
+    () =>
+      LLM_CHAT_MODEL_IDS.map((m) => ({
+        value: m,
+        label: LLM_CHAT_MODEL_LABELS[m] || m,
+      })),
+    [],
+  );
+  const resolvedOptimizeChatModel = useMemo(() => {
+    const raw = String(optimizePromptChatModel || '').trim();
+    if ((LLM_CHAT_MODEL_IDS as readonly string[]).includes(raw)) return raw;
+    if (raw === 'gpt-4o') return 'gpt-4o';
+    return LLM_CHAT_DISPLAY_MODEL_ID;
+  }, [optimizePromptChatModel]);
+
+  const [optimizePromptBusy, setOptimizePromptBusy] = useState(false);
+  const [showOriginalPromptModal, setShowOriginalPromptModal] = useState(false);
+  const optimizePromptCancelRef = useRef(false);
+  const optimizeChatResolverRef = useRef<{
+    resolve: (text: string) => void;
+    reject: (err: Error) => void;
+  } | null>(null);
+  const savedOriginalPrompt = String(promptBeforeOptimize || '').trim();
+  const hasSavedOriginalPrompt = !!savedOriginalPrompt;
+
+  const { execute: executeOptimizeChat, cancel: cancelOptimizeChat } = useAI({
+    nodeId: `${nodeId}__minimax_h3_optimize_prompt`,
+    modelId: 'chat',
+    onComplete: (payload) => {
+      const text = coerceAssistantText(
+        payload?.text ?? payload?.content ?? payload?.result ?? '',
+      );
+      const resolver = optimizeChatResolverRef.current;
+      optimizeChatResolverRef.current = null;
+      if (!resolver) return;
+      if (payload?.error && !text) {
+        resolver.reject(new Error(String(payload.error)));
+        return;
+      }
+      resolver.resolve(text);
+    },
+    onError: (msg) => {
+      const resolver = optimizeChatResolverRef.current;
+      optimizeChatResolverRef.current = null;
+      if (resolver) resolver.reject(new Error(msg || vt.optimizePromptFailed));
+    },
+  });
+
+  const runOptimizeChat = useCallback(
+    async (systemPrompt: string, userPrompt: string, chatModel: string) => {
+      return new Promise<string>((resolve, reject) => {
+        optimizeChatResolverRef.current = { resolve, reject };
+        void executeOptimizeChat({
+          model: chatModel || LLM_CHAT_DISPLAY_MODEL_ID,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          stream: false,
+          projectId: projectId || undefined,
+          nodeTitle: 'MiniMax-H3优化提示词',
+          max_tokens: 8192,
+          temperature: 0.35,
+        }).catch((e) => {
+          optimizeChatResolverRef.current = null;
+          reject(e instanceof Error ? e : new Error(String(e)));
+        });
+      });
+    },
+    [executeOptimizeChat, projectId],
+  );
+
+  const handleCancelOptimizePrompt = useCallback(() => {
+    optimizePromptCancelRef.current = true;
+    const resolver = optimizeChatResolverRef.current;
+    optimizeChatResolverRef.current = null;
+    if (resolver) resolver.reject(new Error('__optimize_cancelled__'));
+    cancelOptimizeChat();
+    setOptimizePromptBusy(false);
+  }, [cancelOptimizeChat]);
+
+  /** 点一下才跑 LLM：成功后写回输入框，并保存优化前原文 */
+  const handleOptimizePrompt = useCallback(async () => {
+    if (!isMinimaxH3Model || optimizePromptBusy) return;
+    const current =
+      (promptInputRef.current?.getPlainText() ?? localPromptRef.current ?? localPrompt ?? '').trim();
+    if (!current) {
+      showAlert(vt.optimizePromptNeedText);
+      return;
+    }
+    if (!window.electronAPI?.getMinimaxH3PromptGuide) {
+      showAlert(vt.optimizePromptGuideMissing);
+      return;
+    }
+
+    const structure = resolveMinimaxH3OptimizeStructure(model);
+    const imageCount = Array.isArray(orderedInputImages) ? orderedInputImages.length : 0;
+    const hasRefAudio = !!(inputAudioUrl || '').trim();
+    const durationSec = Number(durationMinimaxH3) || undefined;
+
+    optimizePromptCancelRef.current = false;
+    setOptimizePromptBusy(true);
+    try {
+      const guideRes = await window.electronAPI.getMinimaxH3PromptGuide(structure);
+      if (optimizePromptCancelRef.current) return;
+      if (!guideRes?.ok) {
+        throw new Error(
+          (guideRes as { error?: string })?.error || vt.optimizePromptGuideMissing,
+        );
+      }
+
+      const { systemPrompt, userPrompt } = buildMinimaxH3OptimizeMessages({
+        structure,
+        skillMd: guideRes.skillMd,
+        guideText: guideRes.guide,
+        prompt: current,
+        imageCount,
+        hasRefAudio,
+        durationSec,
+        baseSubMode: resolveMinimaxH3BaseSubMode(model, imageCount),
+        modelId: model,
+      });
+
+      const raw = await runOptimizeChat(systemPrompt, userPrompt, resolvedOptimizeChatModel);
+      if (optimizePromptCancelRef.current) return;
+
+      let next = parseMinimaxH3OptimizedPrompt(raw, structure);
+      if (!isAcceptableMinimaxH3OptimizedPrompt(next)) {
+        const alt = structure === 'ref' ? 'base' : 'ref';
+        next = parseMinimaxH3OptimizedPrompt(raw, alt);
+      }
+      next = recoverMinimaxH3OptimizedPrompt(next);
+      if (!isAcceptableMinimaxH3OptimizedPrompt(next)) {
+        throw new Error(vt.optimizePromptEmptyResult);
+      }
+
+      if (promptDebounceRef.current) {
+        clearTimeout(promptDebounceRef.current);
+        promptDebounceRef.current = null;
+      }
+      // 原子写回：优化稿 → prompt，优化前稿 → promptBeforeOptimize（供「原文」弹层恢复）
+      if (onMinimaxH3OptimizeApply) {
+        onMinimaxH3OptimizeApply({
+          nodeId,
+          prompt: next,
+          promptBeforeOptimize: current,
+        });
+      } else {
+        onPromptBeforeOptimizeChange?.(current, nodeId);
+        onPromptChange(next, nodeId);
+      }
+      promptInputRef.current?.setPlainText(next);
+      setLocalPrompt(next);
+      lastSentPromptRef.current = next;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e || '');
+      if (optimizePromptCancelRef.current || msg === '__optimize_cancelled__') return;
+      showAlert(msg || vt.optimizePromptFailed);
+    } finally {
+      if (!optimizePromptCancelRef.current) setOptimizePromptBusy(false);
+    }
+  }, [
+    durationMinimaxH3,
+    inputAudioUrl,
+    isMinimaxH3Model,
+    localPrompt,
+    model,
+    nodeId,
+    onMinimaxH3OptimizeApply,
+    onPromptBeforeOptimizeChange,
+    onPromptChange,
+    optimizePromptBusy,
+    orderedInputImages,
+    resolvedOptimizeChatModel,
+    runOptimizeChat,
+    showAlert,
+    vt.optimizePromptEmptyResult,
+    vt.optimizePromptFailed,
+    vt.optimizePromptGuideMissing,
+    vt.optimizePromptNeedText,
+  ]);
+
+  const handleRestoreOriginalPrompt = useCallback(() => {
+    if (!hasSavedOriginalPrompt) return;
+    if (promptDebounceRef.current) {
+      clearTimeout(promptDebounceRef.current);
+      promptDebounceRef.current = null;
+    }
+    promptInputRef.current?.setPlainText(savedOriginalPrompt);
+    setLocalPrompt(savedOriginalPrompt);
+    lastSentPromptRef.current = savedOriginalPrompt;
+    onPromptChange(savedOriginalPrompt, nodeId);
+    setShowOriginalPromptModal(false);
+  }, [hasSavedOriginalPrompt, nodeId, onPromptChange, savedOriginalPrompt]);
+
+  useEffect(() => {
+    if (!isMinimaxH3Model) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      if (e.key !== 'H' && e.key !== 'h') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (optimizePromptBusy) return;
+      void handleOptimizePrompt();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [handleOptimizePrompt, isMinimaxH3Model, optimizePromptBusy]);
+
+  const renderH3OptimizePromptControls = () => {
+    if (!isMinimaxH3Model) return null;
+    return (
+      <>
+        <div className="flex items-center gap-1.5 shrink-0 nodrag nopan">
+          <div
+            className="nodrag nopan shrink-0"
+            title={vt.optimizePromptChatModelHint}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <PanelOptionDropdown
+              value={resolvedOptimizeChatModel}
+              options={OPTIMIZE_CHAT_MODEL_OPTIONS}
+              onChange={(v) => onOptimizePromptChatModelChange?.(v, nodeId)}
+              isDarkMode={isDarkMode}
+              title={vt.optimizePromptChatModelHint}
+              minWidthPx={118}
+              menuPlacement="up"
+              className={
+                optimizePromptBusy
+                  ? 'opacity-50 pointer-events-none'
+                  : isDarkMode
+                    ? '!h-6 !text-[10px] !bg-white/10 !text-white/85 !border-white/20'
+                    : '!h-6 !text-[10px] !bg-white !text-gray-700 !border-gray-300'
+              }
+            />
+          </div>
+          {optimizePromptBusy ? (
+            <button
+              type="button"
+              onClick={handleCancelOptimizePrompt}
+              className={`h-6 px-1.5 rounded text-[10px] font-medium border ${
+                isDarkMode
+                  ? 'border-white/20 text-white/70 hover:bg-white/10'
+                  : 'border-gray-300 text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {vt.optimizePromptCancel}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void handleOptimizePrompt()}
+            disabled={optimizePromptBusy}
+            title={`${vt.optimizePromptButton}（${vt.optimizePromptShortcutHint}）`}
+            className={`inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border transition-colors ${
+              optimizePromptBusy
+                ? isDarkMode
+                  ? 'bg-white/10 text-white/40 border-white/10 cursor-not-allowed'
+                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                : isDarkMode
+                  ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30 hover:bg-emerald-500/30'
+                  : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+            }`}
+          >
+            {optimizePromptBusy ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {vt.optimizePromptBusy}
+              </>
+            ) : (
+              vt.optimizePromptButton
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowOriginalPromptModal(true)}
+            disabled={!hasSavedOriginalPrompt || optimizePromptBusy}
+            title={
+              hasSavedOriginalPrompt
+                ? vt.optimizePromptOriginalTitle
+                : vt.optimizePromptOriginalEmpty
+            }
+            className={`inline-flex items-center gap-1 h-6 px-2 rounded text-[10px] font-medium border transition-colors ${
+              !hasSavedOriginalPrompt || optimizePromptBusy
+                ? isDarkMode
+                  ? 'bg-white/5 text-white/30 border-white/10 cursor-not-allowed'
+                  : 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                : isDarkMode
+                  ? 'bg-white/10 text-white/80 border-white/20 hover:bg-white/15'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            {vt.optimizePromptOriginalButton}
+          </button>
+        </div>
+        <DarkModalFrame
+          open={showOriginalPromptModal}
+          onBackdropClick={() => setShowOriginalPromptModal(false)}
+          panelClassName={`${darkModalPanelMdClass} max-w-lg`}
+          brandLabel={vt.optimizePromptOriginalTitle}
+          footer={
+            <div className={`${darkModalFooterClass} gap-2 !justify-end border-t border-white/10 pt-3`}>
+              <button
+                type="button"
+                onClick={() => setShowOriginalPromptModal(false)}
+                className={darkModalBtnCancelClass}
+              >
+                {vt.optimizePromptOriginalClose}
+              </button>
+              <button
+                type="button"
+                onClick={handleRestoreOriginalPrompt}
+                disabled={!hasSavedOriginalPrompt}
+                className={`${darkModalBtnOkClass} disabled:opacity-40 disabled:cursor-not-allowed`}
+              >
+                {vt.optimizePromptOriginalRestore}
+              </button>
+            </div>
+          }
+        >
+          <div className="px-5 py-4 max-h-[min(50vh,360px)] overflow-y-auto">
+            {hasSavedOriginalPrompt ? (
+              <pre className="whitespace-pre-wrap break-words text-sm text-white/90 font-sans leading-relaxed m-0">
+                {savedOriginalPrompt}
+              </pre>
+            ) : (
+              <p className="text-sm text-white/55 m-0">{vt.optimizePromptOriginalEmpty}</p>
+            )}
+          </div>
+        </DarkModalFrame>
+      </>
+    );
+  };
+
   const isLtx23HdrMultiModel = model === 'ltx-2.3-hdr-multi';
   const isLtx23MsrAv = isLtx23MsrAvModel(model);
   /** MSR 分镜面板：无音频版 / 图像+声音版共用槽位 UI */
   const isLtx23MsrStoryboardUi = isLtx23HdrMultiModel || isLtx23MsrAv;
   const isWanAnimateModel = model === 'wan-animate';
+  const isWanAnimate2Model = model === 'wan-animate-2';
+  const isWanAnimateFamily = isWanAnimateModel || isWanAnimate2Model;
+  /** Wan animate2：原视频探测时长（秒），用于价签 Quantity */
+  const [wanAnimate2MediaDurationSec, setWanAnimate2MediaDurationSec] = useState(0);
+  const isRhartVideoUpscaler = model === 'rhart-video-upscaler';
   const isHeyGemModel = model === 'hey-gem' || heyGemStandalone;
   /** 独立 HeyGem / WanAnimate 模块：提交时强制模型 id，避免误走文生视频链路 */
   const effectiveVideoModel = (
@@ -969,9 +1394,29 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     (next: string) => {
       setLocalPrompt(next);
       lastSentPromptRef.current = next;
-      onPromptChange(next);
+      onPromptChange(next, nodeId);
     },
-    [onPromptChange],
+    [onPromptChange, nodeId],
+  );
+
+  /** 已连接音频入边列表；无连线但有 inputAudioUrl（如导演裁剪）时回退为 1 条 */
+  const resolvedConnectedAudios = useMemo((): VideoConnectedAudioInfo[] => {
+    if (Array.isArray(connectedAudios) && connectedAudios.length > 0) {
+      return connectedAudios;
+    }
+    const aud = String(inputAudioUrl || '').trim();
+    if (!aud) return [];
+    return [{ nodeId: '', name: basenameFromAudioUrl(aud) || 'audio', url: aud }];
+  }, [connectedAudios, inputAudioUrl]);
+
+  const orderedInputAudios = useMemo(
+    () =>
+      resolvedConnectedAudios.map((a) => ({
+        url: String(a.url || '').trim() || undefined,
+        nodeId: String(a.nodeId || '').trim() || undefined,
+        name: String(a.name || '').trim() || undefined,
+      })),
+    [resolvedConnectedAudios],
   );
 
   const {
@@ -987,6 +1432,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     enabled: !micInputLocked,
     composing: promptComposing,
     orderedInputImages,
+    orderedInputAudios,
     locale,
     preferSeedanceTag: isSeedanceModel,
     onApply: applyMentionToPrompt,
@@ -1048,12 +1494,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         ref={promptInputRef}
         value={localPrompt}
         candidates={mentionCandidates}
-        readOnly={micInputLocked}
-        disabled={micInputLocked}
+        readOnly={micInputLocked || optimizePromptBusy}
+        disabled={micInputLocked || optimizePromptBusy}
         isDarkMode={isDarkMode}
         placeholder={opts.placeholder}
         onFocus={() => {
-          if (micInputLocked) return;
+          if (micInputLocked || optimizePromptBusy) return;
           promptInputFocusedRef.current = true;
         }}
         onCompositionChange={(next) => {
@@ -1070,33 +1516,35 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           if (v !== lastSentPromptRef.current) {
             lastSentPromptRef.current = v;
             setLocalPrompt(v);
-            onPromptChange(v);
+            onPromptChange(v, nodeId);
           }
         }}
         onKeyDown={onMentionKeyDown}
         onSubmit={() => {
-          if (micInputLocked || isRunDisabled) return;
+          if (micInputLocked || optimizePromptBusy || isRunDisabled) return;
           void handleExecute();
         }}
         onInputCheck={onMentionInputCheck}
         onChange={(v) => {
-          if (micInputLocked) return;
+          if (micInputLocked || optimizePromptBusy) return;
           setLocalPrompt(v);
+          const sourceId = nodeId;
           if (promptDebounceRef.current) clearTimeout(promptDebounceRef.current);
           promptDebounceRef.current = setTimeout(() => {
             promptDebounceRef.current = null;
             lastSentPromptRef.current = v;
-            onPromptChange(v);
+            onPromptChange(v, sourceId);
           }, 250);
         }}
         onRefPillHover={(match) => {
           setHoveredRefFromPillIndex(resolveRefPillToOrderedIndex(match, latestOrderedImagesRef.current));
         }}
         className={`w-full h-full resize-none bg-transparent px-0 py-1 pr-9 pt-8 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden ${
-          micInputLocked ? 'opacity-45 cursor-not-allowed' : ''
+          micInputLocked || optimizePromptBusy ? 'opacity-45 cursor-not-allowed' : ''
         }`}
       />
-      <div className="absolute top-0.5 right-0 z-10 pointer-events-auto">
+      <div className="absolute top-0.5 right-0 z-10 pointer-events-auto flex items-center gap-1.5">
+        {renderH3OptimizePromptControls()}
         {promptVoiceMicButton}
       </div>
       <AtMentionMenu {...mentionMenuProps} />
@@ -1111,6 +1559,15 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       onResolutionLtx23HdrMultiChange?.('1280');
     }
   }, [model, resolutionLtx23HdrMulti, onResolutionLtx23HdrMultiChange]);
+
+  /** LTX2.3 首位帧：归一为 720p|1080p|1920p（最高 1920p，非 4K） */
+  useEffect(() => {
+    if (model !== 'rh-video-start-end') return;
+    const r = String(resolutionRhartV31 || '').trim().toLowerCase();
+    if (r === '720') onResolutionRhartV31Change?.('720p');
+    else if (r === '1280' || r === '1080') onResolutionRhartV31Change?.('1080p');
+    else if (r === '1920' || r === '4k' || r === '2160p') onResolutionRhartV31Change?.('1920p');
+  }, [model, resolutionRhartV31, onResolutionRhartV31Change]);
 
   /** 旧节点仍可能为 sora-2：面板打开后归一到替代模型并写回（与 onModelChange 一致） */
   useEffect(() => {
@@ -1352,19 +1809,34 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       ? isLtx23HdrMultiRunnable(hdrBackground, storyboardSlots)
       : orderedInputImages.length > 0;
 
-  /** 已接参考视频（无图+音频强制对口型场景） */
-  const hasReferenceVideo =
-    !hasImageAndAudio && !!(referenceVideoUrl || '').trim();
+  /** 是否接了参考视频（WanAnimate / 视频超分等；全能参考不再使用） */
+  const hasVideoRef = !!(referenceVideoUrl || '').trim();
+  /** 是否接了参考音 */
+  const hasAudioRef =
+    !!(inputAudioUrl || '').trim() ||
+    (Array.isArray(connectedAudios) &&
+      connectedAudios.some((a) => String(a?.url || '').trim()));
+  /**
+   * 已接参考视频且非「图+音」专用列表场景：用于 WanAnimate 等旧分流。
+   * 图+音时仍走 hasImageAndAudio 列表（含全能参考）。
+   */
+  const hasReferenceVideo = !hasImageAndAudio && hasVideoRef;
   /** 图 + 参考视频：角色替换 */
-  const hasImageAndVideo = isImageToVideoMode && hasReferenceVideo;
+  const hasImageAndVideo = isImageToVideoMode && hasVideoRef;
+  /**
+   * MiniMax H3 全能参考：始终可选（无参考=文生；有图/音则按槽位提交；不支持参考视频）。
+   * 仅限制参考图不超过 9 张。
+   */
+  const canUseMinimaxH3Multi = orderedInputImages.length <= 9;
 
   // 图生视频候选模型（再按参考图数量过滤）
   const imageToVideoModelCandidates = filterActiveVideoModels([
     ...(HIDE_SORA2_AND_SORA_CHARACTER_UI ? [] : (['sora-2'] as const)),
     'ltx-2.3-lipsync',
     'ltx-2.3-i2v',
-    'ltx-2.3-hdr-multi',
-    LTX23_MSR_AV_MODEL_ID,
+    'minimax-h3-i2v',
+    'minimax-h3-multi',
+    'minimax-h3-audio',
     'rhart-v3.1-pro-se',
     'rh-video-start-end',
     'rhart-video-x',
@@ -1372,17 +1844,20 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'seedance-2.0-mini',
     'gemini-omni-flash',
     'wan-animate',
+    'wan-animate-2',
   ] as const);
 
   /** 图生视频模式下，当前模型最大参考图数量（与主进程 VideoProvider 校验一致） */
   const getMaxRefImagesVideo = (m: string): number => {
     if (m === 'grok-3' || m === 'rhart-video-x' || m === 'grok-3-stable') return 7;
+    if (m === 'minimax-h3-multi') return 9;
+    if (m === 'minimax-h3-audio') return 5;
     if (m === 'ltx-2.3-hdr-multi' || m === LTX23_MSR_AV_MODEL_ID) return 5;
     if (m === 'seedance-2.0-fast' || m === 'seedance-2.0-mini') return 9;
     if (m === 'rhart-v3.1-fast') return 3;
     if (m === 'gemini-omni' || m === 'gemini-omni-flash') return 3;
     if (['rhart-v3.1-fast-se', 'rhart-v3.1-pro-se', 'rh-video-start-end'].includes(m)) return 2;
-    if (m === 'wan-animate') return 1;
+    if (m === 'wan-animate' || m === 'wan-animate-2') return 1;
     return 1; // sora-2, kling-v2.6-pro, wan-2.6, wan-2.6-flash, ltx-2.3-lipsync, ltx-2.3-i2v, hailuo-2.3-i2v-standard, kling-video-o1-i2v 等
   };
 
@@ -1400,8 +1875,9 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'sora-2',
     'ltx-2.3-lipsync',
     'ltx-2.3-i2v',
-    'ltx-2.3-hdr-multi',
-    LTX23_MSR_AV_MODEL_ID,
+    'minimax-h3-i2v',
+    'minimax-h3-multi',
+    'minimax-h3-audio',
     'rhart-v3.1-pro-se',
     'rh-video-start-end',
     'seedance-2.0-fast',
@@ -1409,18 +1885,40 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'gemini-omni-flash',
     'rhart-video-x',
     'wan-animate',
+    'wan-animate-2',
   ] as const;
 
   const VIDEO_I2V_MODEL_LABELS: Record<string, { label: string; title?: string }> = {
     'sora-2': { label: 'Sora2' },
+    'sora-2-pro': { label: 'Sora2 Pro' },
     'ltx-2.3-lipsync': { label: 'LTX2.3 对口型' },
     'ltx-2.3-i2v': { label: 'LTX2.3 图生视频' },
-    'ltx-2.3-hdr-multi': { label: 'LTX2.3 MSR', title: '需要 1 背景 + 至少 2 张分镜（分镜1、2 必填）' },
-    'ltx-2.3-msr-av': {
-      label: LTX23_MSR_AV_LABEL,
-      title: '1 背景 + 至少 2 张分镜 + 音频 + 分镜提示词（PLUS）',
+    'ltx-2.3-t2v': { label: 'LTX2.3 文生视频' },
+    'minimax-h3-t2v': {
+      label: 'MiniMax-H3 文生视频',
+      title: 'MiniMax-H3 文生视频；720P；时长 6/10/15/20 秒',
     },
-    'rhart-v3.1-pro-se': { label: vt.modelRhartV31ProSe, title: vt.modelRhartV31ProSeTitle },
+    'minimax-h3-i2v': {
+      label: 'MiniMax-H3 图生视频',
+      title: '1 张参考图；720P；时长 6/10/15/20 秒',
+    },
+    'minimax-h3-multi': {
+      label: 'MiniMax H3 全能参考',
+      title:
+        '无参考可文生；最多 9 张参考图 + 最多 3 路参考音；720P；时长 6/10/15/20 秒',
+    },
+    'minimax-h3-audio': {
+      label: vt.modelMinimaxH3Audio,
+      title: vt.modelMinimaxH3AudioTitle,
+    },
+    'ltx-2.3-hdr-multi': { label: 'LTX2.3 MSR（已下架）' },
+    'ltx-2.3-msr-av': {
+      label: LTX23_MSR_AV_LABEL + '（已下架）',
+    },
+    'rhart-v3.1-pro-se': {
+      label: '全能视频V3.1-pro-首尾帧生视频',
+      title: '首尾帧；海外站；首帧必填、尾帧可选；时长仅 8s；比例 16:9/9:16；分辨率 720p/1080p/4k',
+    },
     'rh-video-start-end': { label: 'LTX2.3（首位帧）' },
     'seedance-2.0-fast': { label: 'Seedance 2.0 Fast', title: '支持 0–9 张参考图' },
     'seedance-2.0-mini': { label: 'Seedance 2.0 Mini', title: '支持参考图/视频/音频，0–9 张参考图' },
@@ -1434,6 +1932,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     },
     'grok-3-stable': { label: 'Grok video3 plus', title: '参考图生 1–7 张，仅 720p，时长 6s/10s' },
     'wan-animate': { label: 'WanAnimate（角色替换）', title: '角色替换：参考图 + 参考视频' },
+    'wan-animate-2': { label: 'Wan animate2 视频换人', title: '视频换人：参考图 + 参考视频（提示词选填）' },
+    'rhart-video-upscaler': {
+      label: '视频超分放大',
+      title: '输入参考视频；目标分辨率 720P / 1080P / 2K / 4K；最长 10 分钟',
+    },
   };
 
   const maxRefImagesVideo = getMaxRefImagesVideo(model);
@@ -1446,47 +1949,44 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   }, [isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, resolutionHailuo, onResolutionHailuoChange]);
 
   const videoPriceLabel = useMemo(() => {
-    try {
-      return {
-        ok: true as const,
-        value: getVideoDisplayPrice(
-          {
-            model,
-            duration,
-            sound,
-            durationHailuo02,
-            resolutionHailuo,
-            durationKlingO1,
-            modeKlingO1,
-            durationGrok3,
-            resolutionGrok3,
-            resolutionRhartV31,
-            resolutionWan26,
-            durationWan26Flash,
-            enableAudio,
-            durationVeo31ProOfficial,
-            generateAudioVeo31ProOfficial,
-            durationLtx23I2v,
-            resolutionLtx23I2v,
-            durationLtx23T2v,
-            resolutionLtx23T2v,
-            durationLtx23HdrMulti,
-            resolutionLtx23HdrMulti,
-            resolutionLtx23Lipsync,
-            resolutionWanAnimate,
-            wanAnimateClipSec,
-            resolutionSeedance,
-            durationSeedance,
-            resolutionGeminiOmni,
-            durationGeminiOmni,
-          },
-          cloudMap,
-        ),
-      };
-    } catch (e) {
-      if (isModelNotPricedError(e)) return { ok: false as const };
-      throw e;
-    }
+    const value = getVideoDisplayPrice(
+      {
+        model,
+        duration,
+        sound,
+        durationHailuo02,
+        resolutionHailuo,
+        durationKlingO1,
+        modeKlingO1,
+        durationGrok3,
+        resolutionGrok3,
+        resolutionRhartV31,
+        resolutionWan26,
+        durationWan26Flash,
+        enableAudio,
+        durationVeo31ProOfficial,
+        generateAudioVeo31ProOfficial,
+        durationLtx23I2v,
+        resolutionLtx23I2v,
+        durationLtx23T2v,
+        resolutionLtx23T2v,
+        durationMinimaxH3,
+        resolutionMinimaxH3,
+        durationLtx23HdrMulti,
+        resolutionLtx23HdrMulti,
+        resolutionLtx23Lipsync,
+        resolutionWanAnimate,
+        wanAnimateClipSec,
+        resolutionSeedance,
+        durationSeedance,
+        resolutionGeminiOmni,
+        durationGeminiOmni,
+        targetResolution,
+        mediaDurationSec: isWanAnimate2Model ? wanAnimate2MediaDurationSec : undefined,
+      },
+      cloudMap,
+    );
+    return value == null ? ({ ok: false as const }) : ({ ok: true as const, value });
   }, [
     model,
     duration,
@@ -1507,6 +2007,8 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     resolutionLtx23I2v,
     durationLtx23T2v,
     resolutionLtx23T2v,
+    durationMinimaxH3,
+    resolutionMinimaxH3,
     durationLtx23HdrMulti,
     resolutionLtx23HdrMulti,
     resolutionLtx23Lipsync,
@@ -1516,6 +2018,9 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     durationSeedance,
     resolutionGeminiOmni,
     durationGeminiOmni,
+    targetResolution,
+    isWanAnimate2Model,
+    wanAnimate2MediaDurationSec,
     cloudMap,
   ]);
   // ltx-2.3-lipsync 模式：需要图+音频+动作提示词
@@ -1524,41 +2029,107 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const imageCount = isLtx23MsrStoryboardUi ? ltx23HdrRefImageCount : orderedInputImages.length;
 
   const availableModels = useMemo(() => {
-    if (hasImageAndAudio) {
-      return [LTX23_MSR_AV_MODEL_ID, 'ltx-2.3-lipsync', 'seedance-2.0-mini'] as const;
-    }
-    if (!isImageToVideoMode) return [] as const;
-    const filtered = imageToVideoModelCandidates.filter((m) => {
-      // 参考视频接入：仅 WanAnimate（角色替换）；不展示 Seedance Mini
-      if (hasReferenceVideo) {
-        return m === 'wan-animate';
-      }
-      if (m === 'ltx-2.3-lipsync' && !hasImageAndAudio) return false;
-      if (m === LTX23_MSR_AV_MODEL_ID) return false;
-      if (m === 'wan-animate') return false;
-      return modelSupportsRefImageCount(m, imageCount);
-    });
     const orderIdx = (m: string) => {
       const i = I2V_MODEL_DISPLAY_ORDER.indexOf(m as (typeof I2V_MODEL_DISPLAY_ORDER)[number]);
       return i === -1 ? 999 : i;
     };
-    return [...filtered].sort((a, b) => orderIdx(a) - orderIdx(b)) as readonly string[];
+    const withMultiFirst = (list: string[]) => {
+      const out = [...list];
+      if (canUseMinimaxH3Multi && !out.includes('minimax-h3-multi')) {
+        out.unshift('minimax-h3-multi');
+      }
+      return out.sort((a, b) => orderIdx(a) - orderIdx(b)) as readonly string[];
+    };
+
+    // 图+音：对口型 / Mini / 全能参考（MSR 图像+声音已下架）
+    if (hasImageAndAudio) {
+      return withMultiFirst([
+        'ltx-2.3-lipsync',
+        'minimax-h3-audio',
+        'seedance-2.0-mini',
+        'minimax-h3-multi',
+      ]);
+    }
+    // 无图：纯音 / 纯视频 / 音+视频 → 仅暴露适合的模型（全能参考忽略视频；纯视频用超分）
+    if (!isImageToVideoMode) {
+      const list: string[] = [];
+      if (canUseMinimaxH3Multi) list.push('minimax-h3-multi');
+      if (hasVideoRef) {
+        list.push('rhart-video-upscaler');
+        list.push('wan-animate-2');
+        list.push('wan-animate');
+      }
+      return list as readonly string[];
+    }
+    // 有图（单图/多图），可叠加音或视频
+    const filtered = imageToVideoModelCandidates.filter((m) => {
+      if (m === 'minimax-h3-multi') return canUseMinimaxH3Multi;
+      // 参考视频接入：Wan animate2 / WanAnimate（角色替换）；全能参考已在上方单独放行
+      if (hasVideoRef) {
+        return m === 'wan-animate-2' || m === 'wan-animate';
+      }
+      if (m === 'ltx-2.3-lipsync' && !hasImageAndAudio) return false;
+      if (m === LTX23_MSR_AV_MODEL_ID) return false;
+      if (m === 'wan-animate' || m === 'wan-animate-2') return false;
+      return modelSupportsRefImageCount(m, imageCount);
+    });
+    const out = withMultiFirst(filtered as string[]);
+    if (hasVideoRef && !out.includes('rhart-video-upscaler')) {
+      out.unshift('rhart-video-upscaler');
+    }
+    return out;
   }, [
     hasImageAndAudio,
     isImageToVideoMode,
     imageToVideoModelCandidates,
-    hasReferenceVideo,
+    hasVideoRef,
+    canUseMinimaxH3Multi,
     imageCount,
   ]);
 
-  // 图+音频：可在「MSR 图像+声音」「对口型」「Seedance Mini」间选择；默认切到 MSR（已选 Mini 则保留；Fast 升为 Mini）
+  const videoModelDropdownOptions = useMemo(() => {
+    const toOpt = (id: string) => {
+      const meta = VIDEO_I2V_MODEL_LABELS[id] || { label: id };
+      return { value: id, label: meta.label };
+    };
+    let ids: string[] = [];
+    if (hasImageAndAudio) {
+      ids = ['ltx-2.3-lipsync', 'minimax-h3-audio', 'seedance-2.0-mini', 'minimax-h3-multi'];
+    } else if (isImageToVideoMode) {
+      ids = [...availableModels];
+    } else {
+      if (canUseMinimaxH3Multi) ids.push('minimax-h3-multi');
+      if (hasVideoRef) ids.push('wan-animate-2', 'wan-animate');
+      if (!HIDE_SORA2_AND_SORA_CHARACTER_UI) ids.push('sora-2', 'sora-2-pro');
+      ids.push(
+        'ltx-2.3-t2v',
+        'minimax-h3-t2v',
+        'seedance-2.0-fast',
+        'seedance-2.0-mini',
+        'rhart-video-x',
+      );
+    }
+    if (model && !ids.includes(model)) ids = [model, ...ids];
+    return ids.map(toOpt);
+  }, [
+    VIDEO_I2V_MODEL_LABELS,
+    hasImageAndAudio,
+    isImageToVideoMode,
+    availableModels,
+    canUseMinimaxH3Multi,
+    hasVideoRef,
+    model,
+  ]);
+
+  // 图+音频：可在「LTX 对口型」「MiniMax 口型同步」「Seedance Mini」「H3 全能参考」间选择；默认 LTX 对口型
   useEffect(() => {
     if (wanAnimateStandalone || heyGemStandalone) return;
     if (!hasImageAndAudio) return;
     if (
-      model === LTX23_MSR_AV_MODEL_ID ||
       model === 'ltx-2.3-lipsync' ||
-      model === 'seedance-2.0-mini'
+      model === 'minimax-h3-audio' ||
+      model === 'seedance-2.0-mini' ||
+      model === 'minimax-h3-multi'
     ) {
       return;
     }
@@ -1566,56 +2137,29 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       onModelChange('seedance-2.0-mini');
       return;
     }
-    onModelChange(LTX23_MSR_AV_MODEL_ID);
-    onDurationLtx23HdrMultiChange?.('10');
-    onResolutionLtx23HdrMultiChange?.('720');
-    onAspectRatioChange?.('16:9');
-    const collected: string[] = [];
-    const pushUnique = (u: string) => {
-      const t = String(u || '').trim();
-      if (!t || collected.includes(t)) return;
-      collected.push(t);
-    };
-    pushUnique(ltx23HdrBackgroundImage || hdrBackgroundRef.current || '');
-    latestOrderedImagesRef.current.forEach(pushUnique);
-    (inputImages || []).forEach(pushUnique);
-    if (collected.length > 0) {
-      const split = splitLtx23HdrMultiImagesFromCollected(
-        collected,
-        ltx23HdrBackgroundImage || hdrBackgroundRef.current || '',
-      );
-      setHdrBackground(split.background);
-      setStoryboardImages(split.storyboard);
-      onLtx23HdrBackgroundImageChange?.(split.background);
-      onInputImagesOrderChange?.(split.storyboard);
-    }
+    onModelChange('ltx-2.3-lipsync');
   }, [
     wanAnimateStandalone,
     heyGemStandalone,
     hasImageAndAudio,
     model,
     onModelChange,
-    ltx23HdrBackgroundImage,
-    inputImages,
-    onLtx23HdrBackgroundImageChange,
-    onInputImagesOrderChange,
-    onDurationLtx23HdrMultiChange,
-    onResolutionLtx23HdrMultiChange,
-    onAspectRatioChange,
   ]);
 
-  /** 图+参考视频齐备时自动切到 WanAnimate（仅在组合刚成立时，避免覆盖用户手动选型） */
+  /** 图+参考视频齐备时自动切到 Wan animate2 视频换人 */
   const prevWanAnimateInputsRef = useRef({
     imageAndVideoReady: false,
   });
   useEffect(() => {
     if (wanAnimateStandalone || heyGemStandalone || hasImageAndAudio) return;
+    if (isMinimaxH3MultiModel) return;
+    // 仅「1 张图 + 参考视频」才自动角色替换；纯视频留给视频超分
     const imageAndVideoReady = hasImageAndVideo && imageCount === 1;
     const becameReady =
       imageAndVideoReady && !prevWanAnimateInputsRef.current.imageAndVideoReady;
     prevWanAnimateInputsRef.current.imageAndVideoReady = imageAndVideoReady;
-    if (becameReady && model !== 'wan-animate') {
-      onModelChange('wan-animate');
+    if (becameReady && model !== 'wan-animate-2' && model !== 'wan-animate') {
+      onModelChange('wan-animate-2');
       onResolutionWanAnimateChange?.('720p');
       onWanAnimateClipSecChange?.('8');
     }
@@ -1625,17 +2169,68 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     hasImageAndVideo,
     imageCount,
     model,
+    isMinimaxH3MultiModel,
     onModelChange,
     onResolutionWanAnimateChange,
     onWanAnimateClipSecChange,
   ]);
 
-  /** 参考视频断开时，若当前为 WanAnimate 则回退默认模型 */
+  /** Wan animate2：探测原视频时长供价签按秒估算 */
+  useEffect(() => {
+    if (!isWanAnimate2Model) {
+      setWanAnimate2MediaDurationSec(0);
+      return;
+    }
+    const url = String(referenceVideoUrl || '').trim();
+    if (!url) {
+      setWanAnimate2MediaDurationSec(0);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        let sec = 0;
+        if (window.electronAPI?.getMediaDuration) {
+          sec = Number(await window.electronAPI.getMediaDuration(url, projectId)) || 0;
+        }
+        if (!cancelled) setWanAnimate2MediaDurationSec(sec > 0 ? sec : 0);
+      } catch {
+        if (!cancelled) setWanAnimate2MediaDurationSec(0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isWanAnimate2Model, referenceVideoUrl, projectId]);
+
+  /** 参考视频断开时，若当前为 WanAnimate / 视频超分则回退默认模型 */
   useEffect(() => {
     if (wanAnimateStandalone || heyGemStandalone) return;
-    if (model !== 'wan-animate' || hasReferenceVideo) return;
+    if ((model !== 'wan-animate' && model !== 'wan-animate-2' && model !== 'rhart-video-upscaler') || hasVideoRef) return;
     onModelChange(DEFAULT_VIDEO_MODEL_REPLACING_SORA2 as Parameters<typeof onModelChange>[0]);
-  }, [wanAnimateStandalone, model, hasReferenceVideo, onModelChange]);
+  }, [wanAnimateStandalone, model, hasVideoRef, onModelChange]);
+
+  /** 纯参考视频（无图）接入时默认切到视频超分放大 */
+  const prevVideoOnlyRef = useRef(false);
+  useEffect(() => {
+    if (wanAnimateStandalone || heyGemStandalone || hasImageAndAudio || isImageToVideoMode) return;
+    const videoOnly = hasVideoRef;
+    const became = videoOnly && !prevVideoOnlyRef.current;
+    prevVideoOnlyRef.current = videoOnly;
+    if (!became) return;
+    if (model === 'rhart-video-upscaler' || model === 'minimax-h3-multi') return;
+    onModelChange('rhart-video-upscaler');
+    onTargetResolutionChange?.('1080p');
+  }, [
+    wanAnimateStandalone,
+    heyGemStandalone,
+    hasImageAndAudio,
+    isImageToVideoMode,
+    hasVideoRef,
+    model,
+    onModelChange,
+    onTargetResolutionChange,
+  ]);
 
   useEffect(() => {
     if (!isSeedanceFastModel) return;
@@ -1645,23 +2240,35 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     }
   }, [isSeedanceFastModel, resolutionSeedance, onResolutionSeedanceChange]);
 
-  /** 接入参考视频：切到 WanAnimate（不展示 / 不自动选 Seedance Mini） */
+  /**
+   * 无图但已接参考音/视频：仅当当前仍是「图生专用」模型（连线变化后失效）时，
+   * 才自动落到全能参考；不要抢走用户选的文生模型。
+   */
   useEffect(() => {
-    if (wanAnimateStandalone || heyGemStandalone || !hasReferenceVideo) return;
-    if (hasImageAndAudio) return;
-    if (model === 'wan-animate') return;
-    onModelChange('wan-animate');
-    onResolutionWanAnimateChange?.('720p');
-    onWanAnimateClipSecChange?.('8');
+    if (wanAnimateStandalone || heyGemStandalone) return;
+    if (isImageToVideoMode || hasImageAndAudio) return;
+    if (!canUseMinimaxH3Multi) return;
+    const i2vOnlyStuck =
+      model === 'minimax-h3-i2v' ||
+      model === 'ltx-2.3-i2v' ||
+      model === 'minimax-h3-audio' ||
+      model === 'ltx-2.3-lipsync' ||
+      model === LTX23_MSR_AV_MODEL_ID ||
+      model === 'gemini-omni-flash' ||
+      model === 'rhart-v3.1-pro-se';
+    if (!i2vOnlyStuck) return;
+    if (availableModels.includes('minimax-h3-multi')) {
+      onModelChange('minimax-h3-multi');
+    }
   }, [
     wanAnimateStandalone,
     heyGemStandalone,
-    hasReferenceVideo,
+    isImageToVideoMode,
     hasImageAndAudio,
+    canUseMinimaxH3Multi,
+    availableModels,
     model,
     onModelChange,
-    onResolutionWanAnimateChange,
-    onWanAnimateClipSecChange,
   ]);
 
   // Grok video3 / 稳定版 最多 7 张参考图：从其他模型切过来时裁掉多余
@@ -1670,19 +2277,79 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     setOrderedInputImages((prev) => (prev.length > 7 ? prev.slice(0, 7) : prev));
   }, [model]);
 
+  // MiniMax H3 全能参考最多 9 张；口型同步最多 5 张
+  useEffect(() => {
+    if (model === 'minimax-h3-multi') {
+      setOrderedInputImages((prev) => (prev.length > 9 ? prev.slice(0, 9) : prev));
+      return;
+    }
+    if (model === 'minimax-h3-audio') {
+      setOrderedInputImages((prev) => (prev.length > 5 ? prev.slice(0, 5) : prev));
+    }
+  }, [model]);
+
+  // 口型同步：读参考音时长 → 向上取整计费档，写入 durationMinimaxH3（供标价/提交）；不展示计费时长 UI
+  const durationMinimaxH3Ref = useRef(durationMinimaxH3);
+  durationMinimaxH3Ref.current = durationMinimaxH3;
+  const onDurationMinimaxH3ChangeRef = useRef(onDurationMinimaxH3Change);
+  onDurationMinimaxH3ChangeRef.current = onDurationMinimaxH3Change;
+  useEffect(() => {
+    if (!isMinimaxH3AudioModel) return;
+    const aud = String(inputAudioUrl || '').trim();
+    let cancelled = false;
+    const applyBilling = (actualSec: number | undefined) => {
+      if (cancelled) return;
+      const tier = mapMinimaxH3AudioBillingDurationSec(actualSec);
+      const next = String(tier) as '6' | '10' | '15' | '20';
+      if (String(durationMinimaxH3Ref.current) !== next) {
+        onDurationMinimaxH3ChangeRef.current?.(next);
+      }
+    };
+    if (!aud) {
+      applyBilling(undefined);
+      return;
+    }
+    const probe = async () => {
+      let sec = 0;
+      try {
+        if (window.electronAPI?.getMediaDuration) {
+          sec = Number(await window.electronAPI.getMediaDuration(aud, projectId)) || 0;
+        }
+      } catch {
+        sec = 0;
+      }
+      applyBilling(sec > 0 ? sec : undefined);
+    };
+    void probe();
+    return () => {
+      cancelled = true;
+    };
+  }, [isMinimaxH3AudioModel, inputAudioUrl, projectId]);
+
   // 对口型模式下，提示词为空时初始自动填入默认动作提示词
   useEffect(() => {
     if (hasImageAndAudio && isLtx23LipsyncModel && !(prompt || '').trim()) {
-      onPromptChange(vt.defaultLipsyncAction);
+      onPromptChange(vt.defaultLipsyncAction, nodeId);
     }
-  }, [hasImageAndAudio, isLtx23LipsyncModel, prompt, onPromptChange, vt.defaultLipsyncAction]);
+  }, [hasImageAndAudio, isLtx23LipsyncModel, nodeId, prompt, onPromptChange, vt.defaultLipsyncAction]);
 
-  // 图生视频：当前模型不支持参考图数量时自动切换
+  // 图生视频：当前模型不支持参考图数量时自动切换（H3 文生→图生/多参；多图优先多参）
+  // 已选 minimax-h3-multi / audio 时绝不自动改成 i2v / 其它模型
   useEffect(() => {
     if (wanAnimateStandalone || heyGemStandalone) return;
+    if (model === 'minimax-h3-multi' || model === 'minimax-h3-audio') return;
     if (isImageToVideoMode && !hasImageAndAudio) {
       if (!availableModels.includes(model as any)) {
-        const defaultModel = (availableModels[0] as string) || DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
+        const paired =
+          (model === 'minimax-h3-t2v' || model === 'minimax-h3-i2v') &&
+          imageCount > 1 &&
+          availableModels.includes('minimax-h3-multi')
+            ? 'minimax-h3-multi'
+            : model === 'minimax-h3-t2v' && availableModels.includes('minimax-h3-i2v')
+              ? 'minimax-h3-i2v'
+              : null;
+        const defaultModel =
+          paired || (availableModels[0] as string) || DEFAULT_VIDEO_MODEL_REPLACING_SORA2;
         console.log(
           `[VideoInputPanel] 当前模型 ${model} 不支持 ${imageCount} 张参考图，自动切换到 ${defaultModel}`,
         );
@@ -1691,11 +2358,110 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     }
   }, [wanAnimateStandalone, isImageToVideoMode, hasImageAndAudio, imageCount, model, availableModels, onModelChange]);
 
+  /** 点击参考音缩略标签：插入 @音频N 胶囊（与图片 @ 机制对齐） */
+  const appendRefAudioMentionToPrompt = useCallback(
+    (audioIndex: number) => {
+      const idx = audioIndex - 1;
+      const tag = vt.appendAudioTag(audioIndex);
+      const meta = resolvedConnectedAudios[idx];
+      const label = locale === 'en' ? `Audio${audioIndex}` : `音频${audioIndex}`;
+      const item = {
+        id: `ref-audio-${idx}`,
+        origin: 'ref' as const,
+        type: 'audio' as const,
+        label,
+        refLabel: label,
+        thumbUrl: undefined as string | undefined,
+        nodeId: String(meta?.nodeId || '').trim() || undefined,
+        insertText: tag,
+        subtitle: locale === 'en' ? 'Reference audio' : '参考音',
+      };
+      const next =
+        promptInputRef.current?.insertMention(item) ??
+        (() => {
+          const trimmedEnd = localPrompt.trimEnd();
+          const needSpace = trimmedEnd.length > 0 && !/\s$/.test(localPrompt);
+          return trimmedEnd + (needSpace ? ' ' : '') + tag;
+        })();
+      setLocalPrompt(next);
+      lastSentPromptRef.current = next;
+      onPromptChange(next, nodeId);
+      promptInputRef.current?.focus();
+    },
+    [onPromptChange, localPrompt, nodeId, vt, resolvedConnectedAudios, locale],
+  );
+
+  /** 未连接时的提示文案；已连接则不展示绿字，改由声音标签缩略图表达 */
+  const renderConnectedAudioEmptyHint = (mode: 'required' | 'optional') => {
+    if (resolvedConnectedAudios.length > 0) return null;
+    const warnColor = isDarkMode ? 'text-amber-400' : 'text-amber-600';
+    const mutedColor = isDarkMode ? 'text-white/45' : 'text-gray-500';
+    return (
+      <span className={`text-xs shrink-0 ${mode === 'required' ? warnColor : mutedColor}`}>
+        {mode === 'required' ? vt.audioNeedConnect : vt.audioRefOptional}
+      </span>
+    );
+  };
+
+  /** 参考图区旁：每路参考音一个紫色 equalizer 缩略标签（点击插入 @音频N） */
+  const renderConnectedAudioThumbs = (opts?: { className?: string }) => {
+    const list = resolvedConnectedAudios;
+    if (list.length === 0) return null;
+    return (
+      <div
+        className={`flex flex-wrap items-center gap-1.5 min-w-0 ${opts?.className || ''}`}
+        role="list"
+        aria-label={vt.refAudioColumn}
+      >
+        {list.map((a, index) => {
+          const n = index + 1;
+          const seed = String(a.nodeId || a.url || a.name || `audio-${n}`).trim();
+          return (
+            <button
+              key={`ref-audio-thumb-${a.nodeId || seed}-${n}`}
+              type="button"
+              role="listitem"
+              onClick={(e) => {
+                e.stopPropagation();
+                appendRefAudioMentionToPrompt(n);
+              }}
+              className={`relative w-9 h-9 shrink-0 rounded-md border transition-colors nodrag nopan cursor-pointer ${
+                isDarkMode
+                  ? 'border-violet-400/40 hover:border-violet-300/80'
+                  : 'border-violet-300/70 hover:border-violet-500'
+              }`}
+              title={vt.refAudioThumbTitle(n)}
+              aria-label={vt.refAudioThumbAlt(n)}
+            >
+              <AudioEqThumb
+                seed={seed}
+                isDarkMode={isDarkMode}
+                indexLabel={n}
+                className="w-full h-full rounded-md"
+              />
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const showAudioRefUi =
+    isLtx23LipsyncModel ||
+    isLtx23MsrAv ||
+    isMinimaxH3AudioModel ||
+    isMinimaxH3MultiModel ||
+    isSeedanceMiniModel;
+  const audioRefMode: 'required' | 'optional' =
+    isLtx23LipsyncModel || isLtx23MsrAv || isMinimaxH3AudioModel ? 'required' : 'optional';
+
   // 模式标签和按钮文案
   const modeLabel = isLtx23LipsyncModel
     ? vt.modeLipsync
     : isHeyGemModel
       ? vt.heyGemInputLabel
+    : isWanAnimate2Model
+      ? vt.wanAnimate2InputLabel
     : isWanAnimateModel
       ? vt.wanAnimateInputLabel
       : isSeedanceMiniModel
@@ -1709,6 +2475,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   // 超时定时器引用
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number | null>(null);
+  const lastProgressUiRef = useRef<{ at: number; progress: number }>({ at: 0, progress: -1 });
   // AI Hook
   const { status: aiStatus, execute: executeAI } = useAI({
     nodeId,
@@ -1800,16 +2567,21 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         if (packet.payload?.progress !== undefined) {
           const progressValue = packet.payload.progress;
           const progressText = packet.payload.text || vt.generatingVideo;
-          // 提取进度文案（去掉百分比）
           const progressMessage = progressText.replace(/\s*\d+%$/, '').trim() || vt.generatingVideo;
-          console.log(`[VideoInputPanel] 视频生成进度: ${progressValue}%`);
-          // 更新节点的进度显示
-          if (onProgressChange) {
-            onProgressChange(progressValue);
-          }
-          // 更新进度文案
-          if (onProgressMessageChange) {
-            onProgressMessageChange(progressMessage);
+          const now = Date.now();
+          const prev = lastProgressUiRef.current;
+          const skipUi =
+            now - prev.at < 1500 &&
+            Math.abs(progressValue - prev.progress) < 5 &&
+            progressValue < 95;
+          if (!skipUi) {
+            lastProgressUiRef.current = { at: now, progress: progressValue };
+            if (onProgressChange) {
+              onProgressChange(progressValue);
+            }
+            if (onProgressMessageChange) {
+              onProgressMessageChange(progressMessage);
+            }
           }
         } else if (packet.status === 'PROCESSING' && !packet.payload?.progress) {
           // 如果状态是 PROCESSING 但没有进度值，设置一个最小进度值以确保显示进度条
@@ -2017,15 +2789,15 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     }
     if (localPrompt !== lastSentPromptRef.current) {
       lastSentPromptRef.current = localPrompt;
-      onPromptChange(localPrompt);
+      onPromptChange(localPrompt, nodeId);
     }
-  }, [localPrompt, onPromptChange]);
+  }, [onPromptChange, localPrompt, nodeId]);
 
   const handleExecute = useCallback(async () => {
     flushPromptSync();
     if (progress > 0 && progress < 100) return;
     if (aiStatus === 'START' || aiStatus === 'PROCESSING') return;
-    if (!isWanAnimateModel && !isHeyGemModel && !localPrompt.trim()) return;
+    if (!isWanAnimateFamily && !isHeyGemModel && !isRhartVideoUpscaler && !localPrompt.trim()) return;
 
     // MSR：工作流需 1 背景 + 至少 2 分镜（RH ImageResizeKJv2 要求 image2 非空）
     if (isLtx23MsrStoryboardUi) {
@@ -2038,6 +2810,17 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       if (isLtx23MsrAv && !(inputAudioUrl || '').trim()) {
         const msg = 'LTX2.3-MSR 图像+声音需连接音频节点';
         console.error(msg);
+        onErrorTask?.(msg);
+        return;
+      }
+    } else if (isMinimaxH3AudioModel && !(inputAudioUrl || '').trim()) {
+      const msg = vt.modelMinimaxH3AudioNeedRefAudio;
+      console.error(msg);
+      onErrorTask?.(msg);
+      return;
+    } else if (isMinimaxH3MultiModel) {
+      if (orderedInputImages.length > 9) {
+        const msg = 'MiniMax H3 全能参考最多 9 张参考图';
         onErrorTask?.(msg);
         return;
       }
@@ -2111,10 +2894,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       console.log('[VideoInputPanel] 准备发送图片路径给后端处理:', orderedInputImages);
 
       const payload: any = {
-        prompt: isWanAnimateModel || isHeyGemModel ? '' : localPrompt,
+        // wan-animate：强制空提示词；wan-animate-2：提示词选填（有则下发）
+        prompt: isWanAnimateModel || isHeyGemModel || isRhartVideoUpscaler ? '' : localPrompt,
         model: effectiveVideoModel,
       };
-      if (!isHeyGemModel && !isWanAnimateModel) {
+      if (!isHeyGemModel && !isWanAnimateFamily && !isRhartVideoUpscaler) {
         payload.aspect_ratio = aspectRatio;
       }
 
@@ -2171,10 +2955,24 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         if (keepOriginalSound) payload.keepOriginalSound = true;
       }
 
-      if (isWanAnimateModel) {
+      if (isRhartVideoUpscaler) {
+        if (!(referenceVideoUrl || '').trim()) {
+          showAlert('视频超分放大需要连接参考视频');
+          onProgressChange?.(0);
+          return;
+        }
+        payload.referenceVideoUrl = (referenceVideoUrl || '').trim();
+        payload.targetResolution = targetResolution;
+      }
+      if (isWanAnimateFamily) {
         payload.referenceVideoUrl = (referenceVideoUrl || '').trim();
         payload.resolutionWanAnimate = resolutionWanAnimate;
-        payload.wanAnimateClipSec = wanAnimateClipSec;
+        if (isWanAnimateModel) {
+          payload.wanAnimateClipSec = wanAnimateClipSec;
+        }
+        if (isWanAnimate2Model && wanAnimate2MediaDurationSec > 0) {
+          payload.mediaDurationSec = wanAnimate2MediaDurationSec;
+        }
       }
 
       if (isHeyGemModel) {
@@ -2227,6 +3025,29 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         payload.durationLtx23T2v = durationLtx23T2v;
         payload.resolutionLtx23T2v = resolutionLtx23T2v;
       }
+      // MiniMax-H3 文生/图生/多参/口型同步：分辨率(仅 720P→megapixels 0.9)、比例；多参可选参考音；口型同步必填参考音
+      // 口型同步 durationMinimaxH3 为按参考音映射的计费档（RH 不再传时长节点）
+      if (isMinimaxH3Model) {
+        payload.resolutionMinimaxH3 = resolutionMinimaxH3;
+        payload.aspect_ratio = aspectRatio;
+        payload.durationMinimaxH3 = isMinimaxH3AudioModel
+          ? normalizeMinimaxH3AudioDurationChoice(durationMinimaxH3, 20)
+          : durationMinimaxH3;
+        if (isMinimaxH3MultiModel) {
+          payload.images = orderedInputImages.slice(0, 9);
+          const audios = (Array.isArray(connectedAudios) ? connectedAudios : [])
+            .map((a) => String(a?.url || '').trim())
+            .filter(Boolean)
+            .slice(0, 3);
+          const aud = audios[0] || (inputAudioUrl || '').trim();
+          if (audios.length > 0) payload.inputAudioUrls = audios;
+          if (aud) payload.inputAudioUrl = aud;
+        }
+        if (isMinimaxH3AudioModel) {
+          payload.images = orderedInputImages.slice(0, 5);
+          payload.inputAudioUrl = (inputAudioUrl || '').trim();
+        }
+      }
       if (isLtx23HdrMultiModel || isLtx23MsrAv) {
         const built = buildLtx23HdrMultiPayload(hdrBackground, storyboardImages);
         payload.ltx23HdrBackgroundImage = built.background;
@@ -2266,8 +3087,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       // 后端会检测本地路径并自动上传到 OSS
       if (isImageToVideoMode && orderedInputImages.length > 0 && !isLtx23MsrStoryboardUi) {
         payload.images =
-          isLtx23LipsyncModel || isLtx23I2vModel || isWanAnimateModel
+          isLtx23LipsyncModel || isLtx23I2vModel || isWanAnimateFamily
             ? orderedInputImages.slice(0, 1)
+            : isMinimaxH3MultiModel
+              ? orderedInputImages.slice(0, 9)
+            : isMinimaxH3AudioModel
+              ? orderedInputImages.slice(0, 5)
             : isGeminiOmniFamily
               ? orderedInputImages.filter((u) => String(u || '').trim()).slice(0, 3)
             : isSeedanceModel
@@ -2306,7 +3131,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         onErrorTask(error.message || '视频生成失败，请检查提示词或稍后重试');
       }
     }
-  }, [flushPromptSync, progress, aiStatus, localPrompt, model, effectiveVideoModel, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isHeyGemModel, isSeedanceModel, isSeedanceMiniModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, isLtx23HdrMultiModel, isLtx23MsrAv, isLtx23MsrStoryboardUi, hdrBackground, storyboardImages, inputAudioUrl, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, durationLtx23HdrMulti, resolutionLtx23HdrMulti, isRhartV31FastModel, isRhartV31FastSEModel, isRhartV31ProSEModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, vt.heyGemNeedRefVideo, vt.heyGemNeedScriptOrAudio, onProgressChange, onProgressMessageChange, runHeyGemTts, localHeyGemScript, onHeyGemScriptChange]);
+  }, [flushPromptSync, progress, aiStatus, localPrompt, model, effectiveVideoModel, aspectRatio, hd, duration, orderedInputImages, executeAI, isImageToVideoMode, isKlingModel, isKlingVideoO1Model, isKlingVideoO1I2vModel, isKlingVideoO1StartEndModel, isRhVideoStartEndModel, isKlingVideoO1RefModel, referenceVideoUrl, keepOriginalSound, isWan26Model, isWan26FlashModel, isWanAnimateModel, isWanAnimate2Model, isWanAnimateFamily, isHeyGemModel, isSeedanceModel, isSeedanceMiniModel, isGeminiOmniModel, isLtx23LipsyncModel, isLtx23I2vModel, isLtx23T2vModel, isMinimaxH3Model, isMinimaxH3MultiModel, isMinimaxH3AudioModel, isLtx23HdrMultiModel, isLtx23MsrAv, isLtx23MsrStoryboardUi, hdrBackground, storyboardImages, inputAudioUrl, connectedAudios, resolutionLtx23Lipsync, durationLtx23I2v, resolutionLtx23I2v, durationLtx23T2v, resolutionLtx23T2v, durationMinimaxH3, resolutionMinimaxH3, durationLtx23HdrMulti, resolutionLtx23HdrMulti, isRhartV31FastModel, isRhartV31FastSEModel, isRhartV31ProSEModel, isRhartV31ProOfficialI2vModel, isHailuo02Model, isHailuo23Model, isHailuo02I2vModel, isHailuo23I2vModel, guidanceScale, sound, shotType, negativePrompt, resolutionWan26, resolutionRhartV31, durationWan26Flash, durationVeo31ProOfficial, generateAudioVeo31ProOfficial, durationHailuo02, resolutionHailuo, durationKlingO1, modeKlingO1, enableAudio, resolutionWanAnimate, wanAnimateClipSec, wanAnimate2MediaDurationSec, resolutionSeedance, durationSeedance, resolutionGeminiOmni, durationGeminiOmni, projectId, onErrorTask, isGrok3Model, durationGrok3, resolutionGrok3, showAlert, vt.initializing, vt.heyGemNeedRefVideo, vt.heyGemNeedScriptOrAudio, onProgressChange, onProgressMessageChange, runHeyGemTts, localHeyGemScript, onHeyGemScriptChange]);
 
   // 清理超时定时器
   useEffect(() => {
@@ -2325,11 +3150,18 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
   const isRunDisabled =
     isGenerating ||
     isAiBusy ||
-    (!isWanAnimateModel && !isHeyGemModel && !localPrompt.trim()) ||
-    (isImageToVideoMode && !isLtx23MsrStoryboardUi && (!inputImages || inputImages.length === 0)) ||
+    !videoPriceLabel.ok ||
+    (!isWanAnimateFamily && !isHeyGemModel && !isRhartVideoUpscaler && !localPrompt.trim()) ||
+    (isMinimaxH3MultiModel
+      ? orderedInputImages.length > 9
+      : isImageToVideoMode &&
+        !isLtx23MsrStoryboardUi &&
+        !isRhartVideoUpscaler &&
+        (!inputImages || inputImages.length === 0)) ||
     (isLtx23MsrStoryboardUi && !isLtx23HdrMultiRunnable(hdrBackground, storyboardImages)) ||
     (isKlingVideoO1RefModel && !(referenceVideoUrl || '').trim()) ||
-    (isWanAnimateModel &&
+    (isRhartVideoUpscaler && !(referenceVideoUrl || '').trim()) ||
+    (isWanAnimateFamily &&
       (!(referenceVideoUrl || '').trim() || orderedInputImages.length === 0)) ||
     (isHeyGemModel &&
       (!(referenceVideoUrl || '').trim() ||
@@ -2337,7 +3169,8 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     (isHeyGemModel && heyGemTtsBusy) ||
     (isLtx23LipsyncModel && (!inputImages || inputImages.length === 0)) ||
     (isLtx23LipsyncModel && !(inputAudioUrl || '').trim()) ||
-    (isLtx23MsrAv && !(inputAudioUrl || '').trim());
+    (isLtx23MsrAv && !(inputAudioUrl || '').trim()) ||
+    (isMinimaxH3AudioModel && !(inputAudioUrl || '').trim());
 
   const isRunBusy = isGenerating || isAiBusy || (isHeyGemModel && heyGemTtsBusy);
 
@@ -2557,18 +3390,16 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 </label>
                 <div className="flex items-center gap-2 rounded-xl px-2.5 py-1.5 bg-black border-0">
                   <AudioLines className="h-4 w-4 text-emerald-500 shrink-0" />
-                  <select
+                  <PanelOptionDropdown
                     value={heyGemEffectiveTtsModel}
-                    onChange={(e) => onHeyGemTtsModelChange?.(e.target.value)}
-                    className="flex-1 min-w-0 bg-black text-white text-xs outline-none"
-                    style={{ colorScheme: 'dark' }}
-                  >
-                    {HEYGEM_TTS_MODELS.map((m) => (
-                      <option key={m.value} value={m.value} style={{ backgroundColor: '#000', color: '#fff' }}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={HEYGEM_TTS_MODELS.map((m) => ({ value: m.value, label: m.label }))}
+                    onChange={(v) => onHeyGemTtsModelChange?.(v)}
+                    isDarkMode
+                    title={vt.heyGemVoiceModelLabel}
+                    minWidthPx={148}
+                    menuPlacement="up"
+                    className="!bg-black !text-white !border-0 flex-1"
+                  />
                 </div>
                 <p className={`text-[10px] leading-snug ${isDarkMode ? 'text-white/35' : 'text-gray-400'}`}>
                   {vt.heyGemTtsModelHint}
@@ -2652,7 +3483,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               </div>
             </div>
           </div>
-        ) : isWanAnimateModel ? (
+        ) : isWanAnimateFamily ? (
           <div className="grid grid-cols-2 gap-2 flex-1 min-h-0">
             {[
               {
@@ -2722,6 +3553,57 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 </span>
               </div>
             ))}
+            {isWanAnimate2Model ? (
+              <div className="col-span-2 mt-1 flex flex-col gap-1 nodrag nopan">
+                <label className={`text-[11px] font-medium ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>
+                  {vt.wanAnimate2PromptOptionalLabel}
+                </label>
+                <textarea
+                  value={localPrompt}
+                  onFocus={() => {
+                    promptInputFocusedRef.current = true;
+                  }}
+                  onBlur={() => {
+                    promptInputFocusedRef.current = false;
+                    if (promptDebounceRef.current) {
+                      clearTimeout(promptDebounceRef.current);
+                      promptDebounceRef.current = null;
+                    }
+                    const v = localPromptRef.current;
+                    if (v !== lastSentPromptRef.current) {
+                      lastSentPromptRef.current = v;
+                      onPromptChange(v, nodeId);
+                    }
+                  }}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setLocalPrompt(v);
+                    // 防抖写回节点，避免每键触发父级重渲染打断输入（尤其是 IME）
+                    if (promptDebounceRef.current) clearTimeout(promptDebounceRef.current);
+                    promptDebounceRef.current = setTimeout(() => {
+                      promptDebounceRef.current = null;
+                      if (v !== lastSentPromptRef.current) {
+                        lastSentPromptRef.current = v;
+                        onPromptChange(v, nodeId);
+                      }
+                    }, 300);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  placeholder={vt.wanAnimate2PromptOptionalPlaceholder}
+                  rows={2}
+                  className={`nodrag nopan w-full resize-none rounded-lg border px-2.5 py-1.5 text-xs outline-none ${
+                    isDarkMode
+                      ? 'border-white/12 bg-black/35 text-white/90 placeholder:text-white/35'
+                      : 'border-gray-300 bg-white text-gray-900 placeholder:text-gray-400'
+                  }`}
+                />
+              </div>
+            ) : (
+              <p className={`col-span-2 text-[10px] ${isDarkMode ? 'text-white/45' : 'text-gray-500'}`}>
+                {vt.wanAnimateNoPromptHint}
+              </p>
+            )}
           </div>
         ) : isLtx23MsrStoryboardUi ? (
           <div className="grid grid-cols-[minmax(0,1fr)_240px] gap-x-3 gap-y-1">
@@ -2729,11 +3611,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               <label className={`text-xs font-medium shrink-0 ${isDarkMode ? 'text-white/80' : 'text-gray-900'}`}>
                 {vt.promptVideoDesc}
               </label>
-              {isLtx23MsrAv && (
-                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
-                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
-                </span>
-              )}
+              {isLtx23MsrAv && renderConnectedAudioEmptyHint('required')}
             </div>
             <div className={`h-[30px] flex items-center justify-between gap-1 min-w-0 text-xs font-medium ${
               isDarkMode ? 'text-white/80' : 'text-gray-900'
@@ -2755,7 +3633,8 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                   : `还差 ${hdrRequiredSlotStatus.missing.join('、')}`}
               </span>
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex flex-col gap-1.5">
+              {isLtx23MsrAv ? renderConnectedAudioThumbs() : null}
               {renderPromptRichField({
                 className: 'h-[112px]',
                 placeholder: vt.placeholderVideoPrompt,
@@ -2999,7 +3878,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           </div>
         ) : (isImageToVideoMode || isLtx23LipsyncModel) && orderedInputImages.length > 0 ? (
           <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-x-3 gap-y-1">
-            <div className="h-[30px] flex items-center gap-2 min-w-0">
+            <div className="h-[30px] flex items-center gap-2 min-w-0 w-full">
               <label
                 className={`text-xs font-medium shrink-0 ${
                   isDarkMode ? 'text-white/80' : 'text-gray-900'
@@ -3007,31 +3886,15 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               >
                 {isLtx23LipsyncModel ? vt.promptAction : vt.promptVideoDesc}
               </label>
-              {isLtx23LipsyncModel && (
-                <span className={`text-xs shrink-0 ${inputAudioUrl ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-amber-400' : 'text-amber-600')}`}>
-                  {inputAudioUrl ? vt.audioConnected : vt.audioNeedConnect}
-                </span>
-              )}
-              {isSeedanceMiniModel && (
-                <span
-                  className={`text-xs shrink-0 ${
-                    inputAudioUrl
-                      ? isDarkMode
-                        ? 'text-green-400'
-                        : 'text-green-600'
-                      : isDarkMode
-                        ? 'text-white/45'
-                        : 'text-gray-500'
-                  }`}
-                >
-                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
-                </span>
-              )}
             </div>
             <div className={`h-[30px] flex items-center text-xs font-medium ${
               isDarkMode ? 'text-white/80' : 'text-gray-900'
             }`}>
-              {vt.refImageColumn}
+              {isMinimaxH3MultiModel
+                ? vt.minimaxH3MultiRefColumn
+                : showAudioRefUi && resolvedConnectedAudios.length > 0
+                  ? `${vt.refImageColumn} / ${vt.refAudioColumn}`
+                  : vt.refImageColumn}
             </div>
             <div className="min-w-0">
               {renderSeedanceMentionThumbs()}
@@ -3041,92 +3904,100 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 placeholder: isLtx23LipsyncModel ? vt.defaultLipsyncAction : vt.placeholderVideoPrompt,
               })}
             </div>
-            <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden ${
-              isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
-            }`}>
-              <div
-                className={`grid gap-1.5 h-full overflow-y-auto custom-scrollbar pr-0.5 ${
-                  orderedInputImages.length === 1
-                    ? 'grid-cols-1 grid-rows-1'
-                    : orderedInputImages.length === 2
-                      ? 'grid-cols-2 grid-rows-1'
-                      : 'grid-cols-3 content-start'
-                }`}
-              >
-                {orderedInputImages.map((url, index) => {
-                  const isDragSource = isDraggingThumb && dragImageIndexRef.current === index;
-                  const isDropTarget = isDraggingThumb && dragOverIndex === index && dragImageIndexRef.current !== index;
-                  const isPillHoverMatch = hoveredRefFromPillIndex === index;
-                  return (
-                  <button
-                    key={`${url}-${index}`}
-                    type="button"
-                    draggable
-                    onDragStart={(e) => handleThumbDragStart(index, e)}
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      if (dragImageIndexRef.current == null || dragImageIndexRef.current === index) return;
-                      setDragOverIndex(index);
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      handleThumbDrop(index);
-                      finalizeThumbDrag(e);
-                    }}
-                    onDragEnd={(e) => finalizeThumbDrag(e)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (isDraggingThumb || thumbDragDidReorderRef.current) {
-                        thumbDragDidReorderRef.current = false;
-                        return;
-                      }
-                      appendRefImageMentionToPrompt(index + 1);
-                    }}
-                    className={`relative w-full overflow-visible ${
-                      orderedInputImages.length <= 2 ? 'h-full' : 'aspect-square'
-                    } rounded-md border transition-all cursor-grab active:cursor-grabbing ${
-                      isDropTarget
-                        ? 'border-green-400 ring-2 ring-green-400/90'
-                        : isDragSource
-                          ? 'border-white/30 border-dashed opacity-40'
-                          : 'border-white/20 hover:border-green-500'
-                    }`}
-                    style={{
-                      boxShadow: isDropTarget ? '0 0 0 1px rgba(74,222,128,0.45)' : undefined,
-                      zIndex: isDragSource || isDropTarget || isPillHoverMatch ? 10 : 1,
-                    }}
-                  >
-                    <RefImageHoverThumb
-                      url={url}
-                      alt={vt.refImageThumbAlt(index + 1)}
-                      title={
-                        isSeedanceModel
-                          ? vt.seedanceRefImageThumbTitle(index + 1)
-                          : vt.refImageThumbTitle(index + 1)
-                      }
-                      indexLabel={index + 1}
-                      objectFit="contain"
-                      className="h-full w-full overflow-visible rounded-md"
-                      previewDisabled={isDraggingThumb}
-                      emphasize={isPillHoverMatch}
-                      onRemove={() => {
-                        const removed = String(url || '').trim();
-                        const next = latestOrderedImagesRef.current.filter((_, i) => i !== index);
-                        latestOrderedImagesRef.current = next;
-                        setOrderedInputImages(next);
-                        onDisconnectHdrSlotImage?.(removed);
-                        onInputImagesOrderChange?.(next);
+            <div className="min-w-0 flex flex-col gap-1.5">
+              <div className={`rounded-lg border p-1.5 h-[112px] overflow-hidden ${
+                isDarkMode ? 'border-gray-600/40 bg-black/20' : 'border-gray-300/60 bg-white/60'
+              }`}>
+                <div
+                  className={`grid gap-1.5 h-full overflow-y-auto custom-scrollbar pr-0.5 ${
+                    orderedInputImages.length === 1
+                      ? 'grid-cols-1 grid-rows-1'
+                      : orderedInputImages.length === 2
+                        ? 'grid-cols-2 grid-rows-1'
+                        : 'grid-cols-3 content-start'
+                  }`}
+                >
+                  {orderedInputImages.map((url, index) => {
+                    const isDragSource = isDraggingThumb && dragImageIndexRef.current === index;
+                    const isDropTarget = isDraggingThumb && dragOverIndex === index && dragImageIndexRef.current !== index;
+                    const isPillHoverMatch = hoveredRefFromPillIndex === index;
+                    return (
+                    <button
+                      key={`${url}-${index}`}
+                      type="button"
+                      draggable
+                      onDragStart={(e) => handleThumbDragStart(index, e)}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (dragImageIndexRef.current == null || dragImageIndexRef.current === index) return;
+                        setDragOverIndex(index);
                       }}
-                    />
-                  </button>
-                  );
-                })}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        handleThumbDrop(index);
+                        finalizeThumbDrag(e);
+                      }}
+                      onDragEnd={(e) => finalizeThumbDrag(e)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isDraggingThumb || thumbDragDidReorderRef.current) {
+                          thumbDragDidReorderRef.current = false;
+                          return;
+                        }
+                        appendRefImageMentionToPrompt(index + 1);
+                      }}
+                      className={`relative w-full overflow-visible ${
+                        orderedInputImages.length <= 2 ? 'h-full' : 'aspect-square'
+                      } rounded-md border transition-all cursor-grab active:cursor-grabbing ${
+                        isDropTarget
+                          ? 'border-green-400 ring-2 ring-green-400/90'
+                          : isDragSource
+                            ? 'border-white/30 border-dashed opacity-40'
+                            : 'border-white/20 hover:border-green-500'
+                      }`}
+                      style={{
+                        boxShadow: isDropTarget ? '0 0 0 1px rgba(74,222,128,0.45)' : undefined,
+                        zIndex: isDragSource || isDropTarget || isPillHoverMatch ? 10 : 1,
+                      }}
+                    >
+                      <RefImageHoverThumb
+                        url={url}
+                        alt={vt.refImageThumbAlt(index + 1)}
+                        title={
+                          isSeedanceModel
+                            ? vt.seedanceRefImageThumbTitle(index + 1)
+                            : vt.refImageThumbTitle(index + 1)
+                        }
+                        indexLabel={index + 1}
+                        objectFit="contain"
+                        className="h-full w-full overflow-visible rounded-md"
+                        previewDisabled={isDraggingThumb}
+                        emphasize={isPillHoverMatch}
+                        onRemove={() => {
+                          const removed = String(url || '').trim();
+                          const next = latestOrderedImagesRef.current.filter((_, i) => i !== index);
+                          latestOrderedImagesRef.current = next;
+                          setOrderedInputImages(next);
+                          onDisconnectHdrSlotImage?.(removed);
+                          onInputImagesOrderChange?.(next);
+                        }}
+                      />
+                    </button>
+                    );
+                  })}
+                </div>
               </div>
+              {showAudioRefUi ? (
+                <div className="min-w-0 flex flex-col gap-1">
+                  {renderConnectedAudioEmptyHint(audioRefMode)}
+                  {renderConnectedAudioThumbs()}
+                </div>
+              ) : null}
             </div>
           </div>
         ) : (
           <>
-            <div className="mb-1 h-[30px] flex-shrink-0 flex items-center gap-2 min-w-0">
+            <div className="mb-1 h-[30px] flex-shrink-0 flex items-center gap-2 min-w-0 w-full">
               <label
                 className={`text-xs font-medium shrink-0 ${
                   isDarkMode ? 'text-white/80' : 'text-gray-900'
@@ -3134,22 +4005,13 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               >
                 {vt.promptVideoDesc}
               </label>
-              {isSeedanceMiniModel && (
-                <span
-                  className={`text-xs shrink-0 ${
-                    inputAudioUrl
-                      ? isDarkMode
-                        ? 'text-green-400'
-                        : 'text-green-600'
-                      : isDarkMode
-                        ? 'text-white/45'
-                        : 'text-gray-500'
-                  }`}
-                >
-                  {inputAudioUrl ? vt.audioConnected : vt.audioRefOptional}
-                </span>
-              )}
             </div>
+            {showAudioRefUi ? (
+              <div className="mb-1.5 flex flex-wrap items-center gap-1.5 min-w-0">
+                {renderConnectedAudioEmptyHint(audioRefMode)}
+                {renderConnectedAudioThumbs()}
+              </div>
+            ) : null}
             <div className="min-w-0">
               {renderPromptRichField({
                 className: 'h-[112px]',
@@ -3196,12 +4058,15 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               HeyGem 数字人
             </span>
           ) : (
-          <select
+          <PanelOptionDropdown
             value={model}
-            onChange={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              const newModel = e.target.value as VideoInputPanelProps['model'];
+            options={videoModelDropdownOptions}
+            isDarkMode={isDarkMode}
+            title={vt.chooseModelTitle}
+            minWidthPx={148}
+            menuPlacement="up"
+            onChange={(newModelRaw) => {
+              const newModel = newModelRaw as VideoInputPanelProps['model'];
               console.log('[VideoInputPanel] 模型切换:', newModel, '当前模型:', model, 'nodeId:', nodeId);
               
               // 如果模型没有变化，直接返回
@@ -3250,6 +4115,18 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 if (onDurationLtx23T2vChange) onDurationLtx23T2vChange('10');
                 if (onResolutionLtx23T2vChange) onResolutionLtx23T2vChange('720');
                 if (onAspectRatioChange) onAspectRatioChange('16:9');
+              } else if (
+                newModel === 'minimax-h3-t2v' ||
+                newModel === 'minimax-h3-i2v' ||
+                newModel === 'minimax-h3-multi' ||
+                newModel === 'minimax-h3-audio'
+              ) {
+                if (onDurationMinimaxH3Change) {
+                  // 口型同步默认先按保守 20s，连上参考音后由探测 effect 覆盖
+                  onDurationMinimaxH3Change(newModel === 'minimax-h3-audio' ? '20' : '10');
+                }
+                if (onResolutionMinimaxH3Change) onResolutionMinimaxH3Change('720p');
+                if (onAspectRatioChange) onAspectRatioChange('16:9');
               } else if (newModel === 'ltx-2.3-hdr-multi' || newModel === LTX23_MSR_AV_MODEL_ID) {
                 if (onDurationLtx23HdrMultiChange) {
                   onDurationLtx23HdrMultiChange(newModel === LTX23_MSR_AV_MODEL_ID ? '10' : '15');
@@ -3279,7 +4156,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 if (onDurationChange) onDurationChange('5');
                 if (onResolutionRhartV31Change) onResolutionRhartV31Change('1080p');
                 if (onAspectRatioChange) onAspectRatioChange('9:16');
-              } else if (newModel === 'wan-animate') {
+              } else if (newModel === 'wan-animate' || newModel === 'wan-animate-2') {
                 if (onResolutionWanAnimateChange) onResolutionWanAnimateChange('720p');
                 if (onWanAnimateClipSecChange) onWanAnimateClipSecChange('8');
               } else if (newModel === 'seedance-2.0-mini' || newModel === 'seedance-2.0-fast') {
@@ -3311,83 +4188,26 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
                 }
               }
             }}
-            onClick={(e) => {
-              e.stopPropagation();
-            }}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-            }}
-            className={`px-2 py-1 rounded-lg text-xs ${
-              isDarkMode
-                ? 'bg-black/30 text-white border border-gray-600/50'
-                : 'bg-white/90 text-gray-900 border border-gray-300'
-            } outline-none`}
-            title={vt.chooseModelTitle}
-          >
-            {hasImageAndAudio ? (
-              <>
-                <option value={LTX23_MSR_AV_MODEL_ID}>{LTX23_MSR_AV_LABEL}</option>
-                <option value="ltx-2.3-lipsync">LTX2.3 对口型</option>
-                <option value="seedance-2.0-mini" title="文/图/视频多模态，支持参考视频与音频">
-                  Seedance 2.0 Mini
-                </option>
-              </>
-            ) : isImageToVideoMode ? (
-              availableModels.map((m) => {
-                const meta = VIDEO_I2V_MODEL_LABELS[m] || { label: m };
-                return (
-                  <option key={m} value={m} title={meta.title}>
-                    {meta.label}
-                  </option>
-                );
-              })
-            ) : (
-              <>
-                {hasReferenceVideo ? (
-                  <option value="wan-animate" title="角色替换：参考图 + 参考视频">
-                    WanAnimate（角色替换）
-                  </option>
-                ) : (
-                  <>
-                    {!HIDE_SORA2_AND_SORA_CHARACTER_UI ? (
-                      <>
-                        <option value="sora-2">Sora2</option>
-                        <option value="sora-2-pro">Sora2 Pro</option>
-                      </>
-                    ) : null}
-                    <option value="ltx-2.3-t2v">LTX2.3 文生视频</option>
-                    <option value="seedance-2.0-fast" title="文/图多模态，最多 9 张参考图">
-                      Seedance 2.0 Fast
-                    </option>
-                    <option value="seedance-2.0-mini" title="文/图/视频多模态，支持参考视频与音频">
-                      Seedance 2.0 Mini
-                    </option>
-                    <option value="rhart-video-x" title="文生/图生；海外站；720p；时长 6/8/10/15/30 秒；图生最多 7 张">
-                      全能视频X
-                    </option>
-                  </>
-                )}
-              </>
-            )}
-          </select>
+          />
           )}
 
           {/* LTX2.3 对口型：API 档 720/1280/1920，展示与 LTX 图生一致为 720p/1280/1920 */}
           {isLtx23LipsyncModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionLtx23Lipsync}
-                onChange={(e) => onResolutionLtx23LipsyncChange?.(e.target.value as '720' | '1280' | '1920')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720', label: vt.resStandard720p },
+                  { value: '1280', label: vt.resHD1280 },
+                  { value: '1920', label: vt.resUHD1920 },
+                ]}
+                onChange={(v) => onResolutionLtx23LipsyncChange?.(v as '720' | '1280' | '1920')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxLipsyncResolution}
-              >
-                <option value="720">{vt.resStandard720p}</option>
-                <option value="1280">{vt.resHD1280}</option>
-                <option value="1920">{vt.resUHD1920}</option>
-              </select>
+                minWidthPx={88}
+                menuPlacement="up"
+              />
             </>
           )}
 
@@ -3395,31 +4215,33 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {isLtx23I2vModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationLtx23I2v}
-                onChange={(e) => onDurationLtx23I2vChange?.(e.target.value as '5' | '10' | '15')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '5', label: vt.secSuffix(5) },
+                  { value: '10', label: vt.secSuffix(10) },
+                  { value: '15', label: vt.secSuffix(15) },
+                ]}
+                onChange={(v) => onDurationLtx23I2vChange?.(v as '5' | '10' | '15')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxI2vDuration}
-              >
-                <option value="5">{vt.secSuffix(5)}</option>
-                <option value="10">{vt.secSuffix(10)}</option>
-                <option value="15">{vt.secSuffix(15)}</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionLtx23I2v}
-                onChange={(e) => onResolutionLtx23I2vChange?.(e.target.value as '720' | '1280' | '1920')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720', label: vt.resStandard720p },
+                  { value: '1280', label: vt.resHD1280 },
+                  { value: '1920', label: vt.resUHD1920 },
+                ]}
+                onChange={(v) => onResolutionLtx23I2vChange?.(v as '720' | '1280' | '1920')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxI2vResolution}
-              >
-                <option value="720">{vt.resStandard720p}</option>
-                <option value="1280">{vt.resHD1280}</option>
-                <option value="1920">{vt.resUHD1920}</option>
-              </select>
+                minWidthPx={88}
+                menuPlacement="up"
+              />
             </>
           )}
 
@@ -3427,86 +4249,158 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {isLtx23T2vModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationLtx23T2v}
-                onChange={(e) => onDurationLtx23T2vChange?.(e.target.value as '5' | '10' | '15')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '5', label: vt.secSuffix(5) },
+                  { value: '10', label: vt.secSuffix(10) },
+                  { value: '15', label: vt.secSuffix(15) },
+                ]}
+                onChange={(v) => onDurationLtx23T2vChange?.(v as '5' | '10' | '15')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxT2vDuration}
-              >
-                <option value="5">{vt.secSuffix(5)}</option>
-                <option value="10">{vt.secSuffix(10)}</option>
-                <option value="15">{vt.secSuffix(15)}</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionLtx23T2v}
-                onChange={(e) => onResolutionLtx23T2vChange?.(e.target.value as '720' | '1280' | '1920')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720', label: vt.resStandard720p },
+                  { value: '1280', label: vt.resHD1280 },
+                  { value: '1920', label: vt.resUHD1920 },
+                ]}
+                onChange={(v) => onResolutionLtx23T2vChange?.(v as '720' | '1280' | '1920')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxT2vResolution}
-              >
-                <option value="720">{vt.resStandard720p}</option>
-                <option value="1280">{vt.resHD1280}</option>
-                <option value="1920">{vt.resUHD1920}</option>
-              </select>
+                minWidthPx={88}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.aspectRatioLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={aspectRatio}
-                onChange={(e) => onAspectRatioChange(e.target.value as '16:9' | '9:16')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '16:9', label: vt.aspect169Landscape },
+                  { value: '9:16', label: vt.aspect916Portrait },
+                ]}
+                onChange={(v) => onAspectRatioChange(v as '16:9' | '9:16')}
+                isDarkMode={isDarkMode}
                 title={vt.titleLtxT2vAspect}
-              >
-                <option value="16:9">{vt.aspect169Landscape}</option>
-                <option value="9:16">{vt.aspect916Portrait}</option>
-              </select>
+                minWidthPx={88}
+                menuPlacement="up"
+              />
+            </>
+          )}
+
+          {/* MiniMax-H3：文生/图生/多参可选时长；口型同步不展示计费档 UI（后台仍按参考音向上取整计费） */}
+          {isMinimaxH3Model && (
+            <>
+              {isMinimaxH3DurationModel && (
+                <>
+                  <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
+                  <PanelOptionDropdown
+                    value={
+                      ['6', '10', '15', '20'].includes(String(durationMinimaxH3))
+                        ? durationMinimaxH3
+                        : '10'
+                    }
+                    options={[
+                      { value: '6', label: vt.secSuffix(6) },
+                      { value: '10', label: vt.secSuffix(10) },
+                      { value: '15', label: vt.secSuffix(15) },
+                      { value: '20', label: vt.secSuffix(20) },
+                    ]}
+                    onChange={(v) => onDurationMinimaxH3Change?.(v as '6' | '10' | '15' | '20')}
+                    isDarkMode={isDarkMode}
+                    title={vt.titleMinimaxH3Duration}
+                    minWidthPx={72}
+                    menuPlacement="up"
+                  />
+                </>
+              )}
+              <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
+              <PanelOptionDropdown
+                value="720p"
+                options={[{ value: '720p', label: '720P' }]}
+                onChange={(v) => onResolutionMinimaxH3Change?.(v as '720p')}
+                isDarkMode={isDarkMode}
+                title={vt.titleMinimaxH3Resolution}
+                minWidthPx={72}
+                menuPlacement="up"
+              />
+              <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.aspectRatioLabel}</span>
+              <PanelOptionDropdown
+                value={
+                  ['1:1', '2:3', '3:2', '3:4', '4:3', '9:16', '16:9', '21:9'].includes(aspectRatio)
+                    ? aspectRatio
+                    : '16:9'
+                }
+                options={[
+                  { value: '16:9', label: '16:9' },
+                  { value: '9:16', label: '9:16' },
+                  { value: '1:1', label: '1:1' },
+                  { value: '4:3', label: '4:3' },
+                  { value: '3:4', label: '3:4' },
+                  { value: '3:2', label: '3:2' },
+                  { value: '2:3', label: '2:3' },
+                  { value: '21:9', label: '21:9' },
+                ]}
+                onChange={(v) =>
+                  onAspectRatioChange(
+                    v as '16:9' | '9:16' | '1:1' | '2:3' | '3:2' | '4:3' | '3:4' | '21:9',
+                  )
+                }
+                isDarkMode={isDarkMode}
+                title={vt.titleMinimaxH3Aspect}
+                minWidthPx={72}
+                menuPlacement="up"
+              />
             </>
           )}
 
           {isLtx23MsrStoryboardUi && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationLtx23HdrMulti}
-                onChange={(e) => onDurationLtx23HdrMultiChange?.(e.target.value as '5' | '10' | '15')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-              >
-                <option value="5">{vt.secSuffix(5)}</option>
-                <option value="10">{vt.secSuffix(10)}</option>
-                <option value="15">{vt.secSuffix(15)}</option>
-              </select>
+                options={[
+                  { value: '5', label: vt.secSuffix(5) },
+                  { value: '10', label: vt.secSuffix(10) },
+                  { value: '15', label: vt.secSuffix(15) },
+                ]}
+                onChange={(v) => onDurationLtx23HdrMultiChange?.(v as '5' | '10' | '15')}
+                isDarkMode={isDarkMode}
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionLtx23HdrMulti}
-                onChange={(e) => onResolutionLtx23HdrMultiChange?.(e.target.value as '720' | '1280')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-              >
-                <option value="720">{vt.resStandard720p}</option>
-                <option value="1280">{vt.resHD1280}</option>
-              </select>
+                options={[
+                  { value: '720', label: vt.resStandard720p },
+                  { value: '1280', label: vt.resHD1280 },
+                ]}
+                onChange={(v) => onResolutionLtx23HdrMultiChange?.(v as '720' | '1280')}
+                isDarkMode={isDarkMode}
+                minWidthPx={88}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.aspectRatioLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={aspectRatio === '9:16' ? '9:16' : '16:9'}
-                onChange={(e) => onAspectRatioChange(e.target.value as '16:9' | '9:16')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-              >
-                <option value="16:9">{vt.aspect169Landscape}</option>
-                <option value="9:16">{vt.aspect916Portrait}</option>
-              </select>
+                options={[
+                  { value: '16:9', label: vt.aspect169Landscape },
+                  { value: '9:16', label: vt.aspect916Portrait },
+                ]}
+                onChange={(v) => onAspectRatioChange(v as '16:9' | '9:16')}
+                isDarkMode={isDarkMode}
+                minWidthPx={88}
+                menuPlacement="up"
+              />
             </>
           )}
 
-          {!isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isLtx23MsrAv && !isWanAnimateModel && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniFamily && !isGrok3StableModel && (
+          {!isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isMinimaxH3Model && !isLtx23HdrMultiModel && !isLtx23MsrAv && !isWanAnimateFamily && !isRhartVideoUpscaler && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniFamily && !isGrok3StableModel && (
           <>
           <span
             className={`text-xs ${
@@ -3515,83 +4409,77 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           >
             {vt.aspectRatioLabel}
           </span>
-            <select
+            <PanelOptionDropdown
             value={aspectRatio}
-            onChange={(e) => onAspectRatioChange(e.target.value as '16:9' | '9:16' | '1:1' | '2:3' | '3:2')}
-            className={`px-2 py-1 rounded-lg text-xs ${
-              isDarkMode
-                ? 'bg-black/30 text-white border border-gray-600/50'
-                : 'bg-white/90 text-gray-900 border border-gray-300'
-            } outline-none`}
+            options={
+              isRhartVideoXModel
+                ? [
+                    { value: '2:3', label: '2:3' },
+                    { value: '3:2', label: '3:2' },
+                    { value: '1:1', label: vt.aspect11Square },
+                    { value: '16:9', label: vt.aspect169Landscape },
+                    { value: '9:16', label: vt.aspect916Portrait },
+                  ]
+                : [
+                    { value: '16:9', label: vt.aspect169Landscape },
+                    { value: '9:16', label: vt.aspect916Portrait },
+                    ...(isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isKlingVideoO1RefModel
+                      ? [{ value: '1:1', label: vt.aspect11Square }]
+                      : []),
+                  ]
+            }
+            onChange={(v) => onAspectRatioChange(v as '16:9' | '9:16' | '1:1' | '2:3' | '3:2')}
+            isDarkMode={isDarkMode}
             title={vt.chooseAspectTitle}
-          >
-            {isRhartVideoXModel ? (
-              <>
-                <option value="2:3">2:3</option>
-                <option value="3:2">3:2</option>
-                <option value="1:1">{vt.aspect11Square}</option>
-                <option value="16:9">{vt.aspect169Landscape}</option>
-                <option value="9:16">{vt.aspect916Portrait}</option>
-              </>
-            ) : (
-              <>
-                <option value="16:9">{vt.aspect169Landscape}</option>
-                <option value="9:16">{vt.aspect916Portrait}</option>
-                {(isKlingModel || isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isKlingVideoO1RefModel) && <option value="1:1">{vt.aspect11Square}</option>}
-              </>
-            )}
-          </select>
+            minWidthPx={88}
+            menuPlacement="up"
+          />
           </>
           )}
 
           {isRhartVideoXModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={normalizeRhartVideoXDurationStr(durationGrok3, '10')}
-                onChange={(e) => onDurationGrok3Change?.(e.target.value)}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={RHART_VIDEO_X_DURATION_SEC_OPTIONS.map((s) => ({
+                  value: String(s),
+                  label: `${s}s`,
+                }))}
+                onChange={(v) => onDurationGrok3Change?.(v)}
+                isDarkMode={isDarkMode}
                 title="全能视频X：6 / 8 / 10 / 15 / 30 秒"
-              >
-                {RHART_VIDEO_X_DURATION_SEC_OPTIONS.map((s) => (
-                  <option key={s} value={String(s)}>
-                    {s}s
-                  </option>
-                ))}
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value="720p"
+                options={[{ value: '720p', label: '720p' }]}
                 onChange={() => onResolutionGrok3Change?.('720p')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                isDarkMode={isDarkMode}
                 title="全能视频X：720p"
-              >
-                <option value="720p">720p</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
             </>
           )}
 
           {isGrok3StableModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={normalizeGrok3StableDurationStr(durationGrok3, '10')}
-                onChange={(e) => onDurationGrok3Change?.(e.target.value)}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={GROK3_STABLE_DURATION_SEC_OPTIONS.map((s) => ({
+                  value: String(s),
+                  label: `${s}s`,
+                }))}
+                onChange={(v) => onDurationGrok3Change?.(v)}
+                isDarkMode={isDarkMode}
                 title="Grok video3 plus：6s / 10s"
-              >
-                {GROK3_STABLE_DURATION_SEC_OPTIONS.map((s) => (
-                  <option key={s} value={String(s)}>
-                    {s}s
-                  </option>
-                ))}
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`} title="Grok video3 plus 固定 720p">
                 720p
               </span>
@@ -3602,17 +4490,18 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {(isHailuo02Model || isHailuo23Model || isHailuo02I2vModel || isHailuo23I2vModel) && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationHailuo02}
-                onChange={(e) => onDurationHailuo02Change?.(e.target.value as '6' | '10')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '6', label: '6s' },
+                  { value: '10', label: '10s' },
+                ]}
+                onChange={(v) => onDurationHailuo02Change?.(v as '6' | '10')}
+                isDarkMode={isDarkMode}
                 title={vt.titleHailuoDuration}
-              >
-                <option value="6">6s</option>
-                <option value="10">10s</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
             </>
           )}
 
@@ -3621,29 +4510,31 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {(isKlingVideoO1Model || isKlingVideoO1I2vModel || isKlingVideoO1StartEndModel || isKlingVideoO1RefModel) && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationKlingO1}
-                onChange={(e) => onDurationKlingO1Change?.(e.target.value as '5' | '10')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '5', label: '5s' },
+                  { value: '10', label: '10s' },
+                ]}
+                onChange={(v) => onDurationKlingO1Change?.(v as '5' | '10')}
+                isDarkMode={isDarkMode}
                 title={vt.titleKlingO1Duration}
-              >
-                <option value="5">5s</option>
-                <option value="10">10s</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.klingModeLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={modeKlingO1}
-                onChange={(e) => onModeKlingO1Change?.(e.target.value as 'std' | 'pro')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: 'std', label: 'std' },
+                  { value: 'pro', label: 'pro' },
+                ]}
+                onChange={(v) => onModeKlingO1Change?.(v as 'std' | 'pro')}
+                isDarkMode={isDarkMode}
                 title={vt.titleKlingO1Mode}
-              >
-                <option value="std">std</option>
-                <option value="pro">pro</option>
-              </select>
+                minWidthPx={64}
+                menuPlacement="up"
+              />
               {isKlingVideoO1RefModel && (
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
@@ -3662,191 +4553,226 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {(isRhartV31FastModel || isRhartV31FastSEModel || isRhartV31ProSEModel || isRhartV31ProModel) && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionRhartV31}
-                onChange={(e) => onResolutionRhartV31Change?.(e.target.value as '720p' | '1080p' | '4k')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720p', label: '720p' },
+                  { value: '1080p', label: '1080p' },
+                  { value: '4k', label: '4k' },
+                ]}
+                onChange={(v) => onResolutionRhartV31Change?.(v as '720p' | '1080p' | '4k')}
+                isDarkMode={isDarkMode}
                 title={vt.titleOutputResolution}
-                aria-label={vt.resolutionLabel}
-              >
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="4k">4k</option>
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               {(isRhartV31ProModel || isRhartV31ProSEModel) && (
                 <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationFixed8s}</span>
               )}
             </>
           )}
 
-          {/* LTX2.3（首位帧）：分辨率 720p/1080p/4k + 时长 5/10/15 秒 */}
+          {/* LTX2.3（首位帧）：分辨率 720p/1080p/1920p（最高 1920p，非 4K）+ 时长 5/10/15 秒 */}
           {isRhVideoStartEndModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
-                value={resolutionRhartV31}
-                onChange={(e) => onResolutionRhartV31Change?.(e.target.value as '720p' | '1080p' | '4k')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-                title={vt.titleOutputResolution}
-              >
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="4k">4k</option>
-              </select>
+              <PanelOptionDropdown
+                value={(() => {
+                  const r = String(resolutionRhartV31 || '').toLowerCase();
+                  if (r === '720' || r === '720p') return '720p';
+                  if (r === '1920' || r === '1920p' || r === '4k' || r === '2160p') return '1920p';
+                  return '1080p';
+                })()}
+                options={[
+                  { value: '720p', label: '720p' },
+                  { value: '1080p', label: '1080p' },
+                  { value: '1920p', label: '1920p' },
+                ]}
+                onChange={(v) => onResolutionRhartV31Change?.(v as '720p' | '1080p' | '1920p')}
+                isDarkMode={isDarkMode}
+                title="720p / 1080p / 1920p（最高 1920p，非 4K）"
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={duration === '15' ? '15' : duration === '10' ? '10' : '5'}
-                onChange={(e) => onDurationChange(e.target.value as '5' | '10' | '15' | '25')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '5', label: '5s' },
+                  { value: '10', label: '10s' },
+                  { value: '15', label: '15s' },
+                ]}
+                onChange={(v) => onDurationChange(v as '5' | '10' | '15' | '25')}
+                isDarkMode={isDarkMode}
                 title={vt.durationChooseTitle}
-              >
-                <option value="5">5s</option>
-                <option value="10">10s</option>
-                <option value="15">15s</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
             </>
           )}
 
-          {/* WanAnimate 角色替换：分辨率 + 片段档位（与 RH 工作流 259/250） */}
-          {isWanAnimateModel && (
+          {/* 视频超分放大：目标分辨率 */}
+          {isRhartVideoUpscaler && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
+                value={targetResolution}
+                options={[
+                  { value: '720p', label: '720P' },
+                  { value: '1080p', label: '1080P' },
+                  { value: '2k', label: '2K' },
+                  { value: '4k', label: '4K' },
+                ]}
+                onChange={(v) => onTargetResolutionChange?.(v as '720p' | '1080p' | '2k' | '4k')}
+                isDarkMode={isDarkMode}
+                title="目标分辨率：720P / 1080P / 2K / 4K"
+                minWidthPx={80}
+                menuPlacement="up"
+              />
+            </>
+          )}
+
+          {/* WanAnimate：分辨率 + 片段；Wan animate2：仅分辨率（按时长按原视频秒数计费） */}
+          {isWanAnimateFamily && (
+            <>
+              <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
+              <PanelOptionDropdown
                 value={resolutionWanAnimate}
-                onChange={(e) => onResolutionWanAnimateChange?.(e.target.value as '720p' | '1080p')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720p', label: '720P' },
+                  { value: '1080p', label: '1080P' },
+                ]}
+                onChange={(v) => onResolutionWanAnimateChange?.(v as '720p' | '1080p')}
+                isDarkMode={isDarkMode}
                 title={vt.titleWanAnimateResolution}
-              >
-                <option value="720p">720P</option>
-                <option value="1080p">1080P</option>
-              </select>
-              <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
-                value={wanAnimateClipSec}
-                onChange={(e) => onWanAnimateClipSecChange?.(e.target.value as '5' | '8' | '10' | '15')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-                title={vt.titleWanAnimateClip}
-              >
-                <option value="5">5s</option>
-                <option value="8">8s</option>
-                <option value="10">10s</option>
-                <option value="15">15s</option>
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
+              {isWanAnimateModel ? (
+                <>
+                  <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
+                  <PanelOptionDropdown
+                    value={wanAnimateClipSec}
+                    options={[
+                      { value: '5', label: '5s' },
+                      { value: '8', label: '8s' },
+                      { value: '10', label: '10s' },
+                      { value: '15', label: '15s' },
+                    ]}
+                    onChange={(v) => onWanAnimateClipSecChange?.(v as '5' | '8' | '10' | '15')}
+                    isDarkMode={isDarkMode}
+                    title={vt.titleWanAnimateClip}
+                    minWidthPx={72}
+                    menuPlacement="up"
+                  />
+                </>
+              ) : null}
             </>
           )}
 
           {isSeedanceModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={coerceSeedanceResolution(resolutionSeedance, model)}
-                onChange={(e) => onResolutionSeedanceChange?.(e.target.value as '480p' | '720p' | '1080p' | '2k' | '4k')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  ...(isSeedanceMiniModel ? [{ value: '480p', label: '480P' }] : []),
+                  { value: '720p', label: '720P' },
+                  { value: '1080p', label: '1080P' },
+                  ...(isSeedanceMiniModel
+                    ? [
+                        { value: '2k', label: '2K' },
+                        { value: '4k', label: '4K' },
+                      ]
+                    : []),
+                ]}
+                onChange={(v) => onResolutionSeedanceChange?.(v as '480p' | '720p' | '1080p' | '2k' | '4k')}
+                isDarkMode={isDarkMode}
                 title={isSeedanceMiniModel ? '480P / 720P / 1080P / 2K / 4K' : vt.titleSeedanceResolution}
-              >
-                {isSeedanceMiniModel ? <option value="480p">480P</option> : null}
-                <option value="720p">720P</option>
-                <option value="1080p">1080P</option>
-                {isSeedanceMiniModel ? (
-                  <>
-                    <option value="2k">2K</option>
-                    <option value="4k">4K</option>
-                  </>
-                ) : null}
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={normalizeSeedanceDurationChoice(durationSeedance, 10)}
-                onChange={(e) => onDurationSeedanceChange?.(e.target.value as '5' | '10' | '15')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={SEEDANCE_DURATION_SEC_OPTIONS.map((sec) => ({
+                  value: String(sec),
+                  label: vt.secSuffix(sec),
+                }))}
+                onChange={(v) => onDurationSeedanceChange?.(v as '5' | '10' | '15')}
+                isDarkMode={isDarkMode}
                 title={vt.titleSeedanceDuration}
-              >
-                {SEEDANCE_DURATION_SEC_OPTIONS.map((sec) => (
-                  <option key={sec} value={String(sec)}>{vt.secSuffix(sec)}</option>
-                ))}
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.aspectRatioLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={coerceSeedanceRatio(aspectRatio)}
-                onChange={(e) =>
+                options={SEEDANCE_RATIO_OPTIONS.map((r) => ({
+                  value: r,
+                  label: r === 'adaptive' ? vt.aspectAdaptive : r,
+                }))}
+                onChange={(v) =>
                   onAspectRatioChange(
-                    e.target.value as 'adaptive' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9',
+                    v as 'adaptive' | '16:9' | '4:3' | '1:1' | '3:4' | '9:16' | '21:9',
                   )
                 }
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                isDarkMode={isDarkMode}
                 title={vt.titleSeedanceRatio}
-              >
-                {SEEDANCE_RATIO_OPTIONS.map((r) => (
-                  <option key={r} value={r}>
-                    {r === 'adaptive' ? vt.aspectAdaptive : r}
-                  </option>
-                ))}
-              </select>
+                minWidthPx={88}
+                menuPlacement="up"
+              />
             </>
           )}
 
           {isGeminiOmniFamily && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionGeminiOmni}
-                onChange={(e) => onResolutionGeminiOmniChange?.(e.target.value as '720p' | '1080p' | '4k')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720p', label: '720p' },
+                  { value: '1080p', label: '1080p' },
+                  { value: '4k', label: '4k' },
+                ]}
+                onChange={(v) => onResolutionGeminiOmniChange?.(v as '720p' | '1080p' | '4k')}
+                isDarkMode={isDarkMode}
                 title="720p / 1080p / 4k"
-              >
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="4k">4k</option>
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={
                   isGeminiOmniFlashModel
                     ? normalizeGeminiOmniFlashDurationChoice(durationGeminiOmni, 6)
                     : normalizeGeminiOmniDurationChoice(durationGeminiOmni, 6)
                 }
-                onChange={(e) => onDurationGeminiOmniChange?.(e.target.value as '6' | '8' | '10')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-                title="6s / 8s / 10s"
-              >
-                {(isGeminiOmniFlashModel
+                options={(isGeminiOmniFlashModel
                   ? GEMINI_OMNI_FLASH_DURATION_SEC_OPTIONS
                   : GEMINI_OMNI_DURATION_SEC_OPTIONS
-                ).map((sec) => (
-                  <option key={sec} value={String(sec)}>{vt.secSuffix(sec)}</option>
-                ))}
-              </select>
+                ).map((sec) => ({
+                  value: String(sec),
+                  label: vt.secSuffix(sec),
+                }))}
+                onChange={(v) => onDurationGeminiOmniChange?.(v as '6' | '8' | '10')}
+                isDarkMode={isDarkMode}
+                title="6s / 8s / 10s"
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.aspectRatioLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={aspectRatio === '9:16' ? '9:16' : '16:9'}
-                onChange={(e) => onAspectRatioChange(e.target.value as '16:9' | '9:16')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
-              >
-                <option value="16:9">{vt.aspect169Landscape}</option>
-                <option value="9:16">{vt.aspect916Portrait}</option>
-              </select>
+                options={[
+                  { value: '16:9', label: vt.aspect169Landscape },
+                  { value: '9:16', label: vt.aspect916Portrait },
+                ]}
+                onChange={(v) => onAspectRatioChange(v as '16:9' | '9:16')}
+                isDarkMode={isDarkMode}
+                minWidthPx={88}
+                menuPlacement="up"
+              />
             </>
           )}
 
@@ -3854,31 +4780,33 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {isRhartV31ProOfficialI2vModel && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={resolutionRhartV31}
-                onChange={(e) => onResolutionRhartV31Change?.(e.target.value as '720p' | '1080p' | '4k')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '720p', label: '720p' },
+                  { value: '1080p', label: '1080p' },
+                  { value: '4k', label: '4k' },
+                ]}
+                onChange={(v) => onResolutionRhartV31Change?.(v as '720p' | '1080p' | '4k')}
+                isDarkMode={isDarkMode}
                 title={vt.titleVeoResolution}
-              >
-                <option value="720p">720p</option>
-                <option value="1080p">1080p</option>
-                <option value="4k">4k</option>
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={durationVeo31ProOfficial}
-                onChange={(e) => onDurationVeo31ProOfficialChange?.(e.target.value as '4' | '6' | '8')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: '4', label: '4s' },
+                  { value: '6', label: '6s' },
+                  { value: '8', label: '8s' },
+                ]}
+                onChange={(v) => onDurationVeo31ProOfficialChange?.(v as '4' | '6' | '8')}
+                isDarkMode={isDarkMode}
                 title={vt.titleVeoDuration}
-              >
-                <option value="4">4s</option>
-                <option value="6">6s</option>
-                <option value="8">8s</option>
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
@@ -3892,7 +4820,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           )}
 
           {/* sora-2、kling、万相2.6：显示时长选项（Veo3.1 Pro 文生固定 8s，不显示此项） */}
-          {!isWan26FlashModel && !isRhartV31FastModel && !isGrok3Model && !isRhartVideoXModel && !isGrok3StableModel && !isHailuo02Model && !isHailuo23Model && !isHailuo02I2vModel && !isHailuo23I2vModel && !isKlingVideoO1Model && !isKlingVideoO1I2vModel && !isKlingVideoO1StartEndModel && !isRhVideoStartEndModel && !isKlingVideoO1RefModel && !isRhartV31ProSEModel && !isRhartV31ProModel && !isRhartV31ProOfficialI2vModel && !isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isLtx23HdrMultiModel && !isLtx23MsrAv && !isWanAnimateModel && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniFamily && (
+          {!isWan26FlashModel && !isRhartV31FastModel && !isGrok3Model && !isRhartVideoXModel && !isGrok3StableModel && !isHailuo02Model && !isHailuo23Model && !isHailuo02I2vModel && !isHailuo23I2vModel && !isKlingVideoO1Model && !isKlingVideoO1I2vModel && !isKlingVideoO1StartEndModel && !isRhVideoStartEndModel && !isKlingVideoO1RefModel && !isRhartV31ProSEModel && !isRhartV31ProModel && !isRhartV31ProOfficialI2vModel && !isLtx23LipsyncModel && !isLtx23I2vModel && !isLtx23T2vModel && !isMinimaxH3Model && !isLtx23HdrMultiModel && !isLtx23MsrAv && !isWanAnimateFamily && !isRhartVideoUpscaler && !isHeyGemModel && !isSeedanceModel && !isGeminiOmniFamily && (
             <>
               <span
                 className={`text-xs ${
@@ -3901,50 +4829,44 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               >
                 {vt.durationLabel}
               </span>
-              <select
+              <PanelOptionDropdown
                 value={isSora2ProModel ? (duration === '25' ? '25' : '15') : duration}
-                onChange={(e) => onDurationChange(e.target.value as '5' | '10' | '15' | '25')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode
-                    ? 'bg-black/30 text-white border border-gray-600/50'
-                    : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={
+                  isSora2ProModel
+                    ? [
+                        { value: '15', label: '15s' },
+                        { value: '25', label: '25s' },
+                      ]
+                    : isSora2Model
+                      ? [
+                          { value: '10', label: '10s' },
+                          { value: '15', label: '15s' },
+                        ]
+                      : [
+                          ...((isKlingModel || isWan26Model) ? [{ value: '5', label: '5s' }] : []),
+                          { value: '10', label: '10s' },
+                          ...(!isKlingModel ? [{ value: '15', label: '15s' }] : []),
+                        ]
+                }
+                onChange={(v) => onDurationChange(v as '5' | '10' | '15' | '25')}
+                isDarkMode={isDarkMode}
                 title={vt.durationChooseTitle}
-              >
-                {(isKlingModel || isWan26Model) && !isSora2ProModel && <option value="5">5s</option>}
-                {isSora2ProModel ? (
-                  <>
-                    <option value="15">15s</option>
-                    <option value="25">25s</option>
-                  </>
-                ) : isSora2Model ? (
-                  <>
-                    <option value="10">10s</option>
-                    <option value="15">15s</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="10">10s</option>
-                    {!isKlingModel && (
-                      <>
-                        <option value="15">15s</option>
-                      </>
-                    )}
-                  </>
-                )}
-              </select>
+                minWidthPx={72}
+                menuPlacement="up"
+              />
               {(isSora2Model || isSora2ProModel) && (
-                <select
+                <PanelOptionDropdown
                   value={sora2Channel}
-                  onChange={(e) => onSora2ChannelChange?.(e.target.value as 'plugin' | 'core')}
-                  className={`px-2 py-1 rounded-lg text-xs ${
-                    isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                  } outline-none`}
+                  options={[
+                    { value: 'plugin', label: vt.sora2Plugin },
+                    { value: 'core', label: vt.sora2Core },
+                  ]}
+                  onChange={(v) => onSora2ChannelChange?.(v as 'plugin' | 'core')}
+                  isDarkMode={isDarkMode}
                   title={vt.sora2ChannelTitle}
-                >
-                  <option value="plugin">{vt.sora2Plugin}</option>
-                  <option value="core">{vt.sora2Core}</option>
-                </select>
+                  minWidthPx={88}
+                  menuPlacement="up"
+                />
               )}
 
             </>
@@ -3954,31 +4876,33 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           {isWan26Model && (
             <>
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.shotLabel}</span>
-              <select
+              <PanelOptionDropdown
                 value={shotType}
-                onChange={(e) => onShotTypeChange?.(e.target.value as 'single' | 'multi')}
-                className={`px-2 py-1 rounded-lg text-xs ${
-                  isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                } outline-none`}
+                options={[
+                  { value: 'single', label: vt.shotSingle },
+                  { value: 'multi', label: vt.shotMulti },
+                ]}
+                onChange={(v) => onShotTypeChange?.(v as 'single' | 'multi')}
+                isDarkMode={isDarkMode}
                 title={vt.shotTitle}
-              >
-                <option value="single">{vt.shotSingle}</option>
-                <option value="multi">{vt.shotMulti}</option>
-              </select>
+                minWidthPx={80}
+                menuPlacement="up"
+              />
               {isImageToVideoMode && (
                 <>
                   <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-                  <select
+                  <PanelOptionDropdown
                     value={resolutionWan26}
-                    onChange={(e) => onResolutionWan26Change?.(e.target.value as '720p' | '1080p')}
-                    className={`px-2 py-1 rounded-lg text-xs ${
-                      isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                    } outline-none`}
+                    options={[
+                      { value: '720p', label: '720p' },
+                      { value: '1080p', label: '1080p' },
+                    ]}
+                    onChange={(v) => onResolutionWan26Change?.(v as '720p' | '1080p')}
+                    isDarkMode={isDarkMode}
                     title={vt.titleWanI2vResolution}
-                  >
-                    <option value="720p">720p</option>
-                    <option value="1080p">1080p</option>
-                  </select>
+                    minWidthPx={80}
+                    menuPlacement="up"
+                  />
                 </>
               )}
             </>
@@ -3989,44 +4913,44 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.durationLabel}</span>
-                <select
+                <PanelOptionDropdown
                   value={durationWan26Flash}
-                  onChange={(e) => onDurationWan26FlashChange?.(e.target.value as '2'|'3'|'4'|'5'|'6'|'7'|'8'|'9'|'10'|'11'|'12'|'13'|'14'|'15')}
-                  className={`px-2 py-1 rounded-lg text-xs ${
-                    isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                  } outline-none`}
+                  options={([2,3,4,5,6,7,8,9,10,11,12,13,14,15] as const).map((n) => ({
+                    value: String(n),
+                    label: `${n}s`,
+                  }))}
+                  onChange={(v) => onDurationWan26FlashChange?.(v as '2'|'3'|'4'|'5'|'6'|'7'|'8'|'9'|'10'|'11'|'12'|'13'|'14'|'15')}
+                  isDarkMode={isDarkMode}
                   title={vt.titleWanFlashDuration}
-                >
-                  {([2,3,4,5,6,7,8,9,10,11,12,13,14,15] as const).map((n) => (
-                    <option key={n} value={String(n)}>{n}s</option>
-                  ))}
-                </select>
+                  minWidthPx={72}
+                  menuPlacement="up"
+                />
                 <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.shotLabel}</span>
-                <select
+                <PanelOptionDropdown
                   value={shotType}
-                  onChange={(e) => onShotTypeChange?.(e.target.value as 'single' | 'multi')}
-                  className={`px-2 py-1 rounded-lg text-xs ${
-                    isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                  } outline-none`}
+                  options={[
+                    { value: 'single', label: vt.shotSingle },
+                    { value: 'multi', label: vt.shotMulti },
+                  ]}
+                  onChange={(v) => onShotTypeChange?.(v as 'single' | 'multi')}
+                  isDarkMode={isDarkMode}
                   title={vt.shotTitle}
-                  aria-label={vt.shotLabel}
-                >
-                  <option value="single">{vt.shotSingle}</option>
-                  <option value="multi">{vt.shotMulti}</option>
-                </select>
+                  minWidthPx={80}
+                  menuPlacement="up"
+                />
                 <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
-                <select
+                <PanelOptionDropdown
                   value={resolutionWan26}
-                  onChange={(e) => onResolutionWan26Change?.(e.target.value as '720p' | '1080p')}
-                  className={`px-2 py-1 rounded-lg text-xs ${
-                    isDarkMode ? 'bg-black/30 text-white border border-gray-600/50' : 'bg-white/90 text-gray-900 border border-gray-300'
-                  } outline-none`}
+                  options={[
+                    { value: '720p', label: '720p' },
+                    { value: '1080p', label: '1080p' },
+                  ]}
+                  onChange={(v) => onResolutionWan26Change?.(v as '720p' | '1080p')}
+                  isDarkMode={isDarkMode}
                   title={vt.titleOutputResolution}
-                  aria-label={vt.resolutionLabel}
-                >
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                </select>
+                  minWidthPx={80}
+                  menuPlacement="up"
+                />
               </div>
               <div className="flex items-center">
                 <label className="flex items-center gap-1 text-xs cursor-pointer">
@@ -4139,14 +5063,28 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         </div>
 
         <div className="flex-1" />
-        {isImageToVideoMode && imageCount > 0 && (
+        {((isMinimaxH3MultiModel &&
+          (imageCount > 0 || hasAudioRef || hasVideoRef)) ||
+          (isImageToVideoMode && imageCount > 0 && !isMinimaxH3MultiModel)) && (
           <span
             className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 ${
               isDarkMode ? 'text-white/50 bg-white/10' : 'text-gray-500 bg-gray-100'
             }`}
-            title={vt.refImagesTitle(imageCount, maxRefImagesVideo)}
+            title={
+              isMinimaxH3MultiModel
+                ? vt.minimaxH3MultiRefTitle(
+                    imageCount,
+                    Math.min(3, resolvedConnectedAudios.length || (hasAudioRef ? 1 : 0)),
+                  )
+                : vt.refImagesTitle(imageCount, maxRefImagesVideo)
+            }
           >
-            {vt.refImagesBadge(imageCount, maxRefImagesVideo)}
+            {isMinimaxH3MultiModel
+              ? vt.minimaxH3MultiRefBadge(
+                  imageCount,
+                  Math.min(3, resolvedConnectedAudios.length || (hasAudioRef ? 1 : 0)),
+                )
+              : vt.refImagesBadge(imageCount, maxRefImagesVideo)}
           </span>
         )}
         {videoPriceLabel.ok ? (

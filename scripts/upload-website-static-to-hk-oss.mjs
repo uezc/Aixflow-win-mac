@@ -102,7 +102,9 @@ async function main() {
   }
 
   const base = `https://${bucket}.oss-cn-hongkong.aliyuncs.com/${PREFIX}`;
-  console.log(`\n[upload-website-hk] 完成。预览:\n  ${base}/index.html\n  ${base}/recharge.html\n`);
+  console.log(
+    `\n[upload-website-hk] 完成。预览:\n  ${base}/index.html\n  ${base}/recharge.html\n  ${base}/installer.html\n`,
+  );
   console.log(`把 aixflow.ai 换成与 .com.cn 相同设计，任选其一：`);
   console.log(`A) Cloudflare Pages：把 release 解压后的 site/ 整目录上传/关联为 Pages 项目根目录`);
   console.log(`B) Cloudflare DNS：将 aixflow.ai 源站指到已部署本包的 Nginx（与 .com.cn 同站也可）`);

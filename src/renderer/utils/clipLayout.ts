@@ -17,6 +17,7 @@ export {
   layoutFromSourceRectAndCrop,
   syncLayoutAfterCropChange,
   buildClipLayoutScaleFilter,
+  buildClipLayoutOverlayFilter,
   type ClipLayout,
   type NormRect,
 } from '../../shared/clipLayout';

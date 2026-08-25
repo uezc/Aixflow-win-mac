@@ -348,8 +348,6 @@ import {
   dramaStudioNodeTitle,
   projectDramaSessionToPipeline,
   refreshDramaContinuity,
-  refreshDramaPackages,
-  refreshDramaReviews,
   setDramaSessionPhase,
   composeDramaImageStyleHint,
   ensureDramaCharacterPromptGenreLock,
@@ -2029,8 +2027,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
       if (domain?.shots?.length) {
         const clearSet = new Set(clearProgress);
+        // 浅拷贝即可（domain 已规范化），避免 createEmptyDramaSession 深重建导致视频生成对账卡死/OOM
         dataRef.current?.onUpdate?.({
-          directorDomain: createEmptyDramaSession({
+          directorDomain: {
             ...domain,
             shots: domain.shots.map((s) => {
               const no = String(s.shot_no || '').trim();
@@ -2047,7 +2046,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 video_status: 'ready',
               };
             }),
-          }),
+          },
         });
       }
     }
@@ -11346,6 +11345,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
   const goDirectorPhase = useCallback(
     (phase: DirectorPhase) => {
+      const __perfPhaseSync0 = performance.now();
       let next = setDirectorPhase(directorStateRef.current, phase);
       if (isMvMode && phase === 'cast') {
         next = applyAutoDirectorMvCastPlan(next);
@@ -11364,8 +11364,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         );
       }
       if (isDramaMode && (phase === 'shots' || phase === 'board')) {
+        const __tEnsure0 = performance.now();
         next = ensureDirectorDramaShotsFromScript(next, { keepPhase: true });
         next = setDirectorPhase(next, 'board');
+        console.log(
+          `[perf] goDirectorPhase(${phase}) ensureShots(ms) ${(performance.now() - __tEnsure0).toFixed(1)}`,
+        );
       }
       if (isDramaMode && (phase === 'storyboards' || phase === 'videos')) {
         const locked =
@@ -11448,7 +11452,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         };
       }
       // 用户点步骤/下一步：同步 patch，避免 startTransition 在负载下像「点了没反应」
+      const __tPatch0 = performance.now();
       patch(next);
+      console.log(
+        `[perf] goDirectorPhase(${phase}) patch(ms) ${(performance.now() - __tPatch0).toFixed(1)}`,
+      );
+      console.log(
+        `[perf] goDirectorPhase(${phase}) sync+patch同步耗时(ms) ${(performance.now() - __perfPhaseSync0).toFixed(1)}`,
+      );
       // 短剧 V2：顶栏切步时同步 Domain phase（内容面板读 session.meta.phase）
       if (isDramaMode) {
         const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
@@ -11489,12 +11500,28 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             nextDomain = confirmDramaAssets(nextDomain);
           }
           if (domainPhase === 'board' || domainPhase === 'review') {
+            const __tCont0 = performance.now();
             nextDomain = refreshDramaContinuity(nextDomain);
+            console.log(
+              `[perf] goDirectorPhase(${domainPhase}) refreshContinuity(ms) ${(performance.now() - __tCont0).toFixed(1)}`,
+            );
           }
-          if (domainPhase === 'board') nextDomain = refreshDramaPackages(nextDomain);
-          if (domainPhase === 'review') nextDomain = refreshDramaReviews(nextDomain);
+          // packages/reviews 出片/审核时才重建；不再深重建 session，避免顶栏切步卡顿
+          const __tUpdate0 = performance.now();
           dataRef.current?.onUpdate?.({
-            directorDomain: createEmptyDramaSession(nextDomain),
+            directorDomain: nextDomain,
+          });
+          console.log(
+            `[perf] goDirectorPhase(${domainPhase}) onUpdate(ms) ${(performance.now() - __tUpdate0).toFixed(1)}`,
+          );
+          // [perf] 测量「点下去→画面真正刷新完」耗时（渲染阶段异步、无日志，用双 RAF 量）
+          const __perfPhaseRenderT0 = performance.now();
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              console.log(
+                `[perf] goDirectorPhase(${domainPhase})→首帧渲染完成(ms) ${(performance.now() - __perfPhaseRenderT0).toFixed(1)}`,
+              );
+            });
           });
         }
       }
@@ -11855,13 +11882,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         void (async () => {
           ensureDramaPipelineAsset(kind, assetId);
           try {
-            const reader = new FileReader();
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              reader.onload = () => resolve(String(reader.result || ''));
-              reader.onerror = () => reject(new Error('read failed'));
-              reader.readAsDataURL(file);
+            // 存文件拿 local-resource:// 路径，避免把 base64 塞进 session 导致卡顿/OOM
+            const buf = await file.arrayBuffer();
+            const res = await window.electronAPI.directorV2SaveAssetFile(String(data?.projectId || ''), {
+              kind: 'image',
+              filename: file.name,
+              mime: file.type,
+              data: buf,
             });
-            applyAssetImage(assetId, dataUrl);
+            if (!res?.ok || !res.url) throw new Error(res?.error || '保存图片失败');
+            applyAssetImage(assetId, res.url);
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'upload failed';
             if (findDirectorAssetById(directorStateRef.current.assets, assetId)) {
@@ -11892,14 +11922,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       onUploadVoice={(voiceId, file) => {
         void (async () => {
           try {
-            const reader = new FileReader();
-            const dataUrl = await new Promise<string>((resolve, reject) => {
-              reader.onload = () => resolve(String(reader.result || ''));
-              reader.onerror = () => reject(new Error('read failed'));
-              reader.readAsDataURL(file);
+            const buf = await file.arrayBuffer();
+            const res = await window.electronAPI.directorV2SaveAssetFile(String(data?.projectId || ''), {
+              kind: 'audio',
+              filename: file.name,
+              mime: file.type,
+              data: buf,
             });
+            if (!res?.ok || !res.url) throw new Error(res?.error || '保存声音失败');
             syncDomainVoiceSample(voiceId, {
-              sampleUrl: dataUrl,
+              sampleUrl: res.url,
               status: 'ready',
             });
           } catch (e) {

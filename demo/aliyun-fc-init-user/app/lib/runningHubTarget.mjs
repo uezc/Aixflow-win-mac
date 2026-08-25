@@ -58,6 +58,36 @@ export function normalizeRhPath(path) {
   return raw.startsWith('/') ? raw : `/${raw}`;
 }
 
+/** 拆出 path / query，normalizeRhPath 会丢掉 query */
+export function splitRhPathAndQuery(path) {
+  const raw = String(path || '').trim();
+  const qIdx = raw.indexOf('?');
+  if (qIdx < 0) return { pathOnly: raw, query: '' };
+  return { pathOnly: raw.slice(0, qIdx), query: raw.slice(qIdx) };
+}
+
+/**
+ * 组装 RunningHub 转发绝对 URL。
+ * - 默认：{openapi/v2 base}{path}
+ * - `/api/webapp/*`（如 apiCallDemo）：站点根路径，并注入 apiKey（勿把完整 URL 打进日志）
+ */
+export function buildRunningHubForwardUrl(path, rhTarget) {
+  const { pathOnly, query } = splitRhPathAndQuery(path);
+  const p = normalizeRhPath(pathOnly);
+  if (p.startsWith('/api/webapp/')) {
+    const site =
+      rhTarget?.region === 'ai'
+        ? 'https://www.runninghub.ai'
+        : 'https://www.runninghub.cn';
+    const u = new URL(`${site}${p}${query}`);
+    const key = String(rhTarget?.apiKey || '').trim();
+    if (key && !u.searchParams.get('apiKey')) u.searchParams.set('apiKey', key);
+    return u.toString();
+  }
+  const base = (rhTarget?.base || DEFAULT_RH_BASE_CN).replace(/\/$/, '');
+  return `${base}${p}${query}`;
+}
+
 export function getOverseasPathPrefixes() {
   const env = process.env.RUNNINGHUB_OVERSEAS_PATH_PREFIXES?.trim();
   if (env) {

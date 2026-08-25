@@ -15,7 +15,37 @@ export function extractSeedanceImageMentionIndices(prompt: string): number[] {
   return out;
 }
 
+function parseDirectorBindingRows(
+  prompt: string,
+): Array<{ n: number; kind: string; name: string }> {
+  const out: Array<{ n: number; kind: string; name: string }> = [];
+  const re = /@图片\s*(\d+)\s*作为第\d+张参考图｜([^｜\n]+)｜([^｜\n]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(String(prompt || '')))) {
+    const n = Number.parseInt(m[1], 10);
+    if (!Number.isFinite(n) || n < 1) continue;
+    out.push({ n, kind: String(m[2] || '').trim(), name: String(m[3] || '').trim() });
+  }
+  return out;
+}
+
+function findVideoAssetByName(
+  name: string,
+  refs: DirectorVideoAssetRef[],
+): DirectorVideoAssetRef | undefined {
+  const n = String(name || '').trim();
+  if (n.length < 2) return undefined;
+  const exact = refs.find((a) => String(a.name || '').trim() === n);
+  if (exact) return exact;
+  return refs.find((a) => {
+    const an = String(a.name || '').trim();
+    if (an.length < 2) return false;
+    return an.includes(n) || n.includes(an);
+  });
+}
+
 export type DirectorVideoAssetRef = {
+  id?: string;
   imageUrl: string;
   name?: string;
   kind?: string;
@@ -33,6 +63,21 @@ export function sliceDirectorShotAssetsForVideo(
   const maxImages = Math.max(1, Math.min(9, options?.maxImages ?? 9));
   const refs = (orderedAssetsWithImages || []).filter((a) => String(a?.imageUrl || '').trim());
   const rawPrompt = String(prompt || '');
+  const bindings = parseDirectorBindingRows(rawPrompt);
+  if (bindings.length > 0) {
+    const inputImages: string[] = [];
+    for (const b of bindings) {
+      if (/风格|场景|道具|生物|分镜/.test(b.kind)) continue;
+      if (b.kind && !/角色|人物/.test(b.kind)) continue;
+      const hit = findVideoAssetByName(b.name, refs);
+      const url = String(hit?.imageUrl || '').trim();
+      if (!url || inputImages.includes(url)) continue;
+      inputImages.push(url);
+      if (inputImages.length >= maxImages) break;
+    }
+    return { prompt: rawPrompt, inputImages };
+  }
+
   let indices = extractSeedanceImageMentionIndices(rawPrompt);
 
   if (indices.length === 0) {
@@ -56,12 +101,12 @@ export function sliceDirectorShotAssetsForVideo(
     return { prompt: rawPrompt, inputImages: [] };
   }
 
-  const oldToNew = new Map<number, number>();
-  picked.forEach((oldN, i) => oldToNew.set(oldN, i + 1));
-
+  const alreadySequential = picked.every((n, i) => n === i + 1);
   const hadMentions = /@(?:图片|Image)\s*\d+/i.test(rawPrompt);
   let newPrompt = rawPrompt;
-  if (hadMentions) {
+  if (hadMentions && !alreadySequential) {
+    const oldToNew = new Map<number, number>();
+    picked.forEach((oldN, i) => oldToNew.set(oldN, i + 1));
     newPrompt = rawPrompt
       .replace(/@(?:图片|Image)\s*(\d+)/gi, (_full, numStr: string) => {
         const oldN = Number.parseInt(numStr, 10);

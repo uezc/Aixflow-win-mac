@@ -23,10 +23,30 @@ import { audioInputPanelT } from '../../i18n/audioInputPanelI18n';
 import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { micLevelCssVars } from '../../utils/micInputLevel';
+import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
-import { scaleModulePx } from '../../utils/moduleDisplayScale';
+import { scaleModulePx, clampTextModuleSize, TEXT_MODULE_MAX_W, TEXT_MODULE_MAX_H } from '../../utils/moduleDisplayScale';
 import VoiceMicGlyph from './VoiceMicGlyph';
+
+/** 悬停正文时滚轮翻文字，不缩放画布（React 合成 onWheel 拦不住 React Flow 的原生监听） */
+function bindWheelToElementScroll(el: HTMLElement | null): () => void {
+  if (!el) return () => {};
+  const onWheel = (e: WheelEvent) => {
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+    const line = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
+    const dy = e.deltaY * line;
+    const dx = e.deltaX * line;
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+    if (maxTop > 0) el.scrollTop = Math.max(0, Math.min(maxTop, el.scrollTop + dy));
+    if (maxLeft > 0) el.scrollLeft = Math.max(0, Math.min(maxLeft, el.scrollLeft + dx));
+    e.preventDefault();
+  };
+  el.addEventListener('wheel', onWheel, { passive: false, capture: true });
+  return () => el.removeEventListener('wheel', onWheel, { capture: true });
+}
 
 /** 10 个常用字体选项 */
 const TEXT_FONT_OPTIONS: { value: string; label: string }[] = [
@@ -142,12 +162,13 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
   const [fontWeight, setFontWeight] = useState<'normal' | 'bold'>(data?.fontWeight || 'normal');
   const [fontStyle, setFontStyle] = useState<'normal' | 'italic'>(data?.fontStyle || 'normal');
   const [fontFamily, setFontFamily] = useState(data?.fontFamily || TEXT_FONT_OPTIONS[0].value);
+  const TEXT_FONT_DEFAULT = 14;
   const clampTextFontPx = (n: unknown): number => {
     const x = typeof n === 'number' ? n : typeof n === 'string' ? parseFloat(n) : NaN;
-    if (!Number.isFinite(x)) return 28;
+    if (!Number.isFinite(x)) return TEXT_FONT_DEFAULT;
     return Math.min(28, Math.max(10, Math.round(x)));
   };
-  const [fontSizePx, setFontSizePx] = useState(() => clampTextFontPx(data?.fontSizePx ?? 28));
+  const [fontSizePx, setFontSizePx] = useState(() => clampTextFontPx(data?.fontSizePx ?? TEXT_FONT_DEFAULT));
   // 最小尺寸约束（与 TextNode 相同）
   const MIN_WIDTH = scaleModulePx(280);
   const MIN_HEIGHT = scaleModulePx(160);
@@ -173,10 +194,8 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       }
     }
 
-    return {
-      w: Math.max(MIN_WIDTH, width || MIN_WIDTH),
-      h: Math.max(MIN_HEIGHT, height || MIN_HEIGHT),
-    };
+    const c = clampTextModuleSize(width || MIN_WIDTH, height || MIN_HEIGHT);
+    return { w: c.width, h: c.height };
   };
   
   const [size, setSize] = useState(getInitialSize);
@@ -236,6 +255,23 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       })
     );
   }, [id, onDataChange, setNodes]);
+
+  // 挂载时若历史尺寸异常偏大，立刻压回正常范围（无需等重新加载工程）
+  useEffect(() => {
+    const cur = sizeRef.current;
+    const clamped = clampTextModuleSize(cur.w, cur.h);
+    if (Math.abs(cur.w - clamped.width) < 0.5 && Math.abs(cur.h - clamped.height) < 0.5) return;
+    const next = { w: clamped.width, h: clamped.height };
+    sizeRef.current = next;
+    setSize(next);
+    updateNodeData({
+      width: next.w,
+      height: next.h,
+      isUserResized: true,
+      _isResizing: false,
+    } as Partial<MinimalistTextNodeData>);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   // AI Hook（用于接收状态更新，支持进度条和内容回传）
   const { status: aiStatus } = useAI({
@@ -770,6 +806,13 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
     };
   }, [isEditing]);
 
+  // 悬停正文：滚轮上下翻页，不缩放画布
+  useEffect(() => {
+    if (errorMessage) return undefined;
+    const el = isEditing ? textareaRef.current : textViewRef.current;
+    return bindWheelToElementScroll(el);
+  }, [isEditing, errorMessage]);
+
   // 退出编辑：把 textarea 滚动位置带回预览层
   useEffect(() => {
     if (isEditing) return;
@@ -783,21 +826,21 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
   }, [isEditing]);
 
   useEffect(() => {
-    const open = isDictationActive;
-    (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = open;
-    return () => {
-      (window as Window & { __nexflowVoiceModalOpen?: boolean }).__nexflowVoiceModalOpen = false;
-    };
+    if (!isDictationActive) return;
+    acquireVoiceModalLock();
+    return () => releaseVoiceModalLock();
   }, [isDictationActive]);
 
   // 处理尺寸变化（用户手动调整）
   const handleSizeChange = useCallback((newSize: { w: number; h: number }) => {
-    userSizeCommitRef.current = newSize;
-    sizeRef.current = newSize;
-    setSize(newSize);
+    const clamped = clampTextModuleSize(newSize.w, newSize.h);
+    const next = { w: clamped.width, h: clamped.height };
+    userSizeCommitRef.current = next;
+    sizeRef.current = next;
+    setSize(next);
     updateNodeData({
-      width: newSize.w,
-      height: newSize.h,
+      width: next.w,
+      height: next.h,
       isUserResized: true,
       _isResizing: false,
     } as Partial<MinimalistTextNodeData>);
@@ -835,18 +878,23 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       local.w > dw + 0.5 ||
       local.h > dh + 0.5
     ) {
+      const clamped = clampTextModuleSize(local.w, local.h);
       updateNodeData({
-        width: local.w,
-        height: local.h,
+        width: clamped.width,
+        height: clamped.height,
         isUserResized: true,
         _isResizing: false,
       } as Partial<MinimalistTextNodeData>);
+      if (Math.abs(local.w - clamped.width) > 0.5 || Math.abs(local.h - clamped.height) > 0.5) {
+        sizeRef.current = { w: clamped.width, h: clamped.height };
+        setSize({ w: clamped.width, h: clamped.height });
+      }
       return;
     }
 
-    const next = { w: dw, h: dh };
-    sizeRef.current = next;
-    setSize(next);
+    const next = clampTextModuleSize(dw, dh);
+    sizeRef.current = { w: next.width, h: next.height };
+    setSize({ w: next.width, h: next.height });
   }, [isResizing, data?.width, data?.height, data?.isUserResized, updateNodeData]);
 
   useEffect(() => {
@@ -1110,102 +1158,95 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       </div>
       )}
 
-      {/* 左上角语音听写：按住说话，松开结束 */}
-      {(isSelected || isHovered || isDictationActive) && !showPlaceholder && !errorMessage && (
-        <button
-          type="button"
-          {...micPointerHandlers}
-          disabled={transcribeBusy || micVoiceStopping}
-          style={
-            dictationStatus === 'listening' || dictationStatus === 'connecting'
-              ? micLevelCssVars(dictationInputLevel)
-              : undefined
-          }
-          className={`nexflow-voice-mic-btn nodrag absolute top-2 left-2 z-10 flex h-7 w-7 shrink-0 items-center justify-center rounded select-none ${
-            dictationStatus === 'connecting'
-              ? 'connecting'
-              : dictationStatus === 'listening'
-                ? 'listening'
-                : ''
-          } ${
-            transcribeBusy || micVoiceStopping
-              ? isDarkMode
-                ? 'cursor-wait border border-white/25 bg-white/5 text-white/75'
-                : `rounded flex h-7 w-7 items-center justify-center scratch-float-btn ${scratchTintClass('looks')} cursor-wait opacity-80`
-              : isDarkMode
-                ? 'border border-white/25 bg-white/5 text-white/75 hover:bg-white/10 hover:text-white'
-                : `rounded flex h-7 w-7 items-center justify-center scratch-float-btn ${scratchTintClass('sound')}`
-          }`}
-          title={
-            micVoiceBusy || isDictationActive
-              ? wc.textVoiceInputStopButton
-              : wc.textVoiceInputTitle
-          }
-          aria-label={
-            micVoiceBusy || isDictationActive
-              ? wc.textVoiceInputStopButton
-              : wc.textVoiceInputButton
-          }
-        >
-          <VoiceMicGlyph
-            busy={transcribeBusy || micVoiceBusy}
-            active={dictationStatus === 'listening'}
-            level={dictationInputLevel}
-          />
-        </button>
-      )}
-
-      {/* 文本框正上方居中：连音频时「转文字」（与视频节点顶部工具钮同款 + Headphones） */}
-      {showTranscribeBar && (isSelected || isHovered || transcribeBusy) && (
+      {/* 模块外上方居中：话筒 / 复制 /（连音频时）转文字 */}
+      {(isSelected || isHovered || isDictationActive || transcribeBusy) &&
+        !showPlaceholder &&
+        !errorMessage && (
         <div
-          className="nodrag nopan pointer-events-auto absolute -top-10 left-0 right-0 z-[56] flex justify-center gap-2"
+          className="nodrag nopan pointer-events-auto absolute -top-14 left-0 right-0 z-[56] flex justify-center gap-2"
           onPointerDown={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <button
             type="button"
-            disabled={transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())}
-            onClick={(e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              void runCloudTranscribe();
-            }}
-            className={floatTopPillBtn(
-              transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())
+            {...micPointerHandlers}
+            disabled={transcribeBusy || micVoiceStopping}
+            style={
+              dictationStatus === 'listening' || dictationStatus === 'connecting'
+                ? micLevelCssVars(dictationInputLevel)
+                : undefined
+            }
+            className={`nexflow-voice-mic-btn ${floatTopPillBtn(
+              dictationStatus === 'connecting'
+                ? 'connecting'
+                : dictationStatus === 'listening'
+                  ? 'listening'
+                  : '',
+            )} ${
+              transcribeBusy || micVoiceStopping
                 ? 'opacity-50 cursor-wait'
-                : '',
-            )}
-            title="转文字"
-            aria-label="转文字"
-          >
-            {transcribeBusy || data?.transcribeStatus === 'PROCESSING' ? (
-              <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
-            ) : (
-              <Headphones className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
-            )}
-          </button>
-        </div>
-      )}
-
-      {/* 模块内右上角：复制 */}
-      {isSelected && !isEditing && (
-        <div className="absolute top-2 right-2 z-[56] flex items-center gap-1 nodrag nopan">
-          <button
-            type="button"
-            onClick={handleCopy}
-            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-all ${
-              isDarkMode
-                ? 'apple-panel hover:bg-white/20'
-                : `scratch-float-btn ${scratchTintClass('operators')}`
+                : ''
             }`}
-            title={showCopySuccess ? '已复制' : '复制'}
+            title={
+              micVoiceBusy || isDictationActive
+                ? wc.textVoiceInputStopButton
+                : wc.textVoiceInputTitle
+            }
+            aria-label={
+              micVoiceBusy || isDictationActive
+                ? wc.textVoiceInputStopButton
+                : wc.textVoiceInputButton
+            }
           >
-            {showCopySuccess ? (
-              <Check className={`h-3.5 w-3.5 ${isDarkMode ? 'text-green-400' : ''}`} />
-            ) : (
-              <Copy className={`h-3.5 w-3.5 ${isDarkMode ? 'text-white/80' : ''}`} />
-            )}
+            <VoiceMicGlyph
+              busy={transcribeBusy || micVoiceBusy}
+              active={dictationStatus === 'listening'}
+              level={dictationInputLevel}
+            />
           </button>
+          {(isSelected || isHovered) && !isEditing ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleCopy();
+              }}
+              className={floatTopPillBtn()}
+              title={showCopySuccess ? '已复制' : '复制'}
+              aria-label={showCopySuccess ? '已复制' : '复制'}
+            >
+              {showCopySuccess ? (
+                <Check className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-green-400' : 'text-emerald-600'}`} />
+              ) : (
+                <Copy className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              )}
+            </button>
+          ) : null}
+          {showTranscribeBar ? (
+            <button
+              type="button"
+              disabled={transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                void runCloudTranscribe();
+              }}
+              className={floatTopPillBtn(
+                transcribeBusy || !!(linkingTw && !(data?.transcribeAudioUrl || '').trim())
+                  ? 'opacity-50 cursor-wait'
+                  : '',
+              )}
+              title="转文字"
+              aria-label="转文字"
+            >
+              {transcribeBusy || data?.transcribeStatus === 'PROCESSING' ? (
+                <Loader2 className={`h-4 w-4 shrink-0 animate-spin ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              ) : (
+                <Headphones className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`} />
+              )}
+            </button>
+          ) : null}
         </div>
       )}
 
@@ -1258,9 +1299,9 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
             const deltaX = (moveEvent.clientX - startX) / currentZoom;
             const deltaY = (moveEvent.clientY - startY) / currentZoom;
             
-            // 计算新尺寸（最小尺寸约束：280px * 160px）
-            const newW = Math.max(280, startW + deltaX);
-            const newH = Math.max(160, startH + deltaY);
+            // 计算新尺寸（最小/最大约束，避免拖成整屏发糊）
+            const newW = Math.min(TEXT_MODULE_MAX_W, Math.max(MIN_WIDTH, startW + deltaX));
+            const newH = Math.min(TEXT_MODULE_MAX_H, Math.max(MIN_HEIGHT, startH + deltaY));
             sizeRef.current = { w: newW, h: newH };
 
             // 直接操作 DOM，不触发 React 状态更新（非受控样式操作）
@@ -1334,7 +1375,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
 
       {/* 文本内容 */}
       <div
-        className={`flex-1 overflow-hidden flex flex-col min-h-0 ${
+        className={`nowheel flex-1 overflow-hidden flex flex-col min-h-0 ${
           isDictationActive ? 'pt-10' : ''
         }`}
       >
@@ -1363,7 +1404,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
               if (isDictationActive) return;
               handleTextChange(e);
             }}
-            className={`nodrag drag-handle-area w-full h-full bg-transparent resize-none outline-none flex-1 overflow-auto p-2 ${
+            className={`nodrag nowheel drag-handle-area w-full h-full bg-transparent resize-none outline-none flex-1 overflow-auto p-2 ${
               isDarkMode ? 'custom-scrollbar-dark' : 'custom-scrollbar'
             } ${
               isDarkMode 
@@ -1393,7 +1434,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
         ) : (
           <div
             ref={textViewRef}
-            className={`nodrag drag-handle-area w-full h-full flex items-start overflow-auto p-2 relative flex-1 cursor-text ${
+            className={`nodrag nowheel drag-handle-area w-full h-full flex items-start overflow-auto p-2 relative flex-1 cursor-text ${
               isDarkMode ? 'custom-scrollbar-dark' : 'custom-scrollbar'
             } ${
               textAlign === 'left' ? 'justify-start' : textAlign === 'right' ? 'justify-end' : 'justify-center'
@@ -1423,7 +1464,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       </>
       )}
 
-      {/* 模块外下方：对齐/字号等格式悬浮工具栏（转文字在节点顶边正上方居中） */}
+      {/* 模块外下方：对齐/字号等格式悬浮工具栏（话筒/复制/转文字在节点外上方居中） */}
       {showFloatingToolbar && (
         <div
           className="node-floating-toolbar nodrag nopan absolute top-full left-1/2 z-20 mt-1.5 flex w-max max-w-[min(520px,calc(100vw-2rem))] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 overflow-visible"

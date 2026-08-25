@@ -14,6 +14,8 @@ import {
   normalizeGrok3StableDurationSec,
   normalizeGeminiOmniDurationSec,
   normalizeGeminiOmniFlashDurationSec,
+  normalizeMinimaxH3DurationSec,
+  normalizeMinimaxH3AudioDurationSec,
   tryComputeRawVideoCny,
   VIDEO_BILLING_SKU_CNY,
 } from './cost_table.mjs';
@@ -257,6 +259,8 @@ export function getNodePrice(nodeType, data, opts = {}) {
           resolutionLtx23T2v: data.resolutionLtx23T2v != null ? String(data.resolutionLtx23T2v) : undefined,
           durationLtx23I2v: data.durationLtx23I2v != null ? String(data.durationLtx23I2v) : undefined,
           durationLtx23T2v: data.durationLtx23T2v != null ? String(data.durationLtx23T2v) : undefined,
+          durationMinimaxH3: data.durationMinimaxH3 != null ? String(data.durationMinimaxH3) : undefined,
+          resolutionMinimaxH3: data.resolutionMinimaxH3 != null ? String(data.resolutionMinimaxH3) : undefined,
           resolutionWanAnimate:
             data.resolutionWanAnimate != null ? String(data.resolutionWanAnimate) : undefined,
           wanAnimateClipSec: data.wanAnimateClipSec != null ? String(data.wanAnimateClipSec) : undefined,
@@ -448,6 +452,17 @@ const VIDEO_BILLING_DEHYDRATED_TO_CANONICAL = {
   'ltx-2-3': 'ltx-2.3-t2v',
   'ltx-2-3-hdr-multi': 'ltx-2.3-hdr-multi',
   'ltx-2-3-msr-av': 'ltx-2.3-msr-av',
+  'minimax-h3-t2v': 'minimax-h3-t2v',
+  'minimax-h3-i2v': 'minimax-h3-i2v',
+  'minimax-h3-multi': 'minimax-h3-multi',
+  'minimax-h3-audio': 'minimax-h3-audio',
+  'rhart-video-upscaler': 'rhart-video-upscaler',
+  /** RH ai-app 无 billingModelId 时回退到应用 ID → 默认 720p/10s 档由调用方补全 */
+  '2085682347676102657': 'minimax-h3-t2v',
+  '2085687129061019649': 'minimax-h3-i2v',
+  '2085677798773051394': 'minimax-h3-multi',
+  '2086289185186603010': 'minimax-h3-multi',
+  '2086260808442531842': 'minimax-h3-audio',
   'grok-3': 'grok-3',
   'rhart-video-x': 'rhart-video-x',
   'grok-3-stable': 'grok-3-stable',
@@ -524,12 +539,15 @@ function tryParseVideoBillingSku(billingId) {
   }
 
   let audioSuffix = '';
-  const am = s.match(/-(audio|noaudio)$/i);
-  if (am) {
-    const x = am[1].toLowerCase();
-    if (x === 'audio') audioSuffix = 'audio';
-    else if (x === 'noaudio') audioSuffix = 'noaudio';
-    s = s.slice(0, -am[0].length);
+  // 勿把模型名 minimax-h3-audio 的尾缀误当成计费 audio/noaudio 后缀
+  if (!VIDEO_BILLING_DEHYDRATED_TO_CANONICAL[s]) {
+    const am = s.match(/-(audio|noaudio)$/i);
+    if (am) {
+      const x = am[1].toLowerCase();
+      if (x === 'audio') audioSuffix = 'audio';
+      else if (x === 'noaudio') audioSuffix = 'noaudio';
+      s = s.slice(0, -am[0].length);
+    }
   }
 
   let durationSec = 0;
@@ -654,6 +672,25 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
     else out.resolutionLtx23T2v = '720';
     if (durationSec > 0) out.durationLtx23T2v = String(durationSec);
     else out.durationLtx23T2v = '10';
+  } else if (
+    baseModel === 'minimax-h3-t2v' ||
+    baseModel === 'minimax-h3-i2v' ||
+    baseModel === 'minimax-h3-multi'
+  ) {
+    out.model = baseModel;
+    out.resolutionMinimaxH3 = '720p'; // 仅 720P；旧 SKU 含 1080p 亦按 720p 计价维度解析
+    out.durationMinimaxH3 = String(normalizeMinimaxH3DurationSec(durationSec > 0 ? durationSec : 10, 10));
+  } else if (baseModel === 'minimax-h3-audio') {
+    out.model = baseModel;
+    out.resolutionMinimaxH3 = '720p';
+    out.durationMinimaxH3 = String(
+      normalizeMinimaxH3AudioDurationSec(durationSec > 0 ? durationSec : 20, 20),
+    );
+  } else if (baseModel === 'rhart-video-upscaler') {
+    out.model = baseModel;
+    const r = String(mid || '').trim().toLowerCase();
+    out.targetResolution =
+      r === '720p' || r === '1080p' || r === '2k' || r === '4k' ? r : '1080p';
   } else if (baseModel === 'ltx-2.3-hdr-multi') {
     const parts = mid.split('-');
     const res = parts.find((p) => p === '720' || p === '1280' || p === '1920');
@@ -799,31 +836,31 @@ function tryNxModelConfigVideo(mNorm, nodeData, nxMap) {
 
 /**
  * FC run-task 单次扣费元宝（整数）。
- * - 若 ctx.modelConfigMap 来自 Tablestore listModelConfig（与 /model-config 同源），则 **优先按表扣费**，与客户端预估、后台改价一致。
- * - llm：表无行时用环境变量档位（与 NX_CHAT_COST 一致）。
- * - image / video / audio：表无行时回退 cost_table（CNY×倍率）；无法定价时抛 ModelNotPricedError。
+ * - **强制**使用 Tablestore `nx_model_config`（与 /model-config 同源）；取不到表或无对应行则抛 ModelNotPricedError。
+ * - **禁止**回退 cost_table / MODEL_YUANBAO_RATES / 环境变量默认档（OTS 价会变，本地价不可靠）。
  *
  * @param {string} modelId 与前端节点 data.model 或 LLM body.model 一致
  * @param {{
  *   taskType: 'llm'|'image'|'video'|'audio';
  *   nodeData?: Record<string, unknown>;
  *   modelConfigMap?: Record<string, NxModelConfigRowLike> | null;
- * }} ctx modelConfigMap 为 OTS nx_model_config（与 /model-config 同源）时优先按表扣费
+ * }} ctx modelConfigMap 必须为 OTS nx_model_config
  * @returns {number}
  */
 export function getFinalPrice(modelId, ctx) {
-  const env = typeof process !== 'undefined' && process.env ? process.env : {};
   const taskType = ctx?.taskType;
   const nodeData = ctx?.nodeData && typeof ctx.nodeData === 'object' ? ctx.nodeData : {};
   const nxMap = ctx?.modelConfigMap && typeof ctx.modelConfigMap === 'object' ? ctx.modelConfigMap : null;
+
+  if (!nxMap) {
+    throw new ModelNotPricedError(String(modelId || '').trim(), taskType || 'unknown', 'ots_config_unavailable');
+  }
 
   if (taskType === 'llm') {
     const mid = String(modelId || '').trim() || 'gpt-3.5-turbo';
     const fromNx = tryNxModelConfigById(nxMap, mid, 1);
     if (fromNx != null) return fromNx;
-    const rate = resolveModelYuanbao(mid, 0);
-    if (rate && Number(rate.yuanbao) > 0) return Math.max(1, Math.round(Number(rate.yuanbao)));
-    return getCloudDeductYuanbao('llm', env);
+    throw new ModelNotPricedError(mid, 'llm', 'ots_row_missing');
   }
 
   const mNorm = normalizeVideoBillingModelId(modelId);
@@ -834,58 +871,19 @@ export function getFinalPrice(modelId, ctx) {
   if (taskType === 'image') {
     const fromNx = tryNxModelConfigImage(mNorm, nodeData, nxMap);
     if (fromNx != null) return fromNx;
-    const resRaw = nodeData.resolution;
-    const res =
-      (typeof resRaw === 'string' && resRaw.trim()) ||
-      (resRaw != null && String(resRaw).trim()) ||
-      mapImageSizeHint(nodeData.image_size) ||
-      mapImageSizeHint(nodeData.size);
-    const cnyUnit = getImagePrice({ model: mNorm, resolution: res }, {});
-    const imageKey = resolveImageBillingModelId(mNorm);
-    const mult = IMAGE_BILLING_MULTIPLIER_BY_MODEL[imageKey] ?? 1;
-    return cnyToYuanbaoInt(cnyUnit * mult, env);
+    throw new ModelNotPricedError(mNorm, 'image', 'ots_row_missing');
   }
 
   if (taskType === 'video') {
-    if (nxMap) {
-      const fromNx = tryNxModelConfigVideo(mNorm, nodeData, nxMap);
-      if (fromNx != null) return fromNx;
-    }
-    const parsed = tryParseVideoBillingSku(mNorm);
-    const effectiveModel = normalizeVideoBillingModelId(parsed ? parsed.baseModel : mNorm);
-    const ndRaw = /** @type {Record<string, unknown>} */ (nodeData && typeof nodeData === 'object' ? nodeData : {});
-    const nd = /** @type {Record<string, unknown>} */ (parsed ? applyVideoSkuToNodeData(parsed, { ...ndRaw }) : ndRaw);
-    const cny = getVideoPrice(
-      {
-        model: effectiveModel,
-        duration: /** @type {'5'|'10'|'15'|'25'|undefined} */ (nd.duration != null ? String(nd.duration) : undefined),
-        sound: /** @type {'true'|'false'|undefined} */ (nd.sound != null ? String(nd.sound) : undefined),
-        durationHailuo02: /** @type {'6'|'10'|undefined} */ (nd.durationHailuo02 != null ? String(nd.durationHailuo02) : undefined),
-        resolutionHailuo: /** @type {'720p'|'1080p'|'4k'|undefined} */ (nd.resolutionHailuo != null ? String(nd.resolutionHailuo) : undefined),
-        durationKlingO1: /** @type {'5'|'10'|undefined} */ (nd.durationKlingO1 != null ? String(nd.durationKlingO1) : undefined),
-        modeKlingO1: /** @type {'std'|'pro'|undefined} */ (nd.modeKlingO1 != null ? String(nd.modeKlingO1) : undefined),
-        resolutionRhartV31: /** @type {'720p'|'1080p'|'4k'|undefined} */ (nd.resolutionRhartV31 != null ? String(nd.resolutionRhartV31) : undefined),
-        resolutionWan26: /** @type {'720p'|'1080p'|undefined} */ (nd.resolutionWan26 != null ? String(nd.resolutionWan26) : undefined),
-        durationWan26Flash: nd.durationWan26Flash != null ? String(nd.durationWan26Flash) : undefined,
-        enableAudio: /** @type {boolean|undefined} */ (nd.enableAudio),
-        durationVeo31ProOfficial: /** @type {'4'|'6'|'8'|undefined} */ (nd.durationVeo31ProOfficial != null ? String(nd.durationVeo31ProOfficial) : undefined),
-        generateAudioVeo31ProOfficial: /** @type {boolean|undefined} */ (nd.generateAudioVeo31ProOfficial),
-        resolutionLtx23Lipsync: nd.resolutionLtx23Lipsync != null ? String(nd.resolutionLtx23Lipsync) : undefined,
-        resolutionLtx23I2v: nd.resolutionLtx23I2v != null ? String(nd.resolutionLtx23I2v) : undefined,
-        resolutionLtx23T2v: nd.resolutionLtx23T2v != null ? String(nd.resolutionLtx23T2v) : undefined,
-        durationLtx23I2v: nd.durationLtx23I2v != null ? String(nd.durationLtx23I2v) : undefined,
-        durationLtx23T2v: nd.durationLtx23T2v != null ? String(nd.durationLtx23T2v) : undefined,
-      },
-      {},
-    );
-    return cnyToYuanbaoInt(cny, env);
+    const fromNx = tryNxModelConfigVideo(mNorm, nodeData, nxMap);
+    if (fromNx != null) return fromNx;
+    throw new ModelNotPricedError(mNorm, 'video', 'ots_row_missing');
   }
 
   if (taskType === 'audio') {
     const fromNx = tryNxModelConfigById(nxMap, mNorm, 1);
     if (fromNx != null) return fromNx;
-    const cny = getAudioPrice(mNorm, {});
-    return cnyToYuanbaoInt(cny, env);
+    throw new ModelNotPricedError(mNorm, 'audio', 'ots_row_missing');
   }
 
   throw new ModelNotPricedError(mNorm, 'unknown', 'invalid taskType');

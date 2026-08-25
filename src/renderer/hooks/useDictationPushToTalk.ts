@@ -35,7 +35,8 @@ export function useDictationPushToTalk(opts: UseDictationPushToTalkOptions): {
     const o = optsRef.current;
     if (o.disabled || heldRef.current) return;
     const st = statusRef.current;
-    if (st === 'connecting' || st === 'listening' || st === 'stopping') return;
+    // connecting / stopping 允许重入：第二次按住必须能打断卡死的转圈
+    if (st === 'listening') return;
     if (o.canStart && !o.canStart()) return;
     heldRef.current = true;
     void o.start().then((ok) => {
@@ -49,12 +50,14 @@ export function useDictationPushToTalk(opts: UseDictationPushToTalkOptions): {
     if (!heldRef.current) return;
     heldRef.current = false;
     const st = statusRef.current;
-    if (st === 'listening') {
+    if (st === 'listening' || st === 'stopping') {
       void optsRef.current.stop();
-    } else {
-      // connecting / idle：cancel 会 bump gen，中止进行中的 start
-      optsRef.current.cancel();
+      return;
     }
+    // connecting：不要 cancel。否则「按住→等 FC 建连→误以为松开就没了」会把启动掐死，体感完全无效果。
+    // start().then 里若发现已松手会自动 stop。
+    if (st === 'connecting') return;
+    optsRef.current.cancel();
   }, []);
 
   const pointerHandlers = useMemo(

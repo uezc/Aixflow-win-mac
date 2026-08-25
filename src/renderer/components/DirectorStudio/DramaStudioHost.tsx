@@ -5,7 +5,6 @@
  */
 
 import React, {
-  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -354,7 +353,8 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
 
     let base: DramaDirectorSession;
     if (hasPersistedDomain) {
-      base = createEmptyDramaSession(sessionProp || undefined);
+      // sessionProp 已由写回链路规范化，直接引用避免每次深重建（否则视频生成进度对账会卡死/OOM）
+      base = sessionProp as DramaDirectorSession;
     } else if ((pipeline.shots || []).length > 0) {
       // 仅当 V1 镜头表有真实数据时才迁移；空 pipeline 不得虚构分集
       base = migrateDramaV1ToDomainV2(pipeline);
@@ -388,6 +388,10 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     // 自动分集只走「画布连线 / 用户粘贴上传」；此处不再根据 pipeline 文本偷偷灌分集
     return applyDramaLegacyUserFlowNotice(base);
   }, [sessionProp, pipeline]);
+
+  // 最新 session 引用：分析等异步任务写回时读取用户当前停留的 phase，避免完成后强制拽回
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
 
   const [draftNovel, setDraftNovel] = useState(
     () =>
@@ -524,7 +528,11 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
   const patchSession = useCallback(
     (
       next: DramaDirectorSession,
-      opts?: { storyboardsByShotNo?: DirectorPipelineState['storyboardsByShotNo'] },
+      opts?: {
+        storyboardsByShotNo?: DirectorPipelineState['storyboardsByShotNo'];
+        /** 步骤切换等未改动 bible 资产时跳过 V2→V1 资产投影，避免卡顿 */
+        skipAssetsProjection?: boolean;
+      },
     ) => {
       const seriesName = stripDramaEpisodeTitleSuffix(next.bible?.project?.name || '');
       const cleaned =
@@ -546,9 +554,20 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         meta: { ...cleaned.meta, chatModel: resolvedChat },
       };
       // 分析页单元格编辑很频繁：勿每次深拷贝整会话，否则输入会卡死
+      if ((window as any).__patchTraceN == null) (window as any).__patchTraceN = 0;
+      if ((window as any).__patchTraceN < 4) {
+        (window as any).__patchTraceN += 1;
+        console.log(
+          `[perf] patchSession#${(window as any).__patchTraceN} 调用堆栈:`,
+          new Error().stack,
+        );
+      }
+      const __perfOnSessionChangeStart = performance.now();
       onSessionChange(withChat);
-      // pipeline 同步降到 transition，避免挡输入/点击首帧
-      startTransition(() => {
+      console.log('[perf] onSessionChange耗时(ms)', (performance.now() - __perfOnSessionChangeStart).toFixed(1));
+      // 同步 onPipelinePatch 让 React 18 自动批处理，避免步骤切换渲染两次
+      {
+        const __perfOnPipelinePatchStart = performance.now();
         const pipePhase =
           withChat.meta.phase === 'ingest'
             ? 'ingest'
@@ -592,7 +611,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
           isGenerating: next.meta.isGenerating,
           error: next.meta.error,
           activeDramaEpisodeId: withChat.active_episode_id || '',
-          assets: mergeDramaPipelineAssetsFromSession(withChat, pipeline.assets),
+          assets: opts?.skipAssetsProjection
+            ? pipeline.assets
+            : mergeDramaPipelineAssetsFromSession(withChat, pipeline.assets),
           storyboardsByShotNo: migrateBareDirectorStoryboardsToEpisode(
             boardsSrc,
             String(
@@ -600,7 +621,8 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             ).trim(),
           ),
         });
-      });
+        console.log('[perf] onPipelinePatch耗时(ms)', (performance.now() - __perfOnPipelinePatchStart).toFixed(1));
+      }
     },
     [onSessionChange, onPipelinePatch, pipeline, chatModel],
   );
@@ -708,6 +730,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
   }, [phase]);
 
   const goPhase = (p: DramaDomainPhase) => {
+    const __perfGoPhaseStart = performance.now();
     let target = p === 'videos' ? 'board' : p;
     const targetUser = domainPhaseToUserPhase(target);
 
@@ -796,8 +819,14 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       next = confirmDramaAssets(next);
     }
     if (target === 'board' || target === 'review') next = refreshDramaContinuity(next);
-    if (target === 'board') next = refreshDramaPackages(next);
-    patchSession(next);
+    // packages 进入分镜页不被 UI 读取，出片时（spawnOneShot/spawnAllShots）会重新刷新；此处不再预热整批 package，避免步骤切换卡顿
+    // 步骤切换不改 bible 资产，跳过 V2→V1 资产投影
+    console.log('[perf] goPhase 处理耗时(ms)', (performance.now() - __perfGoPhaseStart).toFixed(1));
+    patchSession(next, { skipAssetsProjection: true });
+    console.log('[perf] goPhase 总耗时含patchSession(ms)', (performance.now() - __perfGoPhaseStart).toFixed(1));
+    requestAnimationFrame(() => {
+      console.log('[perf] goPhase→首帧渲染完成(ms)', (performance.now() - __perfGoPhaseStart).toFixed(1));
+    });
   };
 
   const openEpisodeEditor = (ep: DramaEpisode) => {
@@ -922,7 +951,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         ),
       };
     }
-    const targetText = String(ep.text || '').trim();
+    // 进入「当前集」分析时用正在编辑的草稿，避免用 render 时的旧 text 覆盖新输入
+    const isCurrent = !!activeEpisode && activeEpisode.episode_id === ep.episode_id;
+    const targetText = (isCurrent ? episodeDraft : String(ep.text || '')).trim();
     const next = setDramaSessionPhase(
       activateDramaEpisode(
         {
@@ -1473,7 +1504,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
           source_script: source,
           source_novel: session.meta.source_novel || draftNovel,
           chatModel: String(pipeline.chatModel || chatModel || analyzedSession.meta.chatModel || '').trim(),
-          phase: 'analyze',
+          phase: sessionRef.current.meta.phase,
           analyze_confirmed: false,
           board_confirmed_at: 0,
           assets_confirmed_at: 0,
@@ -2680,17 +2711,16 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                   />
                   {analyzing ? (
                     <div
-                      className={`absolute inset-0 z-40 flex flex-col items-center justify-center gap-3 ${
-                        isDark ? 'bg-[#111113]/70' : 'bg-white/75'
+                      className={`absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 rounded-lg px-3 py-2 ${
+                        isDark ? 'bg-[#111113]/80 text-sky-200' : 'bg-white/85 text-sky-700'
                       }`}
+                      style={{ pointerEvents: 'none' }}
                     >
                       <Loader2
-                        className={`h-12 w-12 animate-spin ${isDark ? 'text-sky-300' : 'text-sky-600'}`}
+                        className={`h-4 w-4 animate-spin ${isDark ? 'text-sky-300' : 'text-sky-600'}`}
                         strokeWidth={2.25}
                       />
-                      <div className={`text-[16px] font-medium ${isDark ? 'text-white/90' : 'text-gray-800'}`}>
-                        {analyzingHint}
-                      </div>
+                      <span className="text-[13px] font-medium">{analyzingHint} · 可继续操作其它步骤</span>
                     </div>
                   ) : null}
                 </div>
@@ -6235,7 +6265,7 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
 });
 
 /** 分镜卡右侧：单镜视频生成槽（可选手动视频模型 + 按模型挡位向上取整） */
-function DramaShotVideoSlot({
+const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
   shot,
   session,
   pipeline,
@@ -6463,7 +6493,7 @@ function DramaShotVideoSlot({
       </div>
     </section>
   );
-}
+});
 
 /** 判断元素是否在滚动容器（或浏览器视口）可见区域内 */
 function isElementInScrollViewport(
@@ -6501,7 +6531,8 @@ function DramaViewportMount({
   shellIndex?: number;
   shellClassName?: string;
   placeholder?: React.ReactNode;
-  children: React.ReactNode;
+  /** 惰性求值：视口外不创建 children 的 JSX，避免 16 镜同时 render 把主线程占满 */
+  children: () => React.ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const unmountTimerRef = useRef(0);
@@ -6592,7 +6623,7 @@ function DramaViewportMount({
       className={shellClassName}
       style={{ minHeight: minHeightPx }}
     >
-      {visible ? children : placeholder}
+      {visible ? children() : placeholder}
     </div>
   );
 }
@@ -7125,14 +7156,15 @@ function DramaBoardPanel({
     );
   };
 
-  const setShotVideoModel = (shotNo: string, raw: string) => {
+  const setShotVideoModel = useCallback((shotNo: string, raw: string) => {
     const no = String(shotNo || '').trim();
     if (!no) return;
     const nextModel = normalizeDramaSupportedVideoModel(raw);
+    const base = sessionRef.current;
     onChange(
       createEmptyDramaSession({
-        ...session,
-        shots: session.shots.map((s) =>
+        ...base,
+        shots: base.shots.map((s) =>
           String(s.shot_no || '').trim() === no
             ? {
                 ...s,
@@ -7142,9 +7174,9 @@ function DramaBoardPanel({
         ),
       }),
     );
-  };
+  }, [onChange]);
 
-  const patchShotById = (shotId: string, patch: Partial<DramaShot>) => {
+  const patchShotById = useCallback((shotId: string, patch: Partial<DramaShot>) => {
     const id = String(shotId || '').trim();
     if (!id) return;
     const base = sessionRef.current;
@@ -7166,7 +7198,7 @@ function DramaBoardPanel({
     }
     sessionRef.current = next;
     onChange(next);
-  };
+  }, [onChange]);
 
   const commitShotListEdit = (
     nextSession: DramaDirectorSession,
@@ -7238,10 +7270,11 @@ function DramaBoardPanel({
     });
   };
 
-  const spawnOneShot = (shotNo: string, pickedModel?: string, opts?: { skipOptimizeGate?: boolean }) => {
+  const spawnOneShot = useCallback((shotNo: string, pickedModel?: string, opts?: { skipOptimizeGate?: boolean }) => {
+    const base = sessionRef.current;
     const no = String(shotNo || '').trim();
     if (!no) return;
-    const shot = shots.find((s) => String(s.shot_no || '').trim() === no);
+    const shot = base.shots.find((s) => String(s.shot_no || '').trim() === no);
     const hasOptimized = !!String(shot?.h3_skill_prompt || '').trim();
     if (!hasOptimized && !opts?.skipOptimizeGate) {
       showAlert('请先完成本镜「提示词优化」，再生成视频');
@@ -7259,13 +7292,13 @@ function DramaBoardPanel({
       return;
     }
     if (shot) {
-      const synced = syncDramaShotCharacterIds(session, shot);
+      const synced = syncDramaShotCharacterIds(base, shot);
       if (
         (synced.character_ids || []).join(',') !== (shot.character_ids || []).join(',')
       ) {
         patchShotById(shot.shot_id, { character_ids: synced.character_ids });
       }
-      const castErr = formatDramaShotCastGateError(session, synced);
+      const castErr = formatDramaShotCastGateError(base, synced);
       if (castErr) {
         showAlert(castErr);
         return;
@@ -7275,7 +7308,7 @@ function DramaBoardPanel({
     const hasAudio = !!String(shot?.audio_url || '').trim();
     const videoModelForShot = normalizeDramaSupportedVideoModel(
       pickedModel ||
-        resolveDramaShotVideoModel(shot?.model_params, session.meta.videoBatchModel, {
+        resolveDramaShotVideoModel(shot?.model_params, base.meta.videoBatchModel, {
           hasDialogue: hasDlg,
           hasShotAudio: hasAudio,
         }),
@@ -7288,7 +7321,7 @@ function DramaBoardPanel({
       );
       return;
     }
-    let next = refreshDramaPackages(sessionRef.current, videoModelForShot);
+    let next = refreshDramaPackages(base, videoModelForShot);
     next = {
       ...next,
       shots: next.shots.map((s) =>
@@ -7319,7 +7352,7 @@ function DramaBoardPanel({
             shotModels: { [no]: videoModelForShot },
           },
     );
-  };
+  }, [videoGeneratingIds, videoGenEnabled, variant, showAlert, patchShotById, onSpawnVideos, onMarkVideoGenerating, onChange]);
 
   const shotNeedsBatchVideo = (s: DramaShot) => {
     const no = String(s.shot_no || '').trim();
@@ -7691,12 +7724,13 @@ function DramaBoardPanel({
           )
         }
       >
-      <article
-        key={s.shot_id}
-        className={`${cardCls(isDark)} overflow-hidden ${
-          fill ? 'flex min-h-0 flex-1 flex-col' : ''
-        }`}
-      >
+        {() => (
+          <article
+            key={s.shot_id}
+            className={`${cardCls(isDark)} overflow-hidden ${
+              fill ? 'flex min-h-0 flex-1 flex-col' : ''
+            }`}
+          >
         <div
           className={`flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5 border-b px-2.5 py-1 ${
             isDark ? 'border-white/10 bg-white/[0.03]' : 'border-gray-100 bg-gray-50/80'
@@ -7980,6 +8014,7 @@ function DramaBoardPanel({
           </div>
         </div>
       </article>
+        )}
       </DramaViewportMount>
     );
   };

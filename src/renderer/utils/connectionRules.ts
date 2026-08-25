@@ -1,5 +1,5 @@
 import { HIDE_SORA2_AND_SORA_CHARACTER_UI } from '../config/sora2UiPolicy';
-import { HIDE_DIRECTOR_STAGE_UI } from '../config/directorUiPolicy';
+import { HIDE_DIRECTOR_DRAMA_UI, HIDE_DIRECTOR_STAGE_UI } from '../config/directorUiPolicy';
 import {
   isDigitalHumanAudioOutputHandle,
   isDigitalHumanVideoOutputHandle,
@@ -27,6 +27,7 @@ export const MENU_TYPE_TO_NODE_TYPE: Record<string, string> = {
   storyboardScript: 'storyboardScript',
   script: 'script',
   director: 'director',
+  directorDrama: 'directorDrama',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -49,6 +50,7 @@ export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
   storyboardScript: 'storyboardScript',
   script: 'script',
   director: 'director',
+  directorDrama: 'directorDrama',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -75,19 +77,19 @@ const FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE: Record<string, string[]> = {
   video: ['textSplit', 'rvcTrain', 'script'], // 允许 video -> text（转写）、image、audio、videoSplice、llm、storyboardScript 等
   wanAnimate: ['textSplit', 'rvcTrain', 'script'],
   heyGem: ['textSplit', 'rvcTrain', 'script'],
-  videoSplice: ['text', 'llm', 'textSplit', 'character', 'rvcTrain', 'storyboardScript', 'script', 'director'],
+  videoSplice: ['text', 'llm', 'textSplit', 'character', 'rvcTrain', 'storyboardScript', 'script', 'director', 'directorDrama'],
   // 角色模块：仅连到 图片 / 视频 / 视频换人 / 声音（由目标类型决定传参）
-  character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'rvcTrain', 'storyboardScript', 'script', 'director'],
-  // audio → director 允许（MV 吸收音乐）；其余保持禁止
+  character: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'rvcTrain', 'storyboardScript', 'script', 'director', 'directorDrama'],
+  // audio → director / directorDrama 允许（MV 吸收音乐；短剧亦可接文本旁白等）；其余保持禁止
   audio: ['llm', 'textSplit', 'image', 'character', 'photoCollage', 'gridMap', 'imageComparer', 'storyboardScript', 'script'],
-  rvcTrain: ['text', 'llm', 'textSplit', 'image', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'heyGem', 'storyboardScript', 'script', 'director'],
-  digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'rvcTrain', 'storyboardScript', 'script', 'director'],
+  rvcTrain: ['text', 'llm', 'textSplit', 'image', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'heyGem', 'storyboardScript', 'script', 'director', 'directorDrama'],
+  digitalHuman: ['text', 'llm', 'textSplit', 'character', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'rvcTrain', 'storyboardScript', 'script', 'director', 'directorDrama'],
   // 分镜脚本：可拖线创建/连到 图片、视频、文本、LLM 等下游模型
-  storyboardScript: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'storyboardScript', 'script', 'director'],
+  storyboardScript: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'storyboardScript', 'script', 'director', 'directorDrama'],
   // 剧本：主要连到导演 / 文本 / LLM
   script: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'image', 'video', 'wanAnimate', 'storyboardScript'],
   // 导演：可连到图片、视频、剪辑、文本、LLM
-  director: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director'],
+  director: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director', 'directorDrama'],
 };
 
 /** 从源节点类型看：不能连到的目标节点 type（用于 isValidConnection） */
@@ -168,6 +170,7 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'storyboardScript',
     'script',
     'director',
+    'directorDrama',
   ],
   script: [
     'character',
@@ -200,11 +203,28 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'storyboardScript',
     'script',
     'director',
+    'directorDrama',
+  ],
+  directorDrama: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'imageTo3d',
+    'audioTranscribe',
+    'cameraControl',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
   ],
   cameraControl: ['minimalistText', 'text', 'llm', 'textSplit', 'video', 'character', 'audio', 'cameraControl'], // 旧项目兼容：3D 只能连到 image
 };
 
-const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'director', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
+const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'director', 'directorDrama', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
 
 /** 四视图勾选：显式 boolean[4]；缺省视为旧数据「未存勾选」 */
 export function parseReferenceTransmitSlots(raw: unknown): boolean[] | null {
@@ -244,7 +264,60 @@ export function getCharacterTransmitImageUrls(characterData: Record<string, unkn
   return avatar ? [avatar] : [];
 }
 
-/** 拖线到目标前：校验角色当前数据是否满足该目标（勾选张数 / 是否有参考音） */
+/** 角色卡参考音传出到视频：默认不勾选（与四视图显式勾选对称） */
+export const DEFAULT_REFERENCE_TRANSMIT_AUDIO = false;
+
+/** 角色形象描述传出到图片/视频 prompt：默认不勾选 */
+export const DEFAULT_REFERENCE_TRANSMIT_PROMPT = false;
+
+/** 角色卡是否勾选「传给视频当参考音」 */
+export function isCharacterReferenceAudioTransmitEnabled(
+  characterData: Record<string, unknown> | undefined,
+): boolean {
+  return characterData?.referenceTransmitAudio === true;
+}
+
+/** 角色卡是否勾选「传形象描述到图片/视频 prompt」 */
+export function isCharacterReferencePromptTransmitEnabled(
+  characterData: Record<string, unknown> | undefined,
+): boolean {
+  return characterData?.referenceTransmitPrompt === true;
+}
+
+/** 勾选且存在形象描述时返回可传出的 prompt 文本 */
+export function getCharacterTransmitPrompt(
+  characterData: Record<string, unknown> | undefined,
+): string {
+  if (!characterData || !isCharacterReferencePromptTransmitEnabled(characterData)) return '';
+  return typeof characterData.imageDescription === 'string'
+    ? characterData.imageDescription.trim()
+    : '';
+}
+
+/** 角色卡上的声音片段 URL（voiceClip / referenceAudioUrl），不看勾选 */
+export function getCharacterVoiceClipUrl(
+  characterData: Record<string, unknown> | undefined,
+): string {
+  if (!characterData) return '';
+  const voice = typeof characterData.voiceClip === 'string' ? characterData.voiceClip.trim() : '';
+  if (voice) return voice;
+  const ref =
+    typeof characterData.referenceAudioUrl === 'string' ? characterData.referenceAudioUrl.trim() : '';
+  return ref || '';
+}
+
+/**
+ * 勾选且存在参考音时返回可传出的 URL（用于「角色 → 视频」参考音）。
+ * 「角色 → 音频」请用 getCharacterVoiceClipUrl：有声音即传，不依赖勾选。
+ */
+export function getCharacterTransmitAudioUrl(
+  characterData: Record<string, unknown> | undefined,
+): string {
+  if (!characterData || !isCharacterReferenceAudioTransmitEnabled(characterData)) return '';
+  return getCharacterVoiceClipUrl(characterData);
+}
+
+/** 拖线到目标前：校验角色当前数据是否满足该目标（勾选张数等） */
 export function isCharacterConnectionDataValid(
   targetNodeType: string,
   characterData: Record<string, unknown> | undefined
@@ -255,12 +328,12 @@ export function isCharacterConnectionDataValid(
     return getCharacterTransmitImageUrls(characterData).length >= 1;
   }
   if (tgt === 'video' || tgt === 'wanAnimate') {
+    // 视频仍要求至少 1 张勾选图；参考音为可选附加（由 referenceTransmitAudio 门控）
     return getCharacterTransmitImageUrls(characterData).length >= 1;
   }
   if (tgt === 'audio') {
-    const refUrl =
-      String(characterData.voiceClip ?? '').trim() || String(characterData.referenceAudioUrl ?? '').trim();
-    return !!refUrl;
+    // 有/无声音均可连线；有声音时由边同步写入参考音，无声音不报错、不写空
+    return true;
   }
   return false;
 }
@@ -316,7 +389,9 @@ export function getAllowedMenuTypes(
         types = types.filter((t) => t !== 'character');
       }
       if (HIDE_DIRECTOR_STAGE_UI) {
-        types = types.filter((t) => t !== 'director');
+        types = types.filter((t) => t !== 'director' && t !== 'directorDrama');
+      } else if (HIDE_DIRECTOR_DRAMA_UI) {
+        types = types.filter((t) => t !== 'directorDrama');
       }
       types = types.filter((t) => t !== 'imageTo3d' && t !== 'imageComparer');
       return filterHeyGemFromMenuTypes(sourceNodeType, types);
@@ -365,7 +440,9 @@ export function getAllowedMenuTypes(
     types = types.filter((t) => t !== 'character');
   }
   if (HIDE_DIRECTOR_STAGE_UI) {
-    types = types.filter((t) => t !== 'director');
+    types = types.filter((t) => t !== 'director' && t !== 'directorDrama');
+  } else if (HIDE_DIRECTOR_DRAMA_UI) {
+    types = types.filter((t) => t !== 'directorDrama');
   }
   // 图片转 3D / 图片对比：仅允许从图片节点拖线创建
   if (sourceNodeType !== 'image') {
@@ -448,6 +525,7 @@ export function isConnectionAllowed(
   if (src === 'script') {
     return (
       tgt === 'director' ||
+      tgt === 'directorDrama' ||
       tgt === 'llm' ||
       tgt === 'minimalistText' ||
       tgt === 'text' ||
@@ -455,7 +533,7 @@ export function isConnectionAllowed(
       tgt === 'storyboardScript'
     );
   }
-  if (src === 'director') {
+  if (src === 'director' || src === 'directorDrama') {
     return (
       tgt === 'image' ||
       tgt === 'video' ||
@@ -478,6 +556,15 @@ export function isConnectionAllowed(
       src === 'llm' ||
       src === 'textSplit' ||
       src === 'audio'
+    );
+  }
+  if (tgt === 'directorDrama') {
+    return (
+      src === 'script' ||
+      src === 'minimalistText' ||
+      src === 'text' ||
+      src === 'llm' ||
+      src === 'textSplit'
     );
   }
   const forbidden = FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE[src];

@@ -94,6 +94,11 @@ export type AudioInputPanelStrings = {
   /** 已接入参考音时的 @ 标签 */
   linkedRefAudioTag: string;
   linkedRefAudioTagTitle: string;
+  /** 多路参考音：第 n 路标签兜底名（无文件名时） */
+  linkedRefAudioTagN: (n: number) => string;
+  linkedRefAudioTagTitleN: (n: number, max: number) => string;
+  /** 多路参考音数量徽标，如 参考音 2/3 */
+  linkedRefAudioCountBadge: (cur: number, max: number) => string;
   /** 已接入原曲时的 @ 标签 */
   linkedSourceSongTag: string;
   linkedSourceSongTagTitle: string;
@@ -163,15 +168,15 @@ const zh: AudioInputPanelStrings = {
   selectFileTitle: '选择本地参考音文件（MP3/WAV 等）',
   selectFileAria: '选择参考音文件',
   selectFileButton: '选择文件',
-  recordReferenceTitle: '使用麦克风录制参考音（需授权），再次点击停止并保存',
-  recordReferenceAria: '录制参考音',
+  recordReferenceTitle: '按住录音，松开结束并保存（需麦克风授权）',
+  recordReferenceAria: '按住录制参考音',
   recordReferenceButton: '录音',
-  stopRecordingButton: '停止',
+  stopRecordingButton: '松开保存',
   micPermissionDenied: '无法使用麦克风：请在系统设置中允许本应用访问麦克风，或检查是否被其他程序占用。',
   micSaveFailed: '录音保存失败，请重试或改用「选择文件」。',
-  recordTooShort: '录音过短，请重新录制。',
+  recordTooShort: '录音过短，请按住麦克风稍后再松开。',
   recordModalTitle: '正在录制参考音',
-  recordModalSubtitle: '实时音量波形（点击停止或下方按钮结束并保存）',
+  recordModalSubtitle: '按住麦克风录音，松开结束并保存',
   recordModalStop: '停止并保存',
   priceTitle: '单次生成预估消耗元宝（优先 nx_model_config 云端表）',
   creditsSuffix: '元宝',
@@ -195,6 +200,9 @@ const zh: AudioInputPanelStrings = {
   linkedTextTagTitle: '已接入文本节点',
   linkedRefAudioTag: '参考音',
   linkedRefAudioTagTitle: '已接入参考音频',
+  linkedRefAudioTagN: (n) => `参考音${n}`,
+  linkedRefAudioTagTitleN: (n, max) => `已接入第 ${n} 路参考音频（最多 ${max} 路）`,
+  linkedRefAudioCountBadge: (cur, max) => `参考音 ${cur}/${max}`,
   linkedSourceSongTag: '原曲',
   linkedSourceSongTagTitle: '已接入原曲音频',
   voiceTranscribing: '正在将语音转为文字…',
@@ -263,15 +271,15 @@ const en: AudioInputPanelStrings = {
   selectFileTitle: 'Choose local audio (MP3/WAV, etc.)',
   selectFileAria: 'Choose reference file',
   selectFileButton: 'Choose file',
-  recordReferenceTitle: 'Record reference with microphone (permission required). Click again to stop and save.',
-  recordReferenceAria: 'Record reference audio',
+  recordReferenceTitle: 'Hold to record, release to save (microphone permission required)',
+  recordReferenceAria: 'Hold to record reference audio',
   recordReferenceButton: 'Record',
-  stopRecordingButton: 'Stop',
+  stopRecordingButton: 'Release to save',
   micPermissionDenied: 'Microphone unavailable. Allow this app in system settings, or check if another app is using the mic.',
   micSaveFailed: 'Could not save recording. Try again or use “Choose file”.',
-  recordTooShort: 'Recording too short. Please try again.',
+  recordTooShort: 'Recording too short. Hold the mic a bit longer, then release.',
   recordModalTitle: 'Recording reference audio',
-  recordModalSubtitle: 'Live waveform — click Stop or the button below to finish and save.',
+  recordModalSubtitle: 'Hold the mic to record, release to finish and save.',
   recordModalStop: 'Stop & save',
   priceTitle: 'Estimated credits per generation (nx_model_config)',
   creditsSuffix: 'credits',
@@ -295,6 +303,9 @@ const en: AudioInputPanelStrings = {
   linkedTextTagTitle: 'Linked text node',
   linkedRefAudioTag: 'Reference audio',
   linkedRefAudioTagTitle: 'Linked reference audio',
+  linkedRefAudioTagN: (n) => `Ref audio ${n}`,
+  linkedRefAudioTagTitleN: (n, max) => `Linked reference audio ${n} of ${max}`,
+  linkedRefAudioCountBadge: (cur, max) => `Ref audio ${cur}/${max}`,
   linkedSourceSongTag: 'Source song',
   linkedSourceSongTagTitle: 'Linked source song',
   voiceTranscribing: 'Converting speech to text…',

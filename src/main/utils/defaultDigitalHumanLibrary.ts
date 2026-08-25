@@ -125,9 +125,45 @@ function copyDirRecursive(src: string, dest: string, overwrite = false): void {
   }
 }
 
-function serializedLibraryHasNonPortablePaths(data: unknown): boolean {
+/** 仅绝对路径落在当前 userData 之外时视为他机残留，避免把用户本地路径当成损坏整库覆盖 */
+function serializedLibraryHasAlienAbsolutePaths(data: unknown, userDataPath: string): boolean {
   const s = JSON.stringify(data || '');
-  return /[A-Za-z]:[\\/]/.test(s) || /local-resource:\/\/[A-Za-z]:/i.test(s);
+  const userDataNorm = userDataPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const re = /(?:local-resource:\/\/)?([A-Za-z]:[\\/][^"\\]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    let p = m[1].replace(/\\/g, '/');
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* keep raw */
+    }
+    const pNorm = p.toLowerCase();
+    if (pNorm === userDataNorm || pNorm.startsWith(`${userDataNorm}/`)) continue;
+    return true;
+  }
+  return false;
+}
+
+function mergeLibraryById(
+  existing: Record<string, unknown>[],
+  bundled: Record<string, unknown>[],
+  hydrate: (raw: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const out: Record<string, unknown>[] = [];
+  for (const item of existing) {
+    const id = String((item as { id?: unknown })?.id || '').trim();
+    if (id) seen.add(id);
+    out.push(item);
+  }
+  for (const raw of bundled) {
+    const id = String((raw as { id?: unknown })?.id || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(hydrate(raw));
+  }
+  return out;
 }
 
 function serializedHasUnresolvedBundledPaths(data: unknown): boolean {
@@ -143,6 +179,35 @@ export function repairDigitalHumanLibraryInStore(store: typeof NexflowStore): vo
   if (JSON.stringify(prev) !== JSON.stringify(items)) {
     store.set('digitalHumanLibrary', items);
     console.log('[默认数字人库] 已修复路径', items.length, '条');
+  }
+}
+
+/** 整库覆盖前归档到 userData/lost-digital-human-library */
+function archiveDigitalHumanLibraryToLostFolder(
+  store: typeof NexflowStore,
+  reason: string,
+): string | null {
+  try {
+    const items = (store.get('digitalHumanLibrary') as unknown[] | undefined) || [];
+    if (items.length === 0) return null;
+    const lostDir = path.join(app.getPath('userData'), 'lost-digital-human-library');
+    fs.mkdirSync(lostDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const file = path.join(lostDir, `digital-human-library-${stamp}.json`);
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        { reason, archivedAt: new Date().toISOString(), digitalHumanLibrary: items },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+    console.log('[默认数字人库] 覆盖前已归档到', file, `${items.length} 条`);
+    return file;
+  } catch (e) {
+    console.warn('[默认数字人库] 归档失败:', e);
+    return null;
   }
 }
 
@@ -173,30 +238,45 @@ export function importDefaultDigitalHumanLibraryIfNeeded(store: typeof NexflowSt
 
   const bundleSyncedAt = String(manifest.syncedAt || '').trim();
   const lastSyncedAt = String(store.get(BUNDLE_SYNCED_AT_KEY) || '').trim();
-  const existing = (store.get('digitalHumanLibrary') as unknown[] | undefined) || [];
-  const libraryBroken = serializedLibraryHasNonPortablePaths(existing);
+  const existing = ((store.get('digitalHumanLibrary') as Record<string, unknown>[] | undefined) || []).slice();
+  const userDataPath = app.getPath('userData');
+  const libraryBroken = serializedLibraryHasAlienAbsolutePaths(existing, userDataPath);
   const libraryHasGhostPaths = serializedHasUnresolvedBundledPaths(existing);
-  const libraryEmpty = existing.length === 0 || libraryBroken;
+  const libraryEmpty = existing.length === 0;
   const bundleUpdated = Boolean(bundleSyncedAt && bundleSyncedAt !== lastSyncedAt);
 
-  if (!libraryEmpty && !bundleUpdated && !libraryHasGhostPaths) return;
+  if (!libraryEmpty && !bundleUpdated && !libraryHasGhostPaths && !libraryBroken) return;
 
-  const userDataPath = app.getPath('userData');
   const filesDir = path.join(bundledDir, 'files');
   if (fs.existsSync(filesDir)) {
-    copyDirRecursive(filesDir, userDataPath, bundleUpdated || libraryHasGhostPaths);
+    copyDirRecursive(filesDir, userDataPath, bundleUpdated || libraryHasGhostPaths || libraryBroken);
   }
 
-  const shouldReplace = libraryEmpty || bundleUpdated;
-  if (shouldReplace) {
+  if (libraryEmpty || libraryBroken) {
+    if (!libraryEmpty) {
+      archiveDigitalHumanLibraryToLostFolder(
+        store,
+        libraryBroken ? 'replace-alien-paths' : 'replace-before-default-inject',
+      );
+    }
     store.set(
       'digitalHumanLibrary',
       bundledItems.map((item) => hydrateDigitalHumanItem(item, userDataPath)),
+    );
+  } else if (bundleUpdated) {
+    store.set(
+      'digitalHumanLibrary',
+      mergeLibraryById(existing, bundledItems, (item) => hydrateDigitalHumanItem(item, userDataPath)),
     );
   } else if (libraryHasGhostPaths) {
     repairDigitalHumanLibraryInStore(store);
   }
 
   if (bundleSyncedAt) store.set(BUNDLE_SYNCED_AT_KEY, bundleSyncedAt);
-  console.log('[默认数字人库] 已注入', bundledItems.length, '条', libraryBroken ? '（已覆盖不可移植的旧数据）' : '');
+  console.log(
+    '[默认数字人库] 已处理',
+    bundledItems.length,
+    '条',
+    libraryBroken ? '（已覆盖他机不可移植路径）' : bundleUpdated && !libraryEmpty ? '（已合并，保留用户条目）' : '',
+  );
 }
