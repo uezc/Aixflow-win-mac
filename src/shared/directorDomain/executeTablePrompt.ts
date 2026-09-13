@@ -9,6 +9,12 @@ import {
 } from './shotRefs.js';
 import { resolveCharacterIdsForShot } from './shotTimeline.js';
 import { replaceDramaAnonymousCastLabel } from './shotCastGate.js';
+import {
+  isDramaNarratorVoiceId,
+  isDramaSystemOnlyVoiceId,
+  isDramaSystemVoiceId,
+  resolveDramaVoiceRole,
+} from './voiceEntity.js';
 import type {
   DramaCharacter,
   DramaDirectorSession,
@@ -85,7 +91,7 @@ function buildCharCiteMap(
     ...imgSlots.filter((s) => s.role === 'character' && s.asset_id).map((s) => String(s.asset_id)),
   ]);
   for (const id of ids) {
-    if (!id) continue;
+    if (!id || isDramaSystemVoiceId(id)) continue;
     const ch = chars.find((c) => c.character_id === id);
     const img = imgSlots.find((s) => s.role === 'character' && s.asset_id === id);
     const aud = audSlots.find((s) => s.character_id === id);
@@ -94,6 +100,24 @@ function buildCharCiteMap(
       name: ch?.name || nameById.get(id) || aud?.character_name || id,
       imageIndex: img?.index ?? null,
       audioIndex: aud?.index ?? null,
+    });
+  }
+  const sysAud = audSlots.find((s) => isDramaSystemOnlyVoiceId(s.character_id));
+  if (sysAud) {
+    map.set(sysAud.character_id, {
+      character_id: sysAud.character_id,
+      name: '系统',
+      imageIndex: null,
+      audioIndex: sysAud.index,
+    });
+  }
+  const narAud = audSlots.find((s) => isDramaNarratorVoiceId(s.character_id));
+  if (narAud) {
+    map.set(narAud.character_id, {
+      character_id: narAud.character_id,
+      name: '旁白',
+      imageIndex: null,
+      audioIndex: narAud.index,
     });
   }
   return map;
@@ -216,8 +240,24 @@ export function formatDramaExecuteEventParagraph(
 
   const dlg = String(ev.dialogue || '').trim();
   const sid = String(ev.dialogue_character_id || '').trim();
-  const speaker = sid ? citeOf(sid) : '';
   const env = (ev.environment_audio || []).map((x) => String(x || '').trim()).filter(Boolean);
+  if (isDramaSystemVoiceId(sid) && dlg) {
+    const aud = citeById.get(sid)?.audioIndex;
+    const role = resolveDramaVoiceRole(sid);
+    const who = role === 'narrator' ? '画外旁白' : '画外系统声';
+    const sysSpeak =
+      compileMode === 'h3-multi' && aud
+        ? `${who}使用音频${aud}说：「${dlg}」`
+        : `${who}说（非人物音色）：「${dlg}」`;
+    bits.push(sysSpeak);
+    if (compileMode === 'h3-audio') {
+      bits.push(env.length ? `环境音已含于音频1：${env.join('、')}` : '环境音已含于音频1');
+    } else if (env.length) {
+      bits.push(`环境音：${env.join('、')}`);
+    }
+    return `${bits.join('。')}。`.replace(/。+/g, '。');
+  }
+  const speaker = sid ? citeOf(sid) : '';
 
   if (compileMode === 'h3-audio') {
     if (dlg && ev.lip_sync && speaker) {
@@ -270,9 +310,9 @@ export function buildDramaExecuteTableView(
   const events = shot.timeline_events || [];
   const charIds = resolveCharacterIdsForShot(session, shot);
   const chars = charIds
-    .map((id) => session.bible.characters.find((c) => c.character_id === id))
+    .map((id) => (session.bible?.characters || []).find((c) => c.character_id === id))
     .filter(Boolean) as DramaCharacter[];
-  const scene = session.bible.scenes.find((s) => s.scene_id === shot.scene_asset_id) || null;
+  const scene = (session.bible?.scenes || []).find((s) => s.scene_id === shot.scene_asset_id) || null;
   const nameById =
     opts?.nameById ||
     new Map(chars.map((c) => [c.character_id, c.name] as const));

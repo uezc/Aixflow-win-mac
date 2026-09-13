@@ -1,0 +1,65 @@
+{
+  "started_at": "2026-09-06T05:00:25.255Z",
+  "results": {
+    "invalid_forward": "PASS",
+    "ltx_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096463698892222466",
+      "region": "ai",
+      "task_id": "7dfca88a-73c2-43d5-903a-4736c4b57553"
+    },
+    "ltx_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096464711439835138",
+      "region": "cn",
+      "task_id": "ac7b4ac0-ac8a-45a9-8578-b2e613d1ce5f"
+    },
+    "h3_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096465448089640961",
+      "region": "cn",
+      "task_id": "4f172c71-b753-432a-b301-512e52d66482"
+    },
+    "h3_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096467030290161666",
+      "region": "cn",
+      "task_id": "a12adc1c-f76a-449e-9f2f-9a90a0c9f52d"
+    },
+    "ltx_start_end": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096468623253274625",
+      "region": "cn",
+      "task_id": "fddfee83-224e-4b65-a591-5d5946fff98e"
+    },
+    "rhart_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096469357151551489",
+      "region": "ai",
+      "task_id": "2b803930-6e23-4819-b104-59c0c823598d"
+    },
+    "rhart_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096470180413992961",
+      "region": "ai",
+      "task_id": "3c2ae208-1377-49fd-93e4-84d7192f8050"
+    }
+  },
+  "from_live": {
+    "conclusion": "PASS",
+    "duplicate_charge": "PASS",
+    "duplicate_refund": "PASS",
+    "duplicate_dispatch": "PASS",
+    "invalid_forward": "PASS",
+    "live_fail_refund": true
+  },
+  "finished_at": "2026-09-06T05:28:27.537Z",
+  "conclusion": "PASS"
+}

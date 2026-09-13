@@ -38,6 +38,7 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: devPort,
+      host: '127.0.0.1', // 与主进程/wait-on 一致，避免 localhost 解析成 IPv6 导致主进程连不上
       strictPort: false, // 若仍不可用则自动尝试下一端口（主进程轮询同一默认端口）
     },
   };

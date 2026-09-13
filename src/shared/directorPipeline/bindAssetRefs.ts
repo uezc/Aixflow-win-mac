@@ -261,7 +261,7 @@ export const DIRECTOR_PIC1_VISUAL_ANCHOR =
 
 /** H3 无独立负面框：跟色/风格漂移兜底写进正文前段 */
 export const DIRECTOR_PIC1_LOOK_NEGATIVE_LINE =
-  'Negative: unrealistic color shift, over-saturation, style drift, CGI remake, warm golden hour, purple haze, cold blue mood, orange sunlight, text, subtitle, caption, label, UI, watermark, logo.';
+  'Negative: unrealistic color shift, over-saturation, style drift, CGI remake, warm golden hour, purple haze, cold blue mood, orange sunlight, watermark, logo.';
 
 const LOOK_HEAD_RE =
   /^(参考图对照[：:][^\n]*\n(?:<[^\n]+\n){0,8}(?:Keep Picture 1 colors[^\n]*\n)?(?:Picture 1 is the first frame[^\n]*\n)?(?:以第1张分镜图为首帧[^\n]*\n)?(?:Negative: unrealistic color shift[^\n]*\n)?)/;

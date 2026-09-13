@@ -1,23 +1,34 @@
 /**
- * 凡出场/对白出现的人物（主要+次要）必须进入圣经，便于资产生成设计形象。
+ * 凡出场/对白出现的主要+次要人物必须进入圣经，便于资产生成设计形象。
+ * 只出现一次的配角不建卡。角色卡按剧集、再按本集出场顺序排列。
  */
 
 import { dramaActiveEpisodeSourceText } from './episodes.js';
-import { createEmptyDramaCharacter, createEmptyDramaCreature, createEmptyDramaVoice, createEmptyDramaSession } from './factories.js';
+import {
+  createEmptyDramaCharacter,
+  createEmptyDramaCreature,
+  createEmptyDramaSceneAsset,
+  createEmptyDramaSession,
+  createEmptyDramaVoice,
+  syncDramaSystemVoice,
+} from './factories.js';
 import {
   composeDramaCharacterDesignPrompt,
+  composeDramaSceneDesignPrompt,
   composeDramaVoiceDesign,
   composeDramaVoiceSampleLine,
 } from './characterDesignPrompt.js';
-import { ensureVoiceSampleTexts } from './ensureVoiceSampleTexts.js';
+import { enrichDramaBibleScenesFromOriginal, extractDramaSceneEnvFactsFromOriginal } from './scenePromptFromOriginal.js';
+import { collectDramaCharacterScriptLines, ensureVoiceSampleTexts } from './ensureVoiceSampleTexts.js';
+import { DRAMA_SYSTEM_SPEAKER_ID, isDramaSystemSpeakerCharacter, stripDramaSystemSpeakerCharacters } from './voiceEntity.js';
 import {
   coreDramaPersonName,
   extractCharacterNamesFromDialogueBlob,
-  extractCharacterNamesFromScriptText,
   isDramaAnimalCreatureName,
-  isDramaCharacterNameAcceptable,
   isDramaCharacterNamePlausible,
   isDramaManualCharacterCardName,
+  isDramaStrictCastName,
+  isSystemSpeakerName,
   mergeUniqueNames,
   namesLikelySameDramaPerson,
   salvageDramaPersonName,
@@ -27,9 +38,16 @@ import {
   namesLikelySameDramaCreature,
   preferCanonicalDramaCreatureName,
 } from './extractCastFromScript.js';
+import {
+  collectOriginalSceneLocationsInOrder,
+  collectOriginalSpeakerNamesInOrder,
+  dramaCastTierLabel,
+  findOriginalSpeakerAppearance,
+  isDramaKeepCastSpeaker,
+} from './originalScript.js';
 import { dedupeDramaCharactersByAlias } from './mergeAnalyzeBible.js';
 import { characterHasUsableReference } from './constraints.js';
-import type { DramaCharacter, DramaDirectorSession, DramaVoice } from './types.js';
+import type { DramaCharacter, DramaDirectorSession, DramaEpisode, DramaSceneAsset, DramaVoice } from './types.js';
 
 function normName(n: string): string {
   return String(n || '')
@@ -80,13 +98,13 @@ export function suppressDramaCharacter(
 ): DramaDirectorSession {
   const id = String(characterId || '').trim();
   if (!id) return session;
-  const ch = session.bible.characters.find((c) => c.character_id === id);
+  const ch = (session.bible?.characters || []).find((c) => c.character_id === id);
   if (!ch) return session;
   const extra = suppressKeysForName(ch.name);
   const suppressed = [
     ...new Set([...(session.bible.suppressed_character_names || []), ...extra]),
   ];
-  const characters = session.bible.characters.filter((c) => c.character_id !== id);
+  const characters = (session.bible?.characters || []).filter((c) => c.character_id !== id);
   const voices = (session.bible.voices || []).filter(
     (v) => v.character_id !== id && v.voice_id !== ch.voice_id,
   );
@@ -131,47 +149,207 @@ export function resolveDramaCharacterIdByName(
   return findCharacterByLooseName(characters, name)?.character_id || '';
 }
 
-/** 从镜头对白、场次、分镜建议、源剧本收集出场人名 */
+/** 从镜头对白、场次、分镜建议、原文说话人收集出场人名（保留小说出现顺序） */
 export function collectAppearingCharacterNames(session: DramaDirectorSession): string[] {
-  const fromBible = (session.bible.characters || [])
-    .map((c) => String(c.name || '').trim())
-    .filter(Boolean);
+  const epId = session.active_episode_id;
+  const epBible = session.episode_bibles?.[epId];
+  const fromOriginal = collectOriginalSpeakerNamesInOrder(epBible?.original_segments || []);
+
   const fromShots: string[] = [];
   for (const shot of session.shots || []) {
     for (const line of shot.dialogue || []) {
       const n = String(line.character_name || '').trim();
       if (n) fromShots.push(n);
     }
-    for (const id of shot.character_ids || []) {
-      const c = session.bible.characters.find((x) => x.character_id === id);
-      if (c?.name) fromShots.push(c.name);
-    }
   }
   const fromBeats: string[] = [];
   for (const beat of session.scene_beats || []) {
-    for (const id of beat.cast_ids || []) {
-      const c = session.bible.characters.find((x) => x.character_id === id);
-      if (c?.name) fromBeats.push(c.name);
-    }
     for (const n of beat.characters || []) {
       if (n) fromBeats.push(String(n));
     }
   }
   const fromSug: string[] = [];
-  const epId = session.active_episode_id;
-  const sug = session.episode_bibles?.[epId]?.shot_suggestions || [];
-  for (const s of sug) {
+  for (const s of epBible?.shot_suggestions || []) {
     for (const n of s.cast_names || []) {
       const t = coreDramaPersonName(n) || String(n || '').trim();
       if (t) fromSug.push(t);
     }
-    // dialogue 在 suggestion 里是字符串「名：文」
     fromSug.push(...extractCharacterNamesFromDialogueBlob(String(s.dialogue || '')));
   }
-  const fromScript = extractCharacterNamesFromScriptText(
-    dramaActiveEpisodeSourceText(session),
+  const fromBindings = (epBible?.character_bindings || [])
+    .filter((b) => b.speaker_type !== 'system' && !isSystemSpeakerName(b.original_name))
+    .map((b) => b.original_name);
+
+  // 顺序：原文说话人优先；其余去重追加；再严格过滤（一次过场的配角不进）
+  const merged = mergeUniqueNames(fromOriginal, fromBindings, fromShots, fromBeats, fromSug);
+  const sourceText = dramaActiveEpisodeSourceText(session);
+  const segs = epBible?.original_segments || [];
+  return merged.filter((n) => {
+    if (!isDramaStrictCastName(n, sourceText)) return false;
+    if (!segs.length) return true;
+    return isDramaKeepCastSpeaker(n, segs);
+  });
+}
+
+function appearanceRank(name: string, order: string[]): number {
+  const core = coreDramaPersonName(name) || name;
+  const i = order.findIndex(
+    (o) => o === name || o === core || namesLikelySameDramaPerson(o, name),
   );
-  return mergeUniqueNames(fromBible, fromShots, fromBeats, fromSug, fromScript);
+  return i >= 0 ? i : 10_000;
+}
+
+/** 按「先剧集、再本集出场顺序」重排人物卡；未出场的排后 */
+export function sortDramaCharactersByAppearanceOrder(
+  characters: DramaCharacter[],
+  appearanceOrder: string[],
+): DramaCharacter[] {
+  if (!characters.length) return characters;
+  return [...characters].sort((a, b) => {
+    const ra = appearanceRank(a.name, appearanceOrder);
+    const rb = appearanceRank(b.name, appearanceOrder);
+    if (ra !== rb) return ra - rb;
+    return 0;
+  });
+}
+
+export function listDramaEpisodesInOrder(session: DramaDirectorSession): DramaEpisode[] {
+  return [...(session.episodes || [])].sort((a, b) => {
+    const na = Number(a.episode_no) || 0;
+    const nb = Number(b.episode_no) || 0;
+    if (na !== nb) return na - nb;
+    return String(a.episode_id || '').localeCompare(String(b.episode_id || ''));
+  });
+}
+
+/**
+ * 全集人物出场序：第 1 集先出现的在前，同集内按开口先后。
+ * 只收主要/次要（开口≥2）；跨集去重，以首次出场为准。
+ */
+export function collectSeriesCharacterAppearanceOrder(session: DramaDirectorSession): string[] {
+  const out: string[] = [];
+  const add = (name: string) => {
+    const core = coreDramaPersonName(name) || String(name || '').trim();
+    if (!core) return;
+    if (out.some((o) => o === core || namesLikelySameDramaPerson(o, core))) return;
+    out.push(core);
+  };
+  const bibles = session.episode_bibles || {};
+  const episodes = listDramaEpisodesInOrder(session);
+  const seenEp = new Set<string>();
+  for (const ep of episodes) {
+    const id = String(ep.episode_id || '').trim();
+    if (!id) continue;
+    seenEp.add(id);
+    for (const n of collectOriginalSpeakerNamesInOrder(bibles[id]?.original_segments || [])) add(n);
+  }
+  const leftover = Object.keys(bibles)
+    .filter((id) => id && !seenEp.has(id))
+    .sort((a, b) => {
+      const na = Number(bibles[a]?.episode_no) || 0;
+      const nb = Number(bibles[b]?.episode_no) || 0;
+      if (na !== nb) return na - nb;
+      return a.localeCompare(b);
+    });
+  for (const id of leftover) {
+    for (const n of collectOriginalSpeakerNamesInOrder(bibles[id]?.original_segments || [])) add(n);
+  }
+  return out;
+}
+
+/** 按场次出现顺序重排场景卡 */
+export function sortDramaScenesByAppearanceOrder(
+  scenes: DramaSceneAsset[],
+  appearanceOrder: string[],
+): DramaSceneAsset[] {
+  if (!scenes.length) return scenes;
+  return [...scenes].sort((a, b) => {
+    const ra = appearanceRank(a.location || a.name, appearanceOrder);
+    const rb = appearanceRank(b.location || b.name, appearanceOrder);
+    if (ra !== rb) return ra - rb;
+    return 0;
+  });
+}
+
+/** 按原文场次补齐场景素材，并按出现顺序排列 */
+export function ensureAppearingScenesInBible(session: DramaDirectorSession): DramaDirectorSession {
+  const epId = session.active_episode_id;
+  const epBible = session.episode_bibles?.[epId];
+  const locations = collectOriginalSceneLocationsInOrder(epBible?.original_scenes || []);
+  const storyContext = [
+    session.bible.project.worldview,
+    session.bible.plot,
+    session.bible.project.style,
+    session.bible.project.era,
+  ]
+    .filter(Boolean)
+    .join('；');
+  const eraStyle = String(session.bible.project.era || session.bible.project.style || '').trim();
+
+  if (!locations.length) {
+    const enrichedEmpty = enrichDramaBibleScenesFromOriginal(session);
+    const sorted = sortDramaScenesByAppearanceOrder(enrichedEmpty.bible.scenes || [], []);
+    if (
+      enrichedEmpty === session &&
+      sorted === session.bible.scenes
+    ) {
+      return session;
+    }
+    return {
+      ...enrichedEmpty,
+      bible: { ...enrichedEmpty.bible, scenes: sorted },
+    };
+  }
+
+  let scenes = [...(session.bible.scenes || [])];
+  let changed = false;
+  const findScene = (loc: string) =>
+    scenes.find(
+      (s) =>
+        normName(s.location) === normName(loc) ||
+        normName(s.name) === normName(loc) ||
+        (s.location && loc.includes(s.location)) ||
+        (s.name && loc.includes(s.name)),
+    );
+
+  for (const loc of locations) {
+    if (findScene(loc)) continue;
+    const facts = extractDramaSceneEnvFactsFromOriginal({
+      location: loc,
+      original_scenes: epBible?.original_scenes,
+      original_segments: epBible?.original_segments,
+    });
+    scenes.push(
+      createEmptyDramaSceneAsset({
+        name: loc,
+        location: loc,
+        kind: facts.kind,
+        time_default: facts.time_default,
+        spatial_structure: facts.spatial_structure,
+        fixed_elements: facts.fixed_elements,
+        prompt: composeDramaSceneDesignPrompt({
+          name: loc,
+          location: loc,
+          kind: facts.kind,
+          time_default: facts.time_default,
+          spatial_structure: facts.spatial_structure,
+          fixed_elements: facts.fixed_elements,
+          storyContext,
+          eraStyle,
+        }),
+        status: 'pending',
+      }),
+    );
+    changed = true;
+  }
+
+  const sorted = sortDramaScenesByAppearanceOrder(scenes, locations);
+  const base =
+    changed ||
+    !sorted.every((s, i) => s.scene_id === (session.bible.scenes || [])[i]?.scene_id)
+      ? { ...session, bible: { ...session.bible, scenes: sorted } }
+      : session;
+  return enrichDramaBibleScenesFromOriginal(base);
 }
 
 /**
@@ -182,10 +360,12 @@ export function collectAppearingCharacterNames(session: DramaDirectorSession): s
 export function ensureAppearingCharactersInBible(
   session: DramaDirectorSession,
 ): DramaDirectorSession {
-  let characters = [...(session.bible.characters || [])];
-  let voices = [...(session.bible.voices || [])];
-  let creatures = [...(session.bible.creatures || [])];
-  let changed = false;
+  const stripped = stripDramaSystemSpeakerCharacters(syncDramaSystemVoice(session));
+  let working = stripped;
+  let characters = [...(working.bible.characters || [])];
+  let voices = [...(working.bible.voices || [])];
+  let creatures = [...(working.bible.creatures || [])];
+  let changed = stripped !== session;
 
   const droppedIds = new Set<string>();
   const droppedVoiceIds = new Set<string>();
@@ -200,6 +380,11 @@ export function ensureAppearingCharactersInBible(
     );
 
   characters = characters.filter((c) => {
+    if (isDramaSystemSpeakerCharacter(c)) {
+      droppedIds.add(c.character_id);
+      changed = true;
+      return false;
+    }
     if (isDramaAnimalCreatureName(c.name)) {
       const exists = creatures.some(
         (x) => namesLikelySameDramaCreature(x.name, c.name),
@@ -222,24 +407,37 @@ export function ensureAppearingCharactersInBible(
       return false;
     }
     if (isDramaManualCharacterCardName(c.name)) return true;
-    // 已在圣经里的卡：只清镜头说明类垃圾名。剧本对不上的人名（用户手动加的路人 / asd）要留。
-    if (isDramaCharacterNamePlausible(c.name)) return true;
+    // 已有参考图：保留（用户可能故意留怪名）
     if (String(c.imageUrl || '').trim()) return true;
-    const salvaged = salvageDramaPersonName(c.name, sourceText);
-    if (salvaged) {
-      const existing = findByName(salvaged);
-      if (existing && existing.character_id !== c.character_id) {
-        idMap.set(c.character_id, existing.character_id);
-        droppedIds.add(c.character_id);
-        if (c.voice_id) droppedVoiceIds.add(c.voice_id);
-        changed = true;
-        return false;
+    const segs = session.episode_bibles?.[session.active_episode_id]?.original_segments || [];
+    if (segs.length && !isDramaKeepCastSpeaker(c.name, segs)) {
+      droppedIds.add(c.character_id);
+      if (c.voice_id) droppedVoiceIds.add(c.voice_id);
+      changed = true;
+      return false;
+    }
+    // 严格过滤：地名/标题/系统/不像人名 → 剔除无图空卡
+    if (isSystemSpeakerName(c.name) || !isDramaStrictCastName(c.name, sourceText)) {
+      const salvaged = salvageDramaPersonName(c.name, sourceText);
+      if (salvaged && isDramaStrictCastName(salvaged, sourceText)) {
+        const existing = findByName(salvaged);
+        if (existing && existing.character_id !== c.character_id) {
+          idMap.set(c.character_id, existing.character_id);
+          droppedIds.add(c.character_id);
+          if (c.voice_id) droppedVoiceIds.add(c.voice_id);
+          changed = true;
+          return false;
+        }
+        if (salvaged !== c.name) {
+          c.name = salvaged;
+          changed = true;
+        }
+        return true;
       }
-      if (salvaged !== c.name) {
-        c.name = salvaged;
-        changed = true;
-      }
-      return true;
+      droppedIds.add(c.character_id);
+      if (c.voice_id) droppedVoiceIds.add(c.voice_id);
+      changed = true;
+      return false;
     }
     return true;
   });
@@ -255,6 +453,7 @@ export function ensureAppearingCharactersInBible(
 
   if (droppedIds.size || droppedVoiceIds.size || idMap.size) {
     voices = voices.filter((v) => {
+      if (v.character_id === DRAMA_SYSTEM_SPEAKER_ID) return true;
       if (droppedVoiceIds.has(v.voice_id) && !characters.some((c) => c.voice_id === v.voice_id)) {
         return false;
       }
@@ -342,15 +541,19 @@ export function ensureAppearingCharactersInBible(
       }
       continue;
     }
-    if (!isDramaCharacterNameAcceptable(name, sourceText)) continue;
+    if (!isDramaStrictCastName(name, sourceText)) continue;
+    const segs = prunedSession.episode_bibles?.[prunedSession.active_episode_id]?.original_segments || [];
+    if (segs.length && !isDramaKeepCastSpeaker(name, segs)) continue;
+    const tier = findOriginalSpeakerAppearance(segs, name)?.tier || 'support';
+    const role = dramaCastTierLabel(tier);
     const ch = createEmptyDramaCharacter({
       name: coreDramaPersonName(name) || name,
-      role: '出场角色',
-      identity: '出场角色（含次要）',
+      role,
+      identity: role,
       prompt: composeDramaCharacterDesignPrompt({
         name: coreDramaPersonName(name) || name,
-        role: '出场角色',
-        identity: '出场角色（含次要）',
+        role,
+        identity: role,
         prompt: '',
         storyContext: [
           session.bible.project.worldview,
@@ -360,12 +563,16 @@ export function ensureAppearingCharactersInBible(
         ]
           .filter(Boolean)
           .join('；'),
+        eraStyle: String(session.bible.project.era || session.bible.project.style || '').trim(),
       }),
-      priority: 'P1',
+      priority: tier === 'lead' ? 'P0' : 'P1',
     });
     const designedVoice = composeDramaVoiceDesign({
       name,
-      role: '出场角色',
+      role,
+    });
+    const scriptLines = collectDramaCharacterScriptLines(prunedSession, {
+      characterName: coreDramaPersonName(name) || name,
     });
     const voice = createEmptyDramaVoice({
       character_id: ch.character_id,
@@ -376,11 +583,13 @@ export function ensureAppearingCharactersInBible(
       emotion_range: designedVoice.emotion_range,
       sample_text: composeDramaVoiceSampleLine({
         name,
-        role: '出场角色',
+        role,
         timbre: designedVoice.timbre,
         voiceStyle: designedVoice.voiceStyle,
         language_style: designedVoice.language_style,
         emotion_range: designedVoice.emotion_range,
+        dialogueHint: scriptLines,
+        forceScriptLines: Boolean(scriptLines),
       }),
     });
     ch.voice_id = voice.voice_id;
@@ -416,6 +625,10 @@ export function ensureAppearingCharactersInBible(
       role: ch.role,
       gender: ch.gender,
     });
+    const scriptLines = collectDramaCharacterScriptLines(prunedSession, {
+      characterId: ch.character_id,
+      characterName: ch.name,
+    });
     const voice = createEmptyDramaVoice({
       character_id: ch.character_id,
       timbre: designedVoice.timbre,
@@ -434,6 +647,8 @@ export function ensureAppearingCharactersInBible(
         voiceStyle: designedVoice.voiceStyle,
         language_style: designedVoice.language_style,
         emotion_range: designedVoice.emotion_range,
+        dialogueHint: scriptLines,
+        forceScriptLines: Boolean(scriptLines),
       }),
     });
     characters[i] = { ...ch, voice_id: voice.voice_id };
@@ -442,7 +657,7 @@ export function ensureAppearingCharactersInBible(
   }
 
   // 对白 character_id 回填 + shot.character_ids 合并；去掉已剔除人物
-  const shots = (session.shots || []).map((s) => {
+  const shots = (working.shots || []).map((s) => {
     let ids = [...(s.character_ids || [])]
       .map((id) => remapId(id))
       .filter((id) => {
@@ -473,7 +688,7 @@ export function ensureAppearingCharactersInBible(
     return { ...s, character_ids: ids, dialogue };
   });
 
-  const scene_beats = (session.scene_beats || []).map((b) => {
+  const scene_beats = (working.scene_beats || []).map((b) => {
     const nextCast = [...new Set((b.cast_ids || []).map((id) => remapId(id)).filter((id) => !droppedIds.has(id)))];
     const nextNames = [...new Set(
       (b.characters || [])
@@ -494,26 +709,50 @@ export function ensureAppearingCharactersInBible(
     characters.length === (session.bible.characters || []).length &&
     creatures.length === (session.bible.creatures || []).length
   ) {
-    return ensureVoiceSampleTexts(session);
+    const orderedOnly = sortDramaCharactersByAppearanceOrder(
+      characters,
+      collectSeriesCharacterAppearanceOrder(prunedSession),
+    );
+    const withChars =
+      orderedOnly.map((c) => c.character_id).join('|') ===
+      characters.map((c) => c.character_id).join('|')
+        ? ensureVoiceSampleTexts(session)
+        : ensureVoiceSampleTexts(
+            createEmptyDramaSession({
+              ...session,
+              bible: { ...session.bible, characters: orderedOnly },
+            }),
+          );
+    return ensureAppearingScenesInBible(withChars);
   }
 
-  return ensureVoiceSampleTexts(
-    createEmptyDramaSession({
-      ...session,
-      shots,
-      scene_beats,
-      bible: {
-        ...session.bible,
-        characters,
-        voices,
-        creatures,
-      },
-    }),
+  const appearanceOrder = collectSeriesCharacterAppearanceOrder({
+    ...prunedSession,
+    bible: { ...prunedSession.bible, characters, voices, creatures },
+  });
+  characters = sortDramaCharactersByAppearanceOrder(characters, appearanceOrder);
+
+  return ensureAppearingScenesInBible(
+    ensureVoiceSampleTexts(
+      createEmptyDramaSession({
+        ...session,
+        shots,
+        scene_beats,
+        bible: {
+          ...session.bible,
+          characters,
+          voices,
+          creatures,
+        },
+      }),
+    ),
   );
 }
 
 export function listCharactersMissingDesign(session: DramaDirectorSession): DramaCharacter[] {
-  return (session.bible.characters || []).filter((c) => !characterHasUsableReference(c));
+  return (session.bible.characters || []).filter(
+    (c) => !isDramaSystemSpeakerCharacter(c) && !characterHasUsableReference(c),
+  );
 }
 
 export function listVoicesMissingSample(session: DramaDirectorSession): DramaVoice[] {

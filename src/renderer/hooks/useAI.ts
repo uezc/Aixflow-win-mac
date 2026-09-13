@@ -4,7 +4,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
+import { promptNxSaasLoginIfNeeded, promptCloudBalanceInsufficientIfNeeded } from '../utils/cloudAiGateMessage';
 import { forceClearVoiceModalLock } from '../utils/voiceModalGate';
 
 /**
@@ -294,12 +294,23 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
       
       // 视频/图片/音频 SUCCESS 优先于纯文本：VideoProvider 等会同时带 text（如「视频生成完成: …」）与 videoUrl
       if (hasValidUrl && packet.status === 'SUCCESS') {
+        const isVideoFile = localPath ? /\.(mp4|webm|mov|avi|mkv)$/i.test(localPath) : false;
+        const isImageFile = localPath ? /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(localPath) : false;
+        const isAudioFile = localPath ? /\.(mp3|wav|flac|aac|m4a|ogg|opus)$/i.test(localPath) : false;
+        // 勿把「生成完成」误落盘的 .txt 等非媒体路径带进 onComplete（否则 Image 节点会用 .txt 当图）
+        const safeLocalPath =
+          localPath &&
+          ((displayImageUrl && isImageFile) ||
+            (displayVideoUrl && isVideoFile) ||
+            (displayAudioUrl && isAudioFile))
+            ? localPath
+            : undefined;
         const mergedPayload = {
           ...payload,
           ...(displayImageUrl ? { imageUrl: displayImageUrl } : {}),
           ...(displayVideoUrl ? { videoUrl: displayVideoUrl, url: displayVideoUrl } : {}),
           ...(displayAudioUrl ? { audioUrl: displayAudioUrl, url: displayAudioUrl } : {}),
-          ...(localPath ? { localPath } : {}),
+          ...(safeLocalPath ? { localPath: safeLocalPath } : { localPath: undefined }),
           ...(originalVideoUrl ? { originalVideoUrl } : {}),
         };
 
@@ -447,7 +458,9 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
         console.log(`[useAI] 调用 onComplete 回调，text 长度: ${textLength}, payload keys: ${Object.keys(payload).join(', ')}`);
         callbacksRef.current.onComplete?.(payload);
       } else if (packet.status === 'ERROR') {
-        const payload = callbackPacket.payload as { error?: string; nxAuthRequired?: boolean } | undefined;
+        const payload = callbackPacket.payload as
+          | { error?: string; nxAuthRequired?: boolean; balanceInsufficient?: boolean }
+          | undefined;
         const errMsg = String(payload?.error || packet.payload?.error || '');
         const isCancelErr = /已取消|cancell?ed|aborted/i.test(errMsg);
         if (userCancelledRef.current && isCancelErr) {
@@ -455,7 +468,13 @@ export const useAI = (options: UseAIOptions): UseAIReturn => {
           setPayload(null);
           return;
         }
-        promptNxSaasLoginIfNeeded(payload?.error, payload?.nxAuthRequired);
+        if (
+          !promptCloudBalanceInsufficientIfNeeded(errMsg || payload, {
+            balanceInsufficient: payload?.balanceInsufficient === true,
+          })
+        ) {
+          promptNxSaasLoginIfNeeded(payload?.error, payload?.nxAuthRequired);
+        }
         callbacksRef.current.onError?.(packet.payload?.error || 'Unknown error');
       }
     };

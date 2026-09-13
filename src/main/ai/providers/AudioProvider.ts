@@ -30,6 +30,31 @@ import {
   clampDoubaoLoudnessRate,
   clampDoubaoPitchRate,
 } from '../../../shared/doubaoSeedAudioUtils.js';
+import {
+  isAudioQueueGoldenPathEnabled,
+  isAudioQueueOnlyModel,
+  assertNotDirectChargeForAudioQueueOnlyModel,
+  AUDIO_QUEUE_SPEECH_28_HD_MODEL,
+  AUDIO_QUEUE_INDEX_TTS2_MODEL,
+  AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL,
+  AUDIO_QUEUE_RHART_SONG_V55_MODEL,
+  AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL,
+  isCanvasSpeech28HdQueueGoldenPathInput,
+  isCanvasIndexTts2QueueGoldenPathInput,
+  isCanvasDoubaoSeedAudioQueueGoldenPathInput,
+  isCanvasRhartSongV55QueueGoldenPathInput,
+  isCanvasRvcVoiceTrainQueueGoldenPathInput,
+  buildSpeech28HdRhForward,
+  buildIndexTts2RhForward,
+  buildDoubaoSeedAudioRhForward,
+  buildRhartSongV55RhForward,
+  buildRvcVoiceTrainRhForward,
+  type AudioQueueProviderForward,
+} from '../../../shared/audioQueueGoldenPath.js';
+import {
+  mapCloudTaskToUserQueueUx,
+  USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+} from '../../../shared/userQueueTaskUx.js';
 
 /**
  * 轮询 FC→RunningHub 时：525（CDN SSL）、网络抖动等应重试，避免「第三方已成功但本地误判失败并退款」。
@@ -107,6 +132,8 @@ interface AudioInput {
   coverOutputMode?: 'with_accompaniment' | 'vocals_only';
   /** RVC 音色训练：模型名称（RH node 6） */
   rvcTrainModelName?: string;
+  /** 画布音频 Queue Golden Path 开关（Queue-only 模型由面板/主进程强制 true） */
+  nxCloudQueueGoldenPath?: boolean;
 }
 
 const RH_RVC_VOICE_TRAIN_APP_ID = '2072990640429953025';
@@ -331,6 +358,502 @@ export class AudioProvider extends BaseProvider {
     }
   }
 
+  private async executeAudioCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+    model: string;
+    billingModelId: string;
+    rhForward: AudioQueueProviderForward;
+    prompt: string;
+    nodeData: Record<string, unknown>;
+    logTag?: string;
+    /** rvc-voice-train：SUCCESS 走 handleRvcTrainResult */
+    resultMode?: 'audio' | 'rvc-train';
+    rvcTrainModelName?: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      audioInput,
+      onStatus,
+      model,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData,
+      logTag = 'audio-queue-golden',
+      resultMode = 'audio',
+      rvcTrainModelName,
+    } = opts;
+
+    onStatus({ nodeId, status: 'START', payload: { progress: 1, text: '任务已提交云端队列…' } });
+
+    const {
+      isNxSaasMode,
+      isNxOfflineCloudSession,
+      getNxAccessToken,
+      nxCloudTasksCreate,
+      nxCloudTaskStatus,
+    } = await import('../../services/aliyunService.js');
+
+    if (!isAudioQueueGoldenPathEnabled()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'AUDIO_QUEUE_ENABLED 未开启，无法使用 queue golden path' },
+      });
+      return;
+    }
+    if (
+      !getAliyunFcInitUserUrl().trim() ||
+      !isNxSaasMode() ||
+      isNxOfflineCloudSession() ||
+      !getNxAccessToken()
+    ) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '请先登录云端账号后再使用 queue 音频生成' },
+      });
+      return;
+    }
+
+    let taskId: string;
+    try {
+      const created = await nxCloudTasksCreate({
+        model_id: billingModelId,
+        type: 'audio',
+        execution_mode: 'queue',
+        provider_forward_json: rhForward,
+        params: {
+          nodeId,
+          taskKind: 'audio',
+          model,
+          prompt: prompt.slice(0, 4000),
+          nxCloudQueueGoldenPath: true,
+        },
+        nodeData: {
+          ...nodeData,
+          model,
+          prompt,
+          ...(audioInput.projectId ? { projectId: audioInput.projectId } : {}),
+        },
+      });
+      taskId = created.task_id;
+      const { notifyNxCloudTaskTrack } = await import('../../nxCloudTaskTrackNotifier.js');
+      notifyNxCloudTaskTrack({ taskId, nodeId, taskType: 'audio', balance: created.balance });
+      console.log(
+        `[AudioProvider][${logTag}] created task=${taskId} model=${billingModelId} rhRegion=${rhForward.rhRegion ?? '?'} quoted=${created.quoted_cost_coins ?? '?'}`,
+      );
+    } catch (e) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: buildFcErrorPayload(e, '创建云端队列任务失败'),
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: {
+        progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+        text: '准备排队…',
+        cloudTaskId: taskId,
+      },
+    });
+
+    const deadline = Date.now() + 30 * 60_000;
+    let pollN = 0;
+    while (Date.now() < deadline) {
+      pollN += 1;
+      const sleepMs = pollN <= 3 ? 3000 : pollN <= 12 ? 8000 : 15_000;
+      await new Promise((r) => setTimeout(r, sleepMs));
+      let row: Awaited<ReturnType<typeof nxCloudTaskStatus>>;
+      try {
+        row = await nxCloudTaskStatus(taskId);
+      } catch (e) {
+        console.warn(`[AudioProvider][${logTag}] status poll error`, e);
+        continue;
+      }
+      const st = String(row.status || '').toLowerCase();
+      const ux = mapCloudTaskToUserQueueUx({
+        status: row.status,
+        execution_stage: row.execution_stage,
+        ahead_count: row.ahead_count,
+        queue_position: row.queue_position,
+        queue_position_available: row.queue_position_available,
+        queue_position_complete: row.queue_position_complete,
+        error_msg: row.error_msg,
+        error_code: row.error_code,
+        refunded: row.refunded,
+      });
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: {
+          progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+          text: ux.progressMessage,
+          cloudTaskId: taskId,
+          execution_stage: String(row.execution_stage || ''),
+          ahead_count: row.ahead_count ?? null,
+          queue_position: row.queue_position ?? null,
+        },
+      });
+
+      if (st === 'success') {
+        const { splitNxTaskResultOssUrls } = await import('../../services/aliyunService.js');
+        const url = splitNxTaskResultOssUrls(row.result_oss_url)[0] || '';
+        if (!url) {
+          continue;
+        }
+        if (resultMode === 'rvc-train') {
+          await this.handleRvcTrainResult(
+            url,
+            String(rvcTrainModelName || audioInput.rvcTrainModelName || 'audio').trim() || 'audio',
+            nodeId,
+            onStatus,
+            audioInput.projectId,
+            audioInput.nodeTitle,
+          );
+          return;
+        }
+        onStatus({
+          nodeId,
+          status: 'SUCCESS',
+          payload: {
+            audioUrl: url,
+            outputAudios: [url],
+            cloudTaskId: taskId,
+            progress: 100,
+            text: '生成完成',
+          },
+        });
+        return;
+      }
+      if (st === 'failed' || st === 'cancelled' || st === 'timeout') {
+        const errMsg =
+          ux.failureDetail?.replace(/^失败原因：/, '') ||
+          String(row.error_msg || row.error_code || '音频生成失败');
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error: row.refunded ? `${ux.progressMessage}${errMsg ? `：${errMsg}` : ''}` : errMsg,
+            cloudTaskId: taskId,
+            ...(String(row.error_code || '') === 'BALANCE_INSUFFICIENT'
+              ? { balanceInsufficient: true }
+              : {}),
+          },
+        });
+        return;
+      }
+    }
+
+    onStatus({
+      nodeId,
+      status: 'ERROR',
+      payload: { error: '云端任务超时，请稍后在任务列表查看', cloudTaskId: taskId },
+    });
+  }
+
+  private async executeSpeech28HdCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+  }): Promise<void> {
+    const { nodeId, audioInput, onStatus } = opts;
+    let rhForward: AudioQueueProviderForward;
+    try {
+      rhForward = buildSpeech28HdRhForward({
+        text: String(audioInput.text || ''),
+        voice_id: audioInput.voice_id,
+        speed: audioInput.speed,
+        volume: audioInput.volume,
+        pitch: audioInput.pitch,
+        pronunciation_dict: audioInput.pronunciation_dict,
+        enable_base64_output: audioInput.enable_base64_output,
+        english_normalization: audioInput.english_normalization,
+        emotion: audioInput.emotion,
+        billingModelId: AUDIO_QUEUE_SPEECH_28_HD_MODEL,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'speech-2.8-hd forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeAudioCloudQueueGoldenPath({
+      nodeId,
+      audioInput,
+      onStatus,
+      model: AUDIO_QUEUE_SPEECH_28_HD_MODEL,
+      billingModelId: AUDIO_QUEUE_SPEECH_28_HD_MODEL,
+      rhForward,
+      prompt: String(audioInput.text || ''),
+      nodeData: {
+        voice_id: audioInput.voice_id,
+        speed: audioInput.speed,
+        volume: audioInput.volume,
+        pitch: audioInput.pitch,
+        emotion: audioInput.emotion,
+      },
+      logTag: 'queue-speech-2.8-hd',
+    });
+  }
+
+  private async executeIndexTts2CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+  }): Promise<void> {
+    const { nodeId, audioInput, onStatus } = opts;
+    const ref = String(audioInput.referenceAudioUrl || '').trim();
+    if (!ref) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Index-TTS2.0 配音神器需要上传参考音（参考音为必填）' },
+      });
+      return;
+    }
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考音…' },
+    });
+    let audioUrl: string;
+    try {
+      audioUrl = await this.resolveAudioUrlForRhApp(ref);
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || '参考音处理失败') },
+      });
+      return;
+    }
+    let rhForward: AudioQueueProviderForward;
+    try {
+      rhForward = buildIndexTts2RhForward({
+        text: String(audioInput.text || ''),
+        audioUrl,
+        select: audioInput.indexTts2Select,
+        billingModelId: AUDIO_QUEUE_INDEX_TTS2_MODEL,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'index-tts2 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeAudioCloudQueueGoldenPath({
+      nodeId,
+      audioInput,
+      onStatus,
+      model: AUDIO_QUEUE_INDEX_TTS2_MODEL,
+      billingModelId: AUDIO_QUEUE_INDEX_TTS2_MODEL,
+      rhForward,
+      prompt: String(audioInput.text || ''),
+      nodeData: { indexTts2Select: audioInput.indexTts2Select },
+      logTag: 'queue-index-tts2',
+    });
+  }
+
+  private async executeDoubaoSeedAudioCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+  }): Promise<void> {
+    const { nodeId, audioInput, onStatus } = opts;
+    const speaker = String(audioInput.doubaoSpeaker ?? '').trim();
+    const imageRaw = String(audioInput.doubaoImageUrl ?? '').trim();
+    const audioListRaw = Array.isArray(audioInput.doubaoAudioUrls)
+      ? audioInput.doubaoAudioUrls.map((u) => String(u ?? '').trim()).filter(Boolean)
+      : [];
+    const singleRef = String(audioInput.referenceAudioUrl ?? '').trim();
+    if (audioListRaw.length === 0 && singleRef) audioListRaw.push(singleRef);
+
+    let audioUrls: string[] | undefined;
+    let imageUrl: string | undefined;
+    try {
+      if (audioListRaw.length > 0) {
+        onStatus({
+          nodeId,
+          status: 'PROCESSING',
+          payload: { progress: 2, text: '正在处理参考音…' },
+        });
+        audioUrls = [];
+        for (const u of audioListRaw) {
+          audioUrls.push(await this.resolveAudioUrlForRhApp(u));
+        }
+      } else if (imageRaw) {
+        onStatus({
+          nodeId,
+          status: 'PROCESSING',
+          payload: { progress: 2, text: '正在处理参考图…' },
+        });
+        imageUrl = await this.resolveImageUrlForRh(imageRaw);
+      }
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'Doubao 参考素材处理失败') },
+      });
+      return;
+    }
+
+    let rhForward: AudioQueueProviderForward;
+    try {
+      rhForward = buildDoubaoSeedAudioRhForward({
+        text: String(audioInput.text || ''),
+        speaker: speaker || undefined,
+        audioUrls,
+        imageUrl,
+        speechRate: audioInput.speechRate,
+        loudnessRate: audioInput.loudnessRate,
+        pitchRate: audioInput.pitch,
+        billingModelId: AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'doubao-seed-audio forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeAudioCloudQueueGoldenPath({
+      nodeId,
+      audioInput,
+      onStatus,
+      model: AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL,
+      billingModelId: AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL,
+      rhForward,
+      prompt: String(audioInput.text || ''),
+      nodeData: {
+        speechRate: audioInput.speechRate,
+        loudnessRate: audioInput.loudnessRate,
+        pitch: audioInput.pitch,
+      },
+      logTag: 'queue-doubao-seed-audio',
+    });
+  }
+
+  private async executeRhartSongV55CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+  }): Promise<void> {
+    const { nodeId, audioInput, onStatus } = opts;
+    let rhForward: AudioQueueProviderForward;
+    try {
+      rhForward = buildRhartSongV55RhForward({
+        songName: String(audioInput.songName || ''),
+        lyrics: String(audioInput.lyrics || ''),
+        styleDesc: String(audioInput.styleDesc || ''),
+        billingModelId: AUDIO_QUEUE_RHART_SONG_V55_MODEL,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'rhart-song-v5.5 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeAudioCloudQueueGoldenPath({
+      nodeId,
+      audioInput,
+      onStatus,
+      model: AUDIO_QUEUE_RHART_SONG_V55_MODEL,
+      billingModelId: AUDIO_QUEUE_RHART_SONG_V55_MODEL,
+      rhForward,
+      prompt: String(audioInput.lyrics || audioInput.songName || ''),
+      nodeData: {
+        songName: audioInput.songName,
+        styleDesc: audioInput.styleDesc,
+      },
+      logTag: 'queue-rhart-song-v5.5',
+    });
+  }
+
+  private async executeRvcVoiceTrainCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    audioInput: AudioInput;
+    onStatus: AIExecuteParams['onStatus'];
+  }): Promise<void> {
+    const { nodeId, audioInput, onStatus } = opts;
+    const trainAudio = String(audioInput.referenceAudioUrl || '').trim();
+    const modelName = String(audioInput.rvcTrainModelName ?? '').trim();
+    if (!trainAudio) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'RVC 训练需要连接训练音频（1 路 audio 入边）' },
+      });
+      return;
+    }
+    if (!modelName) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '请填写 RVC 模型名称' },
+      });
+      return;
+    }
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理训练音频…' },
+    });
+    let audioUrl: string;
+    try {
+      audioUrl = await this.resolveAudioUrlForRhApp(trainAudio);
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || '训练音频处理失败') },
+      });
+      return;
+    }
+    let rhForward: AudioQueueProviderForward;
+    try {
+      rhForward = buildRvcVoiceTrainRhForward({
+        audioUrl,
+        modelName,
+        billingModelId: AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String((e as Error)?.message || e || 'rvc-voice-train forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeAudioCloudQueueGoldenPath({
+      nodeId,
+      audioInput,
+      onStatus,
+      model: AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL,
+      billingModelId: AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL,
+      rhForward,
+      prompt: modelName,
+      nodeData: { rvcTrainModelName: modelName },
+      logTag: 'queue-rvc-voice-train',
+      resultMode: 'rvc-train',
+      rvcTrainModelName: modelName,
+    });
+  }
+
   async execute(params: AIExecuteParams): Promise<void> {
     const { nodeId, input, onStatus } = params;
 
@@ -420,6 +943,70 @@ export class AudioProvider extends BaseProvider {
         return;
       }
 
+      // P0：Queue-only 型号在 Direct 提交之前强制走 Unified Queue（禁止 Direct）
+      {
+        if (isAudioQueueOnlyModel(model)) {
+          (audioInput as AudioInput).nxCloudQueueGoldenPath = true;
+        }
+        const queueForcedInput = {
+          ...(audioInput as unknown as Record<string, unknown>),
+          model,
+          nxCloudQueueGoldenPath: true,
+        };
+
+        if (
+          model === AUDIO_QUEUE_SPEECH_28_HD_MODEL &&
+          isCanvasSpeech28HdQueueGoldenPathInput(queueForcedInput)
+        ) {
+          await this.executeSpeech28HdCloudQueueGoldenPath({ nodeId, audioInput, onStatus });
+          return;
+        }
+        if (
+          model === AUDIO_QUEUE_INDEX_TTS2_MODEL &&
+          isCanvasIndexTts2QueueGoldenPathInput(queueForcedInput)
+        ) {
+          await this.executeIndexTts2CloudQueueGoldenPath({ nodeId, audioInput, onStatus });
+          return;
+        }
+        if (
+          model === AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL &&
+          isCanvasDoubaoSeedAudioQueueGoldenPathInput(queueForcedInput)
+        ) {
+          await this.executeDoubaoSeedAudioCloudQueueGoldenPath({ nodeId, audioInput, onStatus });
+          return;
+        }
+        if (
+          model === AUDIO_QUEUE_RHART_SONG_V55_MODEL &&
+          isCanvasRhartSongV55QueueGoldenPathInput(queueForcedInput)
+        ) {
+          await this.executeRhartSongV55CloudQueueGoldenPath({ nodeId, audioInput, onStatus });
+          return;
+        }
+        if (
+          model === AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL &&
+          isCanvasRvcVoiceTrainQueueGoldenPathInput(queueForcedInput)
+        ) {
+          await this.executeRvcVoiceTrainCloudQueueGoldenPath({ nodeId, audioInput, onStatus });
+          return;
+        }
+
+        if (isAudioQueueOnlyModel(model)) {
+          onStatus({
+            nodeId,
+            status: 'ERROR',
+            payload: {
+              error:
+                `模型 ${model} 已强制走云端排队，无法使用 Direct。` +
+                '请检查：已登录云端、AUDIO_QUEUE_ENABLED 未关闭、输入形态与该模型匹配。',
+            },
+          });
+          return;
+        }
+      }
+
+      // 双重保险：Queue-only 不应落到 Direct（上方已 early-return）
+      assertNotDirectChargeForAudioQueueOnlyModel(model, 'AudioProvider.execute');
+
       // 发送 START 状态
       onStatus({
         nodeId,
@@ -435,6 +1022,7 @@ export class AudioProvider extends BaseProvider {
 
       // SUNO v5.5 标准模型：POST /rhart-audio/suno-v5.5/custom（title / prompt / tags）
       if (model === 'rhart-song-v5.5') {
+        assertNotDirectChargeForAudioQueueOnlyModel(model, 'rhart-song-v5.5-direct');
         const title = String(songName ?? '').trim().slice(0, 80);
         const prompt = String(lyrics ?? '').trim().slice(0, 5000);
         const tags = String(styleDesc ?? '').trim().slice(0, 1000);
@@ -460,6 +1048,7 @@ export class AudioProvider extends BaseProvider {
 
       // RVC 音色模型训练：AI 应用 2072990640429953025（训练音频须为 OSS 公网 URL，与 Index-TTS2 一致）
       if (model === 'rvc-voice-train') {
+        assertNotDirectChargeForAudioQueueOnlyModel(model, 'rvc-voice-train-direct');
         const trainAudio = (referenceAudioUrl || '').trim();
         const modelName = String(audioInput.rvcTrainModelName ?? '').trim();
         const audioField = await this.resolveAudioUrlForRhApp(trainAudio);
@@ -505,6 +1094,7 @@ export class AudioProvider extends BaseProvider {
 
       // Doubao 音频生成 1.0：POST /bytedance/doubao-seed-audio-1.0（路径首段 bytedance，须显式 billingModelId）
       if (model === DOUBAO_SEED_AUDIO_MODEL_ID) {
+        assertNotDirectChargeForAudioQueueOnlyModel(model, 'doubao-seed-audio-direct');
         const textPrompt = String(text ?? '').trim();
         if (!textPrompt) throw new Error('Doubao 音频生成需要填写文本提示词（text_prompt）');
         if (textPrompt.length > 3000) throw new Error('文本提示词不能超过 3000 字符');
@@ -523,7 +1113,12 @@ export class AudioProvider extends BaseProvider {
         const hasImage = !!imageRaw;
         const refModes = [hasSpeaker, hasAudio, hasImage].filter(Boolean).length;
         if (refModes > 1) {
-          throw new Error('Doubao 音色(speaker)、参考音频(audio_url)、参考图片(image_url) 三者只能选其一');
+          throw new Error('选了多种声音来源：只能选一种——要么用系统预设音色，要么传一段参考音频，要么传一张人物照片，不能同时选多个。');
+        }
+        if (refModes === 0) {
+          throw new Error(
+            '没法生成声音：缺少「用什么声音来念」的信息。请选择以下任意一种方式：① 在素材准备里给角色生成/上传一段试听音（推荐）；② 选择一个系统预设的音色；③ 上传一张人物照片让 AI 猜声音。',
+          );
         }
 
         const speechRate = clampDoubaoSpeechRate(audioInput.speechRate ?? 0);
@@ -534,32 +1129,27 @@ export class AudioProvider extends BaseProvider {
 
         const payload: Record<string, unknown> = {
           text_prompt: textPrompt,
+          text: textPrompt,
           speech_rate: speechRate,
           loudness_rate: loudnessRate,
           pitch_rate: pitchRate,
           format,
           sample_rate: sampleRate,
+          references: [],
         };
         if (hasSpeaker) {
-          payload.speaker = speaker;
-          payload.audio_url = [];
-          payload.image_url = null;
+          (payload.references as Array<Record<string, unknown>>).push({ speaker });
         } else if (hasAudio) {
           const resolved: string[] = [];
           for (const u of audioListRaw) {
             resolved.push(await this.resolveAudioUrlForRhApp(u));
           }
-          payload.speaker = null;
-          payload.audio_url = resolved;
-          payload.image_url = null;
+          for (const url of resolved) {
+            (payload.references as Array<Record<string, unknown>>).push({ audio_url: url });
+          }
         } else if (hasImage) {
-          payload.speaker = null;
-          payload.audio_url = [];
-          payload.image_url = await this.resolveImageUrlForRh(imageRaw);
-        } else {
-          payload.speaker = null;
-          payload.audio_url = [];
-          payload.image_url = null;
+          const resolvedImg = await this.resolveImageUrlForRh(imageRaw);
+          (payload.references as Array<Record<string, unknown>>).push({ image_url: resolvedImg });
         }
 
         console.log('[音频生成] Doubao-seed-audio-1.0 提交', {
@@ -596,6 +1186,7 @@ export class AudioProvider extends BaseProvider {
 
       // Index-TTS2.0 配音神器：AI 应用 run/ai-app/2008113338793857025
       if (model === 'index-tts2') {
+        assertNotDirectChargeForAudioQueueOnlyModel(model, 'index-tts2-direct');
         if (!referenceAudioUrl || !referenceAudioUrl.trim()) {
           throw new Error('Index-TTS2.0 配音神器需要上传参考音（参考音为必填）');
         }
@@ -633,6 +1224,7 @@ export class AudioProvider extends BaseProvider {
       }
 
       // 默认：语音合成 speech-2.8-hd
+      assertNotDirectChargeForAudioQueueOnlyModel('speech-2.8-hd', 'speech-2.8-hd-direct');
       const payload: Record<string, unknown> = {
         text,
         voice_id,

@@ -1,0 +1,199 @@
+{
+  "started_at": "2026-09-05T04:50:41.200Z",
+  "prefix": "__p81live_mtnwn0ds_",
+  "fc_endpoint": "https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run",
+  "deployment": {
+    "fc_endpoint": "https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run",
+    "video_queue_enabled_local": "1",
+    "vite_video_queue_enabled_local": "1",
+    "internal_endpoints": {
+      "promote": 200,
+      "charge": 200,
+      "dispatch": 200,
+      "poll": 200
+    }
+  },
+  "golden_e2e": {
+    "aixflow_task_id": "11d5e835-45d4-46a1-aeeb-6bb76c21476c",
+    "runninghub_provider_task_id": "2096099040374525953",
+    "final_status": "success",
+    "execution_stage": "done",
+    "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/5d3dca2a-3e20-4488-9ee9-a3fe9600e2b1.mp4",
+    "dispatch_unknown": "0",
+    "balance_after": 1996,
+    "worker_stages_tail": [
+      {
+        "round": 0,
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096099040374525953",
+        "unknown": "0"
+      },
+      {
+        "round": 1,
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096099040374525953",
+        "unknown": "0"
+      },
+      {
+        "round": 2,
+        "status": "success",
+        "stage": "done",
+        "pid": "2096099040374525953",
+        "unknown": "0"
+      }
+    ],
+    "worker_timeout": false,
+    "charge_at": "Phase6 after claim (FC charge-claimed-tasks)",
+    "slot_acquire_at": "Phase5 claim (user+platform CAS)",
+    "slot_release_at": "Phase7 settle success",
+    "mapping_at": "atomicSetProviderTaskId after RH submit (OTS provider_task_id SoT)"
+  },
+  "matrix": [
+    {
+      "scenario": "deployment_fc_phase5_7_workers",
+      "expected": "HTTP 200 on internal workers",
+      "actual": {
+        "promote": 200,
+        "charge": 200,
+        "dispatch": 200,
+        "poll": 200
+      },
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "create_queued_with_forward",
+      "expected": "queued + provider_forward_json",
+      "actual": {
+        "status": "queued",
+        "has_forward": true
+      },
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "claim_after_promote",
+      "expected": "claimed",
+      "actual": "claimed",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "single_task_real_rh_full_path",
+      "expected": "success + provider_task_id + result_oss_url + slots released",
+      "actual": {
+        "status": "success",
+        "pid": "2096099040374525953",
+        "url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f",
+        "slots": {
+          "u": false,
+          "p": false
+        }
+      },
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "insufficient_balance",
+      "expected": "failed, no RH pid, balance 0, slots released",
+      "actual": {
+        "status": "failed",
+        "pid": "",
+        "balance": 0,
+        "snap": {
+          "user_occupied": 0,
+          "platform_video_running": 5
+        }
+      },
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "concurrency_5_of_6",
+      "expected": "5 claimed, 6th queued, user_occ=5",
+      "actual": {
+        "claimed": 5,
+        "sixth": "queued",
+        "snap": {
+          "user_occupied": 5,
+          "platform_video_running": 10
+        }
+      },
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "concurrency_6th_after_release",
+      "expected": "6th becomes claimed",
+      "actual": "claimed",
+      "pass": true,
+      "note": ""
+    },
+    {
+      "scenario": "dispatch_storm_10_workers",
+      "expected": "RH submit=1 (dispatch idempotency)",
+      "actual": {
+        "submits": 1,
+        "pid": "rh_storm___p81live_mtnwn0ds_"
+      },
+      "pass": true,
+      "note": "local dispatch with counting mock to prove CAS/SoT; full path uses real RH on FC"
+    },
+    {
+      "scenario": "timeout_dispatch_unknown",
+      "expected": "dispatch_unknown=1, no retry submit, slots held",
+      "actual": {
+        "unknown": "1",
+        "pid": "",
+        "held": {
+          "u": true,
+          "p": true
+        },
+        "extra_submits": 0
+      },
+      "pass": true,
+      "note": "simulated uncertain submit — documents Phase7 frozen policy"
+    },
+    {
+      "scenario": "provider_failure_refund_idempotent",
+      "expected": "failed, refund once, slots released",
+      "actual": {
+        "status": "failed",
+        "bal": {
+          "after_charge": 1996,
+          "after_refund": 2000
+        },
+        "snap": {
+          "user_occupied": 0,
+          "platform_video_running": 12
+        },
+        "settle2": {
+          "ok": true,
+          "idempotent": true,
+          "status": "failed"
+        }
+      },
+      "pass": true,
+      "note": "poll FAILED simulated; refund idempotency via Phase6 ref_*"
+    }
+  ],
+  "idempotency": {
+    "dispatch": "provider_task_id empty → tryAcquireDispatchLease → RH submit → atomicSetProviderTaskId (CAS empty only) → subsequent dispatch returns ALREADY_HAS_PROVIDER_TASK_ID; dispatch_unknown=1 → DISPATCH_UNKNOWN_NO_RETRY",
+    "charge": "operation_id chg_{task_id} + ledger SoT; repeat chargeClaimedTask → PHASE6_CHARGE_IDEMPOTENT",
+    "refund": "ref_{task_id} ledger idempotency; settleOneTask repeat → idempotent",
+    "release": "releaseUser/Platform CAS; upsert user_slot_held=0 only after terminal settle or charge fail"
+  },
+  "risks": [
+    {
+      "scenario": "Provider created but provider_task_id lost",
+      "behavior": "submit.uncertain → dispatch_unknown=1; dispatchOneChargedTask returns DISPATCH_UNKNOWN_NO_RETRY; no refund, no release until reconciliation",
+      "reconciliation": "No automated RH reconciliation cron verified in this E2E; manual ops required — Phase 8.1 known limitation"
+    }
+  ],
+  "regressions": {},
+  "conclusion": "READY_FOR_PHASE_8_2",
+  "errors": [],
+  "finished_at": "2026-09-05T04:55:56.718Z"
+}

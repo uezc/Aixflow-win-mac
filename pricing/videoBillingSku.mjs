@@ -13,6 +13,7 @@ import {
   normalizeGeminiOmniFlashDurationSec,
   normalizeMinimaxH3DurationSec,
   normalizeMinimaxH3AudioDurationSec,
+  normalizeMinimaxH3Resolution,
 } from './cost_table.mjs';
 
 function lc(s) {
@@ -264,24 +265,24 @@ export function buildVideoBillingSkuKey(baseModel, input) {
   }
 
   if (m === 'minimax-h3-t2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
   }
   if (m === 'minimax-h3-i2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
   }
-  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  // 全能参考：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-multi-{480p|720p}-{6|10|15|20}s）
   if (m === 'minimax-h3-multi') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
   }
-  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  // 口型同步：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-audio-{480p|720p}-{6|10|15|20}s；已删 5s）
   if (m === 'minimax-h3-audio') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3AudioDurationSec(input.durationMinimaxH3, 20);
     return joinKey('minimax', 'h3', 'audio', res, `${durSec}s`);
   }

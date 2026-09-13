@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 连续性规则引擎（第一版启发式，不依赖视觉模型）。
  */
 
@@ -15,7 +15,7 @@ function handSideHint(text: string): 'left' | 'right' | null {
 }
 
 function activeCostumeId(session: DramaDirectorSession, characterId: string): string {
-  const c = session.bible.characters.find((x) => x.character_id === characterId);
+  const c = (session.bible?.characters || []).find((x) => x.character_id === characterId);
   if (!c) return '';
   const active = (c.costumes || []).find((x) => x.active);
   return active?.costume_id || (c.costumes[0]?.costume_id || '') || c.imageUrl || '';
@@ -65,7 +65,7 @@ export function runDramaContinuityCheck(session: DramaDirectorSession): Continui
       const removed = [...prevCast].filter((id) => !curCast.has(id));
       if (added.length || removed.length) {
         const nameOf = (id: string) =>
-          session.bible.characters.find((c) => c.character_id === id)?.name || id;
+          (session.bible?.characters || []).find((c) => c.character_id === id)?.name || id;
         push({
           shot_id: cur.shot_id,
           prev_shot_id: prev.shot_id,
@@ -90,7 +90,7 @@ export function runDramaContinuityCheck(session: DramaDirectorSession): Continui
         prev.costume_notes !== cur.costume_notes &&
         /换装|服装/.test(`${prev.costume_notes}${cur.costume_notes}`)
       ) {
-        const name = session.bible.characters.find((c) => c.character_id === id)?.name || id;
+        const name = (session.bible?.characters || []).find((c) => c.character_id === id)?.name || id;
         push({
           shot_id: cur.shot_id,
           prev_shot_id: prev.shot_id,

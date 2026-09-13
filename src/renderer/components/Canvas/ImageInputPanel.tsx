@@ -29,6 +29,7 @@ import {
   zImageDimensionsForAspect,
   normalizeZImageResolutionTier,
 } from '../../../common/zImageDimensions';
+import { isImageQueueOnlyModel } from '../../../shared/imageQueueGoldenPath';
 import { PanelOptionDropdown } from './PanelOptionDropdown';
 import { AtMentionMenu } from './AtMentionMenu';
 import { PromptRichInput, type PromptRichInputHandle } from './PromptRichInput';
@@ -633,7 +634,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   }, [model, resolution, onModelChange, onResolutionChange]);
 
   useEffect(() => {
-    if (model !== 'banana-2.0' && model !== 'rhart-image-g-2') return;
+    if (model !== 'banana-2.0' && model !== 'rhart-image-g-2' && model !== 'rhart-image-g-2.5') return;
     if (!['1k', '2k', '4k'].includes(resolution)) {
       onResolutionChange('1k');
     }
@@ -648,7 +649,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
 
   // 比例选项（根据 API 文档）
   const aspectRatioValues = (
-    model === 'rhart-image-g-2'
+    model === 'rhart-image-g-2' || model === 'rhart-image-g-2.5'
       ? (['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9', '9:21', '2:1', '1:2', '3:1', '1:3'] as const)
       : model === 'banana-2.0'
         ? (['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9', '1:4', '4:1', '1:8', '8:1'] as const)
@@ -661,7 +662,8 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   const isLens = model === 'lens';
   const isFlux2Klein = model === 'flux2-klein';
   const usesTierResolution = isZImage || isLens || isFlux2Klein;
-  const isBanana20 = model === 'banana-2.0' || model === 'rhart-image-g-2';
+  const isBanana20 =
+    model === 'banana-2.0' || model === 'rhart-image-g-2' || model === 'rhart-image-g-2.5';
   const zImageAspectRatioOptions = Z_IMAGE_ASPECT_RATIOS.map((value) => ({ value, label: value }));
   const zImageResolutionOptions = [
     { value: '720p', label: '720P' },
@@ -707,6 +709,8 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
   ];
   const isMjV7 = model === 'mj-v7';
   const isYouchuanV81 = model === 'youchuan-text-to-image-v81';
+  const isYouchuanV82 = model === 'youchuan-text-to-image-v82';
+  const isYouchuanOpenApi = isYouchuanV81 || isYouchuanV82;
   const isRhartImageX = model === 'rhart-image-g';
   const isGptImage2 = model === 'gpt-image-2';
   const aspectRatioOptionsYouchuanV81 = [
@@ -738,7 +742,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
         ? aspectRatioOptionsGptImage2
         : isMjV7
           ? aspectRatioOptionsMjV7
-          : isYouchuanV81
+          : isYouchuanOpenApi
             ? aspectRatioOptionsYouchuanV81
             : isRhartImageX
               ? aspectRatioOptionsRhartImageX
@@ -867,7 +871,10 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
     },
     // 仅在完成时更新输出图片，避免任务列表重复记录
     onComplete: (result) => {
-      const localPath = result?.localPath;
+      const rawLocalPath = typeof result?.localPath === 'string' ? result.localPath.trim() : '';
+      // 拒绝 AICore 误写入的文本落盘路径（.txt 等），否则主图变成「图片加载失败」
+      const localPath =
+        rawLocalPath && !/\.(txt|json|md|csv|html?|xml)$/i.test(rawLocalPath) ? rawLocalPath : '';
       const originalHttp = typeof (result as { originalImageUrl?: string })?.originalImageUrl === 'string'
         ? String((result as { originalImageUrl?: string }).originalImageUrl).trim()
         : '';
@@ -888,6 +895,8 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
       if (localPath) {
         imageUrl = toLocalResource(localPath);
         console.log('[ImageInputPanel] onComplete 使用本地路径:', localPath, '->', imageUrl, '公网原图:', originalHttp || '无');
+      } else if (rawLocalPath) {
+        console.warn('[ImageInputPanel] onComplete 忽略非图片 localPath:', rawLocalPath);
       }
 
       let outputImages: string[] = [];
@@ -934,10 +943,12 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
       const errorMessage = typeof error === 'string' ? error : (error?.message || String(error));
       const isQuotaError = errorMessage.includes('quota is not enough') || 
                           errorMessage.includes('remain quota') ||
-                          errorMessage.includes('余额不足');
+                          errorMessage.includes('余额不足') ||
+                          errorMessage.includes('元宝不足') ||
+                          /BALANCE_INSUFFICIENT/i.test(errorMessage);
       
       if (isQuotaError) {
-        showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+        showAlert('元宝不足，请充值');
       }
       
       if (onErrorTask) {
@@ -1071,6 +1082,10 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
         requestParams.projectId = projectId;
       }
 
+      if (isImageQueueOnlyModel(model)) {
+        requestParams.nxCloudQueueGoldenPath = true;
+      }
+
       await executeAI(requestParams);
     } catch (error) {
       console.error('图片生成失败:', error);
@@ -1162,7 +1177,7 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
           />
         </div>
       )}
-      {isYouchuanV81 && (
+      {isYouchuanOpenApi && (
         <div className="flex items-center gap-1 shrink-0">
           <PanelOptionDropdown
             value={resolution === 'hd' || resolution === '2k' ? 'hd' : '1k'}
@@ -1444,7 +1459,10 @@ const ImageInputPanel: React.FC<ImageInputPanelProps> = ({
               {it.noPricingYet}
             </span>
           )}
-          {model === 'rhart-image-g-2' || model === 'banana-2.0' || model === 'rhart-image-g' ? (
+          {model === 'rhart-image-g-2' ||
+          model === 'rhart-image-g-2.5' ||
+          model === 'banana-2.0' ||
+          model === 'rhart-image-g' ? (
             <span
               className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 border ${
                 isImageToImageMode

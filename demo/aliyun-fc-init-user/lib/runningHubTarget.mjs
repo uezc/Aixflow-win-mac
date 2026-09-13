@@ -12,8 +12,10 @@ export const DEFAULT_RH_BASE_AI = 'https://www.runninghub.ai/openapi/v2';
  */
 export const ALWAYS_OVERSEAS_PATH_PREFIXES = [
   'youchuan/text-to-image-v81',
+  'youchuan/text-to-image-v82',
   'rhart-image-g',
   'rhart-image-g-2',
+  'rhart-image-g-2.5',
   'gemini-omni-flash',
   'rhart-video-g',
 ];
@@ -25,9 +27,11 @@ export const DEFAULT_OVERSEAS_PATH_PREFIXES = [
   'rhart-video-v3.1-pro-official',
   'rhart-image-n-g31-flash',
   'rhart-image-g-2',
+  'rhart-image-g-2.5',
   'rhart-image-g-2-official',
   'rhart-image-g',
   'youchuan/text-to-image-v81',
+  'youchuan/text-to-image-v82',
   'rhart-video-g',
   'rhart-video-g-official',
   'rhart-audio/suno',
@@ -125,8 +129,11 @@ export function forceOverseasByBillingOrPath(path, billingModelId) {
   if (
     bid === 'youchuan-text-to-image-v81' ||
     bid === 'youchuan-text-to-image-v81-hd' ||
+    bid === 'youchuan-text-to-image-v82' ||
+    bid === 'youchuan-text-to-image-v82-hd' ||
     bid === 'rhart-image-g' ||
     bid === 'rhart-image-g-2' ||
+    bid === 'rhart-image-g-2.5' ||
     bid === 'rhart-image-g-2-official' ||
     bid === 'gemini-omni-flash' ||
     bid.startsWith('gemini-omni-flash-') ||
@@ -144,10 +151,17 @@ export function forceOverseasByBillingOrPath(path, billingModelId) {
     return true;
   }
   const p = normalizeRhPath(path).toLowerCase();
-  if (p.includes('youchuan/text-to-image-v81') || p.endsWith('/text-to-image-v81')) return true;
+  if (
+    p.includes('youchuan/text-to-image-v81') ||
+    p.endsWith('/text-to-image-v81') ||
+    p.includes('youchuan/text-to-image-v82') ||
+    p.endsWith('/text-to-image-v82')
+  )
+    return true;
   // 精确匹配 /rhart-image-g/...，避免误伤其它路径；前缀白名单另有 rhart-image-g
   if (p === '/rhart-image-g' || p.startsWith('/rhart-image-g/')) return true;
   if (p === '/rhart-image-g-2' || p.startsWith('/rhart-image-g-2/') || p.startsWith('/rhart-image-g-2-')) return true;
+  if (p === '/rhart-image-g-2.5' || p.startsWith('/rhart-image-g-2.5/') || p.startsWith('/rhart-image-g-2.5-')) return true;
   if (p === '/gemini-omni-flash' || p.startsWith('/gemini-omni-flash/')) return true;
   if (p === '/rhart-video-g' || p.startsWith('/rhart-video-g/') || p.startsWith('/rhart-video-g-')) return true;
   if (p === '/rhart-video-v3.1-pro' || p.startsWith('/rhart-video-v3.1-pro/') || p.startsWith('/rhart-video-v3.1-pro-')) return true;

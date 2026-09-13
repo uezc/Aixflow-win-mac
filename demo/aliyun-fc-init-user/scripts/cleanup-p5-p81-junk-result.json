@@ -1,0 +1,59 @@
+{
+  "analysis": {
+    "now": 1788775112495,
+    "lease_ms": 60000,
+    "orphan_ms": 120000,
+    "platform_before": {
+      "video": {
+        "running": 0,
+        "max": 100
+      },
+      "image": {
+        "running": 0,
+        "max": 100
+      },
+      "table": "nx_queue_counters"
+    },
+    "samples": [],
+    "counts": {
+      "queued_junk": 0,
+      "claimed_junk": 0,
+      "running_junk": 0,
+      "claimed_lease_expired": 0,
+      "claimed_lease_active": 0,
+      "claimed_slots_held": 0,
+      "claimed_with_charge": 0,
+      "claimed_with_provider": 0,
+      "expired_claimed_scan_junk": 0,
+      "active_claimed_running_junk": 0,
+      "queued_junk_in_scan": 0
+    },
+    "root_cause_notes": [
+      "Claim lease 默认 NX_CLAIM_LEASE_MS=60s；无 cron 时 expired claimed 不会被 recover，槽位可持续占用直到有人调用 promote。",
+      "压测脚本常 NX_SKIP_QUEUE_PIPELINE_ON_CREATE=1 且中途退出，留下 claimed/charged/无 forward 任务。",
+      "promote 扫描按 PK 取前 N 个 queued；大量 junk queued 会饿死真实用户（已在先前事件验证）。",
+      "lease recovery 在 runPromoteQueuedTasks 开头执行；无 cron = 无自动恢复。",
+      "Reconcile orphan reservation 默认不在 promote 每分钟跑（reconcile=false）；需低频 RECONCILE=1。"
+    ],
+    "ots_extra_scanned": 23218
+  },
+  "cleanup": {
+    "mode": "APPLY",
+    "failed": 0,
+    "skipped": 0,
+    "errors": [],
+    "released_slots": 0
+  },
+  "platform_after": {
+    "video": {
+      "running": 0,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "starvation_risk": "LOW_AFTER_CLEANUP"
+}

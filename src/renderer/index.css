@@ -1162,6 +1162,69 @@ html.nexflow-tech-cursor-on .nexflow-canvas-tool-surface[data-tool='text'] {
   border-radius: 0;
 }
 
+/* 竖屏预览等：绿色始终铺满整区，叠加明显扫光表示进行中（避免 scaleX 只盖住半边） */
+@keyframes moduleProgressCoverShimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes moduleProgressCoverPulse {
+  0%,
+  100% {
+    filter: brightness(0.92);
+  }
+  50% {
+    filter: brightness(1.08);
+  }
+}
+
+.module-progress-fill-cover {
+  width: 100%;
+  height: 100%;
+  background-image: linear-gradient(
+    105deg,
+    #15803d 0%,
+    #15803d 38%,
+    #4ade80 50%,
+    #15803d 62%,
+    #15803d 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation:
+    moduleProgressCoverShimmer 1.6s linear infinite,
+    moduleProgressCoverPulse 2.2s ease-in-out infinite;
+  will-change: background-position, filter;
+  border-radius: 0;
+}
+
+/* 导演台视频预览外壳：进度遮罩铺满整块预览区（含画幅外留白） */
+.drama-shot-video-preview-shell {
+  position: relative;
+  isolation: isolate;
+}
+.drama-shot-video-preview-shell > .nexflow-module-progress-bar {
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  z-index: 40 !important;
+}
+
+/* 导演台竖屏预览舞台 */
+.drama-shot-video-stage {
+  position: relative;
+  isolation: isolate;
+}
+.drama-shot-video-stage > .nexflow-module-progress-bar {
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /* 全模块进度条：流动光效（从左向右） */
 @keyframes module-progress-shine {
   0% {
@@ -2722,6 +2785,16 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
   background: transparent !important;
 }
 
+/* 音频波形播放动画 keyframes：静态兜底，避免运行时注入丢失导致波形不跳动 */
+@keyframes nexflow-audio-wave-y {
+  0% { transform: scaleY(0.75); }
+  100% { transform: scaleY(1.1); }
+}
+@keyframes nexflow-audio-wave-y-fill {
+  0% { transform: scaleY(0.88); }
+  100% { transform: scaleY(1.08); }
+}
+
 .light-mode .react-flow__node-audio .custom-node-container.apple-panel-light,
 .light-mode .react-flow__node-audioTranscribe .custom-node-container.apple-panel-light {
   /* 声音 Sound */
@@ -3299,6 +3372,20 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
 
 .prompt-rich-input.is-light .ref-pill:hover {
   color: rgb(17 24 39);
+}
+
+/* 导演台成片预览：video 可见；canvas 仅在成功抓帧后盖住可能发黑的硬件层 */
+.drama-shot-video-stage {
+  isolation: isolate;
+}
+.drama-shot-video-el {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* 硬件 overlay 会扩大点击命中，挡住下方「放弃等待」 */
+  pointer-events: none;
 }
 
 

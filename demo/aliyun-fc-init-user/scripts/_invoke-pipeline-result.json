@@ -1,0 +1,22 @@
+{
+  "http_ms": 502,
+  "status": 200,
+  "idle_no_patrol": true,
+  "idle_short_circuit": true,
+  "elapsed_ms": 204,
+  "summary": {
+    "lease_recovered": 0,
+    "claimed": 0,
+    "charged": 0,
+    "dispatched_ok": 0,
+    "poll_settled": 0
+  },
+  "detail": {
+    "active_slots": 0,
+    "work_active": false,
+    "safety_window": false,
+    "idle_full_sweep_ms": 3600000,
+    "reason": "idle_zero_patrol"
+  },
+  "body_head": "{\"ok\":true,\"started_at\":1788921319371,\"promote\":null,\"charge\":null,\"dispatch\":null,\"poll\":null,\"idle_short_circuit\":true,\"idle_no_patrol\":true,\"idle_short_circuit_detail\":{\"active_slots\":0,\"work_active\":false,\"safety_window\":false,\"idle_full_sweep_ms\":3600000,\"reason\":\"idle_zero_patrol\"},\"elapsed_ms\":204,\"summary\":{\"lease_recovered\":0,\"claimed\":0,\"charged\":0,\"dispatched_ok\":0,\"poll_settled\":0}}"
+}

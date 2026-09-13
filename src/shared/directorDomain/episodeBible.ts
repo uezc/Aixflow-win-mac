@@ -24,8 +24,11 @@ import { assignDramaVisualEventPriorities, createEmptyDramaVisualEvent, type Dra
 import {
   coreDramaPersonName,
   extractCharacterNamesFromDialogueBlob,
+  isDramaStrictCastName,
+  isSystemSpeakerName,
   namesLikelySameDramaPerson,
 } from './extractCastFromScript.js';
+import { collectOriginalSpeakerNamesInOrder, isDramaKeepCastSpeaker } from './originalScript.js';
 import { finalizeShotSuggestionDurations } from './shotDurationEngine.js';
 
 export function createEmptyDramaCharacterDossier(
@@ -134,7 +137,17 @@ export function createEmptyDramaShotSuggestion(
     transition_out: String(partial?.transition_out || '').trim(),
     visual_event_ids: Array.isArray(partial?.visual_event_ids)
       ? partial!.visual_event_ids.map(String).filter(Boolean)
+      : Array.isArray((partial as { event_ids?: string[] })?.event_ids)
+        ? ((partial as { event_ids?: string[] }).event_ids || []).map(String).filter(Boolean)
+        : [],
+    prop_names: Array.isArray(partial?.prop_names)
+      ? partial!.prop_names.map(String).filter(Boolean)
       : [],
+    creature_names: Array.isArray(partial?.creature_names)
+      ? partial!.creature_names.map(String).filter(Boolean)
+      : [],
+    asset_match: String(partial?.asset_match || '').trim(),
+    visual_style: String(partial?.visual_style || '').trim(),
   };
 }
 
@@ -195,6 +208,14 @@ export function createEmptyDramaEpisodeBible(
         : [],
     },
     style_preset_id: String(partial?.style_preset_id || '').trim(),
+    original_scenes: Array.isArray(partial?.original_scenes) ? [...partial!.original_scenes] : [],
+    original_segments: Array.isArray(partial?.original_segments) ? [...partial!.original_segments] : [],
+    character_bindings: Array.isArray(partial?.character_bindings) ? [...partial!.character_bindings] : [],
+    voice_bindings: Array.isArray(partial?.voice_bindings) ? [...partial!.voice_bindings] : [],
+    scene_bindings: Array.isArray(partial?.scene_bindings) ? [...partial!.scene_bindings] : [],
+    ...(partial?.visual_bible_binding ? { visual_bible_binding: partial.visual_bible_binding } : {}),
+    ...(partial?.original_integrity ? { original_integrity: partial.original_integrity } : {}),
+    ...(partial?.analysis_summary ? { analysis_summary: partial.analysis_summary } : {}),
     shot_suggestions: Array.isArray(partial?.shot_suggestions)
       ? partial!.shot_suggestions.map((s) => createEmptyDramaShotSuggestion(s))
       : [],
@@ -205,6 +226,15 @@ export function createEmptyDramaEpisodeBible(
     official_scene_beats: Array.isArray(partial?.official_scene_beats)
       ? [...partial!.official_scene_beats]
       : [],
+    ...(Number(partial?.scene_split_at) > 0
+      ? { scene_split_at: Number(partial!.scene_split_at) }
+      : {}),
+    ...(Number(partial?.duration_split_at) > 0
+      ? { duration_split_at: Number(partial!.duration_split_at) }
+      : {}),
+    ...(Number(partial?.asset_match_at) > 0
+      ? { asset_match_at: Number(partial!.asset_match_at) }
+      : {}),
     updated_at: Number(partial?.updated_at) || 0,
   };
 }
@@ -289,6 +319,8 @@ function hasEpisodeBibleContent(b: DramaEpisodeBible | null | undefined): boolea
     b.shot_suggestions.length ||
     b.official_shots?.length ||
     b.visual_events?.length ||
+    b.original_segments?.length ||
+    b.original_scenes?.length ||
     b.episodePacing.timeline.length
   );
 }
@@ -525,7 +557,7 @@ function splitDramaCastBlob(raw: string): string[] {
     .filter(Boolean);
 }
 
-/** 本集 visual_events / 分镜建议 / 场次里实际出场的人物（用于分析页与前集体隔离） */
+/** 本集 visual_events / 分镜建议 / 原文说话人里实际出场的人物（用于分析页与前集体隔离） */
 export function collectDramaEpisodeAppearingCharacterIds(
   session: DramaDirectorSession,
   episodeId?: string,
@@ -533,8 +565,25 @@ export function collectDramaEpisodeAppearingCharacterIds(
   const epId = String(episodeId || session.active_episode_id || '').trim();
   const names: string[] = [];
   const bibleEp = epId ? session.episode_bibles?.[epId] : undefined;
+  // 优先：原文对白说话人顺序
+  names.push(...collectOriginalSpeakerNamesInOrder(bibleEp?.original_segments || []));
   for (const ev of bibleEp?.visual_events || []) {
-    names.push(...splitDramaCastBlob(ev.who));
+    if (ev.who && (ev.kind === 'dialogue' || String(ev.cut || '') === 'dialogue')) {
+      names.push(...splitDramaCastBlob(ev.who));
+    }
+  }
+  for (const seg of bibleEp?.original_segments || []) {
+    if (
+      seg.character_name &&
+      (seg.type === 'dialogue' || seg.type === 'system' || seg.type === 'narration')
+    ) {
+      names.push(seg.character_name);
+    }
+  }
+  for (const b of bibleEp?.character_bindings || []) {
+    if (b.original_name && b.speaker_type !== 'system' && !isSystemSpeakerName(b.original_name)) {
+      names.push(b.original_name);
+    }
   }
   for (const s of bibleEp?.shot_suggestions || []) {
     for (const n of s.cast_names || []) names.push(String(n || '').trim());
@@ -550,13 +599,23 @@ export function collectDramaEpisodeAppearingCharacterIds(
     const nm = String(n.name || '').trim();
     if (nm) names.push(nm);
   }
+  const segs = bibleEp?.original_segments || [];
   const cleaned = names
     .map((n) => coreDramaPersonName(n) || String(n || '').trim())
-    .filter(Boolean);
+    .filter((n) => {
+      if (!n) return false;
+      if (isSystemSpeakerName(n)) return true;
+      if (!isDramaStrictCastName(n)) return false;
+      if (!segs.length) return true;
+      return isDramaKeepCastSpeaker(n, segs);
+    });
   const ids = new Set<string>();
   for (const n of bibleEp?.directing_notes || []) {
     const id = String(n.character_id || '').trim();
     if (id) ids.add(id);
+  }
+  for (const b of bibleEp?.character_bindings || []) {
+    if (b.status === 'MATCHED' && b.character_id) ids.add(b.character_id);
   }
   for (const c of session.bible?.characters || []) {
     if (ids.has(c.character_id)) continue;

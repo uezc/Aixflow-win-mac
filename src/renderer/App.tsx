@@ -15,6 +15,7 @@ import AdminUsersPage from './components/Admin/AdminUsersPage';
 import AdminFinancePage from './components/Admin/AdminFinancePage';
 import RechargeSettledNotifier from './components/RechargeSettledNotifier';
 import { NxSaasAuthPromptBridge } from './components/NxSaasAuthPromptBridge';
+import { CloudBalanceInsufficientAlertBridge } from './components/CloudBalanceInsufficientAlertBridge';
 import { AgreementConfirmModal } from './components/legal/AgreementConfirmModal';
 import { isAgreementConfirmed } from './legal/agreementStorage';
 import TechCursor from './components/TechCursor';
@@ -607,6 +608,7 @@ const AppRouter: React.FC<{
           onConfirmed={() => setAgreementOk(true)}
         />
         <NxSaasAuthPromptBridge />
+        <CloudBalanceInsufficientAlertBridge />
         <RechargeSettledNotifier />
       </>
     ) : null}

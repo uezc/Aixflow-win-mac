@@ -1,0 +1,233 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "prices": {
+    "veo-3-1-720p-pro-se": 7,
+    "veo-3-1-1080p-pro-se": 15,
+    "veo-3-1-4k-pro-se": 20
+  },
+  "tests": [
+    {
+      "name": "test7_ots_sku_3_3",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "prices": {
+          "veo-3-1-720p-pro-se": 7,
+          "veo-3-1-1080p-pro-se": 15,
+          "veo-3-1-4k-pro-se": 20
+        }
+      }
+    },
+    {
+      "name": "test7_sku_ids",
+      "ok": true,
+      "detail": {
+        "a": "veo-3-1-720p-pro-se",
+        "b": "veo-3-1-1080p-pro-se",
+        "c": "veo-3-1-4k-pro-se"
+      }
+    },
+    {
+      "name": "test8_aspect",
+      "ok": true,
+      "detail": {
+        "a": "16:9",
+        "b": "9:16",
+        "c": "16:9"
+      }
+    },
+    {
+      "name": "test9_duration_string_8",
+      "ok": true,
+      "detail": {
+        "duration": "8",
+        "type": "string"
+      }
+    },
+    {
+      "name": "test10_region_ai",
+      "ok": true,
+      "detail": {
+        "rhRegion": "ai",
+        "pick": "ai",
+        "path": "/rhart-video-v3.1-pro/start-end-to-video"
+      }
+    },
+    {
+      "name": "test1_no_lastFrameUrl",
+      "ok": true,
+      "detail": {
+        "keys": [
+          "prompt",
+          "firstFrameUrl",
+          "aspectRatio",
+          "duration",
+          "resolution"
+        ]
+      }
+    },
+    {
+      "name": "test1_create",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "hasLast": false
+      }
+    },
+    {
+      "name": "test1_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test1_charge",
+      "ok": true,
+      "detail": {
+        "delta": 7,
+        "quoted": 7
+      }
+    },
+    {
+      "name": "test1_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_prose_1",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test1_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "poll": "ai",
+        "held": false
+      }
+    },
+    {
+      "name": "test11_dup_dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "test2_has_lastFrameUrl",
+      "ok": true,
+      "detail": {
+        "first": "https://nexflow-temp-images.oss-cn-hongk",
+        "last": "https://nexflow-temp-images.oss-cn-hongk"
+      }
+    },
+    {
+      "name": "test2_create_stored",
+      "ok": true,
+      "detail": {
+        "first": true,
+        "last": true
+      }
+    },
+    {
+      "name": "test2_success",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "delta": 15
+      }
+    },
+    {
+      "name": "test3_0img_no_create",
+      "ok": true,
+      "detail": {
+        "rejected": true,
+        "creates": 0
+      }
+    },
+    {
+      "name": "gate_reject_0img",
+      "ok": true
+    },
+    {
+      "name": "test4_3img_gate_reject",
+      "ok": true,
+      "detail": {
+        "creates": 0
+      }
+    },
+    {
+      "name": "test5_6_preprocess_before_create",
+      "ok": true,
+      "detail": {
+        "ossCatch": 1714,
+        "createCall": 2953,
+        "ossBeforeCreate": true
+      }
+    },
+    {
+      "name": "test14_submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500,
+        "charge": "refunded"
+      }
+    },
+    {
+      "name": "test12_dup_charge",
+      "ok": true,
+      "detail": {
+        "delta": 7
+      }
+    },
+    {
+      "name": "test13_dup_refund",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "gate_on_1img",
+      "ok": true
+    },
+    {
+      "name": "gate_on_2img",
+      "ok": true
+    },
+    {
+      "name": "gate_off",
+      "ok": true
+    },
+    {
+      "name": "gate_queue_before_direct",
+      "ok": true,
+      "detail": {
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "ui_gate",
+      "ok": true
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {
+        "good": true,
+        "bad": false
+      }
+    },
+    {
+      "name": "reject_rh_filename",
+      "ok": true
+    }
+  ],
+  "rh_submit_calls": 2,
+  "creates": 4
+}

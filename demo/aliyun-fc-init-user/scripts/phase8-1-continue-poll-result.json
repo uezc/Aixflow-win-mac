@@ -1,0 +1,87 @@
+{
+  "task_id": "b8dc5a03-fe6e-446b-995d-dc1b16a41ea6",
+  "status": "success",
+  "stage": "done",
+  "provider_task_id": "2096075740000186369",
+  "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/63dabfef-b1d8-4bc6-8990-180952f5a558.mp4",
+  "quoted_cost": 4,
+  "balance": 1996,
+  "user_occupied": 0,
+  "platform_running": 31,
+  "slots_held": {
+    "u": false,
+    "p": false
+  },
+  "stages_tail": [
+    {
+      "i": 59,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096075740000186369",
+      "url": "",
+      "bal": 1996,
+      "uocc": 1,
+      "prun": 32,
+      "held": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "i": 60,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096075740000186369",
+      "url": "",
+      "bal": 1996,
+      "uocc": 1,
+      "prun": 32,
+      "held": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "i": 61,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096075740000186369",
+      "url": "",
+      "bal": 1996,
+      "uocc": 1,
+      "prun": 32,
+      "held": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "i": 62,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096075740000186369",
+      "url": "",
+      "bal": 1996,
+      "uocc": 1,
+      "prun": 32,
+      "held": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "i": 63,
+      "status": "success",
+      "stage": "done",
+      "pid": "2096075740000186369",
+      "url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/63dabfef-b1d8-4bc6-",
+      "bal": 1996,
+      "uocc": 0,
+      "prun": 31,
+      "held": {
+        "u": false,
+        "p": false
+      }
+    }
+  ]
+}

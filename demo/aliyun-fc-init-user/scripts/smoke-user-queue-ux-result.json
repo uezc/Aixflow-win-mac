@@ -1,0 +1,59 @@
+{
+  "at": "2026-09-07T13:45:16.003Z",
+  "fc": "https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run",
+  "ok": true,
+  "steps": {
+    "created": [
+      "9519ff5c-8c76-46aa-bf30-726c3583e2ac",
+      "5ab09eb3-ca0c-4c87-8132-80b27a3d6f77",
+      "b36cd04f-fb61-4137-a278-31770ae5426c",
+      "50a5478b-5a33-4b39-b1f3-38864e282bc6",
+      "5a5f3d7f-57d1-443b-9df1-44afa2377472",
+      "823665c6-d541-4e10-99ed-6f3544e259c7",
+      "b3ca334f-1249-4439-b252-f84aeacaa306"
+    ],
+    "fill_0": {
+      "status": "running",
+      "has_ahead_key": true
+    },
+    "fill_1": {
+      "status": "running",
+      "has_ahead_key": true
+    },
+    "fill_2": {
+      "status": "failed",
+      "has_ahead_key": true
+    },
+    "fill_3": {
+      "status": "failed",
+      "has_ahead_key": true
+    },
+    "fill_4": {
+      "status": "failed",
+      "has_ahead_key": true
+    },
+    "tail_5": {
+      "i": 5,
+      "task_id": "823665c6-d541-4e10-99ed-6f3544e259c7",
+      "status": "failed",
+      "ahead_count": null,
+      "queue_position": null,
+      "queue_position_available": false,
+      "queue_position_complete": false,
+      "has_ahead_key": true
+    },
+    "tail_6": {
+      "i": 6,
+      "task_id": "b3ca334f-1249-4439-b252-f84aeacaa306",
+      "status": "failed",
+      "ahead_count": null,
+      "queue_position": null,
+      "queue_position_available": false,
+      "queue_position_complete": false,
+      "has_ahead_key": true
+    }
+  },
+  "errors": [
+    "NO_QUEUED_TAIL — 并发未占满或 advance 把尾部也推走了；字段部署仍可能 OK"
+  ]
+}

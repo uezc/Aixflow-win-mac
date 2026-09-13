@@ -1,0 +1,130 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "create_queue_requires_forward",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "t1_candidates_skip_bad_include_good",
+      "ok": true,
+      "detail": {
+        "candidates": 1,
+        "hasGood": true,
+        "hasBad": false
+      }
+    },
+    {
+      "name": "t1_good_dispatches",
+      "ok": true,
+      "detail": {
+        "d": {
+          "ok": true,
+          "provider_task_id": "rh_t1_good"
+        },
+        "pid": "rh_t1_good"
+      }
+    },
+    {
+      "name": "t2_100_bad_still_finds_good",
+      "ok": true,
+      "detail": {
+        "n": 1,
+        "first": "6b69259b",
+        "claimed": "claimed",
+        "charge": true
+      }
+    },
+    {
+      "name": "t3_t4_bad_mark_then_terminal_release",
+      "ok": true,
+      "detail": {
+        "r1": {
+          "ok": false,
+          "reason": "NO_FORWARD_PAYLOAD",
+          "marked": true
+        },
+        "r2": {
+          "ok": false,
+          "reason": "NO_FORWARD_PAYLOAD",
+          "failed": true,
+          "terminal": true
+        },
+        "status": "failed",
+        "stillCandidate": false,
+        "stillInvalid": false,
+        "u": false,
+        "p": false
+      }
+    },
+    {
+      "name": "t5_cost_gt0_refund_via_existing",
+      "ok": true,
+      "detail": {
+        "bal0": 4992,
+        "bal1": 4992,
+        "status": "failed",
+        "note": "refund uses refundTaskCharge; amount may restore if charge SoT exists"
+      }
+    },
+    {
+      "name": "t6_cost0_no_balance_change",
+      "ok": true,
+      "detail": {
+        "b0": 4992,
+        "b1": 4992,
+        "status": "failed"
+      }
+    },
+    {
+      "name": "t7_rhart_ai",
+      "ok": true,
+      "detail": {
+        "force": true,
+        "pick": "ai"
+      }
+    },
+    {
+      "name": "t8_h3_cn",
+      "ok": true,
+      "detail": {
+        "force": false,
+        "pick": "cn",
+        "durType": "string"
+      }
+    },
+    {
+      "name": "t9_dup_charge_once",
+      "ok": true,
+      "detail": {
+        "balA": 4992,
+        "balB": 4987
+      }
+    },
+    {
+      "name": "t10_dup_refund_once",
+      "ok": true,
+      "detail": {
+        "balB": 4987,
+        "balC": 4992,
+        "balD": 4992
+      }
+    },
+    {
+      "name": "t11_batch_good_dispatch_bad_progress",
+      "ok": true,
+      "detail": {
+        "batch_ok": 1,
+        "bad": "failed",
+        "good": "rh_h3_batch",
+        "inv": {
+          "candidates": 5,
+          "marked": 5,
+          "terminal": 0
+        }
+      }
+    }
+  ]
+}

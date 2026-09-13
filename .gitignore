@@ -114,6 +114,7 @@ build/x86-unicode/
 
 # 超过 GitHub 100MB 上限的默认资产视频（本地保留，不入库）
 resources/default-asset-library/files/assets/2026-07-15_15-56-52-1784102432545-xhyh6h.mp4
+resources/default-asset-library/files/assets/沙漠电台-1786973148763-8g1ept.mp4
 
 # 本地临时 / 调试脚本与产物（勿提交）
 _tmp_*

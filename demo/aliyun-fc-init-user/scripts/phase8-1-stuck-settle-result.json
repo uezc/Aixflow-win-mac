@@ -1,0 +1,29 @@
+{
+  "poll": {
+    "ok": true,
+    "status": "success"
+  },
+  "before": {
+    "status": "running",
+    "stage": "provider_submitted",
+    "pid": "2096075740000186369"
+  },
+  "after": {
+    "status": "success",
+    "stage": "done",
+    "pid": "2096075740000186369",
+    "url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/63dabfef-b1d8-4bc6-8990-180952f5a558.mp4",
+    "held": {
+      "u": false,
+      "p": false
+    }
+  },
+  "balance": {
+    "before": 1996,
+    "after": 1996
+  },
+  "user_occupied": 0,
+  "platform_running": 31,
+  "no_recharge": true,
+  "same_provider_task": true
+}

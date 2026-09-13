@@ -18,6 +18,7 @@ import { createEmptyDramaGenerationPackage } from './factories.js';
 import { listDramaShotRefAudioSlots, resolveDramaShotPackageRefImages } from './shotRefs.js';
 import { resolveDramaH3DialoguePlan, shouldSendDramaH3AudioReference } from './h3DialogueMode.js';
 import { dramaShotHasSpokenDialogue, resolveDramaShotAudioTimeline } from './migrateH3Compiler.js';
+import { collectDramaShotSpokenLinesForH3, finalizeMinimaxH3SkillPrompt } from '../minimaxH3OptimizePrompt.js';
 import type {
   DramaDirectorSession,
   DramaGenerationPackage,
@@ -41,7 +42,9 @@ function buildPromptText(session: DramaDirectorSession, shot: DramaShot): string
   const cached = String(
     shot.h3_skill_prompt || shot.last_compiled_prompt || shot.final_prompt || '',
   ).trim();
-  if (cached) return cached;
+  if (cached) {
+    return finalizeMinimaxH3SkillPrompt(cached, collectDramaShotSpokenLinesForH3(shot));
+  }
   const bits = [shot.size, shot.move, shot.action, shot.expression]
     .map((x) => String(x || '').trim())
     .filter(Boolean);
@@ -52,7 +55,7 @@ function buildSceneLock(
   session: DramaDirectorSession,
   shot: DramaShot,
 ): DramaPackageSceneLock | null {
-  const sc = session.bible.scenes.find((s) => s.scene_id === shot.scene_asset_id);
+  const sc = (session.bible?.scenes || []).find((s) => s.scene_id === shot.scene_asset_id);
   if (!sc) return null;
   return {
     scene_id: sc.scene_id,
@@ -78,7 +81,7 @@ function buildCharacterLocks(
   shot: DramaShot,
 ): DramaPackageCharacterLock[] {
   return (shot.character_ids || [])
-    .map((id) => session.bible.characters.find((c) => c.character_id === id))
+    .map((id) => (session.bible?.characters || []).find((c) => c.character_id === id))
     .filter(Boolean)
     .map((c) => ({
       character_id: c!.character_id,
@@ -211,7 +214,7 @@ export function buildDramaGenerationPackage(
     performance_direction: (shot.cast || [])
       .map((c) => {
         const name =
-          session.bible.characters.find((x) => x.character_id === c.character_id)?.name ||
+          (session.bible?.characters || []).find((x) => x.character_id === c.character_id)?.name ||
           c.character_id;
         return [name, c.emotion, c.performance, c.action].filter(Boolean).join(' · ');
       })

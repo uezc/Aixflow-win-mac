@@ -20,6 +20,10 @@ import {
   isDirectorEmptyShotPrompt,
   insertDirectorPromptAfterLookHead,
 } from './bindAssetRefs.js';
+import {
+  isMinimaxH3EnglishSkillPrompt,
+  standardizeMinimaxH3VideoPrompt,
+} from '../minimaxH3StandardizePrompt.js';
 
 const PENDING_FINAL_PROMPT_RE = /^(待生成提示词|待生成|to\s*be\s*generated|pending(\s*prompt)?)$/i;
 
@@ -35,11 +39,11 @@ export const DIRECTOR_DRAMA_SOUNDSCAPE_GUARD =
   '【短剧声景硬性】成片音频须包含：①按本镜对白清晰可辨的角色台词（有对白时人物须开口说话，口型与台词同步）；②与场景匹配的环境底噪与物理动作音/音效。严禁即兴背景音乐、配乐、歌曲、哼唱、器乐铺底或任何非剧情配乐。';
 
 /**
- * 短剧成片禁字幕硬约束（英文为主）。
- * 禁止使用中文正文，禁止包进 <d>——H3 会把 <d> 与中文指令念成台词。
+ * 短剧对白通道（对齐官方 H3 skill §4.4 / §4.5）：
+ * 台词只进 <d>；画面字仅双引号点名。避免反复写 subtitle 反促烧录。
  */
 export const DIRECTOR_DRAMA_NO_SUBTITLE_GUARD =
-  '[NO_SUBTITLE · do not speak] Pure camera image only. No burned-in subtitles, no on-screen captions, no dialogue text, no lyrics, no speech bubbles, no closed captions, no title bars, no watermark, no logo, no UI, no readable letters or numbers. Spoken words exist only as audio + lip motion from <d>[Chinese] … </d> tags elsewhere — never paint those words onto the frame. Do not read this rule aloud.';
+  'Spoken lines use only <d>[Chinese] … </d>. Place speaker ID, action, and delivery outside <d>. On-screen banners, signs, labels, or neon use English double quotation marks only when they must appear in the frame; do not place dialogue inside quotation marks as visible text.';
 
 const STORYBOARD_NO_TEXT_GUARD = DIRECTOR_MV_NO_ONSCREEN_TEXT_GUARD;
 
@@ -448,22 +452,27 @@ export function ensureDirectorDramaVideoPromptGuards(
   if (noDialogueMode) {
     body = body.replace(/【短剧声景硬性】[^【]*/g, '').replace(/\s+$/g, '').trim();
   }
-  // 禁字幕只声明一次（编译器 A 段已含则不再堆叠）；守卫必须纯英文且禁止包 <d>
-  // 中文 api 终稿已自带负面清单时，勿再前置英文 NO_SUBTITLE（避免污染场景概述结构）
+  // 对白通道只声明一次（Compiler 已含 Spoken lines use only <d> 则不再堆叠）
+  // 中文 api 终稿已自带结构时，勿再前置英文通道说明
   const preserveChinese =
     opts?.preserveChinese === true ||
     (opts?.preserveChinese !== false && isDramaH3ZhNaturalApiPrompt(body));
+  // 禁字幕：中文终稿也要保留一句英文硬锁（勿反复堆叠）
   if (
-    !preserveChinese &&
-    !/短剧禁字幕|NO_SUBTITLE|burned-in subtitles|对白只存在于音频轨|Spoken-words lock|\[NO_DIALOGUE\]/i.test(
+    !/Spoken lines use only <d>|短剧禁字幕|NO_SUBTITLE|No burned-in subtitles|burned-in subtitle/i.test(
       body,
     )
   ) {
     const subtitleGuard =
       opts?.hasDialogue === false
-        ? '[NO_SUBTITLE · do not speak] Pure camera image only. No burned-in subtitles, no on-screen captions, no readable text, no watermark, no logo. Do not read this rule aloud.'
-        : DIRECTOR_DRAMA_NO_SUBTITLE_GUARD;
-    body = body ? `${subtitleGuard}\n\n${body}` : subtitleGuard;
+        ? 'Do not write spoken lines. No burned-in subtitles, captions, dialogue bubbles, watermarks, or on-screen UI text.'
+        : `${DIRECTOR_DRAMA_NO_SUBTITLE_GUARD} No burned-in subtitles, captions, dialogue bubbles, watermarks, or on-screen UI text.`;
+    if (preserveChinese) {
+      // 中文混排：放文末，避免顶栏英文锁块再次盖住格式
+      body = body ? `${body}\n${subtitleGuard}` : subtitleGuard;
+    } else {
+      body = body ? `${subtitleGuard}\n\n${body}` : subtitleGuard;
+    }
   }
   if (empty) {
     body = appendPromptGuard(body, DIRECTOR_EMPTY_SHOT_NO_PEOPLE_GUARD);
@@ -471,7 +480,7 @@ export function ensureDirectorDramaVideoPromptGuards(
       body,
       `【短剧空镜声景】仅环境底噪与场景音效${sfx ? `（${sfx}）` : ''}；禁止人物台词、禁止即兴 BGM/配乐/歌曲；画面零文字。`,
     );
-  } else if (!opts?.skipDialogueSfxFlatten) {
+  } else if (!opts?.skipDialogueSfxFlatten && !isMinimaxH3EnglishSkillPrompt(body)) {
     const speak =
       dialogue && dialogue !== '—'
         ? `本镜对白仅作音频与口型驱动（人物开口说出，严禁画面叠字）：音频内容「${dialogue.slice(0, 280)}」；说话者口型与台词同步，无对白者闭嘴。`
@@ -512,22 +521,39 @@ export function ensureDirectorDramaVideoPromptGuards(
   if (!preserveChinese) {
     body = stripChineseOutsideH3DialogueTags(body);
   }
+  if (isMinimaxH3EnglishSkillPrompt(body)) {
+    body = standardizeMinimaxH3VideoPrompt(body);
+  }
   return body;
 }
 
 /**
  * 拼接+整合产出的中文 api 终稿：靠 Context-IR 读中文叙事，禁止再剥汉字。
+ * 含旧六段中文稿，以及白话 @图片 / 风格色调 / 剧情。
  */
 export function isDramaH3ZhNaturalApiPrompt(prompt: string): boolean {
   const t = String(prompt || '');
   if (!t.trim()) return false;
+  if (
+    /@图片\s*\d+\s*是/.test(t) &&
+    (/风格色调\s*[：:]/.test(t) || /剧情\s*[：:]/.test(t))
+  ) {
+    return true;
+  }
   return (
     /\[场景概述\]/.test(t) ||
     /\[场景锚点锁定\]/.test(t) ||
     /\[镜头时间线\]/.test(t) ||
     /\[视觉风格\]/.test(t) ||
     /\[负面清单\]/.test(t) ||
-    /\[声音描述\]/.test(t)
+    /\[声音描述\]/.test(t) ||
+    (/\[镜头\s*\d+\]/.test(t) && /<(?:Picture|Subject|Audio)\s*\d+>/.test(t)) ||
+    (/主体定义\s*[：:]/.test(t) && /详细描述\s*[：:]/.test(t)) ||
+    /综合多模态描述\s*[：:]/.test(t) ||
+    // 英文段名 + 中文正文（短剧 Skill 范例）
+    (/detailed_description\s*:/i.test(t) &&
+      /[\u4e00-\u9fff]/.test(t) &&
+      (/<Picture\s+\d+>/i.test(t) || /\[Shot\s*\d+\]/i.test(t) || /<d>\s*\[Chinese/i.test(t)))
   );
 }
 
@@ -547,7 +573,10 @@ export function stripChineseOutsideH3DialogueTags(prompt: string): string {
     return `\u0000H3SAFE${i}\u0000`;
   };
   let out = text.replace(/<d\b[^>]*>[\s\S]*?<\/d>/gi, protect);
-  out = out.replace(/<(?:图片|主体|音频|图)\s*\d+\s*>/g, protect);
+  out = out.replace(/<(?:图片|主体|音频|图|Picture|Subject|Audio)\s*\d+\s*>/g, protect);
+  out = out.replace(/[（(]S\d+[）)]/g, protect);
+  // 画面字（弹幕/招牌/霓虹）按 H3 约定写在英文双引号内，剥汉字时必须保留
+  out = out.replace(/"(?:\\.|[^"\\])*"/g, protect);
   // CJK 统一表意文字 + 兼容汉字 + CJK 标点/全角
   out = out.replace(/[\u3400-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]+/g, ' ');
   out = out.replace(/\u0000H3SAFE(\d+)\u0000/g, (_, n) => protectedBlocks[Number(n)] || '');

@@ -15,9 +15,29 @@ import type {
   DramaVoiceIdentity,
   DramaVoicePerformance,
 } from './types.js';
+import { normalizeDramaEmotion } from './shotPlanning.js';
 
 function str(v: unknown): string {
   return String(v || '').trim();
+}
+
+function syncMasterRefs<T extends { kind?: string; url?: string; ref_id?: string; label?: string }>(
+  refs: T[] | undefined,
+  imageUrl: string,
+  id: string,
+): T[] {
+  const img = str(imageUrl);
+  const list = Array.isArray(refs) ? [...refs] : [];
+  if (!img) return list;
+  const idx = list.findIndex((r) => r.kind === 'master' || r.kind === 'main');
+  if (idx >= 0) {
+    if (str(list[idx]?.url) === img) return list;
+    return list.map((r, i) => (i === idx ? { ...r, kind: 'master', url: img } : r));
+  }
+  return [
+    { ref_id: `ref-${id}-master`, kind: 'master', url: img, label: 'master' } as T,
+    ...list,
+  ];
 }
 
 function emptyIdentity(partial?: Partial<DramaVoiceIdentity>): DramaVoiceIdentity {
@@ -66,7 +86,8 @@ function emptyCast(partial?: Partial<DramaShotCastMember>): DramaShotCastMember 
     character_id: str(partial?.character_id),
     screen_position: str(partial?.screen_position),
     action: str(partial?.action),
-    emotion: str(partial?.emotion),
+    emotion: normalizeDramaEmotion(partial?.emotion),
+    expression: str(partial?.expression),
     performance: str(partial?.performance),
     dialogue_ids: Array.isArray(partial?.dialogue_ids)
       ? partial!.dialogue_ids.map(String)
@@ -75,6 +96,7 @@ function emptyCast(partial?: Partial<DramaShotCastMember>): DramaShotCastMember 
     ...(partial?.temporary_state !== undefined
       ? { temporary_state: str(partial.temporary_state) }
       : {}),
+    ...(partial?.costume_id ? { costume_id: str(partial.costume_id) } : {}),
   };
 }
 
@@ -203,18 +225,7 @@ export function migrateDramaSessionToContractV1(
   const characters = (session.bible?.characters || []).map((c) => {
     const anchors = deriveCharacterVisualAnchors(c);
     const hasAnchors = anchors.length >= 3;
-    const refs = Array.isArray(c.reference_images) ? c.reference_images : [];
-    const withMaster =
-      refs.length || !str(c.imageUrl)
-        ? refs
-        : [
-            {
-              ref_id: `ref-${c.character_id}-master`,
-              kind: 'master',
-              url: str(c.imageUrl),
-              label: 'master',
-            },
-          ];
+    const withMaster = syncMasterRefs(c.reference_images, str(c.imageUrl), c.character_id);
     return {
       ...c,
       height: str(c.height),
@@ -234,18 +245,7 @@ export function migrateDramaSessionToContractV1(
   });
 
   const scenes = (session.bible?.scenes || []).map((s) => {
-    const refs = Array.isArray(s.reference_images) ? s.reference_images : [];
-    const withMaster =
-      refs.length || !str(s.imageUrl)
-        ? refs
-        : [
-            {
-              ref_id: `ref-${s.scene_id}-master`,
-              kind: 'master',
-              url: str(s.imageUrl),
-              label: 'master',
-            },
-          ];
+    const withMaster = syncMasterRefs(s.reference_images, str(s.imageUrl), s.scene_id);
     const thinLock =
       !str(s.spatial_structure) &&
       !(s.fixed_elements || []).length &&
@@ -267,18 +267,7 @@ export function migrateDramaSessionToContractV1(
   });
 
   const props = (session.bible?.props || []).map((p) => {
-    const refs = Array.isArray(p.reference_images) ? p.reference_images : [];
-    const withMaster =
-      refs.length || !str(p.imageUrl)
-        ? refs
-        : [
-            {
-              ref_id: `ref-${p.prop_id}-master`,
-              kind: 'master',
-              url: str(p.imageUrl),
-              label: 'master',
-            },
-          ];
+    const withMaster = syncMasterRefs(p.reference_images, str(p.imageUrl), p.prop_id);
     return {
       ...p,
       material: str(p.material),

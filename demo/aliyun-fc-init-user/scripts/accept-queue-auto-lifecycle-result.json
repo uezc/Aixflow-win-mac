@@ -1,0 +1,122 @@
+{
+  "task_id": "70de0c5b-6e5e-4491-829b-6a8245df567b",
+  "user_id": "nx_88948564-5e6f-4be3-be7f-7f53c150ad79",
+  "model_id": "minimax-h3-t2v-720p-6s",
+  "skip_queue_pipeline": true,
+  "called_tasks_status": false,
+  "create_http": 200,
+  "balance_before": 55662,
+  "balance_after": 55657,
+  "evidence": {
+    "queue_entered_at": 1788775500418,
+    "claimed_at": 1788775500779,
+    "charged_at": 1788775527131,
+    "execution_stage": "done",
+    "provider_task_id": "2096902702788476929",
+    "completed_at": 1788775776743,
+    "status": "success",
+    "result_oss_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p82-audio_jtqme_1788775733.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "cost": 5,
+    "quoted_cost": 5
+  },
+  "platform": {
+    "video": {
+      "running": 0,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "snaps": [
+    {
+      "at": "t0_create",
+      "status": "queued",
+      "stage": "",
+      "pid": "",
+      "q": 1788775500418
+    },
+    {
+      "at": "tick_1",
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096902702788476929",
+      "claimed_at": 1788775500779,
+      "charged_at": 1788775527131,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": "tick_2",
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096902702788476929",
+      "claimed_at": 1788775500779,
+      "charged_at": 1788775527131,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": "tick_3",
+      "status": "success",
+      "stage": "done",
+      "pid": "2096902702788476929",
+      "claimed_at": 1788775500779,
+      "charged_at": 1788775527131,
+      "url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916",
+      "slots": {
+        "u": false,
+        "p": false
+      }
+    }
+  ],
+  "pipelineLogs": [
+    {
+      "tick": 1,
+      "http": 200,
+      "summary": {
+        "lease_recovered": 0,
+        "claimed": 1,
+        "charged": 1,
+        "dispatched_ok": 1,
+        "poll_settled": 0
+      },
+      "elapsed_ms": 57754
+    },
+    {
+      "tick": 2,
+      "http": 200,
+      "summary": {
+        "lease_recovered": 0,
+        "claimed": 0,
+        "charged": 0,
+        "dispatched_ok": 0,
+        "poll_settled": 0
+      },
+      "elapsed_ms": 55339
+    },
+    {
+      "tick": 3,
+      "http": 200,
+      "summary": {
+        "lease_recovered": 0,
+        "claimed": 0,
+        "charged": 0,
+        "dispatched_ok": 0,
+        "poll_settled": 1
+      },
+      "elapsed_ms": 52369
+    }
+  ],
+  "pass": true
+}

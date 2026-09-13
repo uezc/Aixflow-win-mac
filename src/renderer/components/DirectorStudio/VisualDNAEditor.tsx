@@ -1,410 +1,781 @@
 /**
- * Visual Style Library — AI 导演视觉风格库
- * 用户只选风格卡片；调色参数隐藏在后台 VisualDNA。
- * 暂不接模型；「AI 推荐」为本地启发式占位。
+
+ * Visual Style Library — 画风左、色调右；同尺寸卡，一屏铺满不滚动
+
  */
 
+
+
 import React, { useMemo, useState } from 'react';
+
 import type {
+
   DramaProjectVisualBible,
+
   DramaVisualDNA,
-  VisualStylePreset,
+
 } from '../../../shared/directorDomain';
+
 import {
-  VISUAL_STYLE_PRESETS,
+
+  VISUAL_LOOK_OPTIONS,
+
+  VISUAL_GRADE_OPTIONS,
+
+  applyVisualStyleLookGrade,
+
   applyVisualStylePreset,
+
   recommendVisualStylePresets,
-  buildCinematicPromptZhFromVisualDna,
+
+  buildVisualStylePreset,
+
+  parseVisualStyleLookGrade,
+
+  getVisualLookOption,
+
+  getVisualGradeOption,
+
 } from '../../../shared/directorDomain';
+
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 
+import {
+
+  VISUAL_GRADE_COVERS,
+
+  VISUAL_LOOK_COVERS,
+
+} from '../../assets/visual-style-previews';
+
+
+
 function mutedCls(isDark: boolean) {
-  return isDark ? 'text-white/50' : 'text-gray-500';
+
+  return isDark ? 'text-white/55' : 'text-gray-500';
+
 }
+
+
 
 function cardCls(isDark: boolean) {
+
   return isDark
+
     ? 'rounded-xl border border-white/10 bg-white/[0.04]'
+
     : 'rounded-xl border border-gray-200 bg-white';
+
 }
+
+
 
 export type VisualStyleLibraryProps = {
-  /** 已绑定的 Project Visual Bible */
+
   value: DramaProjectVisualBible;
+
   isDark: boolean;
-  /** 选定风格后回写 Project Visual Bible（含冻结 DNA） */
+
   onChange: (next: DramaProjectVisualBible) => void;
-  /** 可选：剧本文本，用于「AI 推荐」启发式 */
+
   scriptHint?: string;
+
   keywords?: string[];
+
 };
+
+
 
 /** @deprecated 旧名兼容 */
+
 export type VisualDNAEditorProps = {
+
   value: DramaVisualDNA;
+
   isDark: boolean;
+
   onChange: (next: DramaVisualDNA) => void;
+
   projectVisualBible?: DramaProjectVisualBible;
+
   onProjectVisualBibleChange?: (next: DramaProjectVisualBible) => void;
+
   scriptHint?: string;
+
   keywords?: string[];
+
 };
 
-function StyleCard({
-  preset,
+
+
+/** 填满网格格的选择卡（两侧同列数 → 同尺寸） */
+
+function StylePickCard({
+
+  label,
+
+  accent,
+
+  coverUrl,
+
   active,
+
   isDark,
-  en,
-  recommended,
+
   onSelect,
+
 }: {
-  preset: VisualStylePreset;
+
+  label: string;
+
+  accent: string;
+
+  coverUrl?: string;
+
   active: boolean;
+
   isDark: boolean;
-  en: boolean;
-  recommended?: boolean;
+
   onSelect: () => void;
+
 }) {
+
   return (
+
     <button
+
       type="button"
+
       aria-pressed={active}
-      className={`nodrag w-full text-left rounded-xl overflow-hidden transition-all ${
+
+      title={label}
+
+      className={`nodrag group relative h-full min-h-0 w-full overflow-hidden rounded-lg text-left transition-all ${
+
         active
+
           ? isDark
-            ? 'ring-2 ring-sky-400 bg-sky-500/20 shadow-[0_0_0_1px_rgba(56,189,248,0.4)]'
-            : 'ring-2 ring-sky-500 bg-sky-50'
+
+            ? 'ring-2 ring-sky-400 shadow-md shadow-sky-500/20'
+
+            : 'ring-2 ring-sky-500 shadow-sm shadow-sky-200/80'
+
           : isDark
-            ? 'bg-black/30 hover:bg-black/45 ring-1 ring-white/8'
-            : 'bg-gray-50 hover:bg-gray-100 ring-1 ring-gray-200'
+
+            ? 'ring-1 ring-white/10 hover:ring-white/30 hover:brightness-110'
+
+            : 'ring-1 ring-gray-200 hover:ring-gray-300 hover:shadow-sm'
+
       }`}
+
+      style={
+
+        coverUrl
+
+          ? { backgroundColor: '#0c0c12' }
+
+          : {
+
+              background: `linear-gradient(145deg, ${accent}f0 0%, ${accent}88 42%, #0c0c12 100%)`,
+
+            }
+
+      }
+
       onClick={onSelect}
+
     >
-      <div
-        className="h-16 w-full relative"
-        style={{
-          background: preset.coverImage
-            ? undefined
-            : `linear-gradient(135deg, ${preset.accent}99, #0a0a0f 70%)`,
-        }}
-      >
-        {preset.coverImage ? (
-          <img src={preset.coverImage} alt="" className="absolute inset-0 w-full h-full object-cover" />
-        ) : null}
-        {recommended ? (
-          <span
-            className={`absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-              isDark ? 'bg-sky-500 text-white' : 'bg-sky-600 text-white'
-            }`}
-          >
-            {en ? 'AI pick' : 'AI推荐'}
-          </span>
-        ) : null}
+
+      {coverUrl ? (
+
+        <img
+
+          src={coverUrl}
+
+          alt=""
+
+          draggable={false}
+
+          className="absolute inset-0 h-full w-full object-cover object-center"
+
+        />
+
+      ) : null}
+
+      <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
+
+      <div className="absolute inset-x-0 bottom-0 px-1.5 py-1 sm:px-2 sm:py-1.5">
+
+        <div className="truncate text-[11px] sm:text-[12px] font-semibold leading-tight text-white drop-shadow">
+
+          {label}
+
+        </div>
+
       </div>
-      <div className="p-2.5">
-        <div className="text-[14px] font-semibold leading-tight">
-          {en ? preset.nameEn : preset.name}
-        </div>
-        <div className={`mt-1 text-[11px] leading-snug line-clamp-2 ${mutedCls(isDark)}`}>
-          {en ? preset.descriptionEn : preset.description}
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-1">
-          {preset.tags.slice(0, 3).map((tag) => (
-            <span
-              key={tag}
-              className={`rounded px-1.5 py-0.5 text-[10px] ${
-                isDark ? 'bg-white/8 text-white/65' : 'bg-gray-200/80 text-gray-600'
-              }`}
-            >
-              {tag}
-            </span>
-          ))}
-        </div>
-      </div>
+
+      {active ? (
+
+        <span className="absolute right-1 top-1 rounded bg-sky-500 px-1.5 py-px text-[9px] font-semibold text-white shadow">
+
+          已选
+
+        </span>
+
+      ) : null}
+
     </button>
+
   );
+
 }
 
+
+
 export const VisualStyleLibrary: React.FC<VisualStyleLibraryProps> = ({
+
   value,
+
   isDark,
+
   onChange,
+
   scriptHint,
+
   keywords,
+
 }) => {
+
   const { locale } = useAppLocale();
+
   const en = locale === 'en';
+
   const [recommendIds, setRecommendIds] = useState<string[]>(
+
     () => value.recommendedPresetIds || [],
+
   );
+
+
+
+  const parsed = useMemo(() => parseVisualStyleLookGrade(value.presetId), [value.presetId]);
+
+  const lookId = parsed.lookId;
+
+  const gradeId = parsed.gradeId;
 
   const selected = useMemo(
-    () => VISUAL_STYLE_PRESETS.find((p) => p.id === value.presetId) || null,
-    [value.presetId],
+
+    () => (lookId && gradeId ? buildVisualStylePreset(lookId, gradeId) : null),
+
+    [lookId, gradeId],
+
   );
+
+
 
   const t = useMemo(
+
     () =>
+
       en
+
         ? {
-            title: 'Visual Style Library',
-            subtitle: 'Pick one look for the whole series — locks Project Visual Bible',
-            library: 'Style cards',
-            preview: 'Selected look',
-            empty: 'Select a style card to lock visual consistency',
-            recommend: 'AI suggest 3 looks',
-            recommendHint: 'Heuristic only — model wiring later',
-            bind: 'Bound to Project Visual Bible',
-            unbound: 'Not bound yet',
-            prompt: 'Locked cinematic prompt (ZH / EN)',
-            promptZh: 'Chinese',
-            promptEn: 'English',
+
+            title: 'Visual Style',
+
+            subtitle: 'Look left · Grade right',
+
+            look: 'Look',
+
+            grade: 'Grade',
+
+            preview: 'Combined',
+
+            empty: 'Select look + grade',
+
+            recommend: 'AI suggest 3',
+
+            recommendHint: 'Heuristic only',
+
+            bind: 'Bound',
+
+            unbound: 'Not bound',
+
           }
+
         : {
-            title: '视觉风格库',
-            subtitle: '选择一套整片视觉 · 锁定 Project Visual Bible，防画风漂移',
-            library: '风格卡片',
-            preview: '当前方案',
-            empty: '请选择一张视觉风格卡片，锁定全剧一致性',
-            recommend: 'AI 推荐 3 个视觉方案',
-            recommendHint: '本地启发式占位，暂未接模型',
-            bind: '已写入 Project Visual Bible',
-            unbound: '尚未绑定视觉方案',
-            prompt: '锁定电影 Prompt（中英对照）',
-            promptZh: '中文',
-            promptEn: 'English',
+
+            title: '视觉风格',
+
+            subtitle: '左画风 · 右色调 · 一屏选完',
+
+            look: '画风',
+
+            grade: '色调',
+
+            preview: '组合提示词',
+
+            empty: '请选择画风与色调',
+
+            recommend: 'AI 推荐 3 组',
+
+            recommendHint: '本地启发式占位',
+
+            bind: '已锁定',
+
+            unbound: '尚未锁定',
+
           },
+
     [en],
+
   );
 
-  const promptEn = value.stylePrompt || value.visualDNA.generatedPrompt || '';
-  const promptZh = useMemo(() => {
-    if (!selected) return '';
-    return buildCinematicPromptZhFromVisualDna(
-      value.visualDNA.presetId === selected.id ? value.visualDNA : selected.visualDNA,
-      selected.visualDNA.promptTemplateZh,
-    );
-  }, [selected, value.visualDNA]);
 
-  const selectPreset = (id: string) => {
+
+  const lookOpt = getVisualLookOption(lookId);
+
+  const gradeOpt = getVisualGradeOption(gradeId);
+
+  const combinedPrompt = useMemo(() => {
+
+    if (!lookOpt || !gradeOpt) return '';
+
+    if (en) return `${lookOpt.lookEn}, ${gradeOpt.gradeEn}`;
+
+    return `${lookOpt.lookZh}，${gradeOpt.gradeZh}`;
+
+  }, [lookOpt, gradeOpt, en]);
+
+
+
+  const commitLookGrade = (nextLook: string, nextGrade: string) => {
+
+    if (!nextLook || !nextGrade) return;
+
     onChange(
-      applyVisualStylePreset(id, {
+
+      applyVisualStyleLookGrade(nextLook, nextGrade, {
+
         ...value,
+
         recommendedPresetIds: recommendIds.length ? recommendIds : value.recommendedPresetIds,
+
       }),
+
     );
+
   };
+
+
+
+  const selectLook = (id: string) => {
+
+    commitLookGrade(id, gradeId || 'dark_cyan');
+
+  };
+
+
+
+  const selectGrade = (id: string) => {
+
+    commitLookGrade(lookId || 'live', id);
+
+  };
+
+
 
   const runRecommend = () => {
+
     const picks = recommendVisualStylePresets({
+
       scriptText: scriptHint,
+
       keywords,
+
     });
+
     const ids = picks.map((p) => p.id);
+
     setRecommendIds(ids);
+
     onChange({
+
       ...value,
+
       recommendedPresetIds: ids,
+
     });
-    // 若尚未选定，自动聚焦第一个推荐
+
     if (!value.selected_at && picks[0]) {
+
       onChange(
+
         applyVisualStylePreset(picks[0].id, {
+
           ...value,
+
           recommendedPresetIds: ids,
+
         }),
+
       );
+
     }
+
   };
 
-  const coverUrl = selected?.coverImage || value.coverImage || '';
+
+
   const recommendSet = new Set(recommendIds.length ? recommendIds : value.recommendedPresetIds);
 
+
+
+  // 两侧同列数：卡片等宽等高；10 项 → 5×2 一屏铺满
+
+  const pickGridCls =
+
+    'grid h-full min-h-0 grid-cols-5 grid-rows-2 gap-1.5 sm:gap-2 [&>*]:min-h-0';
+
+
+
   return (
-    <div className={`${cardCls(isDark)} flex flex-col min-h-0 h-full overflow-hidden`}>
-      <div className="shrink-0 px-3.5 pt-3 pb-2 flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <div className="text-[16px] font-semibold">{t.title}</div>
-          <div className={`text-[12px] mt-0.5 ${mutedCls(isDark)}`}>{t.subtitle}</div>
+
+    <div className={`${cardCls(isDark)} flex h-full min-h-0 flex-col overflow-hidden`}>
+
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 px-3 py-2">
+
+        <div className="min-w-0">
+
+          <div className="text-[14px] font-semibold leading-tight">{t.title}</div>
+
+          <div className={`truncate text-[11px] ${mutedCls(isDark)}`}>{t.subtitle}</div>
+
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+
           <button
+
             type="button"
+
             title={t.recommendHint}
-            className={`nodrag rounded-lg px-3 py-1.5 text-[13px] font-medium ${
+
+            className={`nodrag rounded-md px-2.5 py-1 text-[12px] font-medium ${
+
               isDark ? 'bg-sky-500/80 text-white' : 'bg-sky-600 text-white'
+
             }`}
+
             onClick={runRecommend}
+
           >
+
             {t.recommend}
+
           </button>
+
           <span
-            className={`text-[12px] ${
+
+            className={`text-[11px] ${
+
               value.selected_at
+
                 ? isDark
+
                   ? 'text-emerald-300'
+
                   : 'text-emerald-700'
+
                 : mutedCls(isDark)
+
             }`}
+
           >
+
             {value.selected_at ? t.bind : t.unbound}
+
           </span>
+
         </div>
+
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-3 px-3.5 pb-3.5">
-        {/* 风格卡片网格 */}
-        <aside className="lg:col-span-7 flex flex-col min-h-0 overflow-hidden">
-          <div className={`text-[13px] font-medium mb-2 ${mutedCls(isDark)}`}>{t.library}</div>
-          <div className="flex-1 min-h-0 overflow-auto custom-scrollbar-dark pr-1">
-            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
-              {VISUAL_STYLE_PRESETS.map((p) => (
-                <StyleCard
-                  key={p.id}
-                  preset={p}
-                  active={value.presetId === p.id && !!value.selected_at}
-                  isDark={isDark}
-                  en={en}
-                  recommended={recommendSet.has(p.id)}
-                  onSelect={() => selectPreset(p.id)}
-                />
-              ))}
-            </div>
-          </div>
-        </aside>
 
-        {/* 当前方案预览 */}
-        <section className="lg:col-span-5 flex flex-col min-h-0 overflow-hidden">
-          <div className={`text-[13px] font-medium mb-2 ${mutedCls(isDark)}`}>{t.preview}</div>
+
+      {/* 左画风 · 右色调：等宽分区 + 同网格同尺寸 */}
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 overflow-hidden px-3 lg:grid-cols-2">
+
+        <section
+
+          className={`flex min-h-0 flex-col overflow-hidden rounded-xl border p-2 ${
+
+            isDark
+
+              ? 'border-white/10 bg-sky-500/[0.06]'
+
+              : 'border-sky-100 bg-sky-50/80'
+
+          }`}
+
+        >
+
           <div
-            className={`flex-1 min-h-[10rem] rounded-xl overflow-hidden border flex flex-col ${
-              isDark ? 'border-white/10 bg-black/40' : 'border-gray-200 bg-gray-100'
+
+            className={`mb-1.5 shrink-0 text-[12px] font-semibold ${
+
+              isDark ? 'text-sky-200' : 'text-sky-800'
+
             }`}
+
           >
-            <div className="relative h-36 shrink-0">
-              {coverUrl ? (
-                <img src={coverUrl} alt="" className="absolute inset-0 w-full h-full object-cover" />
-              ) : selected ? (
-                <div
-                  className="absolute inset-0"
-                  style={{
-                    background: `linear-gradient(135deg, ${selected.accent}aa, #0a0a0f)`,
-                  }}
-                />
-              ) : (
-                <div
-                  className={`flex h-full items-center justify-center px-4 text-center text-[13px] ${mutedCls(isDark)}`}
-                >
-                  {t.empty}
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-h-0 p-3 space-y-2 overflow-auto custom-scrollbar-dark">
-              {selected ? (
-                <>
-                  <div className="text-[15px] font-semibold">
-                    {en ? selected.nameEn : selected.name}
-                  </div>
-                  <div className={`text-[12px] leading-relaxed ${mutedCls(isDark)}`}>
-                    {en ? selected.descriptionEn : selected.description}
-                  </div>
-                  <div className="flex flex-wrap gap-1">
-                    {(value.tags.length ? value.tags : selected.tags).map((tag) => (
-                      <span
-                        key={tag}
-                        className={`rounded px-1.5 py-0.5 text-[11px] ${
-                          isDark ? 'bg-white/10' : 'bg-gray-200'
-                        }`}
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                  <div>
-                    <div className={`text-[12px] mb-1.5 ${mutedCls(isDark)}`}>{t.prompt}</div>
-                    <div className="space-y-2">
-                      <div
-                        className={`rounded-lg px-2.5 py-2 ${
-                          isDark ? 'bg-black/40' : 'bg-white'
-                        }`}
-                      >
-                        <div
-                          className={`mb-1 text-[10px] font-semibold uppercase tracking-wide ${
-                            isDark ? 'text-sky-300/80' : 'text-sky-700'
-                          }`}
-                        >
-                          {t.promptZh}
-                        </div>
-                        <div
-                          className={`text-[12px] leading-relaxed ${
-                            isDark ? 'text-white/80' : 'text-gray-700'
-                          }`}
-                        >
-                          {promptZh || '—'}
-                        </div>
-                      </div>
-                      <div
-                        className={`rounded-lg px-2.5 py-2 ${
-                          isDark ? 'bg-black/40' : 'bg-white'
-                        }`}
-                      >
-                        <div
-                          className={`mb-1 text-[10px] font-semibold uppercase tracking-wide ${
-                            isDark ? 'text-sky-300/80' : 'text-sky-700'
-                          }`}
-                        >
-                          {t.promptEn}
-                        </div>
-                        <div
-                          className={`text-[12px] leading-relaxed ${
-                            isDark ? 'text-white/75' : 'text-gray-700'
-                          }`}
-                        >
-                          {promptEn || '—'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className={`text-[13px] ${mutedCls(isDark)}`}>{t.empty}</div>
-              )}
-            </div>
+
+            {t.look}
+
+            <span className={`ml-1.5 text-[11px] font-normal ${mutedCls(isDark)}`}>
+
+              {VISUAL_LOOK_OPTIONS.length} 选 1
+
+            </span>
+
           </div>
+
+          <div className={`min-h-0 flex-1 ${pickGridCls}`}>
+
+            {VISUAL_LOOK_OPTIONS.map((p) => (
+
+              <StylePickCard
+
+                key={p.id}
+
+                label={en ? p.nameEn : p.name}
+
+                accent={p.accent}
+
+                coverUrl={VISUAL_LOOK_COVERS[p.id]}
+
+                active={lookId === p.id && !!value.selected_at}
+
+                isDark={isDark}
+
+                onSelect={() => selectLook(p.id)}
+
+              />
+
+            ))}
+
+          </div>
+
         </section>
+
+
+
+        <section
+
+          className={`flex min-h-0 flex-col overflow-hidden rounded-xl border p-2 ${
+
+            isDark
+
+              ? 'border-white/10 bg-violet-500/[0.06]'
+
+              : 'border-violet-100 bg-violet-50/80'
+
+          }`}
+
+        >
+
+          <div
+
+            className={`mb-1.5 shrink-0 text-[12px] font-semibold ${
+
+              isDark ? 'text-violet-200' : 'text-violet-800'
+
+            }`}
+
+          >
+
+            {t.grade}
+
+            <span className={`ml-1.5 text-[11px] font-normal ${mutedCls(isDark)}`}>
+
+              {VISUAL_GRADE_OPTIONS.length} 选 1
+
+            </span>
+
+          </div>
+
+          <div className={`min-h-0 flex-1 ${pickGridCls}`}>
+
+            {VISUAL_GRADE_OPTIONS.map((p) => (
+
+              <StylePickCard
+
+                key={p.id}
+
+                label={en ? p.nameEn : p.name}
+
+                accent={p.accent}
+
+                coverUrl={VISUAL_GRADE_COVERS[p.id]}
+
+                active={gradeId === p.id && !!value.selected_at}
+
+                isDark={isDark}
+
+                onSelect={() => selectGrade(p.id)}
+
+              />
+
+            ))}
+
+          </div>
+
+        </section>
+
       </div>
+
+
+
+      {/* 底部组合提示词（紧凑） */}
+
+      <div className="shrink-0 px-3 pb-2.5 pt-2">
+
+        <div
+
+          className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border px-3 py-2 ${
+
+            isDark ? 'border-white/10 bg-black/45' : 'border-gray-200 bg-gray-50'
+
+          }`}
+
+          style={
+
+            selected
+
+              ? {
+
+                  background: isDark
+
+                    ? `linear-gradient(90deg, ${selected.accent}33, transparent 55%), rgba(0,0,0,0.45)`
+
+                    : undefined,
+
+                }
+
+              : undefined
+
+          }
+
+        >
+
+          <span className={`shrink-0 text-[11px] ${mutedCls(isDark)}`}>{t.preview}</span>
+
+          {selected && lookOpt && gradeOpt ? (
+
+            <>
+
+              <div className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-snug">
+
+                {en ? selected.nameEn : selected.name}
+
+                <span className={`ml-2 font-medium ${isDark ? 'text-white/80' : 'text-gray-700'}`}>
+
+                  {combinedPrompt}
+
+                </span>
+
+              </div>
+
+              {recommendSet.has(selected.id) ? (
+
+                <span
+
+                  className={`rounded-full px-2 py-px text-[10px] font-semibold ${
+
+                    isDark ? 'bg-sky-500 text-white' : 'bg-sky-600 text-white'
+
+                  }`}
+
+                >
+
+                  {en ? 'AI pick' : 'AI推荐'}
+
+                </span>
+
+              ) : null}
+
+            </>
+
+          ) : (
+
+            <div className={`text-[12px] ${mutedCls(isDark)}`}>{t.empty}</div>
+
+          )}
+
+        </div>
+
+      </div>
+
     </div>
+
   );
+
 };
 
-/** 兼容旧 VisualDNAEditor 调用：内部转接到风格库 */
+
+
+/** @deprecated 旧 VisualDNAEditor 壳：转发到风格库 */
+
 export const VisualDNAEditor: React.FC<VisualDNAEditorProps> = ({
+
   value,
+
   isDark,
+
   onChange,
+
   projectVisualBible,
+
   onProjectVisualBibleChange,
+
   scriptHint,
+
   keywords,
+
 }) => {
-  const bible: DramaProjectVisualBible =
-    projectVisualBible ||
-    applyVisualStylePreset(value.presetId, {
-      visualDNA: value,
-      stylePrompt: value.generatedPrompt,
-      selected_at: value.presetId && value.presetId !== 'unset' ? Date.now() : 0,
-    });
+
+  if (!projectVisualBible || !onProjectVisualBibleChange) {
+
+    return null;
+
+  }
 
   return (
+
     <VisualStyleLibrary
-      value={bible}
+
+      value={projectVisualBible}
+
       isDark={isDark}
-      scriptHint={scriptHint}
-      keywords={keywords}
+
       onChange={(next) => {
-        onProjectVisualBibleChange?.(next);
-        onChange(next.visualDNA);
+
+        onProjectVisualBibleChange(next);
+
+        onChange(next.visualDNA || value);
+
       }}
+
+      scriptHint={scriptHint}
+
+      keywords={keywords}
+
     />
+
   );
+
 };
+
+

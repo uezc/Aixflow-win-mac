@@ -1,0 +1,103 @@
+{
+  "at": "2026-09-09T13:30:24.842Z",
+  "goal": "≤¥10/day idle+light",
+  "platform": {
+    "video": {
+      "running": 0,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "work_active": {
+    "count": 0,
+    "has_any": false,
+    "scanned": 0,
+    "table": "nx_task_work"
+  },
+  "work_lists": {
+    "promote_queued": 0,
+    "expired_claimed": 0,
+    "charge_candidates": 0,
+    "promote_sample": [],
+    "expired_sample": []
+  },
+  "sls_last_21h": {
+    "label": "bill_window_approx_21h",
+    "from": "2026-09-08T16:30:27.000Z",
+    "to": "2026-09-09T13:30:27.000Z",
+    "timer_lines": 0,
+    "idle_no_patrol_1": 0,
+    "idle_no_patrol_0": 0,
+    "idle_ratio": null,
+    "queue_mode_idle_logs": 0,
+    "queue_mode_active_logs": 0,
+    "idle_probe_deferred_logs": 0,
+    "ms_min": null,
+    "ms_median": null,
+    "ms_max": null,
+    "ms_avg": null,
+    "ms_gt_5s": 0,
+    "samples": []
+  },
+  "sls_last_30m": {
+    "label": "last_30m",
+    "from": "2026-09-09T13:00:27.000Z",
+    "to": "2026-09-09T13:30:27.000Z",
+    "timer_lines": 0,
+    "idle_no_patrol_1": 0,
+    "idle_no_patrol_0": 0,
+    "idle_ratio": null,
+    "queue_mode_idle_logs": 0,
+    "queue_mode_active_logs": 0,
+    "idle_probe_deferred_logs": 0,
+    "ms_min": null,
+    "ms_median": null,
+    "ms_max": null,
+    "ms_avg": null,
+    "ms_gt_5s": 0,
+    "samples": []
+  },
+  "fc": [
+    {
+      "region": "cn-hongkong",
+      "functionName": "nexflow-api",
+      "env": {
+        "NX_QUEUE_IDLE_PROBE_MS": null,
+        "NX_QUEUE_IDLE_FULL_SWEEP_MS": null,
+        "NX_TASK_WORK_FALLBACK_ON_EMPTY": null,
+        "NX_QUEUE_FORCE_PIPELINE": null
+      },
+      "queue_triggers": [
+        {
+          "name": "nexflow-queue-pipeline",
+          "cron": "@every 1m",
+          "enable": true,
+          "payload_head": "{\"action\":\"run-queue-pipeline\",\"max_claims\":20,\"max_charge\":40,\"max_dispatch\":20,\"max_poll\":40,\"reconcile\":false}"
+        }
+      ]
+    },
+    {
+      "region": "cn-beijing",
+      "functionName": "aixflow-api",
+      "env": {
+        "NX_QUEUE_IDLE_PROBE_MS": null,
+        "NX_QUEUE_IDLE_FULL_SWEEP_MS": null,
+        "NX_TASK_WORK_FALLBACK_ON_EMPTY": null,
+        "NX_QUEUE_FORCE_PIPELINE": null
+      },
+      "queue_triggers": []
+    }
+  ],
+  "errors": [],
+  "verdict": {
+    "slots_busy": false,
+    "work_busy": false,
+    "likely_need_cleanup": false,
+    "sls_idle_ok": null,
+    "note": "账单 OTS/FC 拆分请在费用中心人工确认；本脚本不拉消费明细以免权限/延迟问题。"
+  }
+}

@@ -72,7 +72,7 @@ const RvcTrainInputPanel: React.FC<RvcTrainInputPanelProps> = ({
       } else if (packet.status === 'ERROR') {
         const errorMessage = packet.payload?.error || t.noTrainAudio;
         if ((packet.payload as { balanceInsufficient?: boolean } | undefined)?.balanceInsufficient === true) {
-          showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+          showAlert('元宝不足，请充值');
         }
         promptNxSaasLoginIfNeeded(errorMessage, (packet.payload as { nxAuthRequired?: boolean })?.nxAuthRequired);
         onError?.(errorMessage);

@@ -95,7 +95,7 @@ export function formatDirectorH3TimeRange(startSec: number, endSec: number): str
 
 function roleUse(role: MinimaxH3ZhRefImageSlot['role']): string {
   if (role === 'style') return '全片光色锁（画风固定真人写实）';
-  if (role === 'storyboard') return '构图、场景与光色锁';
+  if (role === 'storyboard') return '构图、场景、画风与光色锁（优先级高于文字风格）';
   if (role === 'character') return '角色身份锁';
   if (role === 'scene') return '场景环境锁';
   if (role === 'prop') return '道具外观锁';
@@ -634,7 +634,7 @@ export function buildMinimaxH3ZhRefImageSlots(opts: {
   styleReferenceImageUrl?: string;
   storyboardImageUrl?: string;
   /** 本镜已匹配的有图资产（任意顺序） */
-  matchedAssets: Array<{ imageUrl: string; name?: string; kind?: string }>;
+  matchedAssets: Array<{ imageUrl: string; name?: string; kind?: string; asset_id?: string }>;
   maxImages?: number;
   /** 视频提示词默认只要分镜图和角色图 */
   onlyStoryboardAndCharacters?: boolean;
@@ -643,10 +643,16 @@ export function buildMinimaxH3ZhRefImageSlots(opts: {
   const onlyCast = opts.onlyStoryboardAndCharacters !== false;
   const out: MinimaxH3ZhRefImageSlot[] = [];
   const seen = new Set<string>();
-  const push = (slot: MinimaxH3ZhRefImageSlot) => {
+  const push = (slot: MinimaxH3ZhRefImageSlot, assetId?: string) => {
     const url = String(slot.url || '').trim();
-    if (!url || seen.has(url) || out.length >= max) return;
-    seen.add(url);
+    if (!url || out.length >= max) return;
+    const aid = String(assetId || '').trim();
+    // 按 role+asset 去重：同 URL 多角色各占一槽，禁止末角色覆盖场景槽
+    const key = aid
+      ? `${slot.role}::${aid}`
+      : `url::${slot.role}::${url}::${String(slot.name || '').trim()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
     out.push({ ...slot, url });
   };
 
@@ -662,27 +668,42 @@ export function buildMinimaxH3ZhRefImageSlots(opts: {
 
   if (!onlyCast) {
     for (const a of byKind('scene')) {
-      push({ url: String(a.imageUrl).trim(), role: 'scene', name: a.name });
+      push(
+        { url: String(a.imageUrl).trim(), role: 'scene', name: a.name },
+        String(a.asset_id || '').trim() || undefined,
+      );
     }
   }
   for (const a of byKind('character')) {
-    push({ url: String(a.imageUrl).trim(), role: 'character', name: a.name });
+    push(
+      { url: String(a.imageUrl).trim(), role: 'character', name: a.name },
+      String(a.asset_id || '').trim() || undefined,
+    );
   }
   if (!onlyCast) {
     for (const a of byKind('prop')) {
-      push({ url: String(a.imageUrl).trim(), role: 'prop', name: a.name });
+      push(
+        { url: String(a.imageUrl).trim(), role: 'prop', name: a.name },
+        String(a.asset_id || '').trim() || undefined,
+      );
     }
     for (const a of byKind('creature')) {
-      push({ url: String(a.imageUrl).trim(), role: 'creature', name: a.name });
+      push(
+        { url: String(a.imageUrl).trim(), role: 'creature', name: a.name },
+        String(a.asset_id || '').trim() || undefined,
+      );
     }
     for (const a of matched) {
       const kind = String(a.kind || '');
       if (kind === 'scene' || kind === 'character' || kind === 'prop' || kind === 'creature') continue;
-      push({
-        url: String(a.imageUrl).trim(),
-        role: 'character',
-        name: a.name,
-      });
+      push(
+        {
+          url: String(a.imageUrl).trim(),
+          role: 'character',
+          name: a.name,
+        },
+        String(a.asset_id || '').trim() || undefined,
+      );
     }
   }
 

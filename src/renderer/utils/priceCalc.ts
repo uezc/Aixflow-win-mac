@@ -50,9 +50,9 @@ export interface VideoPriceParams {
   resolutionLtx23Lipsync?: string;
   durationLtx23T2v?: string;
   resolutionLtx23T2v?: string;
-  /** MiniMax-H3 文生/图生/多参/音参：仅 720p → megapixels 0.9；音参为映射后的计费档 6|10|15|20 */
+  /** MiniMax-H3 文生/图生/多参/音参：480p→0.4 / 720p→0.9；音参为映射后的计费档 6|10|15|20 */
   durationMinimaxH3?: '6' | '10' | '15' | '20';
-  resolutionMinimaxH3?: '720p';
+  resolutionMinimaxH3?: '480p' | '720p';
   /** WanAnimate 角色替换：与 buildVideoBillingModelId / VideoProvider 一致 */
   resolutionWanAnimate?: '720p' | '1080p';
   wanAnimateClipSec?: '5' | '8' | '10' | '15';

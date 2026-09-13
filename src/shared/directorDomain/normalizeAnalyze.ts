@@ -50,7 +50,7 @@ import {
 } from './extractCastFromScript.js';
 import { ensureAppearingCharactersInBible } from './ensureAppearingCharacters.js';
 import { ensureCharacterCostumes } from './characterCostumes.js';
-import { ensureVoiceSampleTexts } from './ensureVoiceSampleTexts.js';
+import { collectDramaCharacterScriptLines, ensureVoiceSampleTexts } from './ensureVoiceSampleTexts.js';
 import { extractJsonObject as extractPipelineJsonObject } from '../directorPipeline/normalize.js';
 import {
   mergeAnalyzeCharacters,
@@ -65,10 +65,15 @@ import {
   assignDramaVisualEventPriorities,
   createEmptyDramaVisualEvent,
   normalizeDramaDramaticPurpose,
+  normalizeDramaEmotion,
   normalizeDramaEventId,
   normalizeDramaVisualEventKind,
   recommendDramaShotPlanDurationSec,
 } from './shotPlanning.js';
+import {
+  mergeProgramAndLlmVisualEvents,
+  sanitizeLlmSourceSegmentIds,
+} from './mergeDramaVisualEvents.js';
 import {
   dramaActiveEpisodeSourceText,
   resolveDramaProjectSeriesName,
@@ -82,6 +87,11 @@ import { normalizeDramaShotTimeOfDay } from './types.js';
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function parseWhoField(row: Record<string, unknown>): string {
+  if (Array.isArray(row.who)) return row.who.map((x) => str(x)).filter(Boolean).join('、');
+  return str(row.who);
 }
 
 function pickFirstArray(obj: Record<string, unknown>, keys: string[]): unknown[] {
@@ -400,7 +410,14 @@ export function normalizeDramaDomainAnalyzeResult(
   const keys = Object.keys(parsed).slice(0, 12).join(', ');
   const modelGaveStructure =
     modelNamedChars || beatsRaw.length > 0 || visualEventsEarly.length > 0;
-  if (!modelGaveStructure) {
+  const epIdHint = String(base?.active_episode_id || '').trim();
+  const prevHint = epIdHint ? base?.episode_bibles?.[epIdHint] : undefined;
+  const hasProgramOriginal = !!(
+    (prevHint?.original_segments || []).length ||
+    (prevHint?.visual_events || []).length ||
+    (prevHint?.shot_suggestions || []).length
+  );
+  if (!modelGaveStructure && !hasProgramOriginal) {
     return {
       ok: false,
       error: `分析 JSON 缺少角色/场次/视觉事件（可能被截断成空壳${keys ? `，现有字段：${keys}` : ''}），请重试`,
@@ -553,10 +570,19 @@ export function normalizeDramaDomainAnalyzeResult(
         prompt: str(s.prompt),
         spatial_structure: str(s.spatial_structure),
         lighting: str(s.lighting),
+        architecture: str(s.architecture),
+        materials: str(s.materials),
+        kind: str(s.kind) || str(s.int_ext),
+        fixed_elements: Array.isArray(s.fixed_elements)
+          ? s.fixed_elements.map((x) => str(x)).filter(Boolean)
+          : [],
         storyContext: storyContextHint,
         eraStyle: eraStyleHint,
       }),
       spatial_structure: str(s.spatial_structure),
+      architecture: str(s.architecture),
+      materials: str(s.materials),
+      kind: str(s.kind) || str(s.int_ext),
       fixed_elements: Array.isArray(s.fixed_elements)
         ? s.fixed_elements.map((x) => str(x)).filter(Boolean)
         : [],
@@ -655,6 +681,14 @@ export function normalizeDramaDomainAnalyzeResult(
       language_style: str(raw.language_style) || str(voiceObj?.language_style),
       emotion_range: str(raw.emotion_range) || str(voiceObj?.emotion_range),
     });
+    const llmSample =
+      str(raw.sample_text) ||
+      str(raw.sampleText) ||
+      str(voiceObj?.sample_text) ||
+      str(voiceObj?.sampleText);
+    const scriptLines = base
+      ? collectDramaCharacterScriptLines(base as DramaDirectorSession, { characterName: c.name })
+      : '';
     const sample_text = composeDramaVoiceSampleLine({
       name: c.name,
       age: c.age,
@@ -666,11 +700,8 @@ export function normalizeDramaDomainAnalyzeResult(
       voiceStyle: designed.voiceStyle,
       language_style: designed.language_style,
       emotion_range: designed.emotion_range,
-      dialogueHint:
-        str(raw.sample_text) ||
-        str(raw.sampleText) ||
-        str(voiceObj?.sample_text) ||
-        str(voiceObj?.sampleText),
+      dialogueHint: scriptLines || llmSample,
+      forceScriptLines: Boolean(scriptLines),
     });
     return createEmptyDramaVoice({
       character_id: c.character_id,
@@ -776,24 +807,54 @@ export function normalizeDramaDomainAnalyzeResult(
     scene_beats.push(beat);
   }
 
-  // 第一阶段禁止落镜头：即使模型仍吐了 shots 也丢弃，由 Shot Planning 阶段写入
-  const shotSuggestions: DramaShotSuggestion[] = [];
+  // LLM 禁止生成 Shot；程序一场一镜建议必须保留
+  const epIdForOriginal = String(base?.active_episode_id || '').trim();
+  const prevEpBibleEarly = epIdForOriginal ? base?.episode_bibles?.[epIdForOriginal] : undefined;
+  const allowedSegmentIds = new Set(
+    (prevEpBibleEarly?.original_segments || []).map((s) => String(s.segment_id || '').trim()).filter(Boolean),
+  );
+  const programVisualEvents = Array.isArray(prevEpBibleEarly?.visual_events)
+    ? prevEpBibleEarly!.visual_events
+    : [];
+  const shotSuggestions: DramaShotSuggestion[] = Array.isArray(prevEpBibleEarly?.shot_suggestions)
+    ? [...prevEpBibleEarly!.shot_suggestions]
+    : [];
 
   const visualEventsRaw = Array.isArray(parsed.visual_events) ? parsed.visual_events : [];
-  const visualEvents = assignDramaVisualEventPriorities(
-    visualEventsRaw.filter(isObj).map((row, idx) =>
-      createEmptyDramaVisualEvent({
-        event_id: normalizeDramaEventId(row.id || row.event_id || row.i || idx + 1),
+  const mergeWarnings: string[] = [];
+  const llmVisualEvents = assignDramaVisualEventPriorities(
+    visualEventsRaw.filter(isObj).map((row, idx) => {
+      const event_id = normalizeDramaEventId(row.id || row.event_id || row.i || idx + 1);
+      const source_segment_ids = sanitizeLlmSourceSegmentIds(
+        row.source_segment_ids ?? row.sourceSegmentIds,
+        allowedSegmentIds,
+        mergeWarnings,
+        `LLM VE ${event_id}`,
+      );
+      return createEmptyDramaVisualEvent({
+        event_id,
         index: Number(row.i) || Number(row.index) || idx + 1,
         location: str(row.loc) || str(row.location),
         kind: normalizeDramaVisualEventKind(row.kind),
-        who: str(row.who),
+        who: parseWhoField(row),
+        action: str(row.action),
+        expression: str(row.expression),
+        emotion: normalizeDramaEmotion(row.emotion),
         see: str(row.see) || str(row.visual_focus),
         cut: str(row.cut),
-      }),
-    ),
+        position: str(row.position),
+        source_segment_ids,
+      });
+    }),
     visualEventsRaw.filter(isObj).map((row) => row.pri || row.priority || row.class),
   );
+  const mergedVe = mergeProgramAndLlmVisualEvents(
+    programVisualEvents,
+    llmVisualEvents,
+    allowedSegmentIds,
+  );
+  mergeWarnings.push(...mergedVe.warnings);
+  const visualEvents = programVisualEvents.length ? mergedVe.visual_events : llmVisualEvents;
 
   if (!characters.length && !visualEvents.length && !shotSuggestions.length) {
     return { ok: false, error: '分析结果缺少角色与视觉事件', rawJson };
@@ -943,6 +1004,10 @@ export function normalizeDramaDomainAnalyzeResult(
         prompt: s.prompt,
         spatial_structure: s.spatial_structure,
         lighting: s.lighting,
+        architecture: s.architecture,
+        materials: s.materials,
+        kind: s.kind,
+        fixed_elements: s.fixed_elements,
         storyContext: storyContextHint || bible.plot || bible.project.worldview,
         eraStyle: eraStyleHint || genreLock.styleLine,
       }),
@@ -1006,6 +1071,53 @@ export function normalizeDramaDomainAnalyzeResult(
     shotSuggestions,
     visualEvents,
   });
+  // 程序原文层 authoritative：LLM 不得清空 original / 一场一镜 suggestions
+  if (prevEpBible) {
+    episodeBible.original_segments = prevEpBible.original_segments?.length
+      ? [...prevEpBible.original_segments]
+      : episodeBible.original_segments;
+    episodeBible.original_scenes = prevEpBible.original_scenes?.length
+      ? [...prevEpBible.original_scenes]
+      : episodeBible.original_scenes;
+    episodeBible.shot_suggestions = prevEpBible.shot_suggestions?.length
+      ? [...prevEpBible.shot_suggestions]
+      : episodeBible.shot_suggestions;
+    episodeBible.character_bindings = prevEpBible.character_bindings?.length
+      ? [...prevEpBible.character_bindings]
+      : episodeBible.character_bindings;
+    episodeBible.voice_bindings = prevEpBible.voice_bindings?.length
+      ? [...prevEpBible.voice_bindings]
+      : episodeBible.voice_bindings;
+    episodeBible.scene_bindings = prevEpBible.scene_bindings?.length
+      ? [...prevEpBible.scene_bindings]
+      : episodeBible.scene_bindings;
+    if (prevEpBible.visual_bible_binding) {
+      episodeBible.visual_bible_binding = prevEpBible.visual_bible_binding;
+    }
+    if (prevEpBible.analysis_summary) {
+      episodeBible.analysis_summary = prevEpBible.analysis_summary;
+    }
+    if (prevEpBible.official_scene_beats?.length) {
+      episodeBible.official_scene_beats = [...prevEpBible.official_scene_beats];
+    }
+    const notes = [
+      ...(prevEpBible.original_integrity?.notes || []),
+      ...mergeWarnings,
+    ];
+    if (prevEpBible.original_integrity) {
+      episodeBible.original_integrity = { ...prevEpBible.original_integrity, notes };
+    } else if (mergeWarnings.length) {
+      episodeBible.original_integrity = {
+        ok: true,
+        source_chars: 0,
+        covered_chars: 0,
+        missing_samples: [],
+        dialogue_ok: true,
+        notes,
+      };
+    }
+  }
+  episodeBible.visual_events = visualEvents;
   // 保留用户为本集选过的视觉风格覆盖
   if (prevEpBible?.style_preset_id || prevEpBible?.visual_override?.style) {
     episodeBible.style_preset_id = prevEpBible.style_preset_id || '';
@@ -1051,14 +1163,35 @@ export function normalizeDramaShotPlanResult(
     return { ok: false, error: '分镜建议 JSON 没有 shots。不得保存。', rawJson };
   }
   const beatByNo = new Map(beats.map((b) => [String(b.scene_no || ''), b]));
+  // 20s 模式：从 video_segments[].beats[] 提取对白，按 video_id 映射到 shots
+  const dialogueByVideoId = new Map<string, Array<Record<string, unknown>>>();
+  const videoSegmentsRaw = Array.isArray(parsed.video_segments) ? parsed.video_segments : [];
+  for (const seg of videoSegmentsRaw.filter(isObj)) {
+    const videoId = str(seg.video_id);
+    if (!videoId) continue;
+    const segBeats = Array.isArray(seg.beats) ? seg.beats : [];
+    const dlgList: Array<Record<string, unknown>> = [];
+    for (const b of segBeats.filter(isObj)) {
+      const bd = b.dialogue;
+      if (!bd || !isObj(bd)) continue;
+      const speaker = str(bd.speaker) || str(bd.character_name);
+      const line = str(bd.line) || str(bd.text);
+      if (speaker && line) dlgList.push({ character_name: speaker, text: line, subtext: str(bd.subtext) || '' });
+    }
+    if (dlgList.length) dialogueByVideoId.set(videoId, dlgList);
+  }
   const suggestions: DramaShotSuggestion[] = [];
   for (const row of shotsRaw.filter(isObj)) {
     const scene_no = str(row.scene_no) || '1';
     const beat = beatByNo.get(scene_no);
-    const dialogueRaw = Array.isArray(row.dialogue) ? row.dialogue : [];
+    let dialogueRaw = Array.isArray(row.dialogue) ? row.dialogue : [];
+    if (!dialogueRaw.length) {
+      const vid = str(row.video_id);
+      if (vid && dialogueByVideoId.has(vid)) dialogueRaw = dialogueByVideoId.get(vid)!;
+    }
     const dialogueForFormat = dialogueRaw.filter(isObj).map((d) => ({
-      character_name: str(d.character_name),
-      text: str(d.text).replace(/【潜台词[:：]?[^】]*】/g, '').trim(),
+      character_name: str(d.character_name) || str(d.speaker),
+      text: str(d.text || d.line).replace(/【潜台词[:：]?[^】]*】/g, '').trim(),
     }));
     const subtextFromDlg = dialogueRaw
       .filter(isObj)
@@ -1085,8 +1218,23 @@ export function normalizeDramaShotPlanResult(
       dialogue,
       size: str(row.size),
     });
-    const duration_sec =
-      llmDur >= 10 && recDur === 6 ? llmDur : recDur > llmDur ? recDur : llmDur;
+    // 自动选择：取 LLM 与推荐值中较大者（对白/动作需要更多时间时以推荐值为准）
+    const duration_sec = Math.max(llmDur, recDur);
+    // 生成时长选择理由
+    const dlgCharsForWhy = dialogue
+      .replace(/[^0-9A-Za-z\u4e00-\u9fff：:、。，！？\s]/g, '')
+      .replace(/[A-Za-z\u4e00-\u9fff]+[：:]/g, '') // 去掉角色名
+      .replace(/[^0-9A-Za-z\u4e00-\u9fff]/g, '')
+      .length;
+    const secondsNeeded = Math.ceil(dlgCharsForWhy / 4.5);
+    let durationWhy = str(row.duration_why);
+    if (recDur > llmDur) {
+      durationWhy = durationWhy
+        ? `${durationWhy}；推荐${recDur}s（对白${dlgCharsForWhy}字≈${secondsNeeded}s）`
+        : `对白${dlgCharsForWhy}字（约${secondsNeeded}秒），选${recDur}s`;
+    } else if (!durationWhy && dlgCharsForWhy > 0) {
+      durationWhy = `对白${dlgCharsForWhy}字（约${secondsNeeded}秒），选${duration_sec}s`;
+    }
     suggestions.push(
       createEmptyDramaShotSuggestion({
         scene: str(row.scene) || beat?.location_name || scene_no,
@@ -1105,7 +1253,7 @@ export function normalizeDramaShotPlanResult(
         time_of_day: normalizeDramaShotTimeOfDay(str(row.time_of_day) || str(row.tod)),
         environment: str(row.environment) || str(row.atmosphere),
         duration_sec,
-        duration_why: str(row.duration_why),
+        duration_why: durationWhy,
         cast_names: Array.isArray(row.cast_names)
           ? row.cast_names.map((x) => str(x)).filter(Boolean)
           : [],
@@ -1114,6 +1262,12 @@ export function normalizeDramaShotPlanResult(
         transition_in: str(row.transition_in),
         transition_out: str(row.transition_out),
         visual_event_ids: eventIds.map((x) => normalizeDramaEventId(x)).filter(Boolean),
+        prop_names: Array.isArray(row.prop_names)
+          ? row.prop_names.map((x) => str(x)).filter(Boolean)
+          : [],
+        creature_names: Array.isArray(row.creature_names)
+          ? row.creature_names.map((x) => str(x)).filter(Boolean)
+          : [],
       }),
     );
   }

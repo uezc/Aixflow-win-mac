@@ -1,0 +1,51 @@
+{
+  "started_at": "2026-09-05T09:40:47.614Z",
+  "note": "continued after live script interrupt; OTS lookup by RH pid",
+  "invalid_forward": "PASS",
+  "ltx_e2e": {
+    "aixflow_task": "386fea50-a495-4404-9b0a-94aaa515ba46",
+    "rh_task": "2096167744048230401",
+    "region": "ai",
+    "charge": 8,
+    "final": "success",
+    "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/LTX2.0_00001_p87-audio_zkpqc_1788600532.mp4",
+    "user_occupied": 0,
+    "platform_occupied": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "charge_row": {
+      "task_id": "386fea50-a495-4404-9b0a-94aaa515ba46",
+      "charge_id": "386fea50-a495-4404-9b0a-94aaa515ba46",
+      "operation_id": "chg_386fea50-a495-4404-9b0a-94aaa515ba46",
+      "user_id": "__p93blive_mto6cffb_ltx",
+      "amount": 8,
+      "status": "charged",
+      "ledger_tx_id": "idem_bf19b2c01fa48c1cd7c238885a44934db46ff299b95423ddbbea5c245548149f",
+      "error_code": "",
+      "created_at": 1788600293175,
+      "updated_at": 1788600293321,
+      "charged_at": 1788600293321,
+      "refunded_at": 0
+    },
+    "balance": 1992
+  },
+  "rhart_regression": "PASS",
+  "rhart_detail": {
+    "task": "519ee6f7-a417-4138-b66f-87119528f7fd",
+    "rh": "2096168973973958657",
+    "final": "success",
+    "region": "ai",
+    "url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/f3d2ca0f-6990-4d74-b958-def36842fb89.mp4"
+  },
+  "h3_regression": "PASS",
+  "h3_detail": {
+    "task": "fab8409e-ec9b-40e1-91a7-a90aae647eae",
+    "rh": "2096169537560072194",
+    "final": "success",
+    "region": "cn",
+    "url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00002_p84-audio_ayoxr_1788601036.mp4"
+  },
+  "errors": [],
+  "conclusion": "PASS",
+  "ended_at": "2026-09-05T09:40:47.614Z"
+}

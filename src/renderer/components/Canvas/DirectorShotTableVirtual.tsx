@@ -7,7 +7,7 @@ import { useVirtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
 export const DIRECTOR_MV_SHOT_ROW_ESTIMATE_PX = 152;
 export const DIRECTOR_MV_VIDEO_ROW_ESTIMATE_PX = 160;
-export const DIRECTOR_MV_TABLE_OVERSCAN = 5;
+export const DIRECTOR_MV_TABLE_OVERSCAN = 3;
 
 export function DirectorTableVirtualPad({
   height,

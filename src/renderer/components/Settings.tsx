@@ -45,7 +45,7 @@ import { LegalDocModal } from './legal/LegalDocModal';
 import { legalUiT } from '../legal/legalI18n';
 import type { LegalDocId } from '../legal/legalDocs';
 import BillListModal from './BillListModal';
-import { NEXFLOW_RECHARGE_SETTLED_EVENT } from './RechargeSettledNotifier';
+import { NEXFLOW_RECHARGE_SETTLED_EVENT, NEXFLOW_OPEN_RECHARGE_EVENT, NEXFLOW_OPEN_RECHARGE_FLAG } from './RechargeSettledNotifier';
 import type { RechargePackageId } from '../shared/rechargePackages';
 
 interface SettingsProps {
@@ -666,10 +666,27 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
     void loadTransactions(1);
   };
 
-  const openRechargeModal = () => {
+  const openRechargeModal = useCallback(() => {
     setRechargeError('');
     setRechargeModalOpen(true);
-  };
+  }, []);
+
+  /** 画布顶栏等：跳转到账户页后自动打开充值 */
+  useEffect(() => {
+    const tryOpenFromFlag = () => {
+      try {
+        if (sessionStorage.getItem(NEXFLOW_OPEN_RECHARGE_FLAG) !== '1') return;
+        sessionStorage.removeItem(NEXFLOW_OPEN_RECHARGE_FLAG);
+        openRechargeModal();
+      } catch {
+        /* ignore */
+      }
+    };
+    tryOpenFromFlag();
+    const onOpen = () => openRechargeModal();
+    window.addEventListener(NEXFLOW_OPEN_RECHARGE_EVENT, onOpen);
+    return () => window.removeEventListener(NEXFLOW_OPEN_RECHARGE_EVENT, onOpen);
+  }, [openRechargeModal]);
 
   const handleRedeemCoupon = async () => {
     if (rechargeBusyPackageId !== null) return;
@@ -1470,13 +1487,19 @@ const Settings: React.FC<SettingsProps> = ({ onSaveSuccess }) => {
                 {t.rechargeHeaderBtn}
               </button>
             ) : null}
-            <div className="flex items-center gap-2 rounded-full bg-neutral-900/90 px-3.5 py-2 text-xs backdrop-blur">
+            <button
+              type="button"
+              onClick={openRechargeModal}
+              disabled={!cloud?.loggedIn}
+              className="flex items-center gap-2 rounded-full bg-neutral-900/90 px-3.5 py-2 text-xs backdrop-blur transition hover:bg-neutral-800/95 disabled:cursor-default disabled:opacity-80"
+              title={cloud?.loggedIn ? t.rechargeHeaderBtn : undefined}
+            >
               <Coins className="h-4 w-4 text-white/80" strokeWidth={1.75} />
               <span className="text-white/55">{t.ingotBalance}</span>
               <span className="font-medium tabular-nums text-white">
                 {(cloud?.balance ?? 0).toLocaleString()}
               </span>
-            </div>
+            </button>
             {renderLanguageSelector('header')}
             <SettingsFullscreenToggle />
           </>

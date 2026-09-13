@@ -602,10 +602,41 @@ export class AICore {
         }
       }
       
-      // 如果是文本内容，也保存到本地（不覆盖 videoUrl/imageUrl 的 localPath）
-      // 注意：如果 payload 中已经有 localPath（来自 ChatProvider），说明文本已经保存，跳过重复保存
-      // 同时确保 text 字段被保留（来自 ChatProvider）
-      if (text && text.trim() && !text.match(/^https?:\/\//)) {
+      // 仅对真正的文本结果（LLM/Chat）落盘；图片/视频/音频 SUCCESS 的 progress text（如「生成完成」）
+      // 绝不能写入 localPath，否则会把 .txt 当成图片路径 → 画布「图片加载失败」。
+      const outputImages = Array.isArray((payload as { outputImages?: unknown }).outputImages)
+        ? ((payload as { outputImages?: unknown[] }).outputImages as unknown[])
+        : [];
+      const hasMediaResult = !!(
+        (typeof imageUrl === 'string' && imageUrl.trim()) ||
+        (typeof videoUrl === 'string' && videoUrl.trim()) ||
+        (typeof audioUrl === 'string' && audioUrl.trim()) ||
+        outputImages.length > 0 ||
+        !!(payload as { outputModelUrl?: unknown }).outputModelUrl
+      );
+
+      // Provider 已把 imageUrl 落成 local-resource 但未带 localPath 时，从 URL 回填，避免后续误走文本分支
+      if (
+        hasMediaResult &&
+        typeof imageUrl === 'string' &&
+        (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://')) &&
+        !normalizedPacket.payload.localPath
+      ) {
+        let fsPath = imageUrl.replace(/^(local-resource:\/\/|file:\/\/\/?)/, '');
+        try {
+          fsPath = decodeURIComponent(fsPath);
+        } catch {
+          /* keep */
+        }
+        if (fsPath.match(/^\/[a-zA-Z]:/)) fsPath = fsPath.substring(1);
+        fsPath = fsPath.replace(/\//g, '\\');
+        if (fsPath && !/\.(txt|json|md|csv)$/i.test(fsPath)) {
+          normalizedPacket.payload.localPath = fsPath;
+          payloadModified = true;
+        }
+      }
+
+      if (text && text.trim() && !text.match(/^https?:\/\//) && !hasMediaResult) {
         // 如果已经有 localPath（来自 ChatProvider），保留它和 text 字段
         if (normalizedPacket.payload.localPath) {
           console.log(`[持久化] 文本已保存（来自 Provider）: ${normalizedPacket.payload.localPath}, text 长度: ${text.length}`);

@@ -26,7 +26,7 @@ import { micLevelCssVars } from '../../utils/micInputLevel';
 import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { nodeFloatToolBtn } from '../../utils/assetLibraryChrome';
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
-import { scaleModulePx, clampTextModuleSize, TEXT_MODULE_MAX_W, TEXT_MODULE_MAX_H } from '../../utils/moduleDisplayScale';
+import { scaleModulePx, clampTextModuleSize, clampTextModuleAutoSize } from '../../utils/moduleDisplayScale';
 import VoiceMicGlyph from './VoiceMicGlyph';
 
 /** 悬停正文时滚轮翻文字，不缩放画布（React 合成 onWheel 拦不住 React Flow 的原生监听） */
@@ -46,6 +46,16 @@ function bindWheelToElementScroll(el: HTMLElement | null): () => void {
   };
   el.addEventListener('wheel', onWheel, { passive: false, capture: true });
   return () => el.removeEventListener('wheel', onWheel, { capture: true });
+}
+
+/** 去掉空行（含仅空白的行），保留其余行原文与顺序 */
+function stripTextEmptyLines(raw: string): string {
+  return String(raw || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .join('\n');
 }
 
 /** 10 个常用字体选项 */
@@ -256,10 +266,11 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
     );
   }, [id, onDataChange, setNodes]);
 
-  // 挂载时若历史尺寸异常偏大，立刻压回正常范围（无需等重新加载工程）
+  // 挂载时：仅纠正未手动缩放的异常撑大，不压用户拉过的尺寸
   useEffect(() => {
+    if (data?.isUserResized) return;
     const cur = sizeRef.current;
-    const clamped = clampTextModuleSize(cur.w, cur.h);
+    const clamped = clampTextModuleAutoSize(cur.w, cur.h);
     if (Math.abs(cur.w - clamped.width) < 0.5 && Math.abs(cur.h - clamped.height) < 0.5) return;
     const next = { w: clamped.width, h: clamped.height };
     sizeRef.current = next;
@@ -267,7 +278,6 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
     updateNodeData({
       width: next.w,
       height: next.h,
-      isUserResized: true,
       _isResizing: false,
     } as Partial<MinimalistTextNodeData>);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -937,6 +947,33 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
     };
   }, []);
 
+  const handleStripEmptyLines = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const prev = String(textRef.current || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+      const next = stripTextEmptyLines(prev);
+      if (next === prev) return;
+      if (textSaveTimeoutRef.current) {
+        clearTimeout(textSaveTimeoutRef.current);
+        textSaveTimeoutRef.current = null;
+      }
+      textRef.current = next;
+      setText(next);
+      updateNodeData({ text: next });
+    },
+    [updateNodeData],
+  );
+
+  const canStripEmptyLines = useMemo(() => {
+    const prev = String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+    return stripTextEmptyLines(prev) !== prev;
+  }, [text]);
+
   // 复制到剪贴板
   const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1158,7 +1195,7 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
       </div>
       )}
 
-      {/* 模块外上方居中：话筒 / 复制 /（连音频时）转文字 */}
+      {/* 模块外上方居中：话筒 / 去掉空行 / 复制 /（连音频时）转文字 */}
       {(isSelected || isHovered || isDictationActive || transcribeBusy) &&
         !showPlaceholder &&
         !errorMessage && (
@@ -1204,6 +1241,31 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
               level={dictationInputLevel}
             />
           </button>
+          {(isSelected || isHovered) && !isEditing && !isDictationActive ? (
+            <button
+              type="button"
+              onClick={handleStripEmptyLines}
+              disabled={!canStripEmptyLines}
+              className={floatTopPillBtn(!canStripEmptyLines ? '!opacity-40' : '')}
+              title={wc.textStripEmptyLinesTitle}
+              aria-label={wc.textStripEmptyLinesTitle}
+            >
+              <svg
+                className={`h-4 w-4 shrink-0 ${isDarkMode ? 'text-white/90' : 'text-gray-700'}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M4 6h16" />
+                <path d="M4 12h16" />
+                <path d="M4 18h10" />
+              </svg>
+            </button>
+          ) : null}
           {(isSelected || isHovered) && !isEditing ? (
             <button
               type="button"
@@ -1299,9 +1361,8 @@ export const MinimalistTextNode: React.FC<MinimalistTextNodeProps> = (props) => 
             const deltaX = (moveEvent.clientX - startX) / currentZoom;
             const deltaY = (moveEvent.clientY - startY) / currentZoom;
             
-            // 计算新尺寸（最小/最大约束，避免拖成整屏发糊）
-            const newW = Math.min(TEXT_MODULE_MAX_W, Math.max(MIN_WIDTH, startW + deltaX));
-            const newH = Math.min(TEXT_MODULE_MAX_H, Math.max(MIN_HEIGHT, startH + deltaY));
+            const newW = Math.max(MIN_WIDTH, startW + deltaX);
+            const newH = Math.max(MIN_HEIGHT, startH + deltaY);
             sizeRef.current = { w: newW, h: newH };
 
             // 直接操作 DOM，不触发 React 状态更新（非受控样式操作）

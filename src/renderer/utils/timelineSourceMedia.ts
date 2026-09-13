@@ -8,6 +8,7 @@ import {
   pickDigitalHumanAudioUrl,
   pickDigitalHumanVideoUrl,
 } from './digitalHumanNodeMedia';
+import { probeImagePixelSize } from './nodeSizeFromAspectRatio';
 
 export type TimelineSourceMediaKind = 'video' | 'image' | 'audio';
 
@@ -32,6 +33,9 @@ export type TimelineClipRecord = {
   directorShotNo?: string;
   /** 色度抠像 WebM 等带透明通道 */
   hasAlpha?: boolean;
+  /** 原片像素，供剪辑 Auto 画幅 */
+  sourceWidth?: number;
+  sourceHeight?: number;
 };
 
 export type VideoSpliceClipLabels = {
@@ -375,6 +379,44 @@ export async function probeTimelineMediaDuration(
   });
 }
 
+/** 探测视频/图片原片像素，供剪辑 Auto 画幅 */
+export async function probeTimelineMediaPixelSize(
+  url: string,
+  kind: 'video' | 'image',
+  projectId?: string,
+): Promise<{ width: number; height: number } | null> {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  const normalized = normalizeVideoUrl(raw);
+  const mapped = projectId ? await mapProjectPath(normalized, projectId).catch(() => normalized) : normalized;
+  const src = mapped || normalized;
+  if (kind === 'image') {
+    try {
+      return await probeImagePixelSize(src);
+    } catch {
+      return null;
+    }
+  }
+  return new Promise((resolve) => {
+    const el = document.createElement('video');
+    el.preload = 'metadata';
+    el.muted = true;
+    const finish = (size: { width: number; height: number } | null) => {
+      el.removeAttribute('src');
+      el.load();
+      el.remove();
+      resolve(size);
+    };
+    el.onloadedmetadata = () => {
+      const width = el.videoWidth;
+      const height = el.videoHeight;
+      finish(width > 0 && height > 0 ? { width, height } : null);
+    };
+    el.onerror = () => finish(null);
+    el.src = src;
+  });
+}
+
 /** 音频节点 UI 专用：ffmpeg 全信任；HTML5 仅排除无效值（不受 timeline 占位 1s/5s/8s 规则影响） */
 export async function probeAudioMediaDurationSec(
   url: string,
@@ -582,6 +624,20 @@ export function buildVideoSpliceClipsFromEdges(
         /video-chromakey-/i.test(resolved.url) ||
         /video-smart-matting-/i.test(resolved.url) ||
         /\.webm(?:$|[?#])/i.test(resolved.url));
+    const sourcePx =
+      resolved.clipType === 'audio'
+        ? null
+        : (() => {
+            const asset =
+              resolved.clipType === 'image'
+                ? (sourceNode.data?.imageAsset as { width?: number; height?: number } | undefined)
+                : (sourceNode.data?.videoAsset as { width?: number; height?: number } | undefined);
+            const w = Number(asset?.width);
+            const h = Number(asset?.height);
+            return Number.isFinite(w) && w > 1 && Number.isFinite(h) && h > 1
+              ? { width: w, height: h }
+              : null;
+          })();
 
     const clip: TimelineClipRecord = sanitizeTimelineClipTrim(
       {
@@ -598,6 +654,11 @@ export function buildVideoSpliceClipsFromEdges(
         ...(prev?.volume != null ? { volume: prev.volume } : {}),
         ...(prev?.directorShotNo ? { directorShotNo: prev.directorShotNo } : {}),
         ...(sourceHasAlpha || prev?.hasAlpha ? { hasAlpha: true } : {}),
+        ...(sourcePx
+          ? { sourceWidth: sourcePx.width, sourceHeight: sourcePx.height }
+          : prev?.sourceWidth && prev?.sourceHeight
+            ? { sourceWidth: prev.sourceWidth, sourceHeight: prev.sourceHeight }
+            : {}),
       },
       sourceHint,
     );

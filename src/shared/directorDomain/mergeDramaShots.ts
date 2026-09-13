@@ -231,7 +231,7 @@ export function planMergeDramaShots(
       session,
       patch.timeline_events || target.timeline_events || [],
     ),
-  });
+  }, session);
 
   return {
     targetIndex,

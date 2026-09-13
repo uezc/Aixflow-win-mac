@@ -1,0 +1,170 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "test1_create_forward_720",
+      "ok": true,
+      "detail": {
+        "sku": "ltx-2-3-lipsync-720",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "test_sku_1280",
+      "ok": true,
+      "detail": {
+        "field": "1280",
+        "sku": "ltx-2-3-lipsync-1280"
+      }
+    },
+    {
+      "name": "test_sku_1920",
+      "ok": true,
+      "detail": {
+        "field": "1920",
+        "sku": "ltx-2-3-lipsync-1920"
+      }
+    },
+    {
+      "name": "test4_no_image_reject",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "test5_no_audio_reject",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "test6_two_images_reject",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "test7_8_oss_https_required",
+      "ok": true,
+      "detail": {
+        "imgFail": true,
+        "audFail": true
+      }
+    },
+    {
+      "name": "test9_non_https_reject",
+      "ok": true,
+      "detail": {
+        "rejectedRh": true,
+        "rejectedLocal": true
+      }
+    },
+    {
+      "name": "test10_11_region_and_forward",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "rhRegion": "cn"
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 11
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_lipsync_single",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test_poll_cn_success_release",
+      "ok": true,
+      "detail": {
+        "seen": "cn",
+        "status": "success",
+        "held": false
+      }
+    },
+    {
+      "name": "test12_dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "test13_dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 11
+      }
+    },
+    {
+      "name": "test14_dup_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "test15_submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500,
+        "held": false
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_off_direct_fallback",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasAdapter": true,
+        "hasEarly": true,
+        "hasGate": true,
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {
+        "good": true,
+        "bad": false
+      }
+    },
+    {
+      "name": "regression_paths_distinct",
+      "ok": true,
+      "detail": {
+        "lipsync": "/run/ai-app/2029400959335534594",
+        "i2v": "/run/ai-app/2034955204851933186"
+      }
+    }
+  ],
+  "rh_submit_calls": 1
+}

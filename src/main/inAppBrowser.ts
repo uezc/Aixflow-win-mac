@@ -47,6 +47,7 @@ export async function openInAppBrowser(
       title,
       show: false,
       autoHideMenuBar: true,
+      skipTaskbar: true,
       backgroundColor: '#0b0b0c',
       webPreferences: {
         partition: 'persist:nexflow-in-app-browser',
@@ -73,6 +74,7 @@ export async function openInAppBrowser(
           width: 960,
           height: 720,
           autoHideMenuBar: true,
+          skipTaskbar: true,
           webPreferences: {
             partition: 'persist:nexflow-in-app-browser',
             contextIsolation: true,

@@ -1,0 +1,41 @@
+{
+  "started_at": "2026-09-05T07:12:21.219Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "planted_bad": 15,
+  "invalid_before": 50,
+  "create": {
+    "http": 200,
+    "task_id": "a840885d-5997-453f-9b77-7bd326ff556d",
+    "status": "queued",
+    "task_type": "video",
+    "model_id": "minimax-h3-t2v-720p-10s",
+    "quoted_cost_coins": 8,
+    "cost_coins": 0,
+    "charged": false,
+    "execution_mode": "queue",
+    "balance": 2000
+  },
+  "candidate_includes_h3": true,
+  "candidate_count": 1,
+  "dispatch": {
+    "ok": true,
+    "provider_task_id": "2096134651709186049"
+  },
+  "golden_e2e": {
+    "aixflow_task_id": "a840885d-5997-453f-9b77-7bd326ff556d",
+    "rh_task_id": "2096134651709186049",
+    "region": "cn",
+    "charge": 8,
+    "initial_balance": 2000,
+    "final_balance": 1992,
+    "final_status": "success",
+    "video_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p80-audio_fpxey_1788592717.mp4",
+    "user_occupied": 0,
+    "platform_occupied": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "invalid_before": 50,
+    "candidate_includes_h3": true
+  }
+}

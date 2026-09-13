@@ -213,6 +213,7 @@ export {
   sumDirectorShotsDurationSec,
   ensureMvShotsMatchMusicDuration,
   ensureMvShotsCoverSceneNames,
+  normalizeDirectorShotNoKey,
   type DirectorMvTimelineClip,
 } from './mvHelpers.js';
 
@@ -374,6 +375,7 @@ export {
   DIRECTOR_SCENE_BUILTIN_SUFFIX,
   DIRECTOR_SCENE_UNIVERSAL_PROMPT,
   DIRECTOR_SCENE_NINE_GRID_LINKED_PROMPT,
+  DIRECTOR_SCENE_SINGLE_ENGLISH,
   DIRECTOR_SCENE_NINE_GRID_ENGLISH,
   DIRECTOR_SCENE_360_PROMPT_TEMPLATE,
   DIRECTOR_360_EQUIRECTANGULAR_PROMPT_TEMPLATE,
@@ -386,6 +388,9 @@ export {
   buildDirector360EquirectangularPrompt,
   buildDirectorCharacterImagePrompt,
   buildDirectorPropImagePrompt,
+  buildDirectorSystemVisualImagePrompt,
+  DIRECTOR_SYSTEM_VISUAL_LINKED_PROMPT,
+  DIRECTOR_SYSTEM_VISUAL_FOUR_GRID_ENGLISH,
   directorAssetAspectRatio,
 } from './assetImagePrompts.js';
 

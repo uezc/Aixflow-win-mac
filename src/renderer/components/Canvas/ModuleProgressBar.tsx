@@ -15,6 +15,11 @@ export interface ModuleProgressBarProps {
   fadeDurationMs?: number;
   /** 可选：进度达到 100% 并渐隐结束后回调 */
   onFadeComplete?: () => void;
+  /**
+   * sweep：从左向右 scaleX（画布模块默认）
+   * cover：绿色铺满容器 + 扫光动画（竖屏预览等需整区遮罩时用）
+   */
+  fillMode?: 'sweep' | 'cover';
 }
 
 /**
@@ -29,6 +34,7 @@ export const ModuleProgressBar: React.FC<ModuleProgressBarProps> = ({
   borderRadius = 16,
   fadeDurationMs = 300,
   onFadeComplete,
+  fillMode = 'sweep',
 }) => {
   const clampedProgress = Math.max(0, Math.min(100, progress));
   const isComplete = clampedProgress >= 100;
@@ -53,6 +59,8 @@ export const ModuleProgressBar: React.FC<ModuleProgressBarProps> = ({
         left: 0,
         right: 0,
         bottom: 0,
+        width: '100%',
+        height: '100%',
         borderRadius: `${borderRadius}px`,
         overflow: 'hidden',
         opacity,
@@ -70,14 +78,19 @@ export const ModuleProgressBar: React.FC<ModuleProgressBarProps> = ({
           borderRadius: `${borderRadius}px`,
         }}
       />
-      {/* 进度条填充：覆盖整个模块等高，从左向右循环动画，纯色无圆角 */}
+      {/* 进度条填充：sweep 从左向右；cover 始终铺满整区并轻脉冲 */}
       <div
-        className="module-progress-fill-full"
+        className={
+          fillMode === 'cover' ? 'module-progress-fill-cover' : 'module-progress-fill-full'
+        }
         style={{
           position: 'absolute',
           top: 0,
           left: 0,
+          right: 0,
           bottom: 0,
+          width: '100%',
+          height: '100%',
         }}
       />
       {/* 进度文案：居中显示，保留「之前的信息」可见性 */}

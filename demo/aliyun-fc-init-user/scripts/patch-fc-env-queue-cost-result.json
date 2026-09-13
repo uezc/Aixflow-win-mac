@@ -1,0 +1,30 @@
+{
+  "patch": {
+    "NX_QUEUE_IDLE_PROBE_MS": "900000",
+    "NX_QUEUE_IDLE_FULL_SWEEP_MS": "10800000",
+    "NX_QUEUE_TIMER_TICK_MS": "300000",
+    "NX_TASK_WORK_FALLBACK_ON_EMPTY": "0"
+  },
+  "results": [
+    {
+      "region": "cn-hongkong",
+      "functionName": "nexflow-api",
+      "applied": {
+        "NX_QUEUE_IDLE_PROBE_MS": "900000",
+        "NX_QUEUE_IDLE_FULL_SWEEP_MS": "10800000",
+        "NX_QUEUE_TIMER_TICK_MS": "300000",
+        "NX_TASK_WORK_FALLBACK_ON_EMPTY": "0"
+      }
+    },
+    {
+      "region": "cn-beijing",
+      "functionName": "aixflow-api",
+      "applied": {
+        "NX_QUEUE_IDLE_PROBE_MS": "900000",
+        "NX_QUEUE_IDLE_FULL_SWEEP_MS": "10800000",
+        "NX_QUEUE_TIMER_TICK_MS": "300000",
+        "NX_TASK_WORK_FALLBACK_ON_EMPTY": "0"
+      }
+    }
+  ]
+}

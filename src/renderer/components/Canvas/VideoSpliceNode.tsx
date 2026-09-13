@@ -14,6 +14,7 @@ import {
   needsDirectorLockedClipDurationProbe,
   effectiveTimelineClipDurationSec,
   probeTimelineMediaDuration,
+  probeTimelineMediaPixelSize,
   resolveTimelineMediaFromSource,
   sanitizeTimelineClipTrim,
   timelineClipsFingerprint,
@@ -33,9 +34,14 @@ import {
 import { scratchTintClass, type ScratchColorId } from '../../theme/scratchColors';
 import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import {
-  DEFAULT_SPLICE_PREVIEW_ASPECT_ID,
+  isSpliceAspectAuto,
+  normalizeSpliceExportSize,
+  resolveClipSourcePixelSize,
+  resolveEffectiveSpliceAspectId,
   resolveSpliceExportDimensions,
   resolveSplicePreviewAspectGroup,
+  resolveSpliceSourcePixelSize,
+  SPLICE_ASPECT_AUTO_ID,
   VideoSpliceAspectRatioDropdown,
 } from './VideoSpliceAspectRatioDropdown';
 import { resolveCollage1080pDefaultSize } from './photoCollageAspectRatio';
@@ -127,6 +133,9 @@ export interface TimelineClip {
    * 预览与多轨导出均会应用（上层 index 小覆盖下层；透明/局部 layout 露出下方轨）。
    */
   crop?: ClipCrop;
+  /** 原片像素，供 Auto 画幅 */
+  sourceWidth?: number;
+  sourceHeight?: number;
 }
 
 type SpliceClipClipboardItem = {
@@ -192,9 +201,11 @@ export interface VideoSpliceNodeData {
   audioTrackLeftSnap?: boolean[];
   /** 自动吸附：靠近其他素材边缘时吸附并显示对齐线，默认 true */
   autoSnap?: boolean;
-  /** 预览与导出画面比例（COLLAGE_ASPECT_GROUPS id，默认 16-9） */
+  /** 预览与导出画面比例（auto 或 COLLAGE_ASPECT_GROUPS id，默认 auto） */
   previewAspectId?: string;
-  /** 与 previewAspectId 对应的导出分辨率（1080p 档） */
+  /** 用户是否从下拉手选过比例；未手选时旧 9:16/16:9 按 auto */
+  previewAspectUserPicked?: boolean;
+  /** 与 previewAspectId 对应的导出分辨率（auto 跟原片，固定比例为 1080p 档） */
   exportOutputWidth?: number;
   exportOutputHeight?: number;
   /**
@@ -1606,6 +1617,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           ? String(d.originalOutputAudios[0] || '')
           : '';
         const multiImg = Array.isArray(d.outputImages) ? String(d.outputImages[0] || '') : '';
+        const videoAsset = d.videoAsset && typeof d.videoAsset === 'object' ? (d.videoAsset as Record<string, unknown>) : {};
+        const imageAsset = d.imageAsset && typeof d.imageAsset === 'object' ? (d.imageAsset as Record<string, unknown>) : {};
         parts.push(
           [
             e.source,
@@ -1615,6 +1628,10 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
             String(d.outputVideo || d.originalVideoUrl || ''),
             String(d.outputImage || multiImg || ''),
             String(d.mediaDurationSec ?? ''),
+            String(videoAsset.width ?? ''),
+            String(videoAsset.height ?? ''),
+            String(imageAsset.width ?? ''),
+            String(imageAsset.height ?? ''),
           ].join('\u0001'),
         );
       }
@@ -1942,6 +1959,32 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
       );
     },
     [id, onDataChange, setNodes],
+  );
+
+  const persistClipPixelSize = useCallback(
+    (clipId: string, width: number, height: number) => {
+      const w = Math.round(width);
+      const h = Math.round(height);
+      if (!(w > 1 && h > 1)) return;
+      updateData((prev) => {
+        const tracks = normalizeVideoTracks(prev as VideoSpliceNodeData);
+        let changed = false;
+        const nextTracks = tracks.map((track) =>
+          track.map((c) => {
+            if (c.id !== clipId) return c;
+            if (c.sourceWidth === w && c.sourceHeight === h) return c;
+            changed = true;
+            return { ...c, sourceWidth: w, sourceHeight: h };
+          }),
+        );
+        if (!changed) return {};
+        return {
+          videoTracks: nextTracks,
+          videoClips: nextTracks[0] ?? [],
+        };
+      });
+    },
+    [updateData],
   );
 
   const activateSpliceEditing = useCallback(() => {
@@ -3523,6 +3566,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     const capture = () => {
       const v = getActiveVideo();
       if (v && v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0) {
+        persistClipPixelSize(activeVideoClip.id, v.videoWidth, v.videoHeight);
         try {
           const canvas = document.createElement('canvas');
           canvas.width = v.videoWidth;
@@ -3546,6 +3590,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     timelineScrubbing,
     getActiveVideo,
     isSpliceInViewport,
+    persistClipPixelSize,
   ]);
 
   const seekTimelineAtClientX = useCallback(
@@ -5080,10 +5125,12 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
         <div
           className={`pointer-events-none absolute top-1.5 right-1.5 z-[3] rounded-md border border-black/15 bg-black/55 ${badgePad} font-medium tracking-wide text-white/90 ${badgeText}`}
         >
-          {previewAspectGroup.label}
-          <span className="ml-1 text-white/45">
-            {previewExportResolution[0]}×{previewExportResolution[1]}
-          </span>
+          {isSpliceAspectAuto(previewAspectId) ? vs.aspectAuto : previewAspectGroup.label}
+          {spliceSourcePixelSize || !isSpliceAspectAuto(previewAspectId) ? (
+            <span className="ml-1 text-white/45">
+              {previewExportResolution[0]}×{previewExportResolution[1]}
+            </span>
+          ) : null}
         </div>
       </div>
     );
@@ -5175,7 +5222,8 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     );
     const clips = tracks.flat();
     const exportAudioTracks = audioTracks.map((t) => t.filter((c) => clipHasPlayableSrc(c)).map(withExportTrim));
-    const exportDims = resolveSpliceExportDimensions(data);
+    const sourceSize = resolveSpliceSourcePixelSize(videoTracks.flat(), nodes);
+    const exportDims = resolveSpliceExportDimensions(data, sourceSize);
     return {
       videoTracks: tracks,
       clips,
@@ -5198,20 +5246,35 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
     audioTrackVolume,
     audioTrackMuted,
     data,
+    nodes,
     resolveClipSourceHint,
   ]);
 
   const handlePreviewAspectSelect = useCallback(
     (aspectId: string) => {
+      if (isSpliceAspectAuto(aspectId)) {
+        const sourceSize = resolveSpliceSourcePixelSize(videoTracks.flat(), nodes);
+        const even = sourceSize
+          ? normalizeSpliceExportSize(sourceSize.width, sourceSize.height)
+          : null;
+        updateData({
+          previewAspectId: SPLICE_ASPECT_AUTO_ID,
+          previewAspectUserPicked: true,
+          exportOutputWidth: even?.width,
+          exportOutputHeight: even?.height,
+        });
+        return;
+      }
       const aspectGroup = resolveSplicePreviewAspectGroup(aspectId);
       const [exportWidth, exportHeight] = resolveCollage1080pDefaultSize(aspectGroup);
       updateData({
         previewAspectId: aspectId,
+        previewAspectUserPicked: true,
         exportOutputWidth: exportWidth,
         exportOutputHeight: exportHeight,
       });
     },
-    [updateData],
+    [nodes, updateData, videoTracks],
   );
 
   const handleSaveToComputer = useCallback(async () => {
@@ -5328,6 +5391,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
 
         if (kind === 'video') {
           const dur = await loadVideoDuration(mappedUrl, projectId);
+          const px = await probeTimelineMediaPixelSize(mappedUrl, 'video', projectId);
           const eff = Math.max(0.1, dur);
           nextVideoTracks.push([
             {
@@ -5337,6 +5401,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
               duration: eff,
               startTime: 0,
               name: f.name,
+              ...(px ? { sourceWidth: px.width, sourceHeight: px.height } : {}),
             },
           ]);
           nextVideoMuted.push(false);
@@ -5361,6 +5426,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
           nextAudioSnap.push(true);
           added = true;
         } else if (kind === 'image') {
+          const px = await probeTimelineMediaPixelSize(mappedUrl, 'image', projectId);
           nextVideoTracks.push([
             {
               id: `img-${stamp}`,
@@ -5369,6 +5435,7 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
               duration: 3,
               startTime: 0,
               name: f.name,
+              ...(px ? { sourceWidth: px.width, sourceHeight: px.height } : {}),
             },
           ]);
           nextVideoMuted.push(false);
@@ -5612,11 +5679,18 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   };
 
   const nodeWidth = data?.width ?? scaleModulePx(800);
-  const previewAspectId = data?.previewAspectId ?? DEFAULT_SPLICE_PREVIEW_ASPECT_ID;
-  const spliceExportDims = useMemo(() => resolveSpliceExportDimensions(data), [data]);
+  const previewAspectId = resolveEffectiveSpliceAspectId(data);
+  const spliceSourcePixelSize = useMemo(
+    () => resolveSpliceSourcePixelSize(videoTracks.flat(), nodes),
+    [videoTracks, nodes],
+  );
+  const spliceExportDims = useMemo(
+    () => resolveSpliceExportDimensions(data, spliceSourcePixelSize),
+    [data, spliceSourcePixelSize],
+  );
   const previewAspectGroup = useMemo(
-    () => resolveSplicePreviewAspectGroup(previewAspectId),
-    [previewAspectId],
+    () => resolveSplicePreviewAspectGroup(previewAspectId, spliceSourcePixelSize),
+    [previewAspectId, spliceSourcePixelSize],
   );
   const previewExportResolution = useMemo(
     () => [spliceExportDims.width, spliceExportDims.height] as const,
@@ -5664,11 +5738,60 @@ const VideoSpliceNode: React.FC<VideoSpliceNodeProps> = ({
   }, [compactNodeHeight, data?.height, updateData]);
 
   useEffect(() => {
-    if (!data?.previewAspectId || (data.exportOutputWidth && data.exportOutputHeight)) return;
-    const g = resolveSplicePreviewAspectGroup(data.previewAspectId);
+    if (data?.previewAspectUserPicked) return;
+    const id = String(data?.previewAspectId || '').trim();
+    if (id && id !== '16-9' && id !== '9-16') return;
+    updateData({
+      previewAspectId: SPLICE_ASPECT_AUTO_ID,
+      exportOutputWidth: undefined,
+      exportOutputHeight: undefined,
+    });
+  }, [data?.previewAspectId, data?.previewAspectUserPicked, updateData]);
+
+  useEffect(() => {
+    if (isSpliceAspectAuto(previewAspectId)) {
+      if (!spliceSourcePixelSize) return;
+      const even = normalizeSpliceExportSize(spliceSourcePixelSize.width, spliceSourcePixelSize.height);
+      if (data?.exportOutputWidth === even.width && data?.exportOutputHeight === even.height) return;
+      updateData({ exportOutputWidth: even.width, exportOutputHeight: even.height });
+      return;
+    }
+    if (data?.exportOutputWidth && data?.exportOutputHeight) return;
+    const g = resolveSplicePreviewAspectGroup(previewAspectId);
     const [w, h] = resolveCollage1080pDefaultSize(g);
     updateData({ exportOutputWidth: w, exportOutputHeight: h });
-  }, [data?.previewAspectId, data?.exportOutputWidth, data?.exportOutputHeight, updateData]);
+  }, [
+    data?.exportOutputHeight,
+    data?.exportOutputWidth,
+    previewAspectId,
+    spliceSourcePixelSize,
+    updateData,
+  ]);
+
+  useEffect(() => {
+    const visual = videoTracks
+      .flat()
+      .filter((c) => c && (c.type === 'video' || c.type === 'image'))
+      .slice()
+      .sort((a, b) => a.startTime - b.startTime);
+    const clip = visual[0];
+    if (!clip?.src || (clip.sourceWidth && clip.sourceHeight)) return;
+    const sourceNode = clip.sourceNodeId ? nodes.find((n) => n.id === clip.sourceNodeId) : undefined;
+    const fromNode = resolveClipSourcePixelSize(clip, sourceNode);
+    if (fromNode) {
+      persistClipPixelSize(clip.id, fromNode.width, fromNode.height);
+      return;
+    }
+    let cancelled = false;
+    const kind = clip.type === 'image' ? 'image' : 'video';
+    probeTimelineMediaPixelSize(clip.src, kind, projectId).then((size) => {
+      if (cancelled || !size) return;
+      persistClipPixelSize(clip.id, size.width, size.height);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [nodes, persistClipPixelSize, projectId, videoTracks]);
 
   /** 旧模型：layout=未裁源占位 + crop inset → 新模型：layout=裁切后占位 */
   useEffect(() => {

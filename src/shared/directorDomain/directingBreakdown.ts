@@ -6,7 +6,12 @@
 
 import { dramaNewId } from './ids.js';
 import { createEmptyDramaShot } from './factories.js';
-import { createEmptyDramaTimelineEvent, differentiateDuplicateTimelineCuts, normalizeDramaTimelineEvents } from './timelineEvent.js';
+import {
+  createEmptyDramaTimelineEvent,
+  differentiateDuplicateTimelineCuts,
+  isDramaTimelineEventsThin,
+  normalizeDramaTimelineEvents,
+} from './timelineEvent.js';
 import { dramaShotHasSpokenDialogue } from './migrateH3Compiler.js';
 import {
   allocateBeatWindows,
@@ -17,12 +22,11 @@ import {
 } from './directingBreakdownRules.js';
 import {
   applyLockedCameraToBeatFields,
-  decideLockedCamera,
   inferDramaPrimaryPurpose,
   stripConflictingCameraLanguage,
   PURPOSE_ZH,
-  type DramaLockedCamera,
 } from './directorCameraSchema.js';
+import { composeDramaCinematicCameraDesign } from './cinematicCameraAction.js';
 import {
   actionRespectsEndState,
   collapseDuplicateActionText,
@@ -156,46 +160,40 @@ function constrainBeat(
   };
 }
 
-const BEAT_CUT_CYCLE: DramaLockedCamera[] = [
-  { shotSize: 'full', cameraAngle: 'eye', cameraMovement: 'static', lensMm: 35, composition: 'thirds' },
-  { shotSize: 'medium', cameraAngle: 'eye', cameraMovement: 'slow_push_in', lensMm: 35, composition: 'thirds' },
-  { shotSize: 'close', cameraAngle: 'eye', cameraMovement: 'static', lensMm: 50, composition: 'center' },
-];
-const BEAT_CUT_PREFIX = ['全景交代人物与环境位置', '中景看肢体与站位', '近景看面部与眼神'];
-
-function beatActionKey(b: DramaDirectingBeat): string {
-  return String(b.visibleAction || b.visiblePerformance || '')
-    .replace(/^【[^】]{1,24}】\s*/, '')
-    .replace(/\s+/g, '');
+function differentiateDuplicateBeatCoverage(
+  shot: DramaShot,
+  beats: DramaDirectingBeat[],
+): DramaDirectingBeat[] {
+  // 不再注入【全景交代…】等 AI 导演前缀；仅剥离历史污染，导演权交给 Skill
+  void shot;
+  return beats.map((b) => {
+    const visibleAction = String(b.visibleAction || '')
+      .replace(/^【(?:全景交代人物与环境位置|中景看肢体与站位|近景看面部与眼神)】\s*/g, '')
+      .replace(/【(?:全景交代人物与环境位置|中景看肢体与站位|近景看面部与眼神)】/g, '')
+      .trim();
+    return visibleAction === b.visibleAction ? b : { ...b, visibleAction };
+  });
 }
 
-function differentiateDuplicateBeatCoverage(beats: DramaDirectingBeat[]): DramaDirectingBeat[] {
-  const list = beats.map((b) => ({ ...b }));
-  let i = 0;
-  while (i < list.length) {
-    const key = beatActionKey(list[i]);
-    let j = i + 1;
-    while (j < list.length && beatActionKey(list[j]) === key) j += 1;
-    if (j - i >= 2 && key) {
-      for (let k = 0; k < j - i; k += 1) {
-        const cam = BEAT_CUT_CYCLE[k % BEAT_CUT_CYCLE.length];
-        const prefix = BEAT_CUT_PREFIX[k % BEAT_CUT_PREFIX.length];
-        const b = list[i + k];
-        const body = String(b.visibleAction || b.visiblePerformance || '').replace(
-          /^【[^】]{1,24}】\s*/,
-          '',
-        );
-        list[i + k] = {
-          ...b,
-          lockedCamera: cam,
-          ...applyLockedCameraToBeatFields(cam),
-          visibleAction: `【${prefix}】${body}`,
-        };
-      }
-    }
-    i = j;
-  }
-  return list;
+function designBeatCinematicCamera(
+  shot: DramaShot,
+  b: Pick<DramaDirectingBeat, 'event' | 'action' | 'dialogue' | 'emotion' | 'camera'>,
+  index: number,
+  total: number,
+  prevLine: string,
+) {
+  return composeDramaCinematicCameraDesign({
+    shot,
+    event: {
+      visual_action: `${b.event || ''} ${b.action || ''}`.trim(),
+      dialogue: b.dialogue,
+      expression: b.emotion,
+      camera_action: b.camera,
+    },
+    index,
+    total,
+    prevLine,
+  });
 }
 
 export function finalizeDramaDirectingBeats(
@@ -203,7 +201,7 @@ export function finalizeDramaDirectingBeats(
   beats: DramaDirectingBeat[],
   nameById?: Map<string, string>,
 ): DramaDirectingBeat[] {
-  let prevCam: DramaLockedCamera | null = null;
+  let prevCamLine = '';
   let prevEnd: DramaBeatEndState | null = null;
   let prevPrimary: string[] = [];
   const names = nameById || new Map<string, string>();
@@ -220,12 +218,9 @@ export function finalizeDramaDirectingBeats(
       index: i,
       total,
     });
-    const lockedCamera = decideLockedCamera({
-      purpose: primaryPurpose,
-      emotionIntensity: b.emotionIntensity,
-      prev: prevCam,
-    });
-    prevCam = lockedCamera;
+    const design = designBeatCinematicCamera(shot, b, i, total, prevCamLine);
+    const lockedCamera = design.recipe.locked;
+    prevCamLine = design.line;
     const rawAction = lip ? String(b.action || '').trim() : sanitizeSilentCharacterText(b.action);
     const action = stripConflictingCameraLanguage(
       actionRespectsEndState(mergeActionAndEvent(rawAction, String(b.event || '')), prevEnd),
@@ -248,6 +243,8 @@ export function finalizeDramaDirectingBeats(
     });
     const endState = inferBeatEndState(action, visiblePerformance, prevEnd, gazeTarget);
     const fields = applyLockedCameraToBeatFields(lockedCamera);
+    fields.camera = design.line;
+    fields.movement = design.recipe.move;
     const continuityIn = prevEnd ? `承接：${formatEndState(prevEnd, names)}` : b.continuityIn;
     const continuityOut = formatEndState(endState, names);
     prevEnd = endState;
@@ -272,17 +269,14 @@ export function finalizeDramaDirectingBeats(
     };
   });
   const qa = qaDramaDirectingBeats(shot, out);
-  if (qa.ok) return differentiateDuplicateBeatCoverage(out);
-  prevCam = null;
+  if (qa.ok) return differentiateDuplicateBeatCoverage(shot, out);
+  prevCamLine = '';
   prevEnd = null;
   prevPrimary = [];
-  return differentiateDuplicateBeatCoverage(out.map((b, i) => {
-    const lockedCamera = decideLockedCamera({
-      purpose: b.primaryPurpose || 'hold',
-      emotionIntensity: b.emotionIntensity,
-      prev: prevCam,
-    });
-    prevCam = lockedCamera;
+  return differentiateDuplicateBeatCoverage(shot, out.map((b, i) => {
+    const design = designBeatCinematicCamera(shot, b, i, total, prevCamLine);
+    const lockedCamera = design.recipe.locked;
+    prevCamLine = design.line;
     const action = stripConflictingCameraLanguage(
       b.lipSync ? b.action : sanitizeSilentCharacterText(actionRespectsEndState(b.action, prevEnd)),
       lockedCamera.cameraMovement,
@@ -305,6 +299,9 @@ export function finalizeDramaDirectingBeats(
     const endState = inferBeatEndState(action, visiblePerformance, prevEnd, gazeTarget);
     prevEnd = endState;
     prevPrimary = [...(b.characters || [])];
+    const fields = applyLockedCameraToBeatFields(lockedCamera);
+    fields.camera = design.line;
+    fields.movement = design.recipe.move;
     return {
       ...b,
       action,
@@ -314,7 +311,7 @@ export function finalizeDramaDirectingBeats(
       gazeTarget,
       lockedCamera,
       endState,
-      ...applyLockedCameraToBeatFields(lockedCamera),
+      ...fields,
       continuityIn: i === 0 ? b.continuityIn : `承接：${formatEndState(out[i - 1].endState!, names)}`,
       continuityOut: formatEndState(endState, names),
     };
@@ -465,7 +462,6 @@ export function applyDramaDirectingBreakdownToShot(
   prev: DramaShot | null,
   opts?: { llm?: { answers?: Partial<DramaDirectingAnswers>; beats?: Array<Partial<DramaDirectingBeat>> }; force?: boolean },
 ): DramaShot {
-  const confirmed = Number(shot.confirmed_at) > 0;
   const fp = dramaShotDirectingFingerprint(shot);
   if (
     !opts?.force &&
@@ -476,23 +472,14 @@ export function applyDramaDirectingBreakdownToShot(
     return shot;
   }
   const breakdown = buildDramaDirectingBreakdown(session, shot, prev, opts?.llm);
-  if (confirmed) {
-    return createEmptyDramaShot({ ...shot, directing_breakdown: breakdown });
-  }
-  const timeline_events = breakdownBeatsToTimelineEvents(shot, breakdown);
-  const lead = breakdown.beats.find((b) => b.lipSync) || breakdown.beats[0];
+  // force 只刷新 directing_breakdown 展示层。有效 Timeline 禁止被
+  // breakdownBeatsToTimelineEvents / cinematic 整表覆盖（P0 / P1-A3）。
+  const existing = Array.isArray(shot.timeline_events) ? shot.timeline_events : [];
+  const keepTimeline = existing.length > 0 && !isDramaTimelineEventsThin(existing);
   return createEmptyDramaShot({
     ...shot,
     directing_breakdown: breakdown,
-    timeline_events,
-    ...(lead
-      ? {
-          size: shot.size || lead.shotType,
-          move: shot.move || lead.movement,
-          composition: shot.composition || lead.composition,
-          focal: shot.focal || String(lead.lens),
-        }
-      : {}),
+    timeline_events: keepTimeline ? existing : shot.timeline_events,
     continuity_notes:
       shot.continuity_notes ||
       [breakdown.axisNote, ...breakdown.continuityNotes, breakdown.answers.nextHandoff]

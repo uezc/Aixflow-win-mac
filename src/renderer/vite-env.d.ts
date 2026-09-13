@@ -11,6 +11,8 @@ interface ImportMetaEnv {
   readonly VITE_OSS_SCENE_CONFIG_URL?: string;
   /** 登录页微信交流群二维码图片 URL（覆盖默认 OSS 地址） */
   readonly VITE_WECHAT_GROUP_QR_URL?: string;
+  /** true=跳过分析 LLM；false=走真实 LLM。未设时见 skipLlmAnalyze 默认值 */
+  readonly VITE_SKIP_LLM_ANALYZE?: string;
 }
 
 interface ImportMeta {
@@ -41,8 +43,23 @@ interface Window {
       today_revenue_yuanbao: number;
       total_coupon_codes: number;
       pending_failed_or_timeout_tasks: number;
+      queued_tasks: number;
+      producing_tasks: number;
+      claimed_tasks: number;
+      running_tasks: number;
+      pending_tasks: number;
+      processing_tasks: number;
+      queued_video_tasks: number;
+      queued_image_tasks: number;
+      producing_video_tasks: number;
+      producing_image_tasks: number;
+      platform_video_running: number | null;
+      platform_video_max: number | null;
+      platform_image_running: number | null;
+      platform_image_max: number | null;
       tx_rows_scanned: number;
       task_rows_scanned: number;
+      task_scan_truncated: boolean;
       coupon_full_scan: boolean;
     }>;
     adminFailedTasks: () => Promise<{
@@ -260,14 +277,22 @@ interface Window {
       task_id: string;
       user_id?: string;
       status?: string;
+      execution_stage?: string;
       amount?: string | number;
       cost?: string | number;
       prompt_json?: string;
       workflow_json?: string;
       result_oss_url?: string;
       error_msg?: string;
+      error_code?: string;
       created_at?: string | number;
       updated_at?: string | number;
+      queue_entered_at?: string | number;
+      queue_position?: number | null;
+      ahead_count?: number | null;
+      queue_position_available?: boolean;
+      queue_position_complete?: boolean;
+      refunded?: boolean;
       balance?: number;
     }>;
     onNxCloudTrackTask: (

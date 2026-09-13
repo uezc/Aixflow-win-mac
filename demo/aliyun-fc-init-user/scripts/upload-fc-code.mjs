@@ -88,7 +88,7 @@ async function main() {
     accessKeySecret: ossSk,
     bucket,
     endpoint: ossEndpoint.startsWith('http') ? ossEndpoint : `https://${ossEndpoint}`,
-    timeout: 120000,
+    timeout: 300000,
   });
   await oss.put(objectKey, ZIP);
   console.log('[upload-fc] OSS 上传完成');

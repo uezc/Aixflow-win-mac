@@ -1,0 +1,22 @@
+---
+description: OTS 读取红线（防全表胖扫烧费，事故 2026-09-08）
+alwaysApply: true
+---
+
+# OTS 使用红线
+
+事故复盘：2026-09-08 旧版 Queue Timer 对 `nx_tasks` 无 `columnToGet` 全表胖扫，约 ¥18/h（当日约 ¥356）。
+
+## 强制规则
+
+1. **禁止**对 Tablestore 执行无 `columnToGet` 的 GetRange/Scan；禁止在扫表路径拉取 `prompt_json` / `workflow_json` / `provider_forward_json` 等大字段。
+2. **Queue Timer 禁止扫胖主表 `nx_tasks`**；只允许扫 `nx_task_work` / counters，且必须有 `maxScanRows`。不得默认开启 `NX_TASK_WORK_FALLBACK_ON_EMPTY=1`。
+3. 单次请求/单次 Timer：行数上限 + 禁止无界分页；Admin/运维扫表与线上同标准（必须投影列）。
+4. 改动触及 OTS 读写时，估算空闲下行；预期 **>100MB/h** 或 **>¥1/h** 必须评审。
+5. **禁止**重新部署 `nexflow-fc-2026-09-07T10-14-37-153Z` 旧胖扫包。
+
+## 允许
+
+- 按主键 `GetRow` / 索引点查
+- 带 `columnToGet` + `maxScanRows` 的瘦表扫描
+- 本地 cleanup/audit 默认 DRY_RUN，且默认投影列

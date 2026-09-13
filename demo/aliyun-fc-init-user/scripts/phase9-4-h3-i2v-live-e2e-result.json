@@ -1,0 +1,48 @@
+{
+  "phase": "9.4",
+  "conclusion": "PASS",
+  "finished_at": "2026-09-05T14:28:00.000Z",
+  "mock": {
+    "script": "scripts/test-phase9-4-h3-i2v-queue.mjs",
+    "result": "scripts/phase9-4-h3-i2v-queue-test-result.json",
+    "conclusion": "PASS"
+  },
+  "h3_i2v_live": {
+    "aixflow_task_id": "adb81f9d-d8a1-4e3f-bb0f-2ceb2ae93f90",
+    "runninghub_task_id": "2096224156394934274",
+    "submit_region": "cn",
+    "poll_region": "cn",
+    "billing_sku": "minimax-h3-i2v-720p-10s",
+    "quoted_cost": 9,
+    "actual_charge": 9,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "rh_file": "openapi/86c58c2d31cca00b3bc8052ad8a16cd787682fac3959568544355b9582aee1df.jpg",
+    "path": "/run/ai-app/2085687129061019649",
+    "instanceType": "plus",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p82-audio_njzov_1788614066.mp4",
+    "conclusion": "PASS"
+  },
+  "regression": {
+    "h3_t2v": "PASS",
+    "ltx_t2v": "PASS",
+    "invalid_forward": "PASS",
+    "duplicate_charge": "PASS",
+    "duplicate_refund": "PASS",
+    "rhart_t2v": "BLOCKED_EXTERNAL",
+    "rhart_i2v": "BLOCKED_EXTERNAL",
+    "rhart_blocker": {
+      "errorCode": "605",
+      "errorMessage": "Your balance is insufficient. Please top up your account.",
+      "evidence": "scripts/smoke-rhart-video-x-t2v-ai.mjs direct submit (bypasses AIXFLOW queue) returns empty taskId + 605",
+      "aixflow_mapping": "PROVIDER_NO_TASK_ID → refund (correct; charge status refunded on failed rhart tasks)",
+      "note": "Not caused by Phase 9.4 H3 I2V adapter; LTX on .ai still PASS in same window"
+    }
+  },
+  "unified_queue_core_modified": false,
+  "fc_modified": false,
+  "deployment": "skipped — Electron client only"
+}

@@ -1,0 +1,75 @@
+{
+  "started_at": "2026-09-06T09:38:55.075Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "live_a_t2v": {
+    "ok": true,
+    "external": false,
+    "aixflow_task_id": "3067ce65-8bc9-420d-9e74-c42dcd4bbbef",
+    "runninghub_task_id": "2096533722932580354",
+    "region": "cn",
+    "path": "/rhart-video/sparkvideo-2.0-mini/multimodal-video",
+    "billing_sku": "seedance-2-0-mini-720p-5s",
+    "image_count": 0,
+    "audio_count": 0,
+    "conversion_slots": [
+      "all"
+    ],
+    "quoted_cost": 36,
+    "actual_charge": 36,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/8e596a62-a030-4c85-971e-2a4cd63360e8.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 36,
+    "error_code": "",
+    "error_message": "",
+    "expect_sku": "seedance-2-0-mini-720p-5s",
+    "expect_charge": 36,
+    "error": null
+  },
+  "live_b_image_audio": {
+    "ok": true,
+    "external": false,
+    "aixflow_task_id": "9e092d38-915b-4dbf-8310-1564f4320db0",
+    "runninghub_task_id": "2096534395195691010",
+    "region": "cn",
+    "path": "/rhart-video/sparkvideo-2.0-mini/multimodal-video",
+    "billing_sku": "seedance-2-0-mini-720p-5s",
+    "image_count": 1,
+    "audio_count": 1,
+    "conversion_slots": [
+      "all"
+    ],
+    "quoted_cost": 36,
+    "actual_charge": 36,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/79b4ab4d-0151-48c7-9ede-13bf50a7a3cd.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 36,
+    "error_code": "",
+    "error_message": "",
+    "expect_sku": "seedance-2-0-mini-720p-5s",
+    "expect_charge": 36,
+    "error": null,
+    "conversion_slots_ok": true
+  },
+  "live_fail_refund": {
+    "ok": true,
+    "status": "failed",
+    "bal0": 500,
+    "bal1": 500
+  },
+  "external_blocker": null,
+  "ots_prices": {
+    "seedance-2-0-mini-720p-5s": 36
+  },
+  "finished_at": "2026-09-06T09:48:26.164Z"
+}

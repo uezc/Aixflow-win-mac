@@ -25,19 +25,20 @@ export const RHART_VIDEO_UPSCALER_CNY_PER_SEC: Record<RhartVideoUpscalerResoluti
   '4k': 0.84,
 };
 
-/** 最短计费时长（秒） */
+/** @deprecated 禁止「缺时长按 5 秒」；保留常量仅作文档对照，计费不再使用 */
 export const RHART_VIDEO_UPSCALER_MIN_BILLING_SEC = 5;
 
 /**
- * 计费秒数：先与播放器时钟对齐（floor 秒，如 6.2→6 / 显示 0:06），再不少于 5 秒；未知按 5 秒。
- * （RH 文档为 ceil；产品侧与画布进度条时长展示对齐，避免 6.x 被算成 7。）
+ * 计费秒数：与播放器时钟对齐（floor 秒）。
+ * 缺时长 / 不足 1 秒 → null（禁止任何秒数保底，调用方必须拒跑）。
  */
-export function normalizeRhartVideoUpscalerBillingSec(durationSec: unknown): number {
+export function normalizeRhartVideoUpscalerBillingSec(durationSec: unknown): number | null {
   const n = Number(durationSec);
-  if (!Number.isFinite(n) || n <= 0) return RHART_VIDEO_UPSCALER_MIN_BILLING_SEC;
+  if (!Number.isFinite(n) || n <= 0) return null;
   const capped = Math.min(n, RHART_VIDEO_UPSCALER_MAX_DURATION_SEC);
   const aligned = Math.max(0, Math.floor(capped + 1e-6));
-  return Math.max(RHART_VIDEO_UPSCALER_MIN_BILLING_SEC, aligned);
+  if (aligned < 1) return null;
+  return aligned;
 }
 
 export function normalizeRhartVideoUpscalerResolution(

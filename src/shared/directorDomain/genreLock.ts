@@ -135,37 +135,27 @@ export function resolveDramaGenreLock(input: {
   return { kind, ...base };
 }
 
-/** 生图用：题材约束 + 已有风格提示 */
+/**
+ * 生图用风格提示：不再注入题材 imageConstraint 光色锁（用户要求提示词不对题材做限制）。
+ * 只保留用户选择的风格预设/自定义风格（extraHints）。
+ */
 export function composeDramaImageStyleHint(
-  genreLock: DramaGenreLock,
+  _genreLock: DramaGenreLock,
   ...extraHints: Array<string | undefined | null>
 ): string {
-  return [genreLock.imageConstraint, ...extraHints]
+  return extraHints
     .map((s) => String(s || '').trim())
     .filter(Boolean)
     .join('；');
 }
 
-/** 角色 prompt 补题材服装锁（已有则不重复堆） */
+/**
+ * 角色 prompt：不做题材服装锁自动追加（用户要求提示词按填写内容，不对题材做限制）。
+ * 原样返回用户描述，仅做空值 trim。
+ */
 export function ensureDramaCharacterPromptGenreLock(
   prompt: string,
-  genreLock: DramaGenreLock,
+  _genreLock: DramaGenreLock,
 ): string {
-  const p = String(prompt || '').trim();
-  if (!genreLock.costumeAppend) return p;
-  if (!p) return genreLock.costumeAppend;
-  if (genreLock.kind === 'costume_xuanhuan' || genreLock.kind === 'wuxia' || genreLock.kind === 'historical') {
-    if (/古装|汉服|仙侠|道袍|襦裙|武侠|劲装/.test(p) && !/霓虹|赛博|西装|夹克|牛仔裤/.test(p)) {
-      return p;
-    }
-    // 去掉明显现代冲突词再追加锁
-    const cleaned = p
-      .replace(/赛博朋克|霓虹夜色|霓虹冷感|霓虹/g, '')
-      .replace(/现代西装|西装|夹克|牛仔裤|运动鞋/g, '')
-      .replace(/[，,]{2,}/g, '，')
-      .trim();
-    return `${cleaned}，${genreLock.costumeAppend}`;
-  }
-  if (p.includes(genreLock.costumeAppend)) return p;
-  return `${p}，${genreLock.costumeAppend}`;
+  return String(prompt || '').trim();
 }

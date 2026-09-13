@@ -1,0 +1,48 @@
+{
+  "region": "ai",
+  "api_base": "https://www.runninghub.ai/openapi/v2",
+  "final_url": "https://www.runninghub.ai/openapi/v2/rhart-video-s/text-to-video",
+  "api_key_present": true,
+  "request_body": {
+    "prompt": "Phase81 RH AI-endpoint diagnostic: soft daylight forest path, static camera.",
+    "duration": "10",
+    "aspectRatio": "16:9"
+  },
+  "response": {
+    "http_status": 200,
+    "content_type": "application/json",
+    "raw_body": "{\"taskId\":\"2096068387561435138\",\"status\":\"QUEUED\",\"errorCode\":\"\",\"errorMessage\":\"\",\"results\":null,\"clientId\":\"\",\"promptTips\":\"\",\"failedReason\":{},\"usage\":null,\"parentTaskId\":null,\"taskUsageList\":null}",
+    "json": {
+      "taskId": "2096068387561435138",
+      "status": "QUEUED",
+      "errorCode": "",
+      "errorMessage": "",
+      "results": null,
+      "clientId": "",
+      "promptTips": "",
+      "failedReason": {},
+      "usage": null,
+      "parentTaskId": null,
+      "taskUsageList": null
+    },
+    "parsed_taskId": "2096068387561435138",
+    "created_task": true
+  },
+  "query": {
+    "http_status": 200,
+    "raw_body": "{\"taskId\":\"2096068387561435138\",\"status\":\"RUNNING\",\"errorCode\":\"\",\"errorMessage\":\"\",\"results\":null,\"clientId\":\"\",\"promptTips\":\"\",\"failedReason\":{},\"usage\":null,\"parentTaskId\":null,\"taskUsageList\":null}",
+    "json": {
+      "taskId": "2096068387561435138",
+      "status": "RUNNING",
+      "errorCode": "",
+      "errorMessage": "",
+      "results": null,
+      "clientId": "",
+      "promptTips": "",
+      "failedReason": {},
+      "usage": null,
+      "parentTaskId": null,
+      "taskUsageList": null
+    }
+  }
+}

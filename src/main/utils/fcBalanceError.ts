@@ -3,7 +3,7 @@
  */
 import axios from 'axios';
 
-const DEFAULT_BALANCE_MSG = '元宝不足请充值';
+const DEFAULT_BALANCE_MSG = '元宝不足，请充值';
 const REFUND_MSG = '生成失败，元宝已退回账户';
 
 /** 兼容 axios 与 fcForwardTask 映射后仍带 response 的 Error */

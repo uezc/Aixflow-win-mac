@@ -1,0 +1,215 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "image_video_720p_8s_shape",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-720p-8s",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "sku_720p_5s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-720p-5s",
+        "expect": 12
+      }
+    },
+    {
+      "name": "sku_720p_8s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-720p-8s",
+        "expect": 15
+      }
+    },
+    {
+      "name": "sku_720p_10s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-720p-10s",
+        "expect": 21
+      }
+    },
+    {
+      "name": "sku_720p_15s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-720p-15s",
+        "expect": 31.5
+      }
+    },
+    {
+      "name": "sku_1080p_5s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-1080p-5s",
+        "expect": 18
+      }
+    },
+    {
+      "name": "sku_1080p_8s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-1080p-8s",
+        "expect": 22.5
+      }
+    },
+    {
+      "name": "sku_1080p_10s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-1080p-10s",
+        "expect": 36
+      }
+    },
+    {
+      "name": "sku_1080p_15s",
+      "ok": true,
+      "detail": {
+        "sku": "wan-animate-1080p-15s",
+        "expect": 54
+      }
+    },
+    {
+      "name": "gate_accept_1img_1vid",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_0_image",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_0_video",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_2_images",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_audio",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_t2v",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_reject_animate2",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "image_preprocess_https_required",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "video_preprocess_https_required",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "create_forward_persisted",
+      "ok": true,
+      "detail": {
+        "status": "queued"
+      }
+    },
+    {
+      "name": "claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "charge",
+      "ok": true,
+      "detail": {
+        "delta": 15,
+        "quoted": 15
+      }
+    },
+    {
+      "name": "dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "success_release",
+      "ok": true,
+      "detail": {
+        "status": "success"
+      }
+    },
+    {
+      "name": "duplicate_dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "duplicate_charge",
+      "ok": true,
+      "detail": {
+        "bal2": 4985,
+        "bal3": 4985
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 485,
+        "bal1": 500
+      }
+    },
+    {
+      "name": "duplicate_refund",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "gate_wan_wired",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "queue_before_direct",
+      "ok": true,
+      "detail": {
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "mini_fast_untouched_adapters",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {}
+    }
+  ],
+  "rh_submit_calls": 2
+}

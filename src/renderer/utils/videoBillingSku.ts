@@ -2,6 +2,8 @@
  * NEXFLOW 视频复合计费 Key（与主进程 src/main/utils/videoBillingSku.ts 一致）V2.3
  */
 
+import { normalizeMinimaxH3Resolution } from '../../common/minimaxH3Resolution.js';
+
 function lc(s: string): string {
   return String(s || '').trim().toLowerCase();
 }
@@ -546,24 +548,24 @@ export function buildVideoBillingModelIdCore(baseModel: string, input: Record<st
   }
 
   if (m === 'minimax-h3-t2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
     return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
   }
   if (m === 'minimax-h3-i2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
     return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
   }
-  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  // 全能参考：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-multi-{480p|720p}-{6|10|15|20}s）
   if (m === 'minimax-h3-multi') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3DurationSec(input.durationMinimaxH3 as string | number | undefined, 10);
     return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
   }
-  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  // 口型同步：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-audio-{480p|720p}-{6|10|15|20}s；已删 5s）
   if (m === 'minimax-h3-audio') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(input.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3AudioDurationSec(
       input.durationMinimaxH3 as string | number | undefined,
       20,
@@ -627,21 +629,25 @@ export function buildVideoBillingModelId(baseModel: string, input: Record<string
   return compositeKey;
 }
 
-export function getVideoBillingQuantity(baseModel: string, input: Record<string, unknown>): number {
-  const m = String(baseModel || '').trim();
-  // 视频超分：按秒基价；Quantity = max(floor(时长), 5)，与播放器时钟对齐
+export function getVideoBillingQuantity(baseModel: string, input: Record<string, unknown>): number | null {
+  const m = String(baseModel || '')
+    .trim()
+    .toLowerCase();
+  // 视频超分：按秒基价；Quantity = floor(时长)；缺时长 / <1s → null（禁止秒数保底）
   if (m === 'rhart-video-upscaler') {
     const raw =
       input.mediaDurationSec ?? input.durationRhartVideoUpscaler ?? input.duration ?? 0;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return 5;
-    return Math.max(5, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const aligned = Math.max(0, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+    if (aligned < 1) return null;
+    return aligned;
   }
-  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))，最长 10 分钟
+  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))；缺时长 → null
   if (m === 'wan-animate-2') {
     const raw = input.mediaDurationSec ?? input.duration ?? 0;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return 1;
+    if (!Number.isFinite(n) || n <= 0) return null;
     return Math.max(1, Math.ceil(Math.min(n, 10 * 60) - 1e-9));
   }
   const sku = buildVideoBillingModelIdCore(baseModel, input);

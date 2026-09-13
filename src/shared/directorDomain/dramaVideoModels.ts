@@ -22,7 +22,7 @@ const READY: DramaSupportedVideoModelOption[] = [
     id: 'minimax-h3-multi',
     label: 'MiniMax H3 全能参考',
     requiresShotAudio: false,
-    title: '最多 9 张参考图 + 各角色参考音（音色身份）；720P',
+    title: '最多 9 张参考图 + 各角色参考音（音色身份）；480P/720P',
   },
   {
     id: 'minimax-h3-audio',

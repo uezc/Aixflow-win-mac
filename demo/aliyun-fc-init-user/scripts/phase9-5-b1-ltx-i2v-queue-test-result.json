@@ -1,0 +1,198 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "rhRegion": "cn",
+        "path": "/run/ai-app/2034955204851933186",
+        "img": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/p93",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "duration_5s",
+      "ok": true,
+      "detail": {
+        "field": "5",
+        "sku": "ltx-2-3-i2v-720-5s"
+      }
+    },
+    {
+      "name": "duration_10s",
+      "ok": true,
+      "detail": {
+        "field": "10",
+        "sku": "ltx-2-3-i2v-720-10s"
+      }
+    },
+    {
+      "name": "duration_15s",
+      "ok": true,
+      "detail": {
+        "field": "15",
+        "sku": "ltx-2-3-i2v-720-15s"
+      }
+    },
+    {
+      "name": "resolution_720",
+      "ok": true,
+      "detail": {
+        "field": "720",
+        "sku": "ltx-2-3-i2v-720-10s"
+      }
+    },
+    {
+      "name": "resolution_1280",
+      "ok": true,
+      "detail": {
+        "field": "1280",
+        "sku": "ltx-2-3-i2v-1280-10s"
+      }
+    },
+    {
+      "name": "resolution_1920",
+      "ok": true,
+      "detail": {
+        "field": "1920",
+        "sku": "ltx-2-3-i2v-1920-10s"
+      }
+    },
+    {
+      "name": "image_must_be_oss_https",
+      "ok": true,
+      "detail": {
+        "rejectedRh": true,
+        "rejectedLocal": true
+      }
+    },
+    {
+      "name": "test_create_queued",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "rhRegion": "cn"
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 8
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_ltxi2v_single",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test_poll_cn",
+      "ok": true,
+      "detail": {
+        "seen": "cn",
+        "status": "success"
+      }
+    },
+    {
+      "name": "test_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "url": "https://example.com/ltx-i2v-golden.mp4",
+        "held": false
+      }
+    },
+    {
+      "name": "dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 8
+      }
+    },
+    {
+      "name": "dup_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "submit_fail_refund",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500
+      }
+    },
+    {
+      "name": "lease_recovery",
+      "ok": true,
+      "detail": {
+        "before": "claimed",
+        "after": "queued"
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {
+        "on": true
+      }
+    },
+    {
+      "name": "gate_off_direct_fallback",
+      "ok": true,
+      "detail": {
+        "off": false
+      }
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasEarly": true,
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {
+        "good": true,
+        "bad": false
+      }
+    },
+    {
+      "name": "regression_paths",
+      "ok": true,
+      "detail": {
+        "i2v": "/run/ai-app/2034955204851933186",
+        "t2v": "/run/ai-app/2034994243982336001"
+      }
+    }
+  ],
+  "rh_submit_calls": 1
+}

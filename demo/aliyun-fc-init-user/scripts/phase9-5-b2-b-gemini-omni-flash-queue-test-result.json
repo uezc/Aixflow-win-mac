@@ -1,0 +1,234 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "quoted_sku": "gemini-omni-flash-720p-10s",
+  "quoted_cost": 44,
+  "tests": [
+    {
+      "name": "ots_sku_all_9",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "prices": {
+          "gemini-omni-flash-720p-6s": 27,
+          "gemini-omni-flash-720p-8s": 35,
+          "gemini-omni-flash-720p-10s": 44,
+          "gemini-omni-flash-1080p-6s": 31,
+          "gemini-omni-flash-1080p-8s": 41,
+          "gemini-omni-flash-1080p-10s": 51,
+          "gemini-omni-flash-4k-6s": 42,
+          "gemini-omni-flash-4k-8s": 56,
+          "gemini-omni-flash-4k-10s": 70
+        }
+      }
+    },
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "rhRegion": "ai",
+        "path": "/gemini-omni-flash/image-to-video",
+        "durationType": "string",
+        "pick": "ai",
+        "bodyKeys": [
+          "aspectRatio",
+          "duration",
+          "imageUrls",
+          "prompt",
+          "resolution"
+        ]
+      }
+    },
+    {
+      "name": "mock1_1img_create",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "n": 1,
+        "durationType": "string"
+      }
+    },
+    {
+      "name": "mock1_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "mock1_charge",
+      "ok": true,
+      "detail": {
+        "delta": 44,
+        "quoted": 44
+      }
+    },
+    {
+      "name": "mock1_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_gof_1img",
+        "submits": 1
+      }
+    },
+    {
+      "name": "mock1_poll_ai",
+      "ok": true,
+      "detail": {
+        "seen": "ai",
+        "status": "success"
+      }
+    },
+    {
+      "name": "mock1_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "url": "https://example.com/gemini-flash-1.mp4",
+        "held": false
+      }
+    },
+    {
+      "name": "mock6_dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "mock2_3img_forward",
+      "ok": true,
+      "detail": {
+        "n": 3,
+        "keys": [
+          "prompt",
+          "imageUrls",
+          "duration",
+          "resolution",
+          "aspectRatio"
+        ]
+      }
+    },
+    {
+      "name": "mock2_3img_create_stored",
+      "ok": true,
+      "detail": {
+        "n": 3
+      }
+    },
+    {
+      "name": "mock2_3img_success",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "delta": 44
+      }
+    },
+    {
+      "name": "mock3_2img_reject_no_create",
+      "ok": true,
+      "detail": {
+        "rejected": true,
+        "errMsg": "only 1 or 3 images allowed, got 2",
+        "creates": 0
+      }
+    },
+    {
+      "name": "mock4_preprocess_fail_no_create",
+      "ok": true,
+      "detail": {
+        "rejectedEmpty": true,
+        "ossBeforeQueueCreate": true
+      }
+    },
+    {
+      "name": "mock5_dispatch_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500,
+        "charge": "charged",
+        "charge2": "refunded",
+        "held": false
+      }
+    },
+    {
+      "name": "mock7_dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 44
+      }
+    },
+    {
+      "name": "mock8_dup_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true
+    },
+    {
+      "name": "gate_on_3img",
+      "ok": true
+    },
+    {
+      "name": "gate_off_direct_fallback",
+      "ok": true
+    },
+    {
+      "name": "gate_reject_2img",
+      "ok": true
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "ui_gate_includes_gemini",
+      "ok": true
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {
+        "good": true,
+        "bad": false
+      }
+    },
+    {
+      "name": "duration_string_6",
+      "ok": true,
+      "detail": {
+        "type": "string",
+        "sku": "gemini-omni-flash-720p-6s"
+      }
+    },
+    {
+      "name": "duration_string_8",
+      "ok": true,
+      "detail": {
+        "type": "string",
+        "sku": "gemini-omni-flash-720p-8s"
+      }
+    },
+    {
+      "name": "duration_string_10",
+      "ok": true,
+      "detail": {
+        "type": "string",
+        "sku": "gemini-omni-flash-720p-10s"
+      }
+    }
+  ],
+  "rh_submit_calls": 2,
+  "creates": 4
+}

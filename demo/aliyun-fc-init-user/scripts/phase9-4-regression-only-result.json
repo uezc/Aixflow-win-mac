@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-09-05T13:55:09.890Z",
+  "rhart_t2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID"
+  },
+  "rhart_i2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID"
+  },
+  "h3_t2v": {
+    "ok": true,
+    "status": "success",
+    "pid": "2096236630833848322",
+    "region": "cn",
+    "err": ""
+  },
+  "ltx": {
+    "ok": true,
+    "status": "success",
+    "pid": "2096238457471922178",
+    "region": "ai",
+    "err": ""
+  },
+  "conclusion": "FAIL",
+  "finished_at": "2026-09-05T14:09:54.233Z"
+}

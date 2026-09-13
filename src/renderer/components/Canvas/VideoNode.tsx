@@ -1775,8 +1775,8 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
       raw.includes('remain quota');
     const alertText = isQuota
       ? locale === 'en'
-        ? 'Insufficient balance\n\nYour account balance is not enough for this operation. Please top up in Settings and try again.'
-        : '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。'
+        ? 'Insufficient credits. Please recharge.'
+        : '元宝不足，请充值'
       : `${wc.genFailedTitle}\n\n${failedGenerationDetailWithRefund(facing, locale)}`;
     showAlert(alertText);
     onDataChange?.(id, { errorMessage: undefined, progress: 0, progressMessage: '' });
@@ -3805,8 +3805,12 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
         showAlert(vt.videoUpscaleTooLong);
         return;
       }
+      if (!(smartMattingDurationSec > 0)) {
+        showAlert(vt.videoUpscaleNeedDuration);
+        return;
+      }
       const targetResolution = normalizeRhartVideoUpscalerResolution(rawRes);
-      const mediaDurationSec = smartMattingDurationSec > 0 ? smartMattingDurationSec : 0;
+      const mediaDurationSec = smartMattingDurationSec;
       setUpscaleMenuOpen(false);
       clearUpscaleMenuLeaveTimer();
       setUpscaling(true);
@@ -6080,7 +6084,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                   >
                     <div className={`mb-1 px-1 text-[10px] leading-tight ${isDarkMode ? 'text-white/65' : 'text-gray-500'}`}>
                       {upscaleClockLabel
-                        ? vt.videoUpscaleDurationLine(upscaleClockLabel, String(upscaleBillableSec || 5))
+                        ? vt.videoUpscaleDurationLine(upscaleClockLabel, String(upscaleBillableSec || 0))
                         : vt.videoUpscaleDurationUnknown}
                     </div>
                     <div className="flex flex-col gap-0.5">
@@ -6100,7 +6104,7 @@ const VideoNodeComponent: React.FC<VideoNodeProps> = (props) => {
                           <span className="uppercase">{res}</span>
                           <span className={isDarkMode ? 'text-amber-200' : 'text-amber-700'}>
                             {yuanbao != null
-                              ? vt.videoUpscalePriceLabel(String(yuanbao), String(upscaleBillableSec || 5))
+                              ? vt.videoUpscalePriceLabel(String(yuanbao), String(upscaleBillableSec || 0))
                               : vt.videoUpscalePriceFallback}
                           </span>
                         </button>

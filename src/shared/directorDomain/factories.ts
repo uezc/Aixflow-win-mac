@@ -10,6 +10,17 @@ import {
   createEmptyDramaVisualDNA,
 } from './visualDna.js';
 import { applyVisualStylePreset, resolveVisualStylePresetId } from './visualStylePresets.js';
+import {
+  composeDramaSystemVoiceSampleText,
+  composeDramaSystemVisualPrompt,
+  dramaSessionNeedsSystemVoice,
+  dropDramaSystemVoice,
+  DRAMA_SYSTEM_SPEAKER_ID,
+  DRAMA_SYSTEM_VOICE_TIMBRE,
+  isDramaSystemVoiceId,
+  resolveDramaSystemVoice,
+  sanitizeDramaCharacterIds,
+} from './voiceEntity.js';
 import type {
   DramaAudioEvent,
   DramaCharacter,
@@ -43,6 +54,7 @@ import type {
   DramaAssetReferenceImage,
   DramaCharacterCostume,
 } from './types.js';
+import { normalizeDramaEmotion } from './shotPlanning.js';
 import {
   DIRECTOR_DOMAIN_SCHEMA_VERSION,
   DIRECTOR_DOMAIN_CONTRACT_VERSION,
@@ -263,14 +275,20 @@ export function createEmptyDramaShotCastMember(
     character_id: String(partial?.character_id || '').trim(),
     screen_position: String(partial?.screen_position || '').trim(),
     action: String(partial?.action || '').trim(),
-    emotion: String(partial?.emotion || '').trim(),
+    emotion: normalizeDramaEmotion(partial?.emotion),
     performance: String(partial?.performance || '').trim(),
     dialogue_ids: Array.isArray(partial?.dialogue_ids)
       ? partial!.dialogue_ids.map(String).filter(Boolean)
       : [],
     voice_id: String(partial?.voice_id || '').trim(),
+    ...(partial?.expression !== undefined
+      ? { expression: String(partial.expression || '').trim() }
+      : {}),
     ...(partial?.temporary_state !== undefined
       ? { temporary_state: String(partial.temporary_state || '').trim() }
+      : {}),
+    ...(partial?.costume_id
+      ? { costume_id: String(partial.costume_id).trim() }
       : {}),
   };
 }
@@ -451,6 +469,8 @@ export function createEmptyDramaVoice(partial?: Partial<DramaVoice>): DramaVoice
     reference_audio: String(partial?.identity?.reference_audio || sample).trim(),
   });
   const status = partial?.status || (sample ? 'ready' : 'pending');
+  const imageUrl = String(partial?.imageUrl || '').trim();
+  const imagePrompt = String(partial?.image_prompt || '').trim();
   return {
     voice_id: partial?.voice_id || dramaNewId('voice'),
     character_id: String(partial?.character_id || '').trim(),
@@ -463,6 +483,9 @@ export function createEmptyDramaVoice(partial?: Partial<DramaVoice>): DramaVoice
     language_style: String(partial?.language_style || '').trim(),
     emotion_range: String(partial?.emotion_range || '').trim(),
     identity,
+    ...(imageUrl ? { imageUrl } : {}),
+    ...(imagePrompt ? { image_prompt: imagePrompt } : {}),
+    ...(partial?.image_status !== undefined ? { image_status: partial.image_status } : imageUrl ? { image_status: 'ready' as const } : {}),
     status,
     asset_version: Number(partial?.asset_version) > 0 ? Number(partial!.asset_version) : 1,
     ...(partial?.asset_version_label !== undefined
@@ -472,6 +495,71 @@ export function createEmptyDramaVoice(partial?: Partial<DramaVoice>): DramaVoice
     ...(partial?.needs_review !== undefined ? { needs_review: !!partial.needs_review } : {}),
     ...(partial?.error !== undefined ? { error: partial.error } : {}),
   };
+}
+
+export function createDramaSystemVoice(partial?: Partial<DramaVoice>): DramaVoice {
+  const timbre = String(partial?.timbre || DRAMA_SYSTEM_VOICE_TIMBRE).trim();
+  return createEmptyDramaVoice({
+    ...partial,
+    character_id: DRAMA_SYSTEM_SPEAKER_ID,
+    timbre,
+    voiceStyle: String(partial?.voiceStyle || '系统声音').trim(),
+    sample_text: composeDramaSystemVoiceSampleText(partial?.sample_text),
+    image_prompt: composeDramaSystemVisualPrompt(partial?.image_prompt),
+    language: String(partial?.language || 'zh').trim() || 'zh',
+  });
+}
+
+/** 全剧一条系统音实体。不是 Character，不进 character_ids。 */
+export function ensureDramaSystemVoice(session: DramaDirectorSession): DramaDirectorSession {
+  const voices = session?.bible?.voices || [];
+  const existing = resolveDramaSystemVoice(session);
+  if (existing) {
+    const cid = String(existing.character_id || '').trim();
+    const sample = String(existing.sample_text || '').trim();
+    const imagePrompt = String(existing.image_prompt || '').trim();
+    const needPin = !isDramaSystemVoiceId(cid);
+    const needText = !sample;
+    const needImagePrompt = !imagePrompt;
+    if (!needPin && !needText && !needImagePrompt) return session;
+    return {
+      ...session,
+      bible: {
+        ...session.bible,
+        voices: voices.map((v) =>
+          v.voice_id === existing.voice_id
+            ? {
+                ...v,
+                character_id: DRAMA_SYSTEM_SPEAKER_ID,
+                timbre: String(v.timbre || DRAMA_SYSTEM_VOICE_TIMBRE).trim(),
+                voiceStyle: String(v.voiceStyle || '系统声音').trim(),
+                sample_text: needText ? composeDramaSystemVoiceSampleText(v.sample_text) : v.sample_text,
+                image_prompt: needImagePrompt
+                  ? composeDramaSystemVisualPrompt(v.image_prompt)
+                  : v.image_prompt,
+              }
+            : v,
+        ),
+      },
+    };
+  }
+  return {
+    ...session,
+    bible: {
+      ...session.bible,
+      voices: [...voices, createDramaSystemVoice()],
+    },
+  };
+}
+
+/**
+ * 剧本有系统播报才保留/创建系统提示音；没有则移除，避免空壳角色卡。
+ */
+export function syncDramaSystemVoice(session: DramaDirectorSession): DramaDirectorSession {
+  if (dramaSessionNeedsSystemVoice(session)) {
+    return ensureDramaSystemVoice(session);
+  }
+  return dropDramaSystemVoice(session);
 }
 
 export function createEmptyDramaBible(partial?: Partial<DramaProjectBible>): DramaProjectBible {
@@ -620,7 +708,11 @@ function cloneDramaDirectingBreakdown(
   };
 }
 
-export function createEmptyDramaShot(partial?: Partial<DramaShot>): DramaShot {
+export function createEmptyDramaShot(
+  partial?: Omit<Partial<DramaShot>, 'dialogue'> & {
+    dialogue?: Array<Partial<DramaDialogueLine>>;
+  },
+): DramaShot {
   const scene_beat_id = String(partial?.scene_beat_id || partial?.beat_id || '').trim();
   const beat_id = String(partial?.beat_id || scene_beat_id).trim();
   const final_prompt = String(partial?.final_prompt || '').trim();
@@ -633,9 +725,9 @@ export function createEmptyDramaShot(partial?: Partial<DramaShot>): DramaShot {
   let cast = Array.isArray(partial?.cast)
     ? partial!.cast.map((c) => createEmptyDramaShotCastMember(c))
     : [];
-  const character_ids = Array.isArray(partial?.character_ids)
-    ? partial!.character_ids.map(String)
-    : [];
+  const character_ids = sanitizeDramaCharacterIds(
+    Array.isArray(partial?.character_ids) ? partial!.character_ids.map(String) : [],
+  );
   if (!cast.length && character_ids.length) {
     cast = character_ids.map((id) =>
       createEmptyDramaShotCastMember({
@@ -682,6 +774,9 @@ export function createEmptyDramaShot(partial?: Partial<DramaShot>): DramaShot {
       ? partial!.visual_event_ids.map(String).filter(Boolean)
       : [],
     character_ids,
+    removed_character_ids: Array.isArray(partial?.removed_character_ids)
+      ? partial!.removed_character_ids.map(String).filter(Boolean)
+      : [],
     cast,
     scene_asset_id: String(partial?.scene_asset_id || '').trim(),
     prop_ids: Array.isArray(partial?.prop_ids) ? partial!.prop_ids.map(String) : [],
@@ -725,6 +820,9 @@ export function createEmptyDramaShot(partial?: Partial<DramaShot>): DramaShot {
     model_params:
       partial?.model_params && typeof partial.model_params === 'object' ? { ...partial.model_params } : {},
     storyboard_image_url: String(partial?.storyboard_image_url || '').trim(),
+    ...(partial?.use_storyboard_as_video_ref !== undefined
+      ? { use_storyboard_as_video_ref: partial.use_storyboard_as_video_ref !== false }
+      : {}),
     video_url: String(partial?.video_url || '').trim(),
     video_status: String(partial?.video_status || '').trim(),
     video_node_id: String(partial?.video_node_id || '').trim(),
@@ -746,9 +844,9 @@ export function createEmptyDramaShot(partial?: Partial<DramaShot>): DramaShot {
           event_id: String(e?.event_id || '').trim(),
           start_sec: Number(e?.start_sec) || 0,
           end_sec: Number(e?.end_sec) || 0,
-          character_ids: Array.isArray(e?.character_ids)
-            ? e!.character_ids.map(String)
-            : [],
+          character_ids: sanitizeDramaCharacterIds(
+            Array.isArray(e?.character_ids) ? e!.character_ids.map(String) : [],
+          ),
           visual_action: String(e?.visual_action || '').trim(),
           character_state: String(e?.character_state || '').trim(),
           position: String(e?.position || '').trim(),
@@ -835,6 +933,20 @@ export function createEmptyDramaNodeMeta(
     imageModel: String(partial?.imageModel || 'rhart-image-g-2').trim(),
     videoBatchModel: String(partial?.videoBatchModel || 'minimax-h3-multi').trim(),
     videoBatchLipsyncModel: String(partial?.videoBatchLipsyncModel || 'minimax-h3-audio').trim(),
+    videoBatchResolution: (() => {
+      const r = String(partial?.videoBatchResolution || '').trim().toLowerCase();
+      if (r === '480p' || r === '480' || r === '0.4') return '480p';
+      return '720p';
+    })(),
+    videoBatchLipsyncResolution: (() => {
+      const r = String(
+        partial?.videoBatchLipsyncResolution || partial?.videoBatchResolution || '',
+      )
+        .trim()
+        .toLowerCase();
+      if (r === '480p' || r === '480' || r === '0.4') return '480p';
+      return '720p';
+    })(),
     stylePresetId: String(partial?.stylePresetId || 'street_crew').trim(),
     globalStyle: String(partial?.globalStyle || '').trim(),
     styleReferenceImageUrl: String(partial?.styleReferenceImageUrl || '').trim(),
@@ -860,7 +972,7 @@ export function createEmptyDramaNodeMeta(
         .trim()
         .toLowerCase();
       if (s === 'fast' || s === 'slow' || s === 'standard') return s;
-      return 'standard';
+      return 'fast';
     })(),
     durationTotalCapSec: (() => {
       const n = Number(partial?.durationTotalCapSec);
@@ -872,7 +984,11 @@ export function createEmptyDramaNodeMeta(
 }
 
 export function createEmptyDramaSession(
-  partial?: Partial<DramaDirectorSession> & { episode_plans?: unknown },
+  partial?: Omit<Partial<DramaDirectorSession>, 'bible' | 'meta'> & {
+    bible?: Partial<DramaProjectBible>;
+    meta?: Partial<DramaDirectorNodeMeta>;
+    episode_plans?: unknown;
+  },
 ): DramaDirectorSession {
   const episodes = normalizeDramaEpisodes(partial?.episodes);
   const active =

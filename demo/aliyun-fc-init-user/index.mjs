@@ -157,7 +157,7 @@ function extractModelIdFromForward(path, bodyObj) {
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 /** 单用户每分钟最多 run-task 次数。故事+分批剧本远超 5 次，过低会误伤成 RATE_LIMIT_EXCEEDED */
 const RATE_LIMIT_MAX = Math.max(5, parseInt(process.env.NX_RATE_LIMIT_MAX || '20', 10) || 20);
-const BLTCY_CHAT_URL = 'https://api.bltcy.ai/v1/chat/completions';
+const BLTCY_CHAT_URL = `${(process.env.BLTCY_API_BASE || 'https://api.apilio.ai').replace(/\/$/, '')}/v1/chat/completions`;
 const API_TIMEOUT_MS = 180000;
 const ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '30m';
 const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '7d';
@@ -472,6 +472,94 @@ function getHeader(reqHeaders, name) {
   return undefined;
 }
 
+/**
+ * FC Timer / 定时触发事件（非 HTTP）。
+ * 事件形如：{ triggerTime, triggerName, payload }
+ * 用于云端自治跑 Queue Pipeline，不依赖客户端/本机。
+ */
+function parseFcTimerEvent(req) {
+  let event = null;
+  try {
+    if (req && typeof req === 'object' && !Buffer.isBuffer(req) && typeof req.length !== 'number') {
+      event = req;
+    } else {
+      const s = Buffer.isBuffer(req)
+        ? req.toString('utf8')
+        : typeof req === 'string'
+          ? req
+          : req && typeof req.toString === 'function'
+            ? req.toString('utf8')
+            : '';
+      if (!s?.trim()) return null;
+      event = JSON.parse(s);
+    }
+  } catch {
+    return null;
+  }
+  if (!event || typeof event !== 'object') return null;
+  // HTTP 请求有 headers / requestContext.http，不当作 timer
+  if (event.headers || event.requestContext?.http || event.httpMethod || event.rawPath) {
+    return null;
+  }
+  if (!(event.triggerTime || event.triggerName || event.TriggerName || event.TriggerTime)) {
+    return null;
+  }
+  let payload = event.payload ?? event.Payload ?? null;
+  if (typeof payload === 'string') {
+    try {
+      payload = payload.trim() ? JSON.parse(payload) : {};
+    } catch {
+      payload = { raw: payload };
+    }
+  }
+  if (!payload || typeof payload !== 'object') payload = {};
+  return {
+    triggerTime: event.triggerTime || event.TriggerTime || '',
+    triggerName: String(event.triggerName || event.TriggerName || ''),
+    payload,
+  };
+}
+
+function isQueuePipelineTimer(timer) {
+  if (!timer) return false;
+  const name = String(timer.triggerName || '').toLowerCase();
+  const action = String(timer.payload?.action || timer.payload?.op || '').toLowerCase();
+  if (action === 'run-queue-pipeline' || action === 'queue-pipeline') return true;
+  if (name.includes('queue-pipeline') || name.includes('run-queue-pipeline')) return true;
+  // 专用触发器名约定
+  if (name === 'nexflow-queue-pipeline' || name === 'aixflow-queue-pipeline') return true;
+  return false;
+}
+
+async function handleQueuePipelineTimer(timer) {
+  const dbModule = await ensureDb();
+  const { runQueuePipeline } = await import('./lib/runQueuePipeline.mjs');
+  const body = {
+    ...(timer.payload && typeof timer.payload === 'object' ? timer.payload : {}),
+    max_claims: timer.payload?.max_claims ?? timer.payload?.maxClaims ?? 20,
+    max_charge: timer.payload?.max_charge ?? timer.payload?.maxCharge ?? 40,
+    max_dispatch: timer.payload?.max_dispatch ?? timer.payload?.maxDispatch ?? 20,
+    max_poll: timer.payload?.max_poll ?? timer.payload?.maxPoll ?? 40,
+    reconcile: timer.payload?.reconcile === true || timer.payload?.reconcile === '1',
+  };
+  const r = await runQueuePipeline(dbModule, body);
+  const idleDetail = r.idle_short_circuit_detail || {};
+  console.log(
+    `[timer:run-queue-pipeline] name=${timer.triggerName} queue_mode=${r.queue_mode || ''} claimed=${r.summary?.claimed ?? 0} charged=${r.summary?.charged ?? 0} dispatched=${r.summary?.dispatched_ok ?? 0} settled=${r.summary?.poll_settled ?? 0} lease_recovered=${r.summary?.lease_recovered ?? 0} active_slots=${idleDetail.active_slots ?? r.idle_short_circuit_detail?.active_slots ?? ''} work_active=${idleDetail.work_active ?? ''} idle_no_patrol=${r.idle_no_patrol === true ? 1 : 0} ms=${r.elapsed_ms}`,
+  );
+  return {
+    statusCode: 200,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ok: true,
+      source: 'fc-timer',
+      triggerName: timer.triggerName,
+      triggerTime: timer.triggerTime,
+      ...r,
+    }),
+  };
+}
+
 /** 运营接口统一密钥：与 POST /internal/issue-coupon 相同（NX_ADMIN_ISSUE_COUPON_SECRET） */
 function checkNxAdminIssueCouponSecret(reqHeaders, body) {
   const secret = process.env.NX_ADMIN_ISSUE_COUPON_SECRET?.trim();
@@ -525,7 +613,7 @@ function resolveForwardUrl(provider, path, rhTarget) {
   }
   if (provider === 'bltcy') {
     const p = normalizeRhPath(path);
-    const base = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
+    const base = (process.env.BLTCY_API_BASE || 'https://api.apilio.ai').replace(/\/$/, '');
     return `${base}${p}`;
   }
   throw new Error('UNSUPPORTED_FORWARD_PROVIDER');
@@ -657,11 +745,40 @@ async function handleLlmTask(userId, taskId, innerBody, dbModule) {
 
 const FORWARD_TIMEOUT_MS = parseInt(process.env.NX_FORWARD_TIMEOUT_MS || '300000', 10) || 300000;
 
-/** 从 RunningHub 等 forward 响应中尽量提取可展示的公网结果 URL，写入 nx_tasks.result_oss_url 供轮询 */
+const FORWARD_RESULT_SKIP_TYPES = new Set([
+  'zip',
+  'txt',
+  'text',
+  'json',
+  'glb',
+  'gltf',
+  'obj',
+  'fbx',
+]);
+
+/**
+ * 从 RunningHub 等 forward 响应提取公网结果 URL（多图用换行拼接），写入 nx_tasks.result_oss_url。
+ * 悠船/MJ 等 results[] 含多张时须全部保留，禁止只取 results[0]。
+ */
 function extractForwardResultUrl(data) {
   if (!data || typeof data !== 'object') return '';
   const tryStr = (v) =>
     typeof v === 'string' && /^https?:\/\//i.test(v.trim()) ? v.trim() : '';
+  const skip = (url, outputType) => {
+    const out = String(outputType || '')
+      .trim()
+      .toLowerCase();
+    if (out && FORWARD_RESULT_SKIP_TYPES.has(out)) return true;
+    if (/\.(zip|txt|json|glb|gltf|obj|fbx)(?:$|[?#])/i.test(url)) return true;
+    return false;
+  };
+  const urls = [];
+  const push = (raw, outputType) => {
+    const s = tryStr(raw);
+    if (!s || skip(s, outputType) || urls.includes(s)) return;
+    urls.push(s);
+  };
+
   const inner = data.data;
   let d = data;
   if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
@@ -677,48 +794,44 @@ function extractForwardResultUrl(data) {
       if (inner.results != null) d.results = inner.results;
     }
   }
-  let u =
-    tryStr(d.imageUrl) ||
-    tryStr(d.url) ||
-    tryStr(d.outputUrl) ||
-    tryStr(d.resultUrl) ||
-    tryStr(d.videoUrl) ||
-    tryStr(d.video_url) ||
-    tryStr(d.fileUrl);
-  if (u) return u;
+
+  const collectFromResults = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const item of arr) {
+      if (typeof item === 'string') {
+        push(item);
+        continue;
+      }
+      if (!item || typeof item !== 'object') continue;
+      const out = item.outputType ?? item.type;
+      push(item.url, out);
+      push(item.imageUrl, out);
+      push(item.fileUrl, out);
+      push(item.videoUrl, out);
+      push(item.video_url, out);
+    }
+  };
+
+  collectFromResults(d.results);
+  push(d.imageUrl);
+  push(d.url);
+  push(d.outputUrl);
+  push(d.resultUrl);
+  push(d.videoUrl);
+  push(d.video_url);
+  push(d.fileUrl);
+
   const r1 = d.data;
   if (r1 && typeof r1 === 'object' && !Array.isArray(r1)) {
-    u =
-      tryStr(r1.url) ||
-      tryStr(r1.imageUrl) ||
-      tryStr(r1.video_url) ||
-      tryStr(r1.videoUrl) ||
-      tryStr(r1.fileUrl);
-    if (u) return u;
-    const r1res = r1.results;
-    if (Array.isArray(r1res) && r1res[0] && typeof r1res[0] === 'object') {
-      const x = r1res[0];
-      u =
-        tryStr(x.url) ||
-        tryStr(x.imageUrl) ||
-        tryStr(x.fileUrl) ||
-        tryStr(x.videoUrl) ||
-        tryStr(x.video_url);
-      if (u) return u;
-    }
+    collectFromResults(r1.results);
+    push(r1.url);
+    push(r1.imageUrl);
+    push(r1.video_url);
+    push(r1.videoUrl);
+    push(r1.fileUrl);
   }
-  const r2 = d.results;
-  if (Array.isArray(r2) && r2[0] && typeof r2[0] === 'object') {
-    const x = r2[0];
-    u =
-      tryStr(x.url) ||
-      tryStr(x.imageUrl) ||
-      tryStr(x.fileUrl) ||
-      tryStr(x.videoUrl) ||
-      tryStr(x.video_url);
-    if (u) return u;
-  }
-  return '';
+
+  return urls.join('\n');
 }
 
 function readRhQueryStatusFromForwardPayload(data) {
@@ -742,6 +855,28 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
   const bodyRaw = fwd.body !== undefined ? fwd.body : {};
   const bodyObj =
     bodyRaw && typeof bodyRaw === 'object' && !Array.isArray(bodyRaw) ? bodyRaw : {};
+
+  // Phase 7：禁止对已进入云端 Provider 管线的任务再经 run-task 提交（允许 /query）
+  if (provider === 'runninghub' && !isRhQueryPath(path)) {
+    try {
+      const row =
+        typeof dbModule.getTaskById === 'function' ? await dbModule.getTaskById(taskId) : null;
+      if (row) {
+        const { blocksLegacyProviderSubmit } = await import('./lib/providerStages.mjs');
+        if (blocksLegacyProviderSubmit(row)) {
+          const err = new Error(
+            'PHASE7_PIPELINE_ACTIVE: task already in charged/dispatch/provider pipeline; use cloud dispatch/poll, not run-task submit',
+          );
+          err.nxStatusCode = 409;
+          err.nxErrorCode = 'PHASE7_PIPELINE_ACTIVE';
+          throw err;
+        }
+      }
+    } catch (e) {
+      if (e?.nxErrorCode === 'PHASE7_PIPELINE_ACTIVE') throw e;
+      // 读任务失败不阻断 legacy（兼容）
+    }
+  }
 
   /** @type {{ region: 'cn' | 'ai', base: string, apiKey: string } | null} */
   let rhTarget = null;
@@ -1096,6 +1231,12 @@ async function handleGenericForwardTask(userId, taskId, inner, dbModule, taskTyp
     cost = getFinalPrice(modelId, { taskType: fwdTaskType, nodeData: billingNodeData, modelConfigMap });
   } catch (e) {
     if (isModelNotPricedError(e)) {
+      if (String(e?.message || '') === 'media_duration_required') {
+        const err = new Error('无法识别媒体时长，暂不能计价扣费。请待时长读取完成后再试。');
+        err.nxStatusCode = 400;
+        err.nxErrorCode = 'MEDIA_DURATION_REQUIRED';
+        throw err;
+      }
       const err = new Error('该模型暂未上线或定价错误');
       err.nxStatusCode = 403;
       err.nxErrorCode = 'MODEL_NOT_PRICED';
@@ -1219,110 +1360,18 @@ async function handleRunTask(userId, taskId, rawBody, dbModule) {
 }
 
 /**
- * POST /tasks/create：按 nx_model_config 对 model_id 计价并扣元宝，写入 nx_tasks（pending），返回 task_id。
- * Body: model_id（必填）, params（对象或 JSON 字符串，写入 prompt_json）, type|task_type（llm|image|video|audio，默认 image）,
- *       nodeData|node_data（可选，与 run-task 计费维度一致）, workflow_json（可选）
+ * POST /tasks/create：按 nx_model_config 对 model_id 计价。
+ * Phase 2：execution_mode=queue → status=queued 不扣费；默认 legacy → 预扣费 + pending。
+ * Body: model_id（必填）, params, type|task_type, nodeData|node_data, workflow_json,
+ *       execution_mode|legacy_immediate_charge|defer_charge（可选）
  */
 async function handleTasksCreate(userId, body, dbModule) {
+  const { handleTasksCreate: createTask } = await import('./lib/handleTasksCreate.mjs');
   const { getFinalPrice } = await ensurePricing();
-  const modelId = String(body?.model_id ?? body?.modelId ?? '').trim();
-  if (!modelId) throw new Error('model_id required');
-
-  const taskTypeRaw = String(body?.type ?? body?.task_type ?? 'image').toLowerCase();
-  const taskType =
-    taskTypeRaw === 'llm' || taskTypeRaw === 'image' || taskTypeRaw === 'video' || taskTypeRaw === 'audio'
-      ? taskTypeRaw
-      : 'image';
-
-  const nodeData =
-    body?.nodeData && typeof body.nodeData === 'object'
-      ? body.nodeData
-      : body?.node_data && typeof body.node_data === 'object'
-        ? body.node_data
-        : {};
-
-  let params = body?.params;
-  if (params === undefined || params === null) {
-    params = body?.prompt_json ?? body?.promptJson ?? {};
-  }
-  const promptJsonStr =
-    typeof params === 'string'
-      ? params
-      : JSON.stringify(params && typeof params === 'object' ? params : { value: params });
-
-  const workflowRaw = body?.workflow_json ?? body?.workflowJson;
-  const workflowStr =
-    workflowRaw === undefined || workflowRaw === null
-      ? ''
-      : typeof workflowRaw === 'string'
-        ? workflowRaw
-        : JSON.stringify(workflowRaw);
-
-  let modelConfigMap = null;
-  try {
-    modelConfigMap = await loadNxModelConfigMapForBilling(dbModule);
-  } catch (e) {
-    console.warn('[tasks/create] listModelConfig skipped:', e?.message || e);
-  }
-
-  const cost = getFinalPrice(modelId, { taskType, nodeData, modelConfigMap });
-  const taskId = crypto.randomUUID();
-
-  const billingUserTask = await dbModule.getUserById(userId);
-  if (billingUserTask && typeof dbModule.assertModelCostThreshold === 'function') {
-    dbModule.assertModelCostThreshold(billingUserTask, cost, taskType);
-  }
-
-  const deductResult = await dbModule.deductWithTransaction(userId, taskId, cost, {
-    provider: 'task_create',
-    description: `create:${modelId}`,
+  return createTask(userId, body, dbModule, {
+    getFinalPrice,
+    loadNxModelConfigMapForBilling,
   });
-
-  if (deductResult.idempotent) {
-    const u = await dbModule.getUserById(userId);
-    return {
-      task_id: taskId,
-      balance: u?.balance ?? deductResult.balance,
-      cost_coins: cost,
-      model_id: modelId,
-      duplicate_task: true,
-    };
-  }
-
-  let refunded = false;
-  const safeRefund = async () => {
-    if (refunded) return;
-    refunded = true;
-    try {
-      await dbModule.refundWithLedger(userId, taskId, cost, {
-        provider: 'task_create',
-        description: 'task_record_failed',
-      });
-    } catch (re) {
-      console.error('[tasks/create] refund failed', re?.message || re);
-    }
-  };
-
-  try {
-    await dbModule.upsertTask(taskId, userId, {
-      status: 'pending',
-      cost,
-      amount: cost,
-      prompt_json: promptJsonStr,
-      ...(workflowStr ? { workflow_json: workflowStr } : {}),
-    });
-  } catch (e) {
-    await safeRefund();
-    throw e;
-  }
-
-  const u = await dbModule.getUserById(userId);
-  return {
-    task_id: taskId,
-    balance: u?.balance ?? deductResult.balance,
-    cost_coins: cost,
-    model_id: modelId,
-  };
 }
 
 async function handleRequest(req) {
@@ -1335,6 +1384,22 @@ async function handleRequest(req) {
   try {
     const preflightFirst = tryOptionsPreflightFirst(req);
     if (preflightFirst) return preflightFirst;
+
+    // FC Timer：在 legacy token / HTTP 路由之前处理，实现云端自治 Queue
+    {
+      const timer = parseFcTimerEvent(req);
+      if (timer && isQueuePipelineTimer(timer)) {
+        return await handleQueuePipelineTimer(timer);
+      }
+      if (timer) {
+        console.warn('[fc-timer] ignored unknown timer', timer.triggerName);
+        return {
+          statusCode: 200,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ok: true, ignored: true, triggerName: timer.triggerName }),
+        };
+      }
+    }
 
     /** 少数运行时直接传入事件对象（非 JSON 字符串）；FC 3.0 可能仅有 requestContext.http */
     if (req && typeof req === 'object' && !Buffer.isBuffer(req)) {
@@ -1441,6 +1506,367 @@ async function handleRequest(req) {
           statusCode: 500,
           headers,
           body: JSON.stringify({ error: e?.message || 'SETTLE_FAILED' }),
+        };
+      }
+    }
+
+    // POST /internal/promote-queued-tasks — Phase 5：lease recovery + queued→claimed（需 ADMIN_SETTLE_SECRET）
+    if (
+      pathNorm.endsWith('/internal/promote-queued-tasks') ||
+      pathNorm === '/internal/promote-queued-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({
+            error: 'PROMOTE_NOT_CONFIGURED',
+            message: '请配置 ADMIN_SETTLE_SECRET',
+          }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const runFn = dbModule.runPromoteQueuedTasks;
+        if (typeof runFn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const maxClaimsParsed = parseInt(
+          body.max_claims ?? body.maxClaims ?? process.env.NX_PROMOTE_BATCH_SIZE ?? '20',
+          10,
+        );
+        const maxClaims = Math.min(
+          200,
+          Math.max(0, Number.isFinite(maxClaimsParsed) ? maxClaimsParsed : 20),
+        );
+        const maxScanRows = Math.min(
+          500000,
+          Math.max(1000, parseInt(body.max_scan_rows ?? body.maxScanRows ?? '20000', 10)),
+        );
+        const reconcile =
+          body.reconcile === true ||
+          body.reconcile === '1' ||
+          String(body.reconcile || '').toLowerCase() === 'true';
+        const r = await runFn({
+          maxClaims,
+          maxScanRows,
+          maxLeaseRecover: Math.min(200, Math.max(1, parseInt(body.max_lease_recover ?? body.maxLeaseRecover ?? '50', 10) || 50)),
+          maxOrphans: Math.min(200, Math.max(1, parseInt(body.max_orphans ?? body.maxOrphans ?? '50', 10) || 50)),
+          reconcile,
+          taskType: body.task_type || body.taskType || null,
+        });
+        return { statusCode: 200, headers, body: JSON.stringify(r) };
+      } catch (e) {
+        console.error('[promote-queued-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: e?.message || 'PROMOTE_FAILED' }),
+        };
+      }
+    }
+
+    // POST /internal/reconcile-queue-reservations — Phase 5：低频 orphan reservation 修复（需 ADMIN_SETTLE_SECRET）
+    if (
+      pathNorm.endsWith('/internal/reconcile-queue-reservations') ||
+      pathNorm === '/internal/reconcile-queue-reservations'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({
+            error: 'RECONCILE_NOT_CONFIGURED',
+            message: '请配置 ADMIN_SETTLE_SECRET',
+          }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const runFn = dbModule.runPromoteQueuedTasks;
+        if (typeof runFn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const keys = body.reconcile_counter_keys || body.reconcileCounterKeys || [];
+        const r = await runFn({
+          maxClaims: 0,
+          reconcile: true,
+          maxLeaseRecover: Math.min(200, Math.max(0, parseInt(body.max_lease_recover ?? body.maxLeaseRecover ?? '50', 10) || 50)),
+          maxOrphans: Math.min(200, Math.max(1, parseInt(body.max_orphans ?? body.maxOrphans ?? '50', 10) || 50)),
+          maxScanRows: Math.min(
+            500000,
+            Math.max(1000, parseInt(body.max_scan_rows ?? body.maxScanRows ?? '20000', 10)),
+          ),
+          reconcileCounterKeys: Array.isArray(keys) ? keys : [],
+        });
+        return { statusCode: 200, headers, body: JSON.stringify(r) };
+      } catch (e) {
+        console.error('[reconcile-queue-reservations]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'RECONCILE_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/charge-claimed-tasks — Phase 6：claimed → charged（不写 running，不调 RH）
+    if (
+      pathNorm.endsWith('/internal/charge-claimed-tasks') ||
+      pathNorm === '/internal/charge-claimed-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({
+            error: 'CHARGE_NOT_CONFIGURED',
+            message: '请配置 ADMIN_SETTLE_SECRET',
+          }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const runFn = dbModule.runChargeClaimedTasks;
+        if (typeof runFn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const maxTasks = Math.min(
+          200,
+          Math.max(1, parseInt(String(body.max_tasks ?? body.maxTasks ?? '20'), 10) || 20),
+        );
+        const r = await runFn({ maxTasks });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...r }) };
+      } catch (e) {
+        console.error('[charge-claimed-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'CHARGE_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/dispatch-charged-tasks — Phase 7
+    if (
+      pathNorm.endsWith('/internal/dispatch-charged-tasks') ||
+      pathNorm === '/internal/dispatch-charged-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({ error: 'DISPATCH_NOT_CONFIGURED' }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const fn = dbModule.runDispatchChargedTasks;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const maxTasks = Math.min(
+          50,
+          Math.max(1, parseInt(String(body.max_tasks ?? body.maxTasks ?? '10'), 10) || 10),
+        );
+        const r = await fn({ maxTasks });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...r }) };
+      } catch (e) {
+        console.error('[dispatch-charged-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'DISPATCH_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/poll-provider-tasks — Phase 7
+    if (
+      pathNorm.endsWith('/internal/poll-provider-tasks') ||
+      pathNorm === '/internal/poll-provider-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({ error: 'POLL_NOT_CONFIGURED' }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const fn = dbModule.runPollProviderTasks;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const maxTasks = Math.min(
+          100,
+          Math.max(1, parseInt(String(body.max_tasks ?? body.maxTasks ?? '20'), 10) || 20),
+        );
+        const r = await fn({ maxTasks });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...r }) };
+      } catch (e) {
+        console.error('[poll-provider-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'POLL_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/run-queue-pipeline — promote→charge→dispatch→poll（cron 每分钟；不改 Phase5/6 核心）
+    if (
+      pathNorm.endsWith('/internal/run-queue-pipeline') ||
+      pathNorm === '/internal/run-queue-pipeline'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({ error: 'PIPELINE_NOT_CONFIGURED' }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const { runQueuePipeline } = await import('./lib/runQueuePipeline.mjs');
+        const r = await runQueuePipeline(dbModule, body || {});
+        console.log(
+          `[run-queue-pipeline] claimed=${r.summary?.claimed ?? 0} charged=${r.summary?.charged ?? 0} dispatched=${r.summary?.dispatched_ok ?? 0} settled=${r.summary?.poll_settled ?? 0} lease_recovered=${r.summary?.lease_recovered ?? 0} ms=${r.elapsed_ms}`,
+        );
+        return { statusCode: 200, headers, body: JSON.stringify(r) };
+      } catch (e) {
+        console.error('[run-queue-pipeline]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'PIPELINE_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/settle-terminal-tasks — Phase 7
+    if (
+      pathNorm.endsWith('/internal/settle-terminal-tasks') ||
+      pathNorm === '/internal/settle-terminal-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({ error: 'SETTLE_NOT_CONFIGURED' }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const fn = dbModule.runSettleTerminalTasks;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const r = await fn({
+          maxTasks: Math.min(
+            50,
+            Math.max(1, parseInt(String(body.max_tasks ?? body.maxTasks ?? '20'), 10) || 20),
+          ),
+        });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...r }) };
+      } catch (e) {
+        console.error('[settle-terminal-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'SETTLE_FAILED', message: String(e?.message || e) }),
+        };
+      }
+    }
+
+    // POST /internal/recover-provider-tasks — Phase 7
+    if (
+      pathNorm.endsWith('/internal/recover-provider-tasks') ||
+      pathNorm === '/internal/recover-provider-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({ error: 'RECOVER_NOT_CONFIGURED' }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const fn = dbModule.runRecoverProviderTasks;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const r = await fn({
+          maxTasks: Math.min(
+            50,
+            Math.max(1, parseInt(String(body.max_tasks ?? body.maxTasks ?? '20'), 10) || 20),
+          ),
+        });
+        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...r }) };
+      } catch (e) {
+        console.error('[recover-provider-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: 'RECOVER_FAILED', message: String(e?.message || e) }),
         };
       }
     }
@@ -1814,6 +2240,73 @@ async function handleRequest(req) {
       } catch (e) {
         console.error('[admin-users-list]', e?.stack ?? e);
         return { statusCode: 500, headers, body: JSON.stringify({ error: e?.message || 'ADMIN_USERS_LIST_FAILED' }) };
+      }
+    }
+
+    // POST /internal/admin-set-user-concurrency — Phase 3：套餐/并发覆盖（需 NX_ADMIN_ISSUE_COUPON_SECRET）
+    if (
+      pathNorm.endsWith('/internal/admin-set-user-concurrency') ||
+      pathNorm === '/internal/admin-set-user-concurrency'
+    ) {
+      const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
+      if (!gate.ok) {
+        return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
+      }
+      try {
+        const fn = dbModule.updateUserConcurrencyEntitlement;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const uid = String(body.user_id ?? body.userId ?? '').trim();
+        if (!uid) {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({ error: 'BAD_REQUEST', message: 'user_id 必填' }),
+          };
+        }
+        const patch = {};
+        if (body.plan_id != null || body.planId != null) {
+          patch.planId = body.plan_id ?? body.planId;
+        }
+        if (body.clear_overrides === true || body.clearOverrides === true) {
+          patch.clearConcurrencyOverrides = true;
+        } else {
+          if (body.video_concurrency_override !== undefined || body.videoConcurrencyOverride !== undefined) {
+            const v = body.video_concurrency_override ?? body.videoConcurrencyOverride;
+            patch.videoConcurrencyOverride = v === null || v === '' ? null : Number(v);
+          }
+          if (body.image_concurrency_override !== undefined || body.imageConcurrencyOverride !== undefined) {
+            const v = body.image_concurrency_override ?? body.imageConcurrencyOverride;
+            patch.imageConcurrencyOverride = v === null || v === '' ? null : Number(v);
+          }
+          if (
+            body.concurrency_override_expires_at !== undefined ||
+            body.concurrencyOverrideExpiresAt !== undefined
+          ) {
+            patch.concurrencyOverrideExpiresAt =
+              body.concurrency_override_expires_at ?? body.concurrencyOverrideExpiresAt;
+          }
+        }
+        const updated = await fn(uid, patch);
+        const { concurrencyFieldsForMeResponse } = await import('./lib/userConcurrencyEntitlement.mjs');
+        const conc = concurrencyFieldsForMeResponse(updated);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            ok: true,
+            user_id: updated.userId,
+            ...conc,
+          }),
+        };
+      } catch (e) {
+        const msg = e?.message || 'ADMIN_SET_CONCURRENCY_FAILED';
+        if (msg === 'USER_NOT_FOUND') {
+          return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
+        }
+        console.error('[admin-set-user-concurrency]', e?.stack ?? e);
+        return { statusCode: 500, headers, body: JSON.stringify({ error: msg }) };
       }
     }
 
@@ -2229,7 +2722,7 @@ async function handleRequest(req) {
       };
     }
 
-    // GET /me — 可选：查余额
+    // GET/POST /me — 余额 + Phase 3 并发权益
     if (pathNorm.endsWith('/me') || pathNorm === '/me') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
@@ -2237,6 +2730,13 @@ async function handleRequest(req) {
       }
       const u = await dbModule.getUserById(userId);
       if (!u) return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
+      let concurrencyExtra = {};
+      try {
+        const { concurrencyFieldsForMeResponse } = await import('./lib/userConcurrencyEntitlement.mjs');
+        concurrencyExtra = concurrencyFieldsForMeResponse(u);
+      } catch (e) {
+        console.warn('[me] concurrency resolve skipped', e?.message || e);
+      }
       return {
         statusCode: 200,
         headers,
@@ -2246,6 +2746,7 @@ async function handleRequest(req) {
           balance: u.balance,
           status: u.status,
           is_first_recharge: u.isFirstRecharge === true,
+          ...concurrencyExtra,
         }),
       };
     }
@@ -2804,16 +3305,35 @@ async function handleRequest(req) {
         if (typeof getFn !== 'function') {
           return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
         }
-        const row = await getFn(tid, userId);
+        let row = await getFn(tid, userId);
         if (!row) {
           return { statusCode: 404, headers, body: JSON.stringify({ error: 'NOT_FOUND' }) };
+        }
+        // Queue 任务：按需 claim/charge/dispatch/poll，避免 RH 已完成但 OTS 未 settle、画布永远拿不到结果
+        try {
+          const st0 = String(row.status_raw || row.status || '').toLowerCase();
+          if (st0 !== 'success' && st0 !== 'failed' && st0 !== 'cancelled') {
+            const { advanceOwnQueueTaskOnStatus } = await import('./lib/advanceTaskOnStatus.mjs');
+            await advanceOwnQueueTaskOnStatus(tid, userId, dbModule);
+            row = (await getFn(tid, userId)) || row;
+          }
+        } catch (advErr) {
+          console.warn('[tasks/status] advance skipped:', advErr?.message || advErr);
         }
         let balance = 0;
         try {
           const u = await dbModule.getUserById(userId);
           balance = u?.balance ?? 0;
         } catch (_) {}
-        return { statusCode: 200, headers, body: JSON.stringify({ ...row, balance }) };
+        // 用户 UX：只读 queue position / refunded（失败不影响任务推进）
+        let ux = {};
+        try {
+          const { enrichTaskStatusForUserUx } = await import('./lib/queuePosition.mjs');
+          ux = (await enrichTaskStatusForUserUx(dbModule, row)) || {};
+        } catch (uxErr) {
+          console.warn('[tasks/status] queue position enrich skipped:', uxErr?.message || uxErr);
+        }
+        return { statusCode: 200, headers, body: JSON.stringify({ ...row, ...ux, balance }) };
       } catch (e) {
         console.error('[tasks/status]', e?.stack ?? e);
         return {
@@ -2824,7 +3344,7 @@ async function handleRequest(req) {
       }
     }
 
-    // POST /tasks/create — 按 model_id 扣元宝并建 pending 任务（需 Bearer）
+    // POST /tasks/create — Phase 2：默认 legacy 预扣费；execution_mode=queue 仅入队
     if (pathNorm.endsWith('/tasks/create') || pathNorm === '/tasks/create') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
@@ -2844,11 +3364,32 @@ async function handleRequest(req) {
         const r = await handleTasksCreate(userId, body, dbModule);
         return { statusCode: 200, headers, body: JSON.stringify(r) };
       } catch (e) {
+        if (e?.message === 'media_duration_required' || e?.detail === 'media_duration_required') {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({
+              error: '无法识别媒体时长，暂不能计价扣费。请待时长读取完成后再试。',
+              code: 'MEDIA_DURATION_REQUIRED',
+            }),
+          };
+        }
         if (
           e?.name === 'ModelNotPricedError' ||
           e?.nxStatusCode === 403 ||
           e?.nxErrorCode === 'MODEL_NOT_PRICED'
         ) {
+          const detail = String(e?.message || '');
+          if (detail === 'media_duration_required') {
+            return {
+              statusCode: 400,
+              headers,
+              body: JSON.stringify({
+                error: '无法识别媒体时长，暂不能计价扣费。请待时长读取完成后再试。',
+                code: 'MEDIA_DURATION_REQUIRED',
+              }),
+            };
+          }
           return {
             statusCode: 403,
             headers,
@@ -2880,6 +3421,20 @@ async function handleRequest(req) {
             statusCode: 400,
             headers,
             body: JSON.stringify({ error: 'BAD_REQUEST', message: 'model_id 必填' }),
+          };
+        }
+        if (
+          e?.nxErrorCode === 'QUEUE_FORWARD_REQUIRED' ||
+          /provider_forward_json\.path required/i.test(String(msg))
+        ) {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({
+              error: 'QUEUE_FORWARD_REQUIRED',
+              code: 'QUEUE_FORWARD_REQUIRED',
+              message: 'execution_mode=queue 必须提供 provider_forward_json.path',
+            }),
           };
         }
         console.error('[tasks/create]', e?.stack ?? e);

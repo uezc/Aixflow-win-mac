@@ -75,7 +75,17 @@ export const MINIMAX_H3_MULTI_AUDIO_NODES = [
 /** @deprecated 仅 1 路时的兼容别名；请用 MINIMAX_H3_MULTI_AUDIO_NODES */
 export const MINIMAX_H3_MULTI_AUDIO_NODE = MINIMAX_H3_MULTI_AUDIO_NODES[0];
 
-/** 仅 720P → megapixels 0.9（与 H3 t2v/i2v 一致，勿传 1080） */
+/** 480P → 0.4；720P → 0.9（与 H3 t2v/i2v 一致，勿传 1080） */
+export {
+  MINIMAX_H3_DEFAULT_RESOLUTION,
+  MINIMAX_H3_MEGAPIXELS_BY_RESOLUTION,
+  MINIMAX_H3_RESOLUTION_OPTIONS,
+  minimaxH3MegapixelsForResolution,
+  normalizeMinimaxH3Resolution,
+  type MinimaxH3Resolution,
+} from './minimaxH3Resolution.js';
+
+/** @deprecated 请用 minimaxH3MegapixelsForResolution；默认 720P */
 export const MINIMAX_H3_MULTI_MEGAPIXELS = '0.9';
 
 /** 产品侧时长档（与 H3 文生/图生一致） */

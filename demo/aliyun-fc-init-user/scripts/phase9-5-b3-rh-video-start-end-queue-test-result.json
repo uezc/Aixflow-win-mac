@@ -1,0 +1,198 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "quoted": 4,
+  "tests": [
+    {
+      "name": "test6_ots_sku_9_9",
+      "ok": true,
+      "detail": {
+        "missing": [],
+        "prices": {
+          "ltx-2-3-start-end-720p-5s": 4,
+          "ltx-2-3-start-end-720p-10s": 8,
+          "ltx-2-3-start-end-720p-15s": 11,
+          "ltx-2-3-start-end-1080p-5s": 4,
+          "ltx-2-3-start-end-1080p-10s": 8,
+          "ltx-2-3-start-end-1080p-15s": 11,
+          "ltx-2-3-start-end-1920p-5s": 5,
+          "ltx-2-3-start-end-1920p-10s": 10,
+          "ltx-2-3-start-end-1920p-15s": 16
+        }
+      }
+    },
+    {
+      "name": "forward_shape",
+      "ok": true,
+      "detail": {
+        "rhRegion": "cn",
+        "w": "1280",
+        "h": "720",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "test7_1080p_16x9",
+      "ok": true,
+      "detail": {
+        "w": "1920",
+        "h": "1080",
+        "sku": "ltx-2-3-start-end-1080p-5s"
+      }
+    },
+    {
+      "name": "test7_1080p_9x16",
+      "ok": true,
+      "detail": {
+        "w": "1080",
+        "h": "1920",
+        "sku": "ltx-2-3-start-end-1080p-5s"
+      }
+    },
+    {
+      "name": "test7_1920p_16x9",
+      "ok": true,
+      "detail": {
+        "w": "1920",
+        "h": "1080",
+        "sku": "ltx-2-3-start-end-1920p-5s"
+      }
+    },
+    {
+      "name": "test7_1920p_9x16",
+      "ok": true,
+      "detail": {
+        "w": "1080",
+        "h": "1920",
+        "sku": "ltx-2-3-start-end-1920p-5s"
+      }
+    },
+    {
+      "name": "test2_1img_no_create",
+      "ok": true,
+      "detail": {
+        "creates": 0
+      }
+    },
+    {
+      "name": "test3_3img_no_create",
+      "ok": true,
+      "detail": {
+        "creates": 0
+      }
+    },
+    {
+      "name": "test4_5_preprocess_before_create",
+      "ok": true,
+      "detail": {
+        "startOss": 1220,
+        "endOss": 1404,
+        "createCall": 3165
+      }
+    },
+    {
+      "name": "reject_rh_filename",
+      "ok": true
+    },
+    {
+      "name": "test1_create",
+      "ok": true,
+      "detail": {
+        "status": "queued"
+      }
+    },
+    {
+      "name": "test1_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test1_charge",
+      "ok": true,
+      "detail": {
+        "delta": 4,
+        "quoted": 4
+      }
+    },
+    {
+      "name": "test1_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_se_ok",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test1_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "held": false,
+        "poll": "cn"
+      }
+    },
+    {
+      "name": "test8_dup_dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "test9_dup_charge",
+      "ok": true,
+      "detail": {
+        "delta": 4
+      }
+    },
+    {
+      "name": "test10_dup_refund",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500,
+        "charge": "refunded"
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true
+    },
+    {
+      "name": "gate_off",
+      "ok": true
+    },
+    {
+      "name": "gate_reject_1img",
+      "ok": true
+    },
+    {
+      "name": "gate_queue_before_direct",
+      "ok": true,
+      "detail": {
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "ui_gate",
+      "ok": true
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true
+    }
+  ],
+  "rh_submit_calls": 1
+}

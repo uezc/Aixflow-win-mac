@@ -178,6 +178,8 @@ export type WorkspaceChromeStrings = {
   textVoiceInputButton: string;
   /** 文本节点：录音中按钮文案 */
   textVoiceInputStopButton: string;
+  /** 文本节点：去掉正文空行 */
+  textStripEmptyLinesTitle: string;
   /** 文本节点：录音弹窗标题 */
   textVoiceModalTitle: string;
   /** 文本节点：录音弹窗说明 */
@@ -267,8 +269,8 @@ const zh: WorkspaceChromeStrings = {
   headerConnectingCloud: '正在连接云端服务...',
   headerCreditsTooltip: '元宝可用于所有云端 AI 模型生成',
   headerCurrencyUnit: '元宝',
-  headerLowBalanceTitle: '余额不足，请及时充值（云端元宝）',
-  headerRefreshBalanceTitle: '点击刷新云端余额',
+  headerLowBalanceTitle: '余额不足，点击前往充值',
+  headerRefreshBalanceTitle: '点击前往充值',
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: '界面语言',
@@ -342,6 +344,7 @@ const zh: WorkspaceChromeStrings = {
     '按住麦克风说话，云端实时听写到正文（边说边出字）；松开结束。长音频「转文字」走云端文件转写',
   textVoiceInputButton: '按住说话',
   textVoiceInputStopButton: '松开结束',
+  textStripEmptyLinesTitle: '去掉空行',
   textVoiceModalTitle: '正在听写',
   textVoiceModalSubtitle: '按住说话，文字会实时出现在输入框；松开结束本段听写',
   textVoiceTranscribing: '正在听写…',
@@ -427,8 +430,8 @@ const en: WorkspaceChromeStrings = {
   headerConnectingCloud: 'Connecting to cloud...',
   headerCreditsTooltip: 'Credits are used for all cloud AI generation',
   headerCurrencyUnit: 'credits',
-  headerLowBalanceTitle: 'Low balance — please top up',
-  headerRefreshBalanceTitle: 'Click to refresh balance',
+  headerLowBalanceTitle: 'Low balance — click to top up',
+  headerRefreshBalanceTitle: 'Click to top up',
   languageToEn: 'English',
   languageToZh: '中文',
   languageMenuTitle: 'Display language',
@@ -502,6 +505,7 @@ const en: WorkspaceChromeStrings = {
     'Hold the mic to dictate into the text in real time (cloud ASR). Release to finish. Long-form “Transcribe” also uses cloud file ASR.',
   textVoiceInputButton: 'Hold to talk',
   textVoiceInputStopButton: 'Release to finish',
+  textStripEmptyLinesTitle: 'Remove blank lines',
   textVoiceModalTitle: 'Dictating…',
   textVoiceModalSubtitle: 'Hold to speak; text appears live. Release to end this dictation.',
   textVoiceTranscribing: 'Dictating…',

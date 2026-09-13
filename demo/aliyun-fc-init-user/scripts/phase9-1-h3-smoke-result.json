@@ -1,0 +1,20 @@
+{
+  "region": "cn",
+  "forceOverseas": false,
+  "submit_path": "/run/ai-app/2085682347676102657",
+  "submit": {
+    "http": 200,
+    "taskId": "2096108572860710914",
+    "errorCode": "",
+    "errorMessage": "",
+    "status": "RUNNING"
+  },
+  "query": {
+    "round": 38,
+    "http": 200,
+    "status": "SUCCESS",
+    "has_url": true,
+    "url_prefix": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/Min"
+  },
+  "conclusion": "PASS"
+}

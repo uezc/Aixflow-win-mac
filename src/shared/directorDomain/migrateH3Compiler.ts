@@ -4,6 +4,11 @@
  */
 
 import { dramaNewId } from './ids.js';
+import { isSystemSpeakerName, looksLikeDramaSystemSpokenText } from './extractCastFromScript.js';
+import {
+  inferDramaTimelineDialogueSpeakerId,
+  spokenTextFromDramaTimelineEvent,
+} from './timelineEvent.js';
 import type {
   DramaAudioEvent,
   DramaDialogueLine,
@@ -11,6 +16,17 @@ import type {
   DramaReferenceLockIntent,
   DramaSpeakerId,
 } from './types.js';
+
+/** 非人物说话者（系统/旁白/画外音）的固定 speaker 槽位，不抢角色音色 */
+const SYSTEM_SPEAKER_POOL = ['S99', 'S98', 'S97', 'S96'] as const;
+function systemSpeakerForName(name: string): DramaSpeakerId {
+  const n = String(name || '').trim().toLowerCase();
+  if (/旁白|叙述|旁述/.test(n)) return SYSTEM_SPEAKER_POOL[0] as DramaSpeakerId;
+  if (/画外|os|内心|独白/.test(n)) return SYSTEM_SPEAKER_POOL[1] as DramaSpeakerId;
+  if (/系统|电子|机械|播报|广播|滴|提示音/.test(n)) return SYSTEM_SPEAKER_POOL[2] as DramaSpeakerId;
+  if (/弹幕|字幕|小字|公屏|评论/.test(n)) return SYSTEM_SPEAKER_POOL[3] as DramaSpeakerId;
+  return SYSTEM_SPEAKER_POOL[2] as DramaSpeakerId;
+}
 
 export const DRAMA_H3_COMPILER_CONTRACT = 'h3-compiler.v1';
 
@@ -33,7 +49,7 @@ export function formatDramaSpeakerId(n: number): DramaSpeakerId {
 
 export function defaultDramaReferenceLockIntent(role: string): DramaReferenceLockIntent {
   const r = String(role || '').trim();
-  if (r === 'storyboard') return 'composition';
+  if (r === 'storyboard') return 'visual_anchor';
   if (r === 'scene' || r === 'style') return 'visual_anchor';
   return 'identity';
 }
@@ -42,8 +58,17 @@ export function speakerIdForCharacter(
   session: DramaDirectorSession,
   characterId: string,
 ): DramaSpeakerId | '' {
-  const ch = session.bible.characters.find((c) => c.character_id === characterId);
+  const ch = (session.bible?.characters || []).find((c) => c.character_id === characterId);
+  // 角色是系统/旁白类（名字在 STOP_NAMES 里）→ 返回固定特殊 speaker，不抢真实角色音色
+  if (ch && isSystemSpeakerName(ch.name)) {
+    return systemSpeakerForName(ch.name);
+  }
   if (ch && isDramaSpeakerId(ch.speaker_id)) return ch.speaker_id;
+  // character_id 本身暗示是系统旁白（如 narrator/system）
+  const cid = String(characterId || '').toLowerCase();
+  if (/narrator|system|旁白|画外|system_speaker/.test(cid)) {
+    return systemSpeakerForName(cid);
+  }
   return '';
 }
 
@@ -92,10 +117,33 @@ export function clipDramaAudioEventsToRange(
     .filter(Boolean) as DramaAudioEvent[];
 }
 
+function resolveDialogueSpeakerId(
+  session: DramaDirectorSession,
+  shot: { character_ids?: string[] },
+  line: DramaDialogueLine,
+): string {
+  const cid = String(line.character_id || '').trim();
+  const name = String(line.character_name || '').trim();
+  const text = String(line.text || '').trim();
+  if (isSystemSpeakerName(cid) || isSystemSpeakerName(name) || /^(?:system|narrator)$/i.test(cid)) {
+    return 'system';
+  }
+  if (looksLikeDramaSystemSpokenText(text)) return 'system';
+  if (cid) return cid;
+  if (name) {
+    const hit = (session.bible?.characters || []).find(
+      (c) => String(c.name || '').trim() === name || String(c.character_id || '').trim() === name,
+    );
+    if (hit?.character_id && !isSystemSpeakerName(hit.name)) return String(hit.character_id).trim();
+  }
+  return '';
+}
+
 function deriveFromShotDialogueLines(
   session: DramaDirectorSession,
   shot: {
     duration_sec?: number;
+    character_ids?: string[];
     dialogue?: DramaDialogueLine[];
     timeline_events?: Array<{
       start_sec?: number;
@@ -105,7 +153,12 @@ function deriveFromShotDialogueLines(
     }>;
   },
 ): DramaAudioEvent[] {
-  const lines = (shot.dialogue || []).filter((d) => String(d.text || '').trim() && String(d.character_id || '').trim());
+  const lines = (shot.dialogue || [])
+    .map((d) => ({
+      ...d,
+      character_id: resolveDialogueSpeakerId(session, shot, d),
+    }))
+    .filter((d) => String(d.text || '').trim() && String(d.character_id || '').trim());
   if (!lines.length) return [];
   const events = Array.isArray(shot.timeline_events) ? shot.timeline_events : [];
   const dur = Math.max(0.5, Number(shot.duration_sec) || 10);
@@ -160,14 +213,17 @@ export function deriveDramaAudioTimelineFromShotEvents(
     end_sec?: number;
     dialogue?: string;
     dialogue_character_id?: string;
+    character_ids?: string[];
+    visual_action?: string;
     character_state?: string;
     lip_sync?: boolean;
   }>,
+  fallbackCharacterId = '',
 ): DramaAudioEvent[] {
   const out: DramaAudioEvent[] = [];
   for (const ev of events || []) {
-    const text = String(ev.dialogue || '').trim();
-    const cid = String(ev.dialogue_character_id || '').trim();
+    const text = spokenTextFromDramaTimelineEvent(ev);
+    const cid = inferDramaTimelineDialogueSpeakerId(ev, fallbackCharacterId);
     if (!text || !cid) continue;
     const speaker = speakerIdForCharacter(session, cid) || formatDramaSpeakerId(out.length + 1);
     const start = Number(ev.start_sec) || 0;
@@ -240,6 +296,7 @@ export function resolveDramaShotAudioTimeline(
     audio_timeline?: DramaAudioEvent[];
     timeline_events?: unknown[];
     dialogue?: DramaDialogueLine[];
+    character_ids?: string[];
     duration_sec?: number;
   },
 ): DramaAudioEvent[] {
@@ -254,7 +311,7 @@ export function resolveDramaShotAudioTimeline(
         character_state?: string;
       }>)
     : [];
-  const fromEvents = deriveDramaAudioTimelineFromShotEvents(session, events);
+  const fromEvents = deriveDramaAudioTimelineFromShotEvents(session, events, '');
   const stored = (Array.isArray(shot.audio_timeline) ? shot.audio_timeline : []).filter(
     (a) => String(a?.text || '').trim() && String(a?.character_id || '').trim(),
   );
@@ -287,6 +344,7 @@ export function resolveDramaShotAudioTimeline(
     take(
       deriveFromShotDialogueLines(session, {
         duration_sec: shot.duration_sec,
+        character_ids: shot.character_ids,
         dialogue: shot.dialogue,
         timeline_events: events,
       }),
@@ -308,7 +366,7 @@ export function dramaShotHasSpokenDialogue(shot: {
       (e) =>
         typeof e === 'object' &&
         e &&
-        String((e as { dialogue?: string }).dialogue || '').trim(),
+        !!spokenTextFromDramaTimelineEvent(e as { dialogue?: string; visual_action?: string }),
     )
   ) {
     return true;
@@ -340,6 +398,7 @@ export function migrateDramaSessionToH3CompilerV1(
       const derived = deriveDramaAudioTimelineFromShotEvents(
         session,
         shot.timeline_events || [],
+        String((shot.character_ids || []).find(Boolean) || ''),
       );
       if (derived.length) {
         shot.audio_timeline = derived;

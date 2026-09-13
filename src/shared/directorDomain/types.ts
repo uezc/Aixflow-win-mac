@@ -23,10 +23,13 @@ export {
 import type { DramaLockedCamera, DramaPrimaryPurpose } from './directorCameraSchema.js';
 import type { DramaVisualEvent } from './shotPlanning.js';
 
-/** 八步制片流程：分集 → 整片视觉美术 → 选集 → 分析 → 资产生成 → 分镜 → 视频 → 审核 */
+/**
+ * 制片流程（对齐人工步骤）：
+ * 1 剧本(分集/分场/时长) → 2 画风色调 → 3 资产匹配 → 4 导演分镜 → 5 成片
+ */
 export type DramaDomainPhase =
-  | 'ingest'
   | 'visual'
+  | 'ingest'
   | 'episodes'
   | 'analyze'
   /** @deprecated 旧「准备资产」；读盘时归一到 assets */
@@ -124,7 +127,7 @@ export interface DramaAssetReferenceImage {
   kind: string;
   url: string;
   label?: string;
-  /** 缺省按 role 推断：storyboard→composition，scene→visual_anchor，character→identity */
+  /** 缺省按 role 推断：storyboard→visual_anchor（画风优先），scene→visual_anchor，character→identity */
   lock_intent?: DramaReferenceLockIntent;
 }
 
@@ -261,9 +264,9 @@ export interface VisualStylePreset {
     lighting: DramaVisualDnaLighting;
     texture: DramaVisualDnaTexture;
     mood: DramaVisualDnaMood;
-    /** 英文 prompt 主干（写入 generatedPrompt，英文模式编译使用） */
+    /** 权威画风+色调铅字（中文） */
     promptTemplate: string;
-    /** 中文对照主干（短剧 H3 中文编译使用） */
+    /** 中文对照主干（与 promptTemplate 同权威） */
     promptTemplateZh: string;
   };
 }
@@ -540,6 +543,15 @@ export interface DramaVoice {
   emotion_range: string;
   /** Voice Identity 结构化字段 */
   identity: DramaVoiceIdentity;
+  /**
+   * 系统提示音形象图（全息面板等非人物视觉）。
+   * 仅系统声实体使用；不进 bible.characters / H3 Subject。
+   */
+  imageUrl?: string;
+  /** 系统形象生图提示词 */
+  image_prompt?: string;
+  /** 系统形象生图/上传状态（与声音 status 分离） */
+  image_status?: DramaAssetStatus;
   /** 样本上传 / AI 生成状态 */
   status?: DramaAssetStatus;
   asset_version: number;
@@ -652,6 +664,21 @@ export interface DramaSceneBeat {
 }
 
 /**
+ * 结构化情绪：贯穿 Visual Event → Shot → Breakdown → H3 Prompt 全链路。
+ * 转换可以（emotion → visible performance），但不得覆盖或删除主导情绪。
+ */
+export interface DramaEmotion {
+  /** 主导情绪：愤怒/疑惑/恐惧/释然/压抑/震惊/冷漠... */
+  primary: string;
+  /** 辅助情绪/状态：压抑中的克制/混合的震惊与恐惧... */
+  secondary?: string;
+  /** 0-1 强度：0.2轻微 / 0.5中等 / 0.7中强 / 0.9极强；前端不直接暴露滑块，用自然语言渲染 */
+  intensity: number;
+  /** 情绪变化弧线（可选）：克制→加剧 / 从震惊转为恐惧 / 持续稳定... */
+  arc?: string;
+}
+
+/**
  * 本镜角色表演位：人物「是谁」由 Character Asset 决定；
  * 「这一镜怎么演」由 Shot Cast 决定。严禁混为一谈。
  */
@@ -660,12 +687,20 @@ export interface DramaShotCastMember {
   /** left | right | center | background | foreground | custom */
   screen_position: string;
   action: string;
-  emotion: string;
+  /** 可见表情与肢体微相（眉压低/下颌收紧/瞳孔放大...），区别于抽象 emotion */
+  expression?: string;
+  emotion: DramaEmotion | string;
   performance: string;
   dialogue_ids: string[];
   voice_id: string;
   /** 本镜临时覆盖（TEMPORARY），如湿身/破损 */
   temporary_state?: string;
+  /**
+   * 本镜造型覆盖（SHOT-LEVEL）：指定本镜该角色使用的造型 costume_id。
+   * 不影响其他镜头；为空时回退角色 active costume。
+   * 切换后参考图按此 costume 解析（resolveCharacterMasterReferenceUrl 传 tag）。
+   */
+  costume_id?: string;
 }
 
 /** 镜头层实体 — 一个 Shot = 一个实际生成的视频镜头 */
@@ -910,6 +945,8 @@ export interface DramaShot {
   visual_event_ids: string[];
   /** 多人角色 ID（正式能力） */
   character_ids: string[];
+  /** 用户主动删除的角色 ID（自动匹配不会再加回来） */
+  removed_character_ids: string[];
   /** 本镜 Cast：每人站位/动作/情绪/表演 */
   cast: DramaShotCastMember[];
   scene_asset_id: string;
@@ -952,6 +989,13 @@ export interface DramaShot {
   voice_dependency_mode?: DramaVoiceDependencyMode;
   model_params: Record<string, string>;
   storyboard_image_url: string;
+  /**
+   * 出片是否把本镜分镜图当作参考图。
+   * - true：必须用分镜（缺图会先触发生成）；参考槽 = 分镜+人物+道具+生物（不带场景）
+   * - false：不用分镜；参考槽 = 场景+人物+道具+生物
+   * - 缺省：有分镜图则同 true（兼容旧数据）；无图则同 false，可直接出片
+   */
+  use_storyboard_as_video_ref?: boolean;
   video_url: string;
   video_status: string;
   video_node_id: string;
@@ -988,6 +1032,71 @@ export interface DramaShot {
   needs_review?: boolean;
   /** 本镜执行表确认时间；>0 表示已确认本镜，可单镜出片 */
   confirmed_at?: number;
+  /** v3：关联 Shot Intent（Beat Coverage 校验靠它） */
+  intent_id?: string;
+  /** v3：character_id → costume_tag（防换装穿帮） */
+  costume_tags?: Record<string, string>;
+}
+
+// ================= v3：Narrative Beat × Director Beat × Shot Intent =================
+
+/** 峰值强调联合类型：校验只查"是否命中一种"，不限定具体哪种 */
+export type VisualEmphasis =
+  | 'close_up'
+  | 'push_in'
+  | 'isolation'
+  | 'composition_shift'
+  | 'silence_hold'
+  | 'reaction'
+  | 'reveal_object';
+
+/** ① 剧情层：这段故事发生了什么变化 */
+export interface DramaNarrativeBeat {
+  beat_id: string; // NB01
+  dramatic_function: 'setup' | 'conflict' | 'reveal' | 'climax' | 'turn' | 'suspense';
+  /** ⭐ 核心：观众这一拍结束后新知道了什么（必须可从原文/see/dialogue 推导，禁止情绪形容词） */
+  audience_change: string;
+  /** 情绪走向，如 "慌张 → 绝望" */
+  emotion_arc: string;
+  scene: string;
+  /** 关联 visual_events（A 事件全覆盖靠这里） */
+  event_ids: string[];
+}
+
+/** ② 导演层：导演决定怎么呈现 */
+export interface DramaDirectorBeat {
+  director_beat_id: string; // DB01
+  narrative_beat_id: string;
+  director_function: 'establish' | 'reveal' | 'reaction' | 'confrontation' | 'action' | 'impact';
+  /** 峰值节拍必须声明一种 */
+  visual_emphasis?: VisualEmphasis;
+  /** 推荐时长范围 */
+  target_seconds: [number, number];
+}
+
+/** ③ 意图层：为什么需要这个镜头 — 本方案的灵魂增量 */
+export interface DramaShotIntent {
+  intent_id: string; // SI01
+  director_beat_id: string;
+  purpose: 'establish' | 'reveal' | 'action' | 'reaction' | 'relationship' | 'impact' | 'transition';
+  /** 给观众看什么（画面内容一句话） */
+  visual_information: string;
+  /** 本镜结束观众知道了什么新东西 */
+  audience_change: string;
+  /** 主体 */
+  subject: string[];
+  /** ⭐ 本 intent 内可视化变化次数 → shotPlan 据此定镜数 */
+  visual_change_count: number;
+  visual_emphasis?: VisualEmphasis;
+  /** 承接上一镜（防穿帮） */
+  transition_from_previous?: string;
+}
+
+/** v3 Narrative Planning 三层输出 */
+export interface DramaNarrativePlanningResult {
+  narrative_beats: DramaNarrativeBeat[];
+  director_beats: DramaDirectorBeat[];
+  shot_intents: DramaShotIntent[];
 }
 
 export type DramaRefImageRole =
@@ -1142,8 +1251,8 @@ export interface ContinuityIssue {
 
 export type DramaReviewStatus = 'pass' | 'warn' | 'fail' | 'pending';
 
-/** 分镜建议节奏挡位：15秒高密度（默认）/ 短剧快切 / 正剧细致感 */
-export type DramaShotPlanPaceGear = 'dense_15s' | 'short_drama' | 'cinematic';
+/** 分镜建议节奏挡位：20秒长视频高密度 / 15秒高密度（默认）/ 短剧快切 / 正剧细致感 */
+export type DramaShotPlanPaceGear = 'dense_20s' | 'dense_15s' | 'short_drama' | 'cinematic';
 
 /** 分镜建议：时段枚举（分析剧情后必填其一） */
 export const DRAMA_SHOT_TIME_OF_DAY_OPTIONS = [
@@ -1164,7 +1273,8 @@ export function normalizeDramaShotPlanPaceGear(raw: unknown): DramaShotPlanPaceG
   if (s === 'cinematic' || s === '正剧' || s === '正剧细致感') return 'cinematic';
   if (s === 'short_drama' || s === '短剧快切' || s === '短剧快节奏') return 'short_drama';
   if (s === 'dense_15s' || s === '15秒高密度' || s === '15秒') return 'dense_15s';
-  return 'dense_15s';
+  if (s === 'dense_20s' || s === '20秒高密度' || s === '20秒' || s === '长视频高密度') return 'dense_20s';
+  return 'short_drama';
 }
 
 /** 把 LLM/手写时段归一到固定词表；无法识别则原样截断保留 */
@@ -1249,6 +1359,14 @@ export interface DramaDirectorNodeMeta {
   imageModel: string;
   videoBatchModel: string;
   videoBatchLipsyncModel: string;
+  /**
+   * 出片清晰度：MiniMax-H3 为 480p|720p（全能参考等非口型镜）。
+   */
+  videoBatchResolution: string;
+  /**
+   * 口型同步清晰度：MiniMax-H3 为 480p|720p。
+   */
+  videoBatchLipsyncResolution: string;
   stylePresetId: string;
   globalStyle: string;
   styleReferenceImageUrl: string;
@@ -1422,9 +1540,144 @@ export interface DramaShotSuggestion {
   transition_in?: string;
   transition_out?: string;
   visual_event_ids?: string[];
+  /** 本镜用到的道具名（与素材准备 props.name 对齐，出片时按名绑定 prop_ids） */
+  prop_names?: string[];
+  /** 本镜用到的生物名（与素材准备 creatures.name 对齐） */
+  creature_names?: string[];
+  /** 脚本设计：【参考】图1=角色卡（锚点）；图2=场景（锚点） */
+  asset_match?: string;
+  /** 脚本设计：整片已选视觉风格提示词（原样挂上，不改写） */
+  visual_style?: string;
+  /** v3：关联 Shot Intent（Beat Coverage 校验靠它） */
+  intent_id?: string;
+  /** v3：character_id → costume_tag（防换装穿帮） */
+  costume_tags?: Record<string, string>;
+}
+export type DramaOriginalSegmentType =
+  | 'action'
+  | 'dialogue'
+  | 'stage_direction'
+  | 'performance_direction'
+  | 'system'
+  | 'montage'
+  | 'transition'
+  | 'screen_text'
+  | 'narration'
+  | 'other';
+
+export type DramaAssetBindingStatus = 'MATCHED' | 'UNMATCHED' | 'AMBIGUOUS';
+
+export interface DramaOriginalSourceRange {
+  start: number;
+  end: number;
 }
 
-/** Episode Bible：单集剧情结构 + 本集 override + 分镜建议 */
+/** 分析阶段场次：只整理原文边界，不创作 */
+export interface DramaOriginalScene {
+  scene_id: string;
+  episode_id: string;
+  scene_number: number;
+  scene_no: string;
+  location_type: string;
+  location: string;
+  time: string;
+  original_heading: string;
+  order: number;
+  source_range?: DramaOriginalSourceRange;
+  scene_asset_id?: string;
+  scene_image_id?: string;
+  binding_status?: DramaAssetBindingStatus;
+}
+
+/** 分析阶段原文片段：original_text 是事实源，禁止截断 */
+export interface DramaOriginalSegment {
+  segment_id: string;
+  episode_id: string;
+  scene_id: string;
+  scene_no: string;
+  order: number;
+  original_text: string;
+  type: DramaOriginalSegmentType;
+  /** 剧本里的人物名，永不改成资产名 */
+  character_name?: string;
+  character_names?: string[];
+  character_id?: string;
+  image_id?: string;
+  voice_id?: string;
+  performance?: string;
+  speaker_type?: 'character' | 'system' | 'narration';
+  voice_description?: string;
+  source_range?: DramaOriginalSourceRange;
+}
+
+export interface DramaCharacterBinding {
+  original_name: string;
+  status: DramaAssetBindingStatus;
+  character_id?: string;
+  asset_name?: string;
+  image_id?: string;
+  voice_id?: string;
+  speaker_type?: 'character' | 'system' | 'narration';
+  candidate_character_ids?: string[];
+  candidate_names?: string[];
+}
+
+export interface DramaVoiceBinding {
+  original_name: string;
+  status: DramaAssetBindingStatus;
+  voice_id?: string;
+  voice_name?: string;
+  character_id?: string;
+  speaker_type?: 'character' | 'system' | 'narration';
+  voice_description?: string;
+  candidate_voice_ids?: string[];
+}
+
+export interface DramaSceneAssetBinding {
+  original_location: string;
+  status: DramaAssetBindingStatus;
+  scene_id?: string;
+  asset_name?: string;
+  scene_image_id?: string;
+  candidate_scene_ids?: string[];
+  candidate_names?: string[];
+}
+
+export interface DramaVisualBibleBinding {
+  visual_bible_id: string;
+  style_id: string;
+  style_name: string;
+  bound: boolean;
+}
+
+export interface DramaOriginalIntegrityReport {
+  ok: boolean;
+  source_chars: number;
+  covered_chars: number;
+  missing_samples: string[];
+  dialogue_ok: boolean;
+  notes: string[];
+}
+
+export interface DramaEpisodeAnalysisSummary {
+  scene_count: number;
+  segment_count: number;
+  character_mention_count: number;
+  scene_mention_count: number;
+  character_matched: number;
+  character_pending: number;
+  character_ambiguous: number;
+  voice_matched: number;
+  voice_pending: number;
+  voice_ambiguous: number;
+  scene_matched: number;
+  scene_pending: number;
+  scene_ambiguous: number;
+  visual_bible_bound: boolean;
+  integrity_ok: boolean;
+  analyzed_at: number;
+}
+
 export interface DramaEpisodeBible {
   episode_id: string;
   episode_no: number;
@@ -1436,6 +1689,16 @@ export interface DramaEpisodeBible {
   episodeBeat: DramaEpisodeBeat;
   episodePacing: DramaEpisodePacing;
   directing_notes: DramaCharacterDirecting[];
+  /** 分析阶段：原文场次（完整 heading） */
+  original_scenes?: DramaOriginalScene[];
+  /** 分析阶段：原文片段（完整 original_text） */
+  original_segments?: DramaOriginalSegment[];
+  character_bindings?: DramaCharacterBinding[];
+  voice_bindings?: DramaVoiceBinding[];
+  scene_bindings?: DramaSceneAssetBinding[];
+  visual_bible_binding?: DramaVisualBibleBinding;
+  original_integrity?: DramaOriginalIntegrityReport;
+  analysis_summary?: DramaEpisodeAnalysisSummary;
   /** 本集覆盖项目级 Visual Bible（空字段表示不覆盖） */
   visual_override: DramaVisualBible;
   /** 本集覆盖项目级 Sound Bible */
@@ -1445,10 +1708,20 @@ export interface DramaEpisodeBible {
   shot_suggestions: DramaShotSuggestion[];
   /** 分析阶段先拆出的视觉事件（合并成镜之前） */
   visual_events: DramaVisualEvent[];
+  /** v3 Narrative Planning：剧情层 / 导演层 / 意图层（analyze 后、shotPlan 前产出） */
+  narrative_beats?: DramaNarrativeBeat[];
+  director_beats?: DramaDirectorBeat[];
+  shot_intents?: DramaShotIntent[];
   /** 本集正式导演表（与 session.shots 工作副本对应，切集时换入） */
   official_shots: DramaShot[];
   /** 本集场次（随官方镜头表一起切集） */
   official_scene_beats: DramaSceneBeat[];
+  /** 步骤 2：分场（剧本拆分）完成时间 */
+  scene_split_at?: number;
+  /** 步骤 3：时长拆镜完成时间 */
+  duration_split_at?: number;
+  /** 步骤 6：素材匹配（脚本设计）完成时间；须在资产之后 */
+  asset_match_at?: number;
   updated_at: number;
 }
 

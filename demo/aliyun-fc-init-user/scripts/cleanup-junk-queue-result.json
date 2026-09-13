@@ -1,0 +1,24 @@
+{
+  "target_final": {
+    "task_id": "fa86cc56-176d-414c-84cb-e7138b36c2c2",
+    "status": "running",
+    "execution_stage": "provider_submitted",
+    "provider_task_id": "2096883203129430017",
+    "error_code": "",
+    "error_msg": "",
+    "user_id": "nx_88948564-5e6f-4be3-be7f-7f53c150ad79",
+    "model_id": "minimax-h3-i2v-720p-6s"
+  },
+  "platform": {
+    "video": {
+      "running": 3,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "cleanup_failed_count": 646
+}

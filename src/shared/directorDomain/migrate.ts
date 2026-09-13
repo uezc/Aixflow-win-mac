@@ -313,6 +313,8 @@ export function migrateDramaV1ToDomainV2(
       imageModel: s.imageModel,
       videoBatchModel: s.videoBatchModel,
       videoBatchLipsyncModel: s.videoBatchLipsyncModel,
+      videoBatchResolution: s.videoBatchResolution,
+      videoBatchLipsyncResolution: s.videoBatchLipsyncResolution,
       stylePresetId: s.stylePresetId,
       globalStyle: s.globalStyle,
       styleReferenceImageUrl: s.styleReferenceImageUrl,

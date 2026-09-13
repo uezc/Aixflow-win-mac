@@ -4,6 +4,11 @@ import { DarkConfirmModal, type DarkConfirmVariant } from '../components/DarkCon
 import { DARK_MODAL_Z, DARK_MODAL_Z_ABOVE_DIRECTOR_FS } from '../components/darkModalShell';
 import { getGlobalInteractionSnapshot } from '../utils/globalInteractionStore';
 import { abortAllPushToTalkPointers } from '../utils/pushToTalkPointer';
+import {
+  CLOUD_BALANCE_INSUFFICIENT_ALERT,
+  CLOUD_BALANCE_INSUFFICIENT_ALERT_EN,
+  isCloudBalanceInsufficientError,
+} from '../utils/cloudAiGateMessage';
 
 export type DarkConfirmOptions = {
   variant?: DarkConfirmVariant;
@@ -40,10 +45,28 @@ export const DarkAlertProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [confirmMessage, setConfirmMessage] = useState('');
   const [confirmOptions, setConfirmOptions] = useState<DarkConfirmOptions>({});
   const confirmResolverRef = useRef<((v: boolean) => void) | null>(null);
+  const lastBalanceAlertAtRef = useRef(0);
 
   const showAlert = useCallback((msg: string, options?: { stackZClass?: string }) => {
     abortAllPushToTalkPointers();
-    setMessage(msg);
+    let nextMsg = String(msg ?? '');
+    // 生成任务元宝不足：统一文案，并短时去重（避免多处同时弹）
+    if (isCloudBalanceInsufficientError(nextMsg)) {
+      const now = Date.now();
+      if (now - lastBalanceAlertAtRef.current < 1600) return;
+      lastBalanceAlertAtRef.current = now;
+      if (
+        nextMsg !== CLOUD_BALANCE_INSUFFICIENT_ALERT &&
+        nextMsg !== CLOUD_BALANCE_INSUFFICIENT_ALERT_EN
+      ) {
+        nextMsg =
+          /insufficient|recharge|top up|credits|balance/i.test(nextMsg) &&
+          !/[\u4e00-\u9fff]/.test(nextMsg)
+            ? CLOUD_BALANCE_INSUFFICIENT_ALERT_EN
+            : CLOUD_BALANCE_INSUFFICIENT_ALERT;
+      }
+    }
+    setMessage(nextMsg);
     setAlertStackZ(resolveModalStackZ(options?.stackZClass));
     setOpen(true);
   }, []);

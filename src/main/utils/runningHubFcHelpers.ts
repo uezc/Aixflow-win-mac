@@ -4,9 +4,38 @@
 import { randomUUID } from 'crypto';
 import { fcForwardRequest } from './fcForwardTask.js';
 import type { RhSealMediaFields } from './rhSealMedia.js';
+import {
+  assertNotDirectChargeForQueueOnlyModel,
+  VIDEO_QUEUE_ONLY_MODEL_IDS,
+} from '../../shared/videoQueueGoldenPath.js';
+import {
+  assertNotDirectChargeForAudioQueueOnlyModel,
+  AUDIO_QUEUE_ONLY_MODEL_IDS,
+} from '../../shared/audioQueueGoldenPath.js';
 
 export type { RhSealMediaFields } from './rhSealMedia.js';
 
+function queueOnlyModelFromBillingId(billingModelId?: string): string | null {
+  const b = String(billingModelId || '')
+    .trim()
+    .toLowerCase();
+  if (!b) return null;
+  for (const m of VIDEO_QUEUE_ONLY_MODEL_IDS) {
+    if (b === m || b.startsWith(`${m}-`)) return m;
+  }
+  return null;
+}
+
+function audioQueueOnlyModelFromBillingId(billingModelId?: string): string | null {
+  const b = String(billingModelId || '')
+    .trim()
+    .toLowerCase();
+  if (!b) return null;
+  for (const m of AUDIO_QUEUE_ONLY_MODEL_IDS) {
+    if (b === m || b.startsWith(`${m}-`)) return m;
+  }
+  return null;
+}
 export type RhAiAppNodeInfo = {
   nodeId: string;
   fieldName: string;
@@ -232,6 +261,7 @@ export function applyRhWorkflowMediaSeal(
   seal: RhSealMediaFields,
   userImages: string[],
   userAudios: string[],
+  unusedAudio: 'repeat' | 'silent' = 'repeat',
 ): void {
   const nodes = Array.isArray(liveNodes) ? liveNodes : [];
   if (!nodes.length) return;
@@ -247,7 +277,8 @@ export function applyRhWorkflowMediaSeal(
   const imgs = userImages.map((u) => String(u || '').trim()).filter(Boolean);
   const auds = userAudios.map((u) => String(u || '').trim()).filter(Boolean);
   const anchorImg = imgs[0] || seal.blankImage;
-  const anchorAud = auds[0] || seal.silentAudio;
+  const anchorAud =
+    unusedAudio === 'silent' ? seal.silentAudio : auds[0] || seal.silentAudio;
 
   imageDemoNodes.forEach((demo, idx) => {
     list.push({
@@ -291,9 +322,11 @@ function sealFallbackAudioSlots(
   audioFields: string[],
   slots: ReadonlyArray<{ nodeId: string; description: string }>,
   seal: RhSealMediaFields,
+  unusedAudio: 'repeat' | 'silent' = 'repeat',
 ): void {
   const auds = audioFields.map((u) => String(u || '').trim()).filter(Boolean);
-  const anchor = auds[0] || seal.silentAudio;
+  const anchor =
+    unusedAudio === 'silent' ? seal.silentAudio : auds[0] || seal.silentAudio;
   slots.forEach((slot, idx) => {
     list.push({
       nodeId: slot.nodeId,
@@ -547,13 +580,13 @@ export function buildMinimaxH3MultiNodeInfoListFallback(
     { nodeId: '67', description: '参考音2' },
     { nodeId: '68', description: '参考音3' },
   ] as const;
-  sealFallbackAudioSlots(list, audios, AUDIO_FALLBACK, seal);
+  sealFallbackAudioSlots(list, audios, AUDIO_FALLBACK, seal, 'silent');
   return list;
 }
 
 /**
  * MiniMax H3 全能参考：apiCallDemo 仅取 nodeId；媒体值用用户上传。
- * 空图槽用 image1 封口；有参考音时覆盖全部 audio 槽。
+ * 空图槽用 image1 封口；空音槽用静音占位，禁止把人物参考音复制进 Audio 3。
  */
 export function buildMinimaxH3MultiNodeInfoList(
   prompt: string,
@@ -586,7 +619,7 @@ export function buildMinimaxH3MultiNodeInfoList(
   );
   const nodes = Array.isArray(liveNodes) ? liveNodes : [];
   if (!nodes.length) {
-    applyRhWorkflowMediaSeal(fallback, nodes, seal, imageFields, audios);
+    applyRhWorkflowMediaSeal(fallback, nodes, seal, imageFields, audios, 'silent');
     return fallback;
   }
 
@@ -618,7 +651,7 @@ export function buildMinimaxH3MultiNodeInfoList(
         })),
       ),
     );
-    applyRhWorkflowMediaSeal(fallback, nodes, seal, imageFields, audios);
+    applyRhWorkflowMediaSeal(fallback, nodes, seal, imageFields, audios, 'silent');
     return finishRhNodeInfoList(fallback, nodes);
   }
 
@@ -648,7 +681,7 @@ export function buildMinimaxH3MultiNodeInfoList(
       description: durNode.description || '时长',
     },
   ];
-  applyRhWorkflowMediaSeal(list, nodes, seal, imageFields, audios);
+  applyRhWorkflowMediaSeal(list, nodes, seal, imageFields, audios, 'silent');
   return finishRhNodeInfoList(list, nodes);
 }
 
@@ -992,6 +1025,11 @@ export async function rhPostChargeVideo(
   options?: { billingModelId?: string; rhRegion?: 'cn' | 'ai' },
   prepaidLedgerTaskId?: string | null,
 ): Promise<Record<string, unknown>> {
+  // P0：Queue-only 型号禁止经 Direct charge 提交（billingModelId 形如 minimax-h3-t2v-720p-6s）
+  const queueOnly = queueOnlyModelFromBillingId(options?.billingModelId);
+  if (queueOnly) {
+    assertNotDirectChargeForQueueOnlyModel(queueOnly, 'rhPostChargeVideo');
+  }
   const usePrepaid = prepaidLedgerTaskId != null && String(prepaidLedgerTaskId).trim() !== '';
   const taskId = usePrepaid ? String(prepaidLedgerTaskId).trim() : fallbackFcId;
   const billing = usePrepaid ? ('none' as const) : ('charge' as const);
@@ -1088,6 +1126,10 @@ export async function rhPostChargeAudio(
   options?: { billingModelId?: string },
   prepaidLedgerTaskId?: string | null,
 ): Promise<Record<string, unknown>> {
+  const queueOnly = audioQueueOnlyModelFromBillingId(options?.billingModelId);
+  if (queueOnly) {
+    assertNotDirectChargeForAudioQueueOnlyModel(queueOnly, 'rhPostChargeAudio');
+  }
   const usePrepaid = prepaidLedgerTaskId != null && String(prepaidLedgerTaskId).trim() !== '';
   const taskId = usePrepaid ? String(prepaidLedgerTaskId).trim() : fallbackFcId;
   const billing = usePrepaid ? ('none' as const) : ('charge' as const);

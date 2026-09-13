@@ -149,8 +149,10 @@ function extractModelIdFromForward(path, bodyObj) {
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 /** 单用户每分钟最�?run-task 次数（防刷） */
 const RATE_LIMIT_MAX = Math.max(5, parseInt(process.env.NX_RATE_LIMIT_MAX || '20', 10) || 20);
-const BLTCY_CHAT_URL = 'https://api.bltcy.ai/v1/chat/completions';
-const API_TIMEOUT_MS = 180000;
+const BLTCY_CHAT_URL = `${(process.env.BLTCY_API_BASE || 'https://api.apilio.ai').replace(/\/$/, '')}/v1/chat/completions`;
+// v3 改造后剧本分析链路变长（Analyze + NarrativePlanning + ShotPlan + 对白补齐 + 校验）
+// 配合阿里云控制台 FC 函数超时调到 300s，fetch BLTCY 也放宽到 5 分钟
+const API_TIMEOUT_MS = 300000;
 const ACCESS_EXPIRES = process.env.JWT_ACCESS_EXPIRES || '30m';
 const REFRESH_EXPIRES = process.env.JWT_REFRESH_EXPIRES || '7d';
 
@@ -512,7 +514,7 @@ function resolveForwardUrl(provider, path, rhTarget) {
   }
   if (provider === 'bltcy') {
     const p = normalizeRhPath(path);
-    const base = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
+    const base = (process.env.BLTCY_API_BASE || 'https://api.apilio.ai').replace(/\/$/, '');
     return `${base}${p}`;
   }
   throw new Error('UNSUPPORTED_FORWARD_PROVIDER');
@@ -1209,105 +1211,12 @@ async function handleRunTask(userId, taskId, rawBody, dbModule) {
  *       nodeData|node_data（可选，�?run-task 计费维度一致）, workflow_json（可选）
  */
 async function handleTasksCreate(userId, body, dbModule) {
+  const { handleTasksCreate: createTask } = await import('./lib/handleTasksCreate.mjs');
   const { getFinalPrice } = await ensurePricing();
-  const modelId = String(body?.model_id ?? body?.modelId ?? '').trim();
-  if (!modelId) throw new Error('model_id required');
-
-  const taskTypeRaw = String(body?.type ?? body?.task_type ?? 'image').toLowerCase();
-  const taskType =
-    taskTypeRaw === 'llm' || taskTypeRaw === 'image' || taskTypeRaw === 'video' || taskTypeRaw === 'audio'
-      ? taskTypeRaw
-      : 'image';
-
-  const nodeData =
-    body?.nodeData && typeof body.nodeData === 'object'
-      ? body.nodeData
-      : body?.node_data && typeof body.node_data === 'object'
-        ? body.node_data
-        : {};
-
-  let params = body?.params;
-  if (params === undefined || params === null) {
-    params = body?.prompt_json ?? body?.promptJson ?? {};
-  }
-  const promptJsonStr =
-    typeof params === 'string'
-      ? params
-      : JSON.stringify(params && typeof params === 'object' ? params : { value: params });
-
-  const workflowRaw = body?.workflow_json ?? body?.workflowJson;
-  const workflowStr =
-    workflowRaw === undefined || workflowRaw === null
-      ? ''
-      : typeof workflowRaw === 'string'
-        ? workflowRaw
-        : JSON.stringify(workflowRaw);
-
-  let modelConfigMap = null;
-  try {
-    modelConfigMap = await loadNxModelConfigMapForBilling(dbModule);
-  } catch (e) {
-    console.warn('[tasks/create] listModelConfig skipped:', e?.message || e);
-  }
-
-  const cost = getFinalPrice(modelId, { taskType, nodeData, modelConfigMap });
-  const taskId = crypto.randomUUID();
-
-  const billingUserTask = await dbModule.getUserById(userId);
-  if (billingUserTask && typeof dbModule.assertModelCostThreshold === 'function') {
-    dbModule.assertModelCostThreshold(billingUserTask, cost, taskType);
-  }
-
-  const deductResult = await dbModule.deductWithTransaction(userId, taskId, cost, {
-    provider: 'task_create',
-    description: `create:${modelId}`,
+  return createTask(userId, body, dbModule, {
+    getFinalPrice,
+    loadNxModelConfigMapForBilling,
   });
-
-  if (deductResult.idempotent) {
-    const u = await dbModule.getUserById(userId);
-    return {
-      task_id: taskId,
-      balance: u?.balance ?? deductResult.balance,
-      cost_coins: cost,
-      model_id: modelId,
-      duplicate_task: true,
-    };
-  }
-
-  let refunded = false;
-  const safeRefund = async () => {
-    if (refunded) return;
-    refunded = true;
-    try {
-      await dbModule.refundWithLedger(userId, taskId, cost, {
-        provider: 'task_create',
-        description: 'task_record_failed',
-      });
-    } catch (re) {
-      console.error('[tasks/create] refund failed', re?.message || re);
-    }
-  };
-
-  try {
-    await dbModule.upsertTask(taskId, userId, {
-      status: 'pending',
-      cost,
-      amount: cost,
-      prompt_json: promptJsonStr,
-      ...(workflowStr ? { workflow_json: workflowStr } : {}),
-    });
-  } catch (e) {
-    await safeRefund();
-    throw e;
-  }
-
-  const u = await dbModule.getUserById(userId);
-  return {
-    task_id: taskId,
-    balance: u?.balance ?? deductResult.balance,
-    cost_coins: cost,
-    model_id: modelId,
-  };
 }
 
 async function handleRequest(req) {
@@ -1423,6 +1332,116 @@ async function handleRequest(req) {
           statusCode: 500,
           headers,
           body: JSON.stringify({ error: e?.message || 'SETTLE_FAILED' }),
+        };
+      }
+    }
+
+    // POST /internal/promote-queued-tasks — Phase 5：lease recovery + queued→claimed
+    if (
+      pathNorm.endsWith('/internal/promote-queued-tasks') ||
+      pathNorm === '/internal/promote-queued-tasks'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({
+            error: 'PROMOTE_NOT_CONFIGURED',
+            message: '请配置 ADMIN_SETTLE_SECRET',
+          }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const runFn = dbModule.runPromoteQueuedTasks;
+        if (typeof runFn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const maxClaims = Math.min(
+          200,
+          Math.max(0, parseInt(body.max_claims ?? body.maxClaims ?? process.env.NX_PROMOTE_BATCH_SIZE ?? '20', 10) || 20),
+        );
+        const maxScanRows = Math.min(
+          500000,
+          Math.max(1000, parseInt(body.max_scan_rows ?? body.maxScanRows ?? '20000', 10)),
+        );
+        const reconcile =
+          body.reconcile === true ||
+          body.reconcile === '1' ||
+          String(body.reconcile || '').toLowerCase() === 'true';
+        const r = await runFn({
+          maxClaims,
+          maxScanRows,
+          maxLeaseRecover: Math.min(200, Math.max(1, parseInt(body.max_lease_recover ?? body.maxLeaseRecover ?? '50', 10) || 50)),
+          maxOrphans: Math.min(200, Math.max(1, parseInt(body.max_orphans ?? body.maxOrphans ?? '50', 10) || 50)),
+          reconcile,
+          taskType: body.task_type || body.taskType || null,
+        });
+        return { statusCode: 200, headers, body: JSON.stringify(r) };
+      } catch (e) {
+        console.error('[promote-queued-tasks]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: e?.message || 'PROMOTE_FAILED' }),
+        };
+      }
+    }
+
+    // POST /internal/reconcile-queue-reservations — Phase 5 orphan reconcile
+    if (
+      pathNorm.endsWith('/internal/reconcile-queue-reservations') ||
+      pathNorm === '/internal/reconcile-queue-reservations'
+    ) {
+      const secret = process.env.ADMIN_SETTLE_SECRET?.trim();
+      if (!secret) {
+        return {
+          statusCode: 503,
+          headers,
+          body: JSON.stringify({
+            error: 'RECONCILE_NOT_CONFIGURED',
+            message: '请配置 ADMIN_SETTLE_SECRET',
+          }),
+        };
+      }
+      const h =
+        getHeader(reqHeaders, 'x-admin-settle-secret') ||
+        getHeader(reqHeaders, 'X-Admin-Settle-Secret') ||
+        (body && (body.admin_secret || body.adminSecret));
+      if (h !== secret) {
+        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
+      }
+      try {
+        const runFn = dbModule.runPromoteQueuedTasks;
+        if (typeof runFn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const keys = body.reconcile_counter_keys || body.reconcileCounterKeys || [];
+        const r = await runFn({
+          maxClaims: 0,
+          reconcile: true,
+          maxLeaseRecover: Math.min(200, Math.max(0, parseInt(body.max_lease_recover ?? body.maxLeaseRecover ?? '50', 10) || 50)),
+          maxOrphans: Math.min(200, Math.max(1, parseInt(body.max_orphans ?? body.maxOrphans ?? '50', 10) || 50)),
+          maxScanRows: Math.min(
+            500000,
+            Math.max(1000, parseInt(body.max_scan_rows ?? body.maxScanRows ?? '20000', 10)),
+          ),
+          reconcileCounterKeys: Array.isArray(keys) ? keys : [],
+        });
+        return { statusCode: 200, headers, body: JSON.stringify(r) };
+      } catch (e) {
+        console.error('[reconcile-queue-reservations]', e?.stack ?? e);
+        return {
+          statusCode: 500,
+          headers,
+          body: JSON.stringify({ error: e?.message || 'RECONCILE_FAILED' }),
         };
       }
     }
@@ -1789,6 +1808,73 @@ async function handleRequest(req) {
       } catch (e) {
         console.error('[admin-users-list]', e?.stack ?? e);
         return { statusCode: 500, headers, body: JSON.stringify({ error: e?.message || 'ADMIN_USERS_LIST_FAILED' }) };
+      }
+    }
+
+    // POST /internal/admin-set-user-concurrency — Phase 3：套餐/并发覆盖（需 NX_ADMIN_ISSUE_COUPON_SECRET）
+    if (
+      pathNorm.endsWith('/internal/admin-set-user-concurrency') ||
+      pathNorm === '/internal/admin-set-user-concurrency'
+    ) {
+      const gate = checkNxAdminIssueCouponSecret(reqHeaders, body);
+      if (!gate.ok) {
+        return { statusCode: gate.status, headers, body: JSON.stringify(gate.payload) };
+      }
+      try {
+        const fn = dbModule.updateUserConcurrencyEntitlement;
+        if (typeof fn !== 'function') {
+          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
+        }
+        const uid = String(body.user_id ?? body.userId ?? '').trim();
+        if (!uid) {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({ error: 'BAD_REQUEST', message: 'user_id 必填' }),
+          };
+        }
+        const patch = {};
+        if (body.plan_id != null || body.planId != null) {
+          patch.planId = body.plan_id ?? body.planId;
+        }
+        if (body.clear_overrides === true || body.clearOverrides === true) {
+          patch.clearConcurrencyOverrides = true;
+        } else {
+          if (body.video_concurrency_override !== undefined || body.videoConcurrencyOverride !== undefined) {
+            const v = body.video_concurrency_override ?? body.videoConcurrencyOverride;
+            patch.videoConcurrencyOverride = v === null || v === '' ? null : Number(v);
+          }
+          if (body.image_concurrency_override !== undefined || body.imageConcurrencyOverride !== undefined) {
+            const v = body.image_concurrency_override ?? body.imageConcurrencyOverride;
+            patch.imageConcurrencyOverride = v === null || v === '' ? null : Number(v);
+          }
+          if (
+            body.concurrency_override_expires_at !== undefined ||
+            body.concurrencyOverrideExpiresAt !== undefined
+          ) {
+            patch.concurrencyOverrideExpiresAt =
+              body.concurrency_override_expires_at ?? body.concurrencyOverrideExpiresAt;
+          }
+        }
+        const updated = await fn(uid, patch);
+        const { concurrencyFieldsForMeResponse } = await import('./lib/userConcurrencyEntitlement.mjs');
+        const conc = concurrencyFieldsForMeResponse(updated);
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            ok: true,
+            user_id: updated.userId,
+            ...conc,
+          }),
+        };
+      } catch (e) {
+        const msg = e?.message || 'ADMIN_SET_CONCURRENCY_FAILED';
+        if (msg === 'USER_NOT_FOUND') {
+          return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
+        }
+        console.error('[admin-set-user-concurrency]', e?.stack ?? e);
+        return { statusCode: 500, headers, body: JSON.stringify({ error: msg }) };
       }
     }
 
@@ -2201,13 +2287,21 @@ async function handleRequest(req) {
       };
     }
 
-    // GET /me �?可选：查余�?    if (pathNorm.endsWith('/me') || pathNorm === '/me') {
+    // GET/POST /me — balance + Phase 3 concurrency
+    if (pathNorm.endsWith('/me') || pathNorm === '/me') {
       const userId = await verifyAccessTokenAsync(auth, dbModule);
       if (!userId) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
       }
       const u = await dbModule.getUserById(userId);
       if (!u) return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
+      let concurrencyExtra = {};
+      try {
+        const { concurrencyFieldsForMeResponse } = await import('./lib/userConcurrencyEntitlement.mjs');
+        concurrencyExtra = concurrencyFieldsForMeResponse(u);
+      } catch (e) {
+        console.warn('[me] concurrency resolve skipped', e?.message || e);
+      }
       return {
         statusCode: 200,
         headers,
@@ -2217,550 +2311,10 @@ async function handleRequest(req) {
           balance: u.balance,
           status: u.status,
           is_first_recharge: u.isFirstRecharge === true,
+          ...concurrencyExtra,
         }),
       };
     }
-
-    // POST /recharge �?充值入账（Bearer 用户自助；或支付服务密钥 + out_trade_no 支付宝闭环）
-    if (pathNorm.endsWith('/recharge') || pathNorm === '/recharge') {
-      const payGate = checkAlipayPaySecret(reqHeaders, body);
-      if (payGate.ok) {
-        const outTradeNo = String(body.out_trade_no ?? body.outTradeNo ?? '').trim();
-        const tradeNo = String(body.trade_no ?? body.tradeNo ?? '').trim();
-        const amountRaw = body.amount_cny ?? body.amountCny ?? body.total_amount;
-        const amountCny = typeof amountRaw === 'string' ? parseFloat(amountRaw) : Number(amountRaw);
-        if (!outTradeNo) {
-          return { statusCode: 400, headers, body: JSON.stringify({ error: 'OUT_TRADE_NO_REQUIRED' }) };
-        }
-        try {
-          const fn = dbModule.settleAlipayOrder;
-          if (typeof fn !== 'function') {
-            return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
-          }
-          console.log('[recharge/alipay] settle', outTradeNo);
-          const r = await fn(outTradeNo, tradeNo, amountCny);
-          return { statusCode: 200, headers, body: JSON.stringify(r) };
-        } catch (e) {
-          const msg = e?.message || 'RECHARGE_FAILED';
-          console.error('[recharge/alipay]', msg, e?.stack ?? e);
-          if (msg === 'ORDER_NOT_FOUND') {
-            return { statusCode: 404, headers, body: JSON.stringify({ error: 'ORDER_NOT_FOUND' }) };
-          }
-          return { statusCode: 500, headers, body: JSON.stringify({ error: msg }) };
-        }
-      }
-
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      const amountRaw = body.amount_cny ?? body.amountCny ?? body.tier ?? body.amount;
-      const amountCny = typeof amountRaw === 'string' ? parseFloat(amountRaw) : Number(amountRaw);
-      if (!Number.isFinite(amountCny)) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: 'amount_cny required' }) };
-      }
-      try {
-        const r = await dbModule.rechargeWithLedger(userId, amountCny);
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify(r),
-        };
-      } catch (e) {
-        const msg = e?.message || 'RECHARGE_FAILED';
-        if (msg === 'INVALID_RECHARGE_TIER') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
-          };
-        }
-        if (msg === 'USER_NOT_FOUND') {
-          return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
-        }
-        if (msg === 'USER_FROZEN') {
-          return { statusCode: 403, headers, body: JSON.stringify({ error: 'USER_FROZEN' }) };
-        }
-        console.error('[recharge]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: msg }),
-        };
-      }
-    }
-
-    // POST /redeem-coupon �?兑换码入账（需 Bearer�?    if (pathNorm.endsWith('/redeem-coupon') || pathNorm === '/redeem-coupon') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      const codeRaw = body.code ?? body.coupon_code;
-      const codeStr = codeRaw != null ? String(codeRaw) : '';
-      if (!codeStr.trim()) {
-        return {
-          statusCode: 400,
-          headers,
-          body: JSON.stringify({ error: 'COUPON_CODE_REQUIRED', message: '请输入兑换码' }),
-        };
-      }
-      try {
-        const dbModule = await ensureDb();
-        const r = await dbModule.redeemCouponWithLedger(userId, codeStr);
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify(r),
-        };
-      } catch (e) {
-        const msg = e?.message || 'REDEEM_FAILED';
-        if (msg === 'COUPON_INVALID') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'COUPON_INVALID', message: '兑换码无效或不存�? }),
-          };
-        }
-        if (msg === 'COUPON_USED') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'COUPON_USED', message: '兑换码已使用' }),
-          };
-        }
-        if (msg === 'COUPON_MISCONFIGURED') {
-          return {
-            statusCode: 500,
-            headers,
-            body: JSON.stringify({ error: 'COUPON_MISCONFIGURED', message: '兑换码配置异�? }),
-          };
-        }
-        if (msg === 'INVALID_RECHARGE_TIER') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'INVALID_RECHARGE_TIER', message: '仅支持档�?50/100/300/1000 �? }),
-          };
-        }
-        if (msg === 'USER_NOT_FOUND') {
-          return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
-        }
-        if (msg === 'USER_FROZEN') {
-          return { statusCode: 403, headers, body: JSON.stringify({ error: 'USER_FROZEN' }) };
-        }
-        console.error('[redeem-coupon]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: msg }),
-        };
-      }
-    }
-
-    // POST /transactions — 流水分页（需 Bearer；body: limit, page）
-    if (pathNorm.endsWith('/transactions') || pathNorm === '/transactions') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 30));
-      const page = Math.max(1, parseInt(body.page, 10) || 1);
-      try {
-        const pagedFn = dbModule.listTransactionsForUserPaged;
-        if (typeof pagedFn === 'function') {
-          const result = await pagedFn(userId, { limit: lim, page });
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify({
-              items: result.items || [],
-              page: result.page ?? page,
-              pageSize: result.pageSize ?? lim,
-              total: result.total ?? 0,
-              hasMore: !!result.hasMore,
-            }),
-          };
-        }
-        const items = await dbModule.listRecentTransactionsForUser(userId, lim);
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({
-            items,
-            page: 1,
-            pageSize: lim,
-            total: Array.isArray(items) ? items.length : 0,
-            hasMore: false,
-          }),
-        };
-      } catch (e) {
-        console.error('[transactions]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: e?.message || 'LIST_FAILED' }),
-        };
-      }
-    }
-
-
-    // POST /tasks �?最近任务记录（需 Bearer；走全局二级索引 idx_user_tasks�?    if (pathNorm.endsWith('/tasks') || pathNorm === '/tasks') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      const lim = Math.min(50, Math.max(1, parseInt(body.limit, 10) || 20));
-      try {
-        const listFn = dbModule.listRecentTasksForUser;
-        const items = typeof listFn === 'function' ? await listFn(userId, lim) : [];
-        return { statusCode: 200, headers, body: JSON.stringify({ items }) };
-      } catch (e) {
-        console.error('[tasks]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: e?.message || 'LIST_FAILED' }),
-        };
-      }
-    }
-
-    // POST /tasks/status �?单条任务状态（需 Bearer；与 /tasks 列表字段一�?+ balance�?    if (pathNorm.endsWith('/tasks/status') || pathNorm === '/tasks/status') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      const tid = String(body.task_id ?? body.taskId ?? '').trim();
-      if (!tid) {
-        return {
-          statusCode: 400,
-          headers,
-          body: JSON.stringify({ error: 'BAD_REQUEST', message: 'task_id 必填' }),
-        };
-      }
-      try {
-        const getFn = dbModule.getTaskRowForUser;
-        if (typeof getFn !== 'function') {
-          return { statusCode: 501, headers, body: JSON.stringify({ error: 'NOT_IMPLEMENTED' }) };
-        }
-        const row = await getFn(tid, userId);
-        if (!row) {
-          return { statusCode: 404, headers, body: JSON.stringify({ error: 'NOT_FOUND' }) };
-        }
-        let balance = 0;
-        try {
-          const u = await dbModule.getUserById(userId);
-          balance = u?.balance ?? 0;
-        } catch (_) {}
-        return { statusCode: 200, headers, body: JSON.stringify({ ...row, balance }) };
-      } catch (e) {
-        console.error('[tasks/status]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: e?.message || 'STATUS_FAILED' }),
-        };
-      }
-    }
-
-    // POST /tasks/create �?�?model_id 扣元宝并�?pending 任务（需 Bearer�?    if (pathNorm.endsWith('/tasks/create') || pathNorm === '/tasks/create') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      if (!checkRateLimit(userId)) {
-        return {
-          statusCode: 429,
-          headers,
-          body: JSON.stringify({
-            error: 'RATE_LIMIT_EXCEEDED',
-            message: '请求过于频繁，请稍后再试',
-          }),
-        };
-      }
-      try {
-        const r = await handleTasksCreate(userId, body, dbModule);
-        return { statusCode: 200, headers, body: JSON.stringify(r) };
-      } catch (e) {
-        if (
-          e?.name === 'ModelNotPricedError' ||
-          e?.nxStatusCode === 403 ||
-          e?.nxErrorCode === 'MODEL_NOT_PRICED'
-        ) {
-          return {
-            statusCode: 403,
-            headers,
-            body: JSON.stringify({
-              error: '该模型暂未上线或定价错误',
-              code: 'MODEL_NOT_PRICED',
-            }),
-          };
-        }
-        const msg = e?.message || 'TASK_CREATE_FAILED';
-        if (msg === 'BALANCE_INSUFFICIENT') {
-          return { statusCode: 402, headers, body: JSON.stringify({ error: 'BALANCE_INSUFFICIENT' }) };
-        }
-        if (msg === 'USER_FROZEN') {
-          return { statusCode: 403, headers, body: JSON.stringify({ error: 'USER_FROZEN' }) };
-        }
-        if (msg === 'USER_NOT_FOUND') {
-          return { statusCode: 404, headers, body: JSON.stringify({ error: 'USER_NOT_FOUND' }) };
-        }
-        if (msg === 'INVALID_AMOUNT') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'INVALID_AMOUNT', message: '计价结果�?0 或无效，无法扣费' }),
-          };
-        }
-        if (msg === 'model_id required') {
-          return {
-            statusCode: 400,
-            headers,
-            body: JSON.stringify({ error: 'BAD_REQUEST', message: 'model_id 必填' }),
-          };
-        }
-        console.error('[tasks/create]', e?.stack ?? e);
-        return { statusCode: 500, headers, body: JSON.stringify({ error: msg }) };
-      }
-    }
-
-    // init-user 旧版
-    if (pathNorm.endsWith('/init-user') || pathNorm === '/init-user') {
-      return {
-        statusCode: 410,
-        headers,
-        body: JSON.stringify({
-          error: 'DEPRECATED',
-          message: '请使�?/register �?/login，客户端升级至正式版',
-        }),
-      };
-    }
-
-    // POST /model-config �?nx_model_config 全量（需 Bearer；客户端展示价）
-    if (pathNorm.endsWith('/model-config') || pathNorm === '/model-config') {
-      const userId = await verifyAccessTokenAsync(auth, dbModule);
-      if (!userId) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: 'UNAUTHORIZED' }) };
-      }
-      try {
-        const listFn = dbModule.listModelConfig;
-        const items = typeof listFn === 'function' ? await listFn() : [];
-        return {
-          statusCode: 200,
-          headers,
-          body: JSON.stringify({ items }),
-        };
-      } catch (e) {
-        console.error('[model-config]', e?.stack ?? e);
-        return {
-          statusCode: 500,
-          headers,
-          body: JSON.stringify({ error: e?.message || 'MODEL_CONFIG_LIST_FAILED' }),
-        };
-      }
-    }
-
-    // run-task
-    const isRunTask = pathNorm.endsWith('/run-task') || pathNorm === '/run-task' || pathNorm === '/' || pathNorm === '';
-    if (!isRunTask) {
-      return { statusCode: 404, headers, body: JSON.stringify({ error: 'Not Found' }) };
-    }
-
-    const userId = await verifyAccessTokenAsync(auth, dbModule);
-    if (!userId) {
-      return {
-        statusCode: 401,
-        headers,
-        body: JSON.stringify({ error: 'UNAUTHORIZED', message: '需�?Authorization: Bearer <access_token>' }),
-      };
-    }
-
-    const taskId = body.taskId || getHeader(reqHeaders, 'x-task-id');
-    if (!taskId || typeof taskId !== 'string') {
-      return { statusCode: 400, headers, body: JSON.stringify({ error: 'taskId required' }) };
-    }
-    const tid = taskId.trim();
-
-    const innerPre = body.body || body.payload || body;
-    const billingPre = String(innerPre?.billing ?? body.billing ?? 'charge').toLowerCase();
-    if (billingPre !== 'none' && billingPre !== 'refund' && !checkRateLimit(userId)) {
-      return {
-        statusCode: 429,
-        headers,
-        body: JSON.stringify({
-          error: 'RATE_LIMIT_EXCEEDED',
-          message: '请求过于频繁，请稍后再试',
-        }),
-      };
-    }
-
-    try {
-      const result = await handleRunTask(userId, tid, body, dbModule);
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          ...result.data,
-          balance: result.balance,
-        }),
-      };
-    } catch (e) {
-      console.error('run-task error:', e?.stack ?? e);
-      if (
-        e?.name === 'ModelNotPricedError' ||
-        e?.nxStatusCode === 403 ||
-        e?.nxErrorCode === 'MODEL_NOT_PRICED'
-      ) {
-        return {
-          statusCode: 403,
-          headers,
-          body: JSON.stringify({
-            error: '该模型暂未上线或定价错误',
-            code: 'MODEL_NOT_PRICED',
-            balanceRefunded: false,
-          }),
-        };
-      }
-      const rd = e?.response?.data;
-      const message =
-        (typeof rd?.error === 'string' && rd.error) ||
-        rd?.message ||
-        e?.message ||
-        'Internal Server Error';
-      const refundSucceeded = e?.nxRefundSucceeded === true;
-      const isBal =
-        message === 'BALANCE_INSUFFICIENT' ||
-        message === 'USER_FROZEN' ||
-        message === 'USER_NOT_FOUND' ||
-        String(message).toUpperCase().includes('BALANCE');
-      const code =
-        message === 'USER_FROZEN'
-          ? 403
-          : message === 'USER_NOT_FOUND'
-            ? 404
-            : isBal
-              ? 402
-              : e?.response?.status >= 400
-                ? e.response.status
-                : 500;
-      return {
-        statusCode: code,
-        headers,
-        body: JSON.stringify({
-          error: message,
-          ...(refundSucceeded
-            ? {
-                errorCode: 'PROVIDER_ERROR_REFUNDED',
-                balanceRefunded: true,
-              }
-            : { balanceRefunded: false }),
-        }),
-      };
-    }
-  } catch (e) {
-    console.error('[handler]', e?.stack ?? e);
-    let adminGuess = isAdminApiPath;
-    if (!adminGuess) {
-      try {
-        let s = '';
-        if (typeof req === 'string') s = req;
-        else if (Buffer.isBuffer(req) || (req && typeof req.length === 'number' && typeof req.toString === 'function')) {
-          s = req.toString('utf8');
-        }
-        if (s) {
-          const ev = JSON.parse(s);
-          const p = String(ev.rawPath || ev.path || '').split('?')[0];
-          adminGuess = p.includes('/api/admin/');
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    const errHeaders = adminGuess ? adminCorsJsonHeaders(reqHeadersForCors) : headers;
-    return {
-      statusCode: 500,
-      headers: errHeaders,
-      body: JSON.stringify({ error: e?.message || 'Internal Server Error' }),
-    };
-  }
-}
-
-export const handler = async (req) => sanitizeFcResponse(await handleRequest(req));
-
-// ---------------------------------------------------------------------------
-// 自定义运行时：FC 配置「启动命�?node index.mjs、监�?9000」时，由本机 HTTP 承接请求并复用上�?handler
-// ---------------------------------------------------------------------------
-
-function isMainModule() {
-  if (!process.argv[1]) return false;
-  try {
-    const entry = path.resolve(fileURLToPath(pathToFileURL(process.argv[1]).href));
-    const thisFile = path.resolve(fileURLToPath(import.meta.url));
-    return entry === thisFile;
-  } catch {
-    return false;
-  }
-}
-
-async function readIncomingMessageBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-/**
- * �?Node IncomingMessage 转为�?FC HTTP 触发器兼容的 event，供 parseRequest / handleRequest 使用
- */
-function buildFcEventFromNodeRequest(req, bodyStr) {
-  const host = req.headers?.host || '127.0.0.1';
-  let pathWithQuery = '/';
-  try {
-    const u = new URL(req.url || '/', `http://${host}`);
-    pathWithQuery = u.pathname + (u.search || '');
-  } catch {
-    const raw = String(req.url || '/');
-    pathWithQuery = raw.startsWith('/') ? raw : `/${raw}`;
-  }
-  const headers = {};
-  for (const [k, v] of Object.entries(req.headers || {})) {
-    if (v === undefined) continue;
-    headers[k] = Array.isArray(v) ? v.join(', ') : String(v);
-  }
-  const ev = {
-    httpMethod: String(req.method || 'GET').toUpperCase(),
-    path: pathWithQuery,
-    headers,
-  };
-  if (bodyStr && bodyStr.length) ev.body = bodyStr;
-  return ev;
-}
-
-function writeFcHttpResponse(nodeRes, fcOut, reqMethod) {
-  const code = Number(fcOut.statusCode) || 500;
-  const raw = fcOut.headers && typeof fcOut.headers === 'object' ? { ...fcOut.headers } : {};
-  let body = fcOut.body === undefined || fcOut.body === null ? '' : fcOut.body;
-  if (typeof body !== 'string') body = String(body);
-  if (reqMethod === 'HEAD') {
-    nodeRes.writeHead(code, raw);
-    nodeRes.end();
-    return;
-  }
-  nodeRes.writeHead(code, raw);
-  nodeRes.end(body);
-}
-
-/** listen 成功后注册一次，避免重复绑定 */
-let _aixflowProcHandlersRegistered = false;
-function registerAixflowGlobalErrorHandlers() {
-  if (_aixflowProcHandlersRegistered) return;
-  _aixflowProcHandlersRegistered = true;
-  process.on('uncaughtException', (err) => {
-    console.error('[AIXFLOW FC] uncaughtException:', err?.stack || err);
-  });
-  process.on('unhandledRejection', (reason, p) => {
-    console.error('[AIXFLOW FC] unhandledRejection:', reason, p);
-  });
-}
 
 /**
  * FC_SERVER_KEEPALIVE_MS 未设置时默认 120000（大文件/长耗时）；设为 0 表示使用 0ms（按需配合 Node 默认�? * FC_SERVER_HEADERS_MS 可单独覆盖；否则�?keepAlive + 5s

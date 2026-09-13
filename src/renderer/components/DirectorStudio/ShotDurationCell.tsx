@@ -193,7 +193,7 @@ export const ShotDurationCell: React.FC<ShotDurationCellProps> = ({
         </button>
       </div>
 
-      {hasBand ? (
+      {hasBand && !locked ? (
         <div
           className={`relative mt-1 h-1.5 w-full rounded-full overflow-hidden ${
             isDark ? 'bg-white/10' : 'bg-gray-200'
@@ -216,18 +216,18 @@ export const ShotDurationCell: React.FC<ShotDurationCellProps> = ({
         </div>
       ) : null}
 
-      {hasBand ? (
+      {hasBand && !locked ? (
         <div
           className={`mt-0.5 flex justify-between text-[9px] tabular-nums leading-tight ${
             isDark ? 'text-white/40' : 'text-gray-400'
           }`}
         >
-          <span>{lo.toFixed(1)}</span>
-          <span>{hi.toFixed(1)}</span>
+          <span title="建议区间下限">{lo.toFixed(1)}</span>
+          <span title="建议区间上限">{hi.toFixed(1)}</span>
         </div>
       ) : null}
 
-      {outOfBand ? (
+      {outOfBand && !locked ? (
         <div
           className={`mt-0.5 text-[9px] leading-tight ${
             isDark ? 'text-amber-300/90' : 'text-amber-700'
@@ -237,14 +237,23 @@ export const ShotDurationCell: React.FC<ShotDurationCellProps> = ({
         </div>
       ) : null}
 
-      {showExportTier && display > 0 ? (
+      {locked ? (
         <div
           className={`mt-0.5 text-[9px] leading-tight truncate ${
             isDark ? 'text-white/35' : 'text-gray-400'
           }`}
-          title="仅旁注，不覆盖表内秒数"
+          title="本镜规划时长（按画面内容估时后落到成片档）"
         >
-          出片≈{snapToTier(display)}s
+          规划时长
+        </div>
+      ) : showExportTier && display > 0 ? (
+        <div
+          className={`mt-0.5 text-[9px] leading-tight truncate ${
+            isDark ? 'text-white/35' : 'text-gray-400'
+          }`}
+          title="成片会落到模型支持的 6/10/15/20 秒档；不覆盖上面规划秒数"
+        >
+          成片档≈{snapToTier(display)}s
         </div>
       ) : null}
     </div>
@@ -326,19 +335,6 @@ export const DurationToolbar: React.FC<DurationToolbarProps> = ({
         {totalCapSec != null && totalCapSec > 0 ? ` / ${totalCapSec}s` : ''}
         {over ? ' · 超限' : ''}
       </span>
-
-      <label className={`inline-flex items-center gap-1.5 ${isDark ? 'text-white/70' : 'text-gray-600'}`}>
-        节奏
-        <select
-          className={selectCls}
-          value={paceStyle}
-          onChange={(e) => onPaceChange(e.target.value as ShotDurationPaceStyle)}
-        >
-          <option value="standard">标准</option>
-          <option value="fast">快节奏</option>
-          <option value="slow">慢节奏</option>
-        </select>
-      </label>
 
       <button
         type="button"

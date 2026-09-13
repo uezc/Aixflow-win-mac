@@ -1,15 +1,88 @@
 /**
- * 情绪 → 可拍摄表演。最终 Prompt 只写可见动作，不写情绪标签。
+ * 情绪三层处理：
+ * 1. Emotional Intent（导演意图）：自然语言指令，结构化 emotion 不覆盖不删除
+ * 2. Visible Performance（可见表演）：表情/肢体微相等纯物理描述
+ * 3. Physical Action（具体动作）：演员做什么
+ *
+ * 转换规则：emotion → visible performance（允许映射展开），但原始主导情绪必须保留。
+ * stripEmotionLabels 现仅清理过程修饰、重复、无效标签；不得删除主导情绪词。
  */
 
 import { stripCameraMotionFromPerformance } from './directorCameraSchema.js';
-import type { DramaBeatEndState } from './types.js';
+import type { DramaBeatEndState, DramaEmotion } from './types.js';
+
+/**
+ * 把字符串/对象/undefined 形式的 emotion 统一归一化为 DramaEmotion 对象。
+ * — 字符串（遗留/用户输入）：按「主情绪 + 次情绪 @强度 #弧线」宽松解析，
+ *   例："愤怒(克制) @0.8 #隐忍→爆发"、"紧张,心虚"
+ * — 空值：返回 { primary: '', intensity: 0.6 }
+ * — 对象：按 DramaEmotion 字段原样复制并兜底默认值
+ */
+export function coerceDramaEmotion(raw: unknown): DramaEmotion {
+  if (raw == null) return { primary: '', intensity: 0.6 };
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    const primary = String(obj.primary || '').trim();
+    const secondary = String(obj.secondary || '').trim();
+    let intensity = Number(obj.intensity);
+    if (!Number.isFinite(intensity)) intensity = 0.6;
+    intensity = Math.max(0, Math.min(1, intensity));
+    const arc = String(obj.arc || '').trim();
+    return {
+      primary,
+      secondary: secondary || undefined,
+      intensity,
+      arc: arc || undefined,
+    };
+  }
+  const text = String(raw).trim();
+  if (!text) return { primary: '', intensity: 0.6 };
+  // 提取 @强度
+  let intensity = 0.6;
+  let rest = text;
+  const intMatch = text.match(/@\s*([01](?:\.\d+)?|\d\.\d+)/);
+  if (intMatch) {
+    const parsed = Number(intMatch[1]);
+    if (Number.isFinite(parsed)) intensity = Math.max(0, Math.min(1, parsed));
+    rest = rest.replace(intMatch[0], '');
+  }
+  // 提取 #弧线
+  let arc: string | undefined;
+  const arcMatch = rest.match(/#([^\s,，()（）]+(?:\s*→\s*[^\s,，()（）]+)?)/);
+  if (arcMatch) {
+    arc = arcMatch[1].replace(/\s*→\s*/g, '→').trim() || undefined;
+    rest = rest.replace(arcMatch[0], '');
+  }
+  // 拆分主/次：按逗号、顿号、括号、空格
+  const tokens = rest
+    .replace(/[()（）]/g, ',')
+    .split(/[,，、\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const primary = tokens[0] || '';
+  const secondary = tokens.slice(1).join('、') || undefined;
+  return { primary, secondary, intensity, arc };
+}
 
 const SPEECH_IN_ACTION_RE =
   /低声交谈|小声说话|交谈|说话|讲话|讨论|回答|喊叫|开口|对白|对话|唱歌|跟唱/;
 
-const EMOTION_LABEL_RE =
-  /紧张感初现|高度戒备|敌意升高|紧张感|戒备|敌意|恐慌|悲伤|愤怒|冷峻|克制|紧张/g;
+/**
+ * 过程性修饰词 / 无效标签（仅清理这些，不删主导情绪）：
+ * - 过渡短语（紧张感初现 / 敌意升高 / 高度戒备）
+ * - 冗余名词形式（紧张感 ≈ 紧张，保留主导词「紧张」）
+ *
+ * 主导情绪词（戒备/敌意/恐慌/悲伤/愤怒/冷峻/克制/紧张）一律保留。
+ */
+const EMOTION_PROCESS_MODIFIER_RE =
+  /紧张感初现|高度戒备|敌意升高|紧张感/g;
+
+/**
+ * 抽象情绪词表：仅用于清理纯物理描述文本（Visible Performance）时。
+ * 在 Emotional Intent 文本中禁止调用本正则。
+ */
+const ABSTRACT_EMOTION_WORDS_RE =
+  /隐忍|焦虑|冷漠|麻木|愤怒|疲惫|无奈|悲伤|恐慌|惊恐|恐惧|害怕|慌|心虚|慌张|躲闪|冷峻|冷静|克制|戒备|敌意|紧张|震怒|暴怒|失落|绝望/g;
 
 const VISUAL_BIBLE_LEAK_RE = /烟雾缭绕|昏暗灯光|低饱和|胶片颗粒|变形宽银幕/g;
 
@@ -37,10 +110,24 @@ export function stripSpeechFromSilentAction(text: string): string {
 
 export function stripEmotionLabels(text: string): string {
   return String(text || '')
-    .replace(EMOTION_LABEL_RE, '')
+    .replace(EMOTION_PROCESS_MODIFIER_RE, '')
     .replace(/用可看见的身体与眼神完成，不写抽象心情词。?/g, '')
     .replace(/[：:]\s*/g, '')
     .replace(/[，,]{2,}/g, '，')
+    .replace(/^[，,。\s]+|[，,。\s]+$/g, '')
+    .trim();
+}
+
+/**
+ * 仅用于 Visible Performance（纯物理描述）字段：清理其中混入的抽象情绪词，
+ * 让「压抑的愤怒」「冷峻」这类词不在「物理微相」段出现，下沉到 Emotional Intent 层。
+ * 处理 Emotional Intent（导演意图）文本时禁止调用本函数。
+ */
+export function stripAbstractEmotionFromPhysicalText(text: string): string {
+  return String(text || '')
+    .replace(ABSTRACT_EMOTION_WORDS_RE, ' ')
+    .replace(/[，,]{2,}/g, '，')
+    .replace(/\s+/g, ' ')
     .replace(/^[，,。\s]+|[，,。\s]+$/g, '')
     .trim();
 }
@@ -72,23 +159,82 @@ export function isLocationGazeTarget(id: string | undefined): boolean {
 export function expandVisiblePerformance(emotion: string, action: string): string {
   const act = collapseDuplicateActionText(String(action || '').trim());
   if (CONCRETE_PHYSICAL_RE.test(act)) {
-    const cleaned = stripEmotionLabels(stripSpeechFromSilentAction(stripCameraMotionFromPerformance(act)));
+    const cleaned = stripAbstractEmotionFromPhysicalText(
+      stripEmotionLabels(stripSpeechFromSilentAction(stripCameraMotionFromPerformance(act))),
+    );
     if (cleaned) return cleaned;
   }
   const blob = `${emotion} ${act}`;
   for (const row of PERFORMANCE_MAP) {
     if (row.key.test(blob)) return row.text;
   }
-  const cleaned = stripEmotionLabels(
-    stripSpeechFromSilentAction(stripCameraMotionFromPerformance(act || emotion)),
+  const cleaned = stripAbstractEmotionFromPhysicalText(
+    stripEmotionLabels(
+      stripSpeechFromSilentAction(stripCameraMotionFromPerformance(act || emotion)),
+    ),
   );
   if (cleaned) return cleaned;
   return '保持现有姿态，只有呼吸和眼神微动';
 }
 
+/**
+ * 结构化情绪 → 自然语言导演指令。用于 H3 Prompt [EMOTIONAL INTENT] 段。
+ * 不使用孤立标签「愤怒」，而写为「本镜情绪基调：压抑中的愤怒，中强强度，从克制逐渐加剧」
+ * 这样避免被视频模型误判为画面元素（短剧禁字幕规则的延伸）。
+ */
+export function renderEmotionAsDirectorDirective(emotion: DramaEmotion | undefined | null): string {
+  if (!emotion) return '';
+  const primary = String(emotion.primary || '').trim();
+  if (!primary) return '';
+  const secondary = String(emotion.secondary || '').trim();
+  const intensity = Number(emotion.intensity);
+  const arc = String(emotion.arc || '').trim();
+  let intensityLabel = '中等';
+  if (Number.isFinite(intensity)) {
+    if (intensity <= 0.25) intensityLabel = '轻微';
+    else if (intensity <= 0.45) intensityLabel = '中弱';
+    else if (intensity <= 0.6) intensityLabel = '中等';
+    else if (intensity <= 0.8) intensityLabel = '中强';
+    else intensityLabel = '极强';
+  }
+  const parts: string[] = [];
+  if (secondary) parts.push(`${secondary}的${primary}`);
+  else parts.push(primary);
+  parts.push(`${intensityLabel}强度`);
+  if (arc) parts.push(`从${arc.replace(/→/, '逐渐过渡到') || arc}`);
+  return `本镜情绪基调：${parts.join('，')}`;
+}
+
+/** 强度数字 → 自然语言等级标签（前端 UI 展示用） */
+export function emotionIntensityToLabel(intensity: number | undefined | null): string {
+  if (!Number.isFinite(Number(intensity))) return '中等';
+  const v = Number(intensity);
+  if (v <= 0.25) return '轻微';
+  if (v <= 0.45) return '中弱';
+  if (v <= 0.6) return '中等';
+  if (v <= 0.8) return '中强';
+  return '极强';
+}
+
+/** 结构化情绪 → 前端一行短展示，例：「压抑的愤怒 · 中强 · 克制→加剧」 */
+export function renderEmotionShortDisplay(emotion: DramaEmotion | undefined | null): string {
+  if (!emotion) return '';
+  const primary = String(emotion.primary || '').trim();
+  if (!primary) return '';
+  const secondary = String(emotion.secondary || '').trim();
+  const intensityLabel = emotionIntensityToLabel(emotion.intensity);
+  const arc = String(emotion.arc || '').trim();
+  const head = secondary ? `${secondary}的${primary}` : primary;
+  const parts = [head, intensityLabel];
+  if (arc) parts.push(arc);
+  return parts.join(' · ');
+}
+
 export function sanitizeSilentCharacterText(text: string): string {
   return stripVisualBibleLeak(
-    stripEmotionLabels(stripSpeechFromSilentAction(stripCameraMotionFromPerformance(text))),
+    stripAbstractEmotionFromPhysicalText(
+      stripEmotionLabels(stripSpeechFromSilentAction(stripCameraMotionFromPerformance(text))),
+    ),
   );
 }
 

@@ -131,6 +131,13 @@ export interface CloudUserState {
   machineId: string | null;
   balance: number;
   isPro: boolean;
+  /** Phase 3：服务器下发的有效并发（客户端只读，本阶段不接入 AICore） */
+  concurrency?: {
+    video: { limit: number };
+    image: { limit: number };
+    planId?: string;
+    planLabel?: string;
+  };
   status: 'idle' | 'connecting' | 'success' | 'error';
   /** 姝ｅ紡鐗?JWT */
   nxAccessToken?: string | null;
@@ -149,6 +156,36 @@ function parseIsFirstRechargeFlag(raw: unknown): boolean | undefined {
   return undefined;
 }
 
+/** 解析 /me 的 concurrency；缺字段时返回 undefined（旧服务端兼容） */
+function parseConcurrencyFromMe(data: Record<string, unknown>): CloudUserState['concurrency'] | undefined {
+  const nested = data.concurrency;
+  if (nested && typeof nested === 'object') {
+    const o = nested as Record<string, unknown>;
+    const videoObj = o.video && typeof o.video === 'object' ? (o.video as Record<string, unknown>) : null;
+    const imageObj = o.image && typeof o.image === 'object' ? (o.image as Record<string, unknown>) : null;
+    const videoLimit = Number(videoObj?.limit ?? data.video_concurrency_limit);
+    const imageLimit = Number(imageObj?.limit ?? data.image_concurrency_limit);
+    if (Number.isFinite(videoLimit) && videoLimit >= 1 && Number.isFinite(imageLimit) && imageLimit >= 1) {
+      return {
+        video: { limit: Math.round(videoLimit) },
+        image: { limit: Math.round(imageLimit) },
+        planId: typeof o.plan_id === 'string' ? o.plan_id : typeof data.plan_id === 'string' ? data.plan_id : undefined,
+        planLabel: typeof o.plan_label === 'string' ? o.plan_label : undefined,
+      };
+    }
+  }
+  const vFlat = Number(data.video_concurrency_limit);
+  const iFlat = Number(data.image_concurrency_limit);
+  if (Number.isFinite(vFlat) && vFlat >= 1 && Number.isFinite(iFlat) && iFlat >= 1) {
+    return {
+      video: { limit: Math.round(vFlat) },
+      image: { limit: Math.round(iFlat) },
+      planId: typeof data.plan_id === 'string' ? data.plan_id : undefined,
+    };
+  }
+  return undefined;
+}
+
 function getStoredState(): CloudUserState {
   const raw = (store as { get: (k: string) => unknown }).get(STORE_KEY);
   if (raw && typeof raw === 'object') {
@@ -158,6 +195,20 @@ function getStoredState(): CloudUserState {
       machineId: typeof o.machineId === 'string' ? o.machineId : null,
       balance: typeof o.balance === 'number' ? o.balance : 0,
       isPro: Boolean(o.isPro),
+      concurrency: (() => {
+        const c = o.concurrency;
+        if (!c || typeof c !== 'object') return undefined;
+        const co = c as Record<string, unknown>;
+        const v = co.video && typeof co.video === 'object' ? Number((co.video as { limit?: unknown }).limit) : NaN;
+        const i = co.image && typeof co.image === 'object' ? Number((co.image as { limit?: unknown }).limit) : NaN;
+        if (!Number.isFinite(v) || v < 1 || !Number.isFinite(i) || i < 1) return undefined;
+        return {
+          video: { limit: Math.round(v) },
+          image: { limit: Math.round(i) },
+          planId: typeof co.planId === 'string' ? co.planId : undefined,
+          planLabel: typeof co.planLabel === 'string' ? co.planLabel : undefined,
+        };
+      })(),
       status: (o.status as CloudUserState['status']) || 'idle',
       nxAccessToken: typeof o.nxAccessToken === 'string' ? o.nxAccessToken : null,
       nxRefreshToken: typeof o.nxRefreshToken === 'string' ? o.nxRefreshToken : null,
@@ -184,6 +235,21 @@ function getFcBaseUrl(): string {
 }
 
 /** 姝ｅ紡鐗?access_token锛屼緵 FC run-task */
+/** Phase 3：读取服务器缓存的并发额度；无则 null（调用方勿硬编码推导） */
+export function getNxConcurrencyLimits(): {
+  video: number;
+  image: number;
+  planId?: string;
+} | null {
+  const c = getStoredState().concurrency;
+  if (!c?.video?.limit || !c?.image?.limit) return null;
+  return {
+    video: c.video.limit,
+    image: c.image.limit,
+    planId: c.planId,
+  };
+}
+
 export function getNxAccessToken(): string {
   const s = getStoredState();
   return (s.nxAccessToken || '').trim();
@@ -784,6 +850,7 @@ export async function initCloudUser(): Promise<CloudUserState> {
       const userId =
         typeof uidRaw === 'string' && uidRaw.trim() ? uidRaw.trim() : getStoredState().userId ?? null;
       const isFirst = parseIsFirstRechargeFlag((data as { is_first_recharge?: unknown }).is_first_recharge);
+      const concurrency = parseConcurrencyFromMe(data as Record<string, unknown>);
       setStoredState({
         ...getStoredState(),
         balance,
@@ -791,6 +858,7 @@ export async function initCloudUser(): Promise<CloudUserState> {
         ...(email != null && { nxEmail: email }),
         ...(userId != null && { userId }),
         ...(isFirst !== undefined && { isFirstRecharge: isFirst }),
+        ...(concurrency ? { concurrency } : {}),
       });
       const { notifyCloudUserStateRefresh } = await import('../cloudBalanceNotifier.js');
       notifyCloudUserStateRefresh();
@@ -904,21 +972,49 @@ export interface NxTaskItem {
   task_id: string;
   user_id?: string;
   status?: string;
+  /** Unified Queue：queued / claimed / charged / dispatched / … */
+  execution_stage?: string;
   amount?: string | number;
   cost?: string | number;
   prompt_json?: string;
   workflow_json?: string;
   result_oss_url?: string;
   error_msg?: string;
+  error_code?: string;
+  provider_task_id?: string;
   created_at?: string | number;
   updated_at?: string | number;
+  queue_entered_at?: string | number;
+  /** 用户 UX：FIFO 位次（仅 queued；与 Claim 排序一致） */
+  queue_position?: number | null;
+  ahead_count?: number | null;
+  queue_position_available?: boolean;
+  queue_position_complete?: boolean;
+  /** 失败且已退款（只读 charge 表） */
+  refunded?: boolean;
 }
 
-/** FC 鍚勭増鏈彲鑳界敤 result_url / output_url 绛夊埆鍚嶏紝缁熶竴鎴愬鎴风浣跨敤鐨?result_oss_url */
+/**
+ * 拆分 nx_tasks.result_oss_url：FC 对悠船/MJ 等多图用换行拼接全部 URL。
+ */
+export function splitNxTaskResultOssUrls(raw: string | null | undefined): string[] {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+  const parts = /[\n\r]/.test(s) ? s.split(/[\n\r]+/) : [s];
+  const out: string[] = [];
+  for (const p of parts) {
+    const u = p.trim();
+    if (/^https?:\/\//i.test(u) && !out.includes(u)) out.push(u);
+  }
+  return out;
+}
+
+/** FC 各版本可能用 result_url / output_url 等别名，统一成客户端使用的 result_oss_url（可含多行） */
 function pickNxTaskResultUrlFromStatusPayload(data: Record<string, unknown>): string {
   const take = (v: unknown): string => {
     if (typeof v !== 'string') return '';
     const s = v.trim();
+    // 多图：整段以 https 开头即可（中间为换行分隔的后续 URL）
     return s && /^https?:\/\//i.test(s) ? s : '';
   };
   return (
@@ -1089,7 +1185,22 @@ export async function nxCloudTasksCreate(body: {
   type?: string;
   params?: Record<string, unknown>;
   nodeData?: Record<string, unknown>;
-}): Promise<{ task_id: string; balance: number; cost_coins?: number }> {
+  /** Phase 2：显式走旧预扣费路径（现网 Provider 默认） */
+  legacy_immediate_charge?: boolean;
+  /** Phase 2+：只入队不扣费 */
+  execution_mode?: 'queue' | 'legacy';
+  /** Phase 8.1：Dispatch Worker 所需 RH forward 载荷 */
+  provider_forward_json?: Record<string, unknown> | string;
+}): Promise<{
+  task_id: string;
+  balance: number;
+  cost_coins?: number;
+  status?: string;
+  charged?: boolean;
+  execution_mode?: string;
+  task_type?: string;
+  quoted_cost_coins?: number;
+}> {
   const base = getFcBaseUrl();
   if (!base) throw new Error('鏈厤缃?ALIYUN_FC_INIT_USER_URL');
   if (isNxOfflineCloudSession()) throw new Error('当前为离线/本地会话，请使用邮箱登录后再试');
@@ -1106,6 +1217,13 @@ export async function nxCloudTasksCreate(body: {
           type: body.type || 'image',
           params: body.params && typeof body.params === 'object' ? body.params : {},
           nodeData: body.nodeData && typeof body.nodeData === 'object' ? body.nodeData : {},
+          // Phase 2：未显式指定 queue 时，现网仍走预扣费，避免 Provider 未迁移前出现「未扣费却 billing=none」
+          legacy_immediate_charge:
+            body.execution_mode === 'queue' ? false : body.legacy_immediate_charge !== false,
+          ...(body.execution_mode ? { execution_mode: body.execution_mode } : {}),
+          ...(body.provider_forward_json != null
+            ? { provider_forward_json: body.provider_forward_json }
+            : {}),
         },
         { timeout: FC_TIMEOUT_MS },
       ),
@@ -1119,7 +1237,26 @@ export async function nxCloudTasksCreate(body: {
     setNxAuth({ balance });
     const { notifyCloudUserStateRefresh } = await import('../cloudBalanceNotifier.js');
     notifyCloudUserStateRefresh();
-    return { task_id, balance, ...(cost_coins !== undefined && Number.isFinite(cost_coins) ? { cost_coins } : {}) };
+    const status = typeof data.status === 'string' ? data.status : undefined;
+    const charged = typeof data.charged === 'boolean' ? data.charged : undefined;
+    const execution_mode = typeof data.execution_mode === 'string' ? data.execution_mode : undefined;
+    const task_type = typeof data.task_type === 'string' ? data.task_type : undefined;
+    const quoted_cost_coins =
+      typeof data.quoted_cost_coins === 'number'
+        ? data.quoted_cost_coins
+        : Number(data.quoted_cost_coins) || undefined;
+    return {
+      task_id,
+      balance,
+      ...(cost_coins !== undefined && Number.isFinite(cost_coins) ? { cost_coins } : {}),
+      ...(status ? { status } : {}),
+      ...(charged !== undefined ? { charged } : {}),
+      ...(execution_mode ? { execution_mode } : {}),
+      ...(task_type ? { task_type } : {}),
+      ...(quoted_cost_coins !== undefined && Number.isFinite(quoted_cost_coins)
+        ? { quoted_cost_coins }
+        : {}),
+    };
   } catch (e) {
     throw new Error(nxFcErrorToUserMessage(e));
   } finally {
@@ -1155,20 +1292,41 @@ export async function nxCloudTaskStatus(taskId: string): Promise<NxCloudTaskStat
     const cost = data.cost;
     const createdAt = data.created_at;
     const updatedAt = data.updated_at;
+    const queueEnteredAt = data.queue_entered_at;
     const payload = data as Record<string, unknown>;
     const mergedResultUrl = pickNxTaskResultUrlFromStatusPayload(payload);
+    const aheadRaw = data.ahead_count;
+    const posRaw = data.queue_position;
+    const aheadNum = aheadRaw == null ? null : Number(aheadRaw);
+    const posNum = posRaw == null ? null : Number(posRaw);
     return {
       task_id: String(data.task_id ?? data.taskId ?? tid).trim() || tid,
       user_id: typeof data.user_id === 'string' ? data.user_id : String(data.user_id ?? ''),
       status: typeof data.status === 'string' ? data.status : String(data.status ?? ''),
+      execution_stage:
+        typeof data.execution_stage === 'string' ? data.execution_stage : String(data.execution_stage ?? ''),
       amount: typeof amount === 'number' || typeof amount === 'string' ? amount : undefined,
       cost: typeof cost === 'number' || typeof cost === 'string' ? cost : undefined,
       prompt_json: typeof data.prompt_json === 'string' ? data.prompt_json : String(data.prompt_json ?? ''),
       workflow_json: typeof data.workflow_json === 'string' ? data.workflow_json : String(data.workflow_json ?? ''),
       result_oss_url: mergedResultUrl,
       error_msg: typeof data.error_msg === 'string' ? data.error_msg : String(data.error_msg ?? ''),
+      error_code: typeof data.error_code === 'string' ? data.error_code : String(data.error_code ?? ''),
+      provider_task_id:
+        typeof data.provider_task_id === 'string'
+          ? data.provider_task_id
+          : String(data.provider_task_id ?? ''),
       created_at: typeof createdAt === 'number' || typeof createdAt === 'string' ? createdAt : undefined,
       updated_at: typeof updatedAt === 'number' || typeof updatedAt === 'string' ? updatedAt : undefined,
+      queue_entered_at:
+        typeof queueEnteredAt === 'number' || typeof queueEnteredAt === 'string'
+          ? queueEnteredAt
+          : undefined,
+      ahead_count: aheadNum != null && Number.isFinite(aheadNum) ? aheadNum : null,
+      queue_position: posNum != null && Number.isFinite(posNum) ? posNum : null,
+      queue_position_available: data.queue_position_available === true,
+      queue_position_complete: data.queue_position_complete === true,
+      refunded: data.refunded === true,
       ...(Number.isFinite(balance) ? { balance } : {}),
     };
   } catch (e) {
@@ -1271,38 +1429,69 @@ export async function nxAdminIssueCoupon(amountCny: number): Promise<{ code: str
   }
 }
 
-/** 杩愯惀鐪嬫澘锛氫粖鏃ュ厓瀹濇敹鍏ャ€佸厬鎹㈢爜鎬绘暟銆佸け璐ヤ换鍔℃暟锛團C POST /internal/admin-dashboard-stats锛?*/
+/** 运营看板：今日元宝收入、兑换码总数、失败任务数、排队/生产中（FC POST /internal/admin-dashboard-stats） */
 export async function nxAdminDashboardStats(): Promise<{
   timezone: string;
   date: string;
   today_revenue_yuanbao: number;
   total_coupon_codes: number;
   pending_failed_or_timeout_tasks: number;
+  queued_tasks: number;
+  producing_tasks: number;
+  claimed_tasks: number;
+  running_tasks: number;
+  pending_tasks: number;
+  processing_tasks: number;
+  queued_video_tasks: number;
+  queued_image_tasks: number;
+  producing_video_tasks: number;
+  producing_image_tasks: number;
+  platform_video_running: number | null;
+  platform_video_max: number | null;
+  platform_image_running: number | null;
+  platform_image_max: number | null;
   tx_rows_scanned: number;
   task_rows_scanned: number;
+  task_scan_truncated: boolean;
   coupon_full_scan: boolean;
 }> {
-  if (!getFcBaseUrl()) throw new Error('鏈厤缃?ALIYUN_FC_INIT_USER_URL');
+  if (!getFcBaseUrl()) throw new Error('未配置 ALIYUN_FC_INIT_USER_URL');
+  const num = (v: unknown, d = 0) =>
+    typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || d;
+  const numOrNull = (v: unknown): number | null => {
+    if (v == null || v === '') return null;
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
   try {
     const { data } = await getNxFcAxios().post<Record<string, unknown>>(
       '/internal/admin-dashboard-stats',
       {},
-      { timeout: FC_TIMEOUT_MS, headers: requireNxAdminSecretHeader() }
+      { timeout: Math.max(FC_TIMEOUT_MS, 120_000), headers: requireNxAdminSecretHeader() }
     );
     return {
       timezone: typeof data.timezone === 'string' ? data.timezone : 'Asia/Shanghai',
       date: typeof data.date === 'string' ? data.date : '',
-      today_revenue_yuanbao:
-        typeof data.today_revenue_yuanbao === 'number' ? data.today_revenue_yuanbao : Number(data.today_revenue_yuanbao) || 0,
-      total_coupon_codes:
-        typeof data.total_coupon_codes === 'number' ? data.total_coupon_codes : Number(data.total_coupon_codes) || 0,
-      pending_failed_or_timeout_tasks:
-        typeof data.pending_failed_or_timeout_tasks === 'number'
-          ? data.pending_failed_or_timeout_tasks
-          : Number(data.pending_failed_or_timeout_tasks) || 0,
-      tx_rows_scanned: typeof data.tx_rows_scanned === 'number' ? data.tx_rows_scanned : Number(data.tx_rows_scanned) || 0,
-      task_rows_scanned:
-        typeof data.task_rows_scanned === 'number' ? data.task_rows_scanned : Number(data.task_rows_scanned) || 0,
+      today_revenue_yuanbao: num(data.today_revenue_yuanbao),
+      total_coupon_codes: num(data.total_coupon_codes),
+      pending_failed_or_timeout_tasks: num(data.pending_failed_or_timeout_tasks),
+      queued_tasks: num(data.queued_tasks ?? data.queuedTasks),
+      producing_tasks: num(data.producing_tasks ?? data.producingTasks),
+      claimed_tasks: num(data.claimed_tasks ?? data.claimedTasks),
+      running_tasks: num(data.running_tasks ?? data.runningTasks),
+      pending_tasks: num(data.pending_tasks ?? data.pendingTasks),
+      processing_tasks: num(data.processing_tasks ?? data.processingTasks),
+      queued_video_tasks: num(data.queued_video_tasks ?? data.queuedVideoTasks),
+      queued_image_tasks: num(data.queued_image_tasks ?? data.queuedImageTasks),
+      producing_video_tasks: num(data.producing_video_tasks ?? data.producingVideoTasks),
+      producing_image_tasks: num(data.producing_image_tasks ?? data.producingImageTasks),
+      platform_video_running: numOrNull(data.platform_video_running ?? data.platformVideoRunning),
+      platform_video_max: numOrNull(data.platform_video_max ?? data.platformVideoMax),
+      platform_image_running: numOrNull(data.platform_image_running ?? data.platformImageRunning),
+      platform_image_max: numOrNull(data.platform_image_max ?? data.platformImageMax),
+      tx_rows_scanned: num(data.tx_rows_scanned),
+      task_rows_scanned: num(data.task_rows_scanned),
+      task_scan_truncated: data.task_scan_truncated === true || data.taskScanTruncated === true,
       coupon_full_scan: data.coupon_full_scan === true,
     };
   } catch (e) {

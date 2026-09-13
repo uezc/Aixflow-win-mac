@@ -1,0 +1,42 @@
+{
+  "phase": "9.7-h3-audio",
+  "started_at": "2026-09-07T10:51:22.576Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "h3_audio_e2e": {
+    "aixflow_task_id": "1e020ba6-4a94-48d1-85cd-23e7587186ca",
+    "runninghub_task_id": "2096914439885508610",
+    "submit_region": "cn",
+    "poll_region": "cn",
+    "billing_sku": "minimax-h3-audio-720p-6s",
+    "quoted_cost": 8,
+    "actual_charge": 8,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "queue_entered_at": 1788778289786,
+    "claimed_at": 1788778287612,
+    "charged_at": 1788778324255,
+    "execution_stage": "done",
+    "completed_at": 1788778559164,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/AnimateDiff_00001_p85-audio_mxyus_1788778529.mp4",
+    "user_occupied": 0,
+    "platform_occupied": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "path": "/run/ai-app/2086260808442531842",
+    "worker_timeout": false
+  },
+  "failure_refund": {
+    "conclusion": "PASS",
+    "task_id": "3d769f8c-317d-4842-9111-7ef23a37a87b",
+    "bal0": 500,
+    "bal1": 500,
+    "bal2": 500,
+    "status": "failed"
+  },
+  "queue_only_check": "PASS",
+  "billing_sku": "minimax-h3-audio-720p-6s",
+  "finished_at": "2026-09-07T10:56:19.589Z"
+}

@@ -89,11 +89,22 @@ export function characterHasUsableReference(character: DramaCharacter | null | u
  * 人物主参考图（分镜槽 / H3 推送）。
  * 优先当前造型；当前空时回退其它有图造型与旧主图，避免「库里有图但镜头推不出去」。
  * （空当前造型清空主卡仅影响素材页展示，不阻断出片参考。）
+ * v3：支持 costumeTag 参数，按造型标签解析（防换装穿帮）。
  */
 export function resolveCharacterMasterReferenceUrl(
   character: DramaCharacter | null | undefined,
+  /** v3：造型标签（如"常服"/"制服"），有则优先匹配该 tag 的造型图 */
+  costumeTag?: string,
 ): string {
   if (!character) return '';
+  // v3：优先按 costumeTag 匹配造型
+  if (costumeTag) {
+    const tagged = (character.costumes || []).find(
+      (c) => String(c?.tag || '').trim() === costumeTag && c?.images?.some((u) => String(u || '').trim()),
+    );
+    const taggedUrl = String(tagged?.images?.[0] || '').trim();
+    if (taggedUrl) return taggedUrl;
+  }
   const fromActive = firstCostumeImage(character);
   if (fromActive) return fromActive;
   const fromOther = anyCostumeImage(character);

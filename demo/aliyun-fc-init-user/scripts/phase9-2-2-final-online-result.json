@@ -1,0 +1,130 @@
+{
+  "started_at": "2026-09-05T08:12:12.039Z",
+  "deployment": {
+    "HK": "PASS",
+    "BJ": "PASS",
+    "detail": {
+      "hk": {
+        "functionName": "nexflow-api",
+        "region": "cn-hongkong",
+        "codeSize": 15031184,
+        "lastModified": "2026-09-05T08:05:50Z"
+      },
+      "bj": {
+        "functionName": "aixflow-api",
+        "region": "cn-beijing",
+        "codeSize": 15031184,
+        "lastModified": "2026-09-05T08:05:52Z"
+      },
+      "hk_triggers": [
+        {
+          "name": "defaultTrigger",
+          "type": "http",
+          "url": "https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run"
+        }
+      ],
+      "bj_triggers": [
+        {
+          "name": "defaultTrigger",
+          "type": "http",
+          "url": "https://aixflow-api-vosjmnhbpf.cn-beijing.fcapp.run"
+        }
+      ],
+      "hk_dispatch_signature": {
+        "http": 200,
+        "has_invalid_forward": true,
+        "invalid_forward": {
+          "candidates": 1,
+          "marked": 0,
+          "terminal": 1
+        }
+      },
+      "bj_http": "https://aixflow-api-vosjmnhbpf.cn-beijing.fcapp.run",
+      "bj_queue_protection": {
+        "http": 400,
+        "code": "QUEUE_FORWARD_REQUIRED"
+      },
+      "queue_protection": {
+        "http": 400,
+        "code": "QUEUE_FORWARD_REQUIRED",
+        "task_id": null,
+        "balance_unchanged": true
+      }
+    }
+  },
+  "queue_protection": "PASS",
+  "invalid_forward_starvation": "PASS",
+  "no_forward": {
+    "first_marked": true,
+    "terminal": true,
+    "slots_released": true,
+    "amount0_balance": 100,
+    "amount0_ok": true,
+    "d1_invalid": {
+      "candidates": 50,
+      "marked": 48,
+      "terminal": 2
+    },
+    "d2_invalid": {
+      "candidates": 50,
+      "marked": 2,
+      "terminal": 48
+    },
+    "has_signature": true,
+    "refund_task": "00nfr__p922f_mto3u5qf_amt",
+    "final_status": "failed",
+    "provider_error": "NO_FORWARD_PAYLOAD"
+  },
+  "h3": {
+    "aixflow_task": "e3b815da-7392-4c1a-81f3-29d9b30236c6",
+    "rh_task": "2096150715847364609",
+    "region": "cn",
+    "charge": 8,
+    "quoted": 8,
+    "final": "success",
+    "stage": "done",
+    "video_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p84-audio_akavg_1788596621.mp4",
+    "slots": {
+      "user_occupied": 0,
+      "platform_occupied": 0,
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    "charge_row": {
+      "status": "charged",
+      "amount": 8
+    },
+    "worker_timeout": false,
+    "fc_dispatch_signature": true
+  },
+  "rhart": "PASS",
+  "billing": {
+    "duplicate_charge": "PASS",
+    "duplicate_refund": "PASS"
+  },
+  "final_slots": {
+    "user_occupied": 0,
+    "platform_occupied": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false
+  },
+  "conclusion": "PASS",
+  "errors": [],
+  "starvation_detail": {
+    "planted": 100,
+    "cand_has_bad_before": false,
+    "invalid_planted_hit": 100,
+    "includes_valid": true,
+    "includes_bad_after": false,
+    "no_forward_ok": true
+  },
+  "rhart_detail": {
+    "task_id": "f2d63a7c-c89e-40d7-b24d-3bd527fbdf00",
+    "rh_task": "2096153234154426370",
+    "region": "ai",
+    "final": "success",
+    "url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/5e25f161-da03-4f92-a0c9-52306cce72da.mp4",
+    "timeout": false
+  },
+  "ended_at": "2026-09-05T08:29:18.445Z"
+}

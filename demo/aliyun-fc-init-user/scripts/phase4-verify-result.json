@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "deploy": {
+    "oss": "fc-deploys/nexflow-fc-2026-09-09T02-29-40-309Z.zip",
+    "beijing": "aixflow-api lastModified=2026-09-09T02:30:15Z",
+    "hongkong": "nexflow-api lastModified=2026-09-09T02:30:16Z",
+    "codeSize": 15051344
+  },
+  "slots": {
+    "video_running": 0,
+    "image_running": 0,
+    "held_leaks": 0,
+    "zombie_status": "failed"
+  },
+  "online_idle_probe": {
+    "http_status": 200,
+    "idle_no_patrol": true,
+    "elapsed_ms": 204,
+    "active_slots": 0,
+    "work_active": false
+  },
+  "timer_trigger": {
+    "name": "nexflow-queue-pipeline",
+    "cron": "@every 1m",
+    "enable": true
+  },
+  "sls_note": "SLS last-hour query returned 0 rows at verify time (possible delay); online HTTP probe confirms new idle path.",
+  "alerts_doc": "demo/aliyun-fc-init-user/OTS_BILLING_ALERT_CHECKLIST.md"
+}

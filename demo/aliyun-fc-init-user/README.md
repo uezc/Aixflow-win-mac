@@ -56,7 +56,7 @@
 | RUNNINGHUB_LLM_API_KEY | RunningHub **LLM**（`llm.runninghub.ai`）Bearer；未设时回退 `RUNNINGHUB_API_KEY_AI` |
 | RUNNINGHUB_LLM_BASE_URL | 可选，默认 `https://llm.runninghub.ai/v1` |
 | RUNNINGHUB_OVERSEAS_PATH_PREFIXES | 可选。逗号分隔 path 前缀，**整表覆盖**默认海外白名单（Veo/banana/Grok/SUNO/Gemini Omni 等） |
-| BLTCY_API_BASE | BLTCY API 根路径，默认 `https://api.bltcy.ai`（LLM 与 `forward.provider=bltcy` 时使用） |
+| BLTCY_API_BASE | 核心算力 API 根路径，默认 `https://api.apilio.ai`（原 bltcy.ai；LLM 与 `forward.provider=bltcy` 时使用） |
 | DASHSCOPE_API_KEY | 百炼 API Key（实时听写 + 录音文件识别共用；勿下发客户端） |
 | DASHSCOPE_ASR_MODEL | 可选，实时模型，默认 `fun-asr-realtime` |
 | DASHSCOPE_ASR_FILE_MODEL | 可选，文件转写模型，默认 `fun-asr`（可钉 `fun-asr-2025-11-07`） |

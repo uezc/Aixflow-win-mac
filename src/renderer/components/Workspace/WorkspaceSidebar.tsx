@@ -138,15 +138,29 @@ function taskLooksLikeAudioMedia(task: { taskType?: string; videoUrl?: string; a
   return looksAudio(task.audioUrl) || looksAudio(task.videoUrl) || looksAudio(task.localFilePath);
 }
 
+function taskLooksLikeVideoMediaUrl(u?: string): boolean {
+  return !!u && /\.(mp4|webm|mov|mkv|avi|m4v)(?:$|[?#])/i.test(String(u).trim());
+}
+
 function resolveTaskPreviewKind(task: {
   taskType?: string;
   videoUrl?: string;
   audioUrl?: string;
+  imageUrl?: string;
   localFilePath?: string;
 }): 'video' | 'audio' | 'other' {
   if (task.taskType === 'audio' && (task.audioUrl || task.localFilePath)) return 'audio';
   if (task.taskType === 'video' && (task.videoUrl || task.localFilePath)) {
     // 误标：音频 SUCCESS 被写成 video + mp3 URL
+    if (taskLooksLikeAudioMedia(task)) return 'audio';
+    return 'video';
+  }
+  // 误把视频路径写成 imageUrl / taskType=image 时，仍按视频预览，避免「图片加载失败」
+  if (
+    taskLooksLikeVideoMediaUrl(task.imageUrl) ||
+    taskLooksLikeVideoMediaUrl(task.localFilePath) ||
+    taskLooksLikeVideoMediaUrl(task.videoUrl)
+  ) {
     if (taskLooksLikeAudioMedia(task)) return 'audio';
     return 'video';
   }
@@ -410,10 +424,18 @@ const TaskCard = React.memo(function TaskCard({
               >
                 {(() => {
                   const kind = resolveTaskPreviewKind(task);
-                  if (kind === 'video' && (task.videoUrl || task.localFilePath)) {
+                  if (kind === 'video' && (task.videoUrl || task.localFilePath || task.imageUrl)) {
+                    const videoTask = {
+                      ...task,
+                      taskType: 'video' as const,
+                      videoUrl:
+                        task.videoUrl ||
+                        (taskLooksLikeVideoMediaUrl(task.localFilePath) ? task.localFilePath : undefined) ||
+                        (taskLooksLikeVideoMediaUrl(task.imageUrl) ? task.imageUrl : undefined),
+                    };
                     return (
                       <TaskMediaPreview
-                        task={task}
+                        task={videoTask}
                         isDarkMode={isDarkMode}
                         projectId={projectId}
                         onPreviewVideo={onPreviewImage}

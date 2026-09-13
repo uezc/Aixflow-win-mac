@@ -1,0 +1,70 @@
+{
+  "started_at": "2026-09-06T04:50:01.154Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "live_a_1img": {
+    "ok": true,
+    "aixflow_task_id": "83d447ee-9101-4c7a-913f-205a3e1abb90",
+    "runninghub_task_id": "2096461078946021377",
+    "region": "ai",
+    "path": "/rhart-video-v3.1-pro/start-end-to-video",
+    "billing_sku": "veo-3-1-720p-pro-se",
+    "quoted_cost": 7,
+    "actual_charge": 7,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/e1c2d209-2c1c-4429-92c8-c95dc4ca66e1.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 7,
+    "error_code": "",
+    "has_lastFrameUrl": false,
+    "expect_sku": "veo-3-1-720p-pro-se",
+    "expect_charge": 7,
+    "error": null
+  },
+  "live_b_2img": {
+    "ok": true,
+    "aixflow_task_id": "a862e0d5-c153-4fba-962b-9cb94b5869fe",
+    "runninghub_task_id": "2096461880406470657",
+    "region": "ai",
+    "path": "/rhart-video-v3.1-pro/start-end-to-video",
+    "billing_sku": "veo-3-1-1080p-pro-se",
+    "quoted_cost": 15,
+    "actual_charge": 15,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/60dcb6ec-d38b-47d8-932b-4b20f018b19c.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 15,
+    "error_code": "",
+    "has_lastFrameUrl": true,
+    "expect_sku": "veo-3-1-1080p-pro-se",
+    "expect_charge": 15,
+    "error": null
+  },
+  "live_fail_refund": {
+    "ok": true,
+    "status": "failed",
+    "charge": "refunded",
+    "bal0": 500,
+    "bal1": 500
+  },
+  "regressions": {
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS",
+    "invalid_forward": "PASS"
+  },
+  "external_blocker": null,
+  "ots_prices": {
+    "veo-3-1-720p-pro-se": 7,
+    "veo-3-1-1080p-pro-se": 15
+  },
+  "finished_at": "2026-09-06T04:59:49.376Z"
+}

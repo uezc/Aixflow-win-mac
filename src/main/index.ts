@@ -39,7 +39,7 @@ process.on('uncaughtException', (err) => {
   }
 });
 
-import { app, BrowserWindow, ipcMain, dialog, shell, protocol, clipboard, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, protocol, clipboard, nativeImage, session } from 'electron';
 
 // V8 堆上限已在 envLoader（首个 import）里 appendSwitch js-flags
 
@@ -185,6 +185,14 @@ import {
   getNxLastLoginEmail,
   initCloudUser,
   isNxSaasMode,
+  nxAdminDashboardStats,
+  nxAdminFailedTasks,
+  nxAdminGetAllUsers,
+  nxAdminIssueCoupon,
+  nxAdminModelConfigList,
+  nxAdminModelConfigUpsert,
+  nxAdminProfitAnalytics,
+  nxAdminRefundTask,
   nxCloudChangePassword,
   nxCloudFetchModelConfig,
   nxCloudGetProfile,
@@ -271,14 +279,17 @@ import { sortProjectsByCreatedAtDesc, reorderProjectsByIds, type ProjectListReco
 import { getAverageDuration, recordTaskHistory, TaskType } from './services/taskHistory.js';
 import {
   applyHardwareAccelerationPolicy,
+  disableHardwareAccelerationAfterBlackScreen,
   hardwareAccelerationActive,
   isExperimentalHardwareAccelerationEnabled,
+  markHardwareAccelerationSessionOk,
   setExperimentalHardwareAccelerationEnabled,
 } from './utils/hardwareAccelerationPref.js';
 
 /** 与 vite.config 默认一致；Windows 上 5173 可能落入保留段导致 listen EACCES */
 const VITE_DEV_SERVER_PORT = Number(process.env.VITE_DEV_SERVER_PORT) || 5274;
-const VITE_DEV_SERVER_ORIGIN = `http://localhost:${VITE_DEV_SERVER_PORT}`;
+// 用 127.0.0.1 而非 localhost：Windows 上 localhost 可能解析成 IPv6 ::1，而 Vite 只监听 IPv4 127.0.0.1，导致主进程连不上（整窗黑屏）
+const VITE_DEV_SERVER_ORIGIN = `http://127.0.0.1:${VITE_DEV_SERVER_PORT}`;
 
 applyHardwareAccelerationPolicy();
 
@@ -298,6 +309,100 @@ function isSnipOverlayBrowserWindow(win: BrowserWindow): boolean {
   if (win.isDestroyed()) return false;
   return win.getTitle() === SNIP_OVERLAY_WINDOW_TITLE;
 }
+
+function isInAppBrowserSession(win: BrowserWindow): boolean {
+  if (win.isDestroyed() || win.webContents.isDestroyed()) return false;
+  try {
+    return win.webContents.session === session.fromPartition('persist:nexflow-in-app-browser');
+  } catch {
+    return false;
+  }
+}
+
+/** 同页克隆：window.open / target=_blank 若落到 Vite 或 index.html，会再开一整份导演台 */
+function isAppRendererUrl(url: string): boolean {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (u.startsWith(VITE_DEV_SERVER_ORIGIN)) return true;
+  if (/[/\\]dist[/\\]index\.html/i.test(u)) return true;
+  if (u.startsWith('data:text/html') && /Aixflow/i.test(u)) return true;
+  return false;
+}
+
+function hideNonMainWindowFromTaskSwitch(win: BrowserWindow): void {
+  if (win.isDestroyed()) return;
+  if (mainWindow && win === mainWindow) return;
+  try {
+    win.setSkipTaskbar(true);
+  } catch {
+    /* ignore */
+  }
+}
+
+function closeDuplicateAppWindows(except?: BrowserWindow | null): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win === except) continue;
+    if (mainWindow && win === mainWindow) continue;
+    if (isSnipOverlayBrowserWindow(win) || isInAppBrowserSession(win)) continue;
+    let url = '';
+    try {
+      url = win.webContents.getURL();
+    } catch {
+      continue;
+    }
+    if (!isAppRendererUrl(url)) continue;
+    console.warn('[window-guard] 关闭重复的应用窗口', url);
+    try {
+      win.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function openExternalOrDeny(url: string): { action: 'deny' } {
+  const target = String(url || '').trim();
+  if (/^https?:\/\//i.test(target)) {
+    void shell.openExternal(target).catch(() => {});
+  } else if (/^file:\/\//i.test(target)) {
+    void shell.openExternal(target).catch(() => {});
+  }
+  return { action: 'deny' };
+}
+
+function attachMainWindowOpenGuard(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(({ url }) => openExternalOrDeny(url));
+}
+
+function attachWindowTaskSwitchGuard(win: BrowserWindow): void {
+  const apply = () => {
+    if (win.isDestroyed()) return;
+    hideNonMainWindowFromTaskSwitch(win);
+    if (mainWindow && win === mainWindow) return;
+    if (isSnipOverlayBrowserWindow(win) || isInAppBrowserSession(win)) return;
+    let url = '';
+    try {
+      url = win.webContents.getURL();
+    } catch {
+      return;
+    }
+    if (isAppRendererUrl(url)) {
+      console.warn('[window-guard] 拦截同页克隆窗', url);
+      try {
+        win.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  queueMicrotask(apply);
+  win.webContents.on('did-finish-load', apply);
+  win.webContents.on('did-navigate', apply);
+}
+
+app.on('browser-window-created', (_event, win) => {
+  attachWindowTaskSwitchGuard(win);
+});
 
 function extractProjectFileFromArgv(argv: string[]): string | null {
   const execLower = path.resolve(process.execPath).toLowerCase();
@@ -418,11 +523,12 @@ function createWindow() {
     width: 1200,
     height: 800,
     title: 'Aixflow',
-    show: false,
+    show: true,
     fullscreen: false,
     autoHideMenuBar: true,
     transparent: false,
-    backgroundColor: '#000000',
+    // 勿用纯黑：Vite 未就绪时窗口会像「黑屏」
+    backgroundColor: '#1c1d22',
     ...iconOpt,
     webPreferences: {
       preload: preloadPath,
@@ -439,18 +545,15 @@ function createWindow() {
   setMainWindowForSnip(mainWindow);
   setAppUpdaterMainWindow(mainWindow);
 
-  mainWindow.once('ready-to-show', () => {
-    if (mainWindow) {
-      // 隐藏原生菜单栏（File/Edit/View...）
-      mainWindow.setMenuBarVisibility(false);
-      mainWindow.removeMenu();
-      // 启动默认窗口模式；登录页保持窗口，进入主界面后由渲染进程切换全屏
-      if (mainWindow.isFullScreen()) {
-        mainWindow.setFullScreen(false);
-      }
-      mainWindow.show();
-    }
-  });
+  attachMainWindowOpenGuard(mainWindow);
+  mainWindow.setSkipTaskbar(false);
+  mainWindow.setMenuBarVisibility(false);
+  mainWindow.removeMenu();
+  queueMicrotask(() => closeDuplicateAppWindows(mainWindow));
+  if (mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+  }
+  mainWindow.show();
 
   // 设置 Content Security Policy
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
@@ -471,13 +574,16 @@ function createWindow() {
     });
   });
 
-  // 唯一 did-finish-load：统一设置 rendererReady，开发环境可在此打开 DevTools（按需取消注释）
-  mainWindow.webContents.once('did-finish-load', () => {
+  // 开发态先画启动页，避免 Vite 编译期间整窗像黑屏；真正页面加载后再标 rendererReady
+  mainWindow.webContents.on('did-finish-load', () => {
+    const url = mainWindow?.webContents.getURL() || '';
+    const pageReady = isDev
+      ? url.startsWith(VITE_DEV_SERVER_ORIGIN)
+      : /index\.html/i.test(url) || url.startsWith('file:');
+    if (!pageReady) return;
     rendererReady = true;
+    markHardwareAccelerationSessionOk();
     flushPendingOpenProjectPath();
-    if (isDev && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.openDevTools();
-    }
   });
   mainWindow.on('closed', () => {
     rendererReady = false;
@@ -492,6 +598,12 @@ function createWindow() {
     mainWindow = null;
   });
   if (isDev) {
+    const splash =
+      '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Aixflow</title></head>' +
+      '<body style="margin:0;background:#1c1d22;color:#d4d4d8;font-family:Segoe UI,sans-serif;' +
+      'display:flex;align-items:center;justify-content:center;height:100vh;letter-spacing:.04em">' +
+      '正在启动…</body></html>';
+    void mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(splash));
     loadViteDevServer();
   } else {
     mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
@@ -505,6 +617,9 @@ function createWindow() {
   // 页面加载失败时打印详情，便于排查白屏/崩溃
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[主进程] did-fail-load:', { errorCode, errorDescription, validatedURL });
+    if (hardwareAccelerationActive && errorCode !== -3) {
+      disableHardwareAccelerationAfterBlackScreen(`did-fail-load ${errorCode}`);
+    }
   });
   // 渲染进程崩溃时置位并弹窗，提供重新加载选项
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
@@ -546,23 +661,30 @@ function createWindow() {
 
 function checkViteServerReady(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get(VITE_DEV_SERVER_ORIGIN, { timeout: 1000 }, (res) => {
+    // 首编 Workspace/DirectorNode 等超大文件时，Vite 端口已开但首包可能超过 1s
+    const req = http.get(VITE_DEV_SERVER_ORIGIN, { timeout: 12000 }, (res) => {
       resolve(true);
       res.resume();
     });
     req.on('error', () => { resolve(false); });
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('timeout', () => {
+      // 超时多半是正在编译，当作已就绪，交给 loadURL 继续等
+      req.destroy();
+      resolve(true);
+    });
   });
 }
 
 async function loadViteDevServer(retryCount = 0) {
   if (!mainWindow) return;
   const viteUrl = VITE_DEV_SERVER_ORIGIN;
-  const maxRetries = 60;
+  const maxRetries = 120;
   if (retryCount >= maxRetries) {
-    console.error('[主进程] 达到最大重试次数，停止尝试连接 Vite 服务器');
-    const errorHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>NEXFLOW V2 - 连接失败</title></head><body style="font-family:sans-serif;padding:2rem"><h1>无法连接到 Vite 服务器</h1><p>请确保已执行 npm run dev 并等待 Vite 就绪。</p></body></html>';
-    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(errorHtml));
+    console.warn('[主进程] Vite 探测超时，仍尝试直接加载', viteUrl);
+    if (hardwareAccelerationActive) {
+      disableHardwareAccelerationAfterBlackScreen('开发服长时间未响应');
+    }
+    mainWindow.loadURL(viteUrl);
     return;
   }
   const isReady = await checkViteServerReady();
@@ -570,7 +692,10 @@ async function loadViteDevServer(retryCount = 0) {
     mainWindow.loadURL(viteUrl);
     console.log('✅ Vite 服务器已就绪，加载开发服务器');
   } else {
-    setTimeout(() => { loadViteDevServer(retryCount + 1); }, 1000);
+    if (retryCount === 0 || retryCount % 10 === 0) {
+      console.log(`[主进程] 等待 Vite ${viteUrl}… (${retryCount}/${maxRetries})`);
+    }
+    setTimeout(() => { loadViteDevServer(retryCount + 1); }, 500);
   }
 }
 
@@ -1176,6 +1301,7 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     console.log('[single-instance] 检测到重复启动，聚焦已有窗口');
+    closeDuplicateAppWindows(mainWindow);
     focusMainApplicationWindow();
     const projectPath = extractProjectFileFromArgv(argv);
     if (projectPath) {
@@ -1191,6 +1317,10 @@ if (!gotSingleInstanceLock) {
 
   // 应用启动
   app.whenReady().then(() => {
+  app.on('browser-window-created', (_event, win) => {
+    attachWindowTaskSwitchGuard(win);
+  });
+
   // 不再删除 Chromium 内部目录（GPUCache、Cache），否则会导致 Gpu Cache Creation failed 与渲染进程 exitCode -2147483645。仅清理自定义缓存（如项目临时目录、缩略图）时使用 app 自有路径。
   applyFirstRunAfterInstall();
 
@@ -7601,3 +7731,17 @@ ipcMain.handle('local-resource:create-video-from-url', async (_, projectId: stri
 ipcMain.handle('local-resource:create-video-from-bilibili-page', async (_, projectId: string | undefined, pageUrl: string) => {
   return localResourceManager.createVideoResourceFromBilibiliPage(projectId, pageUrl);
 });
+
+/** 运营控制台（需本机 NX_ADMIN_ISSUE_COUPON_SECRET 与 FC 一致） */
+ipcMain.handle('admin-issue-coupon', async (_, amountCny: number) => nxAdminIssueCoupon(amountCny));
+ipcMain.handle('admin-dashboard-stats', async () => nxAdminDashboardStats());
+ipcMain.handle('admin-failed-tasks', async () => nxAdminFailedTasks());
+ipcMain.handle('admin-refund-task', async (_, userId: string, taskId: string) =>
+  nxAdminRefundTask(userId, taskId)
+);
+ipcMain.handle('admin-model-config-list', async () => nxAdminModelConfigList());
+ipcMain.handle('admin-model-config-upsert', async (_, row) => nxAdminModelConfigUpsert(row));
+ipcMain.handle('admin-get-all-users', async (_, maxScanRows?: number) => nxAdminGetAllUsers(maxScanRows));
+ipcMain.handle('admin-profit-analytics', async (_, opts?: { maxTxScanRows?: number; maxCouponScanRows?: number }) =>
+  nxAdminProfitAnalytics(opts)
+);

@@ -1,6 +1,7 @@
 /**
- * AI 短剧导演 — 影视级视觉风格库（10 预设）
- * 用户只选卡片；VisualDNA 参数隐藏在后台。
+ * AI 短剧导演 — 视觉风格：画风（媒介）+ 色调
+ * 用户只选两层；合成 Look / Grade 铅字写入 Project Visual Bible。
+ * 禁止题材/地点/场景渗入 H3。
  */
 
 import type { VisualStylePreset } from './types.js';
@@ -10,287 +11,440 @@ import {
 } from './visualDna.js';
 import type { DramaProjectVisualBible } from './types.js';
 
-export type VisualStylePresetId =
-  | 'film_cinematic'
-  | 'korean_clear'
-  | 'japanese_healing'
-  | 'cyber_neon'
-  | 'noir_suspense'
-  | 'retro_hk'
-  | 'guofeng_ink'
-  | 'anime_comic'
-  | 'luxury_chic'
-  | 'realist_doc';
+export type VisualLookId =
+  | 'live'
+  | 'cg'
+  | 'cartoon'
+  | 'anime'
+  | 'ink'
+  | 'oil'
+  | 'clay'
+  | 'sketch'
+  | 'pixel'
+  | 'illustration';
+export type VisualGradeId =
+  | 'dark_cyan'
+  | 'cold_blue'
+  | 'warm_amber'
+  | 'muted_gray'
+  | 'noir'
+  | 'soft_pastel'
+  | 'golden_hour'
+  | 'neon_night'
+  | 'earthy'
+  | 'clean_white';
 
-function dna(
-  partial: VisualStylePreset['visualDNA'],
-): VisualStylePreset['visualDNA'] {
-  return partial;
-}
+export type VisualStylePresetId = `${VisualLookId}__${VisualGradeId}`;
 
-/** 内置 10 个影视级视觉风格预设 */
-export const VISUAL_STYLE_PRESETS: readonly VisualStylePreset[] = [
+export type VisualLookOption = {
+  id: VisualLookId;
+  name: string;
+  nameEn: string;
+  description: string;
+  descriptionEn: string;
+  /** H3 Look 铅字 */
+  lookEn: string;
+  lookZh: string;
+  accent: string;
+};
+
+export type VisualGradeOption = {
+  id: VisualGradeId;
+  name: string;
+  nameEn: string;
+  description: string;
+  descriptionEn: string;
+  /** H3 Grade 铅字 */
+  gradeEn: string;
+  gradeZh: string;
+  accent: string;
+  color: VisualStylePreset['visualDNA']['color'];
+};
+
+/** 画风：10 选 1（与色调同卡尺寸布局） */
+export const VISUAL_LOOK_OPTIONS: readonly VisualLookOption[] = [
   {
-    id: 'film_cinematic',
-    name: '电影质感',
-    nameEn: 'Cinematic Look',
-    coverImage: '',
-    previewVideo: '',
-    description: '低饱和、强对比、暗部层次、电影镜头感',
-    descriptionEn: 'Low saturation, strong contrast, layered shadows, cinematic framing.',
-    tags: ['都市', '悬疑', '商战'],
-    accent: '#8b9bb4',
-    visualDNA: dna({
-      color: { temperature: -6, saturation: 28, contrast: 78, blackLevel: 14 },
-      camera: { lens: 35, depthOfField: 48, anamorphic: true, movement: 'motivated push-in' },
-      lighting: { style: 'cinematic motivated key', direction: 'side key with soft fill', contrast: 72 },
-      texture: { filmGrain: 42, filmStock: 'Kodak Vision3 500T', sharpness: 62 },
-      mood: { emotion: 'tense sophistication', atmosphere: 'urban night drama' },
-      promptTemplate:
-        'cinematic film look, low saturation, strong contrast, deep shadow layers, anamorphic cinema framing, urban suspense grade',
-      promptTemplateZh:
-        '电影质感，低饱和，强对比，暗部层次，变形宽银幕镜头感，都市悬疑调色',
-    }),
-  },
-  {
-    id: 'korean_clear',
-    name: '韩式清透',
-    nameEn: 'Korean Clear',
-    coverImage: '',
-    previewVideo: '',
-    description: '柔光、肤色通透、干净背景、清新色调',
-    descriptionEn: 'Soft light, clear skin tones, clean backgrounds, fresh palette.',
-    tags: ['甜宠', '校园', '爱情'],
-    accent: '#7eb8d4',
-    visualDNA: dna({
-      color: { temperature: 8, saturation: 48, contrast: 42, blackLevel: 38 },
-      camera: { lens: 50, depthOfField: 72, anamorphic: false, movement: 'gentle gimbal' },
-      lighting: { style: 'beauty soft key', direction: 'front soft wrap', contrast: 32 },
-      texture: { filmGrain: 10, filmStock: 'clean digital beauty', sharpness: 70 },
-      mood: { emotion: 'sweet clarity', atmosphere: 'bright clean romance' },
-      promptTemplate:
-        'Korean drama clear look, soft beauty light, translucent skin tones, clean background, fresh airy grade',
-      promptTemplateZh:
-        '韩式清透，柔光美颜，肤色通透，干净背景，清新通透调色',
-    }),
-  },
-  {
-    id: 'japanese_healing',
-    name: '日系治愈',
-    nameEn: 'Japanese Healing',
-    coverImage: '',
-    previewVideo: '',
-    description: '柔和自然光、低对比、温暖市井感',
-    descriptionEn: 'Soft natural light, low contrast, warm everyday street mood.',
-    tags: ['青春', '生活', '情感'],
-    accent: '#e8b4a0',
-    visualDNA: dna({
-      color: { temperature: 28, saturation: 42, contrast: 36, blackLevel: 44 },
-      camera: { lens: 85, depthOfField: 78, anamorphic: false, movement: 'gentle drift' },
-      lighting: { style: 'soft window natural light', direction: 'front soft key', contrast: 26 },
-      texture: { filmGrain: 22, filmStock: 'Fuji Pro 400H', sharpness: 45 },
-      mood: { emotion: 'tender nostalgia', atmosphere: 'warm slice-of-life streets' },
-      promptTemplate:
-        'Japanese healing drama, soft natural light, low contrast, warm everyday city life, intimate close-ups',
-      promptTemplateZh:
-        '日系治愈，柔和自然光，低对比，温暖市井日常，亲密特写',
-    }),
-  },
-  {
-    id: 'cyber_neon',
-    name: '赛博霓虹',
-    nameEn: 'Cyber Neon',
-    coverImage: '',
-    previewVideo: '',
-    description: '蓝紫霓虹、高反差、未来感光影',
-    descriptionEn: 'Blue-purple neon, high contrast, futuristic light play.',
-    tags: ['科幻', '逆袭', '都市异能'],
-    accent: '#5b8def',
-    visualDNA: dna({
-      color: { temperature: -55, saturation: 72, contrast: 78, blackLevel: 18 },
-      camera: { lens: 24, depthOfField: 48, anamorphic: true, movement: 'gliding steadicam' },
-      lighting: { style: 'neon practicals', direction: 'multi-color rim', contrast: 74 },
-      texture: { filmGrain: 16, filmStock: 'digital clean', sharpness: 82 },
-      mood: { emotion: 'electrified ambition', atmosphere: 'rainy neon megacity' },
-      promptTemplate:
-        'cyberpunk neon, teal magenta and violet neon, high contrast, futuristic light reflections, rain-slick streets',
-      promptTemplateZh:
-        '赛博霓虹，青品红与蓝紫霓虹，高反差，未来感光影反射，雨夜湿街',
-    }),
-  },
-  {
-    id: 'noir_suspense',
-    name: '暗黑悬疑',
-    nameEn: 'Dark Suspense',
-    coverImage: '',
-    previewVideo: '',
-    description: '冷黑灰、局部红光、压迫感构图',
-    descriptionEn: 'Cold black-grey, isolated red accents, oppressive framing.',
-    tags: ['犯罪', '复仇', '惊悚'],
-    accent: '#8a8f98',
-    visualDNA: dna({
-      color: { temperature: -12, saturation: 12, contrast: 88, blackLevel: 8 },
-      camera: { lens: 50, depthOfField: 55, anamorphic: false, movement: 'locked-off tension' },
-      lighting: { style: 'noir hard light with red accent', direction: 'side slash + red practical', contrast: 90 },
-      texture: { filmGrain: 55, filmStock: 'Ilford HP5 push', sharpness: 62 },
-      mood: { emotion: 'paranoid dread', atmosphere: 'cold crime night' },
-      promptTemplate:
-        'dark suspense thriller, cold black-grey grade, isolated red light accents, oppressive framing, neo-noir',
-      promptTemplateZh:
-        '暗黑悬疑，冷黑灰调，局部红光点缀，压迫感构图，新黑色电影',
-    }),
-  },
-  {
-    id: 'retro_hk',
-    name: '复古港风',
-    nameEn: 'Retro Hong Kong',
-    coverImage: '',
-    previewVideo: '',
-    description: '暖色胶片、颗粒感、经典港剧光影',
-    descriptionEn: 'Warm film tones, grain, classic Hong Kong drama lighting.',
-    tags: ['年代', '商战', '情仇'],
-    accent: '#c4a574',
-    visualDNA: dna({
-      color: { temperature: 42, saturation: 52, contrast: 62, blackLevel: 22 },
-      camera: { lens: 35, depthOfField: 50, anamorphic: false, movement: 'classic tracking' },
-      lighting: { style: 'classic HK drama practicals', direction: 'warm key + tungsten fill', contrast: 58 },
-      texture: { filmGrain: 58, filmStock: 'warm 35mm film', sharpness: 52 },
-      mood: { emotion: 'nostalgic rivalry', atmosphere: '1980s Hong Kong night streets' },
-      promptTemplate:
-        'retro Hong Kong drama look, warm film stock, visible grain, classic Cantonese cinema lighting, period urban mood',
-      promptTemplateZh:
-        '复古港风，暖色胶片，可见颗粒，经典港剧光影，年代都市氛围',
-    }),
-  },
-  {
-    id: 'guofeng_ink',
-    name: '国风写意',
-    nameEn: 'Guofeng Ink',
-    coverImage: '',
-    previewVideo: '',
-    description: '水墨感、淡雅色系、东方美学构图',
-    descriptionEn: 'Ink-wash feel, elegant muted palette, Eastern aesthetic framing.',
-    tags: ['古装', '玄幻', '历史'],
-    accent: '#3d9b8f',
-    visualDNA: dna({
-      color: { temperature: -8, saturation: 38, contrast: 48, blackLevel: 34 },
-      camera: { lens: 35, depthOfField: 58, anamorphic: false, movement: 'floating lyrical drift' },
-      lighting: { style: 'misty soft dawn key', direction: 'backlit haze', contrast: 36 },
-      texture: { filmGrain: 26, filmStock: 'soft cinema grain', sharpness: 46 },
-      mood: { emotion: 'poetic stillness', atmosphere: 'ink-wash oriental landscape' },
-      promptTemplate:
-        'Chinese guofeng ink aesthetic, pale elegant palette, Eastern composition, poetic wuxia cinema mist',
-      promptTemplateZh:
-        '国风写意，淡雅色系，东方美学构图，诗意武侠薄雾影像',
-    }),
-  },
-  {
-    id: 'anime_comic',
-    name: '二次元漫感',
-    nameEn: 'Anime Comic',
-    coverImage: '',
-    previewVideo: '',
-    description: '高饱和、人物精致、漫画分镜感',
-    descriptionEn: 'High saturation, refined characters, comic-panel framing.',
-    tags: ['甜宠', '奇幻', '青春'],
-    accent: '#d4a5c9',
-    visualDNA: dna({
-      color: { temperature: 18, saturation: 78, contrast: 58, blackLevel: 36 },
-      camera: { lens: 50, depthOfField: 68, anamorphic: false, movement: 'dynamic comic push' },
-      lighting: { style: 'cel-shaded soft key', direction: 'front beauty + color rim', contrast: 52 },
-      texture: { filmGrain: 8, filmStock: 'clean anime-inspired digital', sharpness: 80 },
-      mood: { emotion: 'bright fantasy romance', atmosphere: 'stylized comic panels' },
-      promptTemplate:
-        'anime comic aesthetic, high saturation, refined character detail, manga panel framing, stylized youth fantasy',
-      promptTemplateZh:
-        '二次元漫感，高饱和，人物精致，漫画分镜感，风格化青春奇幻',
-    }),
-  },
-  {
-    id: 'luxury_chic',
-    name: '轻奢高级',
-    nameEn: 'Luxury Chic',
-    coverImage: '',
-    previewVideo: '',
-    description: '金黑 / 米白配色、空间质感、柔光高调',
-    descriptionEn: 'Gold-black / ivory palette, spatial texture, soft high-key light.',
-    tags: ['总裁', '豪门', '都市'],
-    accent: '#d4a017',
-    visualDNA: dna({
-      color: { temperature: 16, saturation: 42, contrast: 55, blackLevel: 30 },
-      camera: { lens: 50, depthOfField: 65, anamorphic: false, movement: 'smooth luxury glide' },
-      lighting: { style: 'soft high-key beauty', direction: 'front three-quarter soft', contrast: 42 },
-      texture: { filmGrain: 12, filmStock: 'clean premium digital', sharpness: 74 },
-      mood: { emotion: 'polished desire', atmosphere: 'gold-black penthouse elegance' },
-      promptTemplate:
-        'luxury chic short drama, gold-black and ivory palette, premium interior texture, soft high-key lighting, CEO romance gloss',
-      promptTemplateZh:
-        '轻奢高级，金黑与米白配色，空间质感，柔光高调，总裁豪门光泽',
-    }),
-  },
-  {
-    id: 'realist_doc',
-    name: '真实纪实',
-    nameEn: 'Realist Documentary',
-    coverImage: '',
-    previewVideo: '',
-    description: '自然光线、手持感、生活化场景',
-    descriptionEn: 'Natural light, handheld feel, everyday lived-in scenes.',
-    tags: ['社会', '现实', '职业剧'],
+    id: 'live',
+    name: '真实风格',
+    nameEn: 'Live-action',
+    description: '真人实拍',
+    descriptionEn: 'Photoreal',
+    lookEn: 'photoreal live-action',
+    lookZh: '真实风格',
     accent: '#7a8a7a',
-    visualDNA: dna({
-      color: { temperature: 2, saturation: 38, contrast: 48, blackLevel: 30 },
-      camera: { lens: 35, depthOfField: 42, anamorphic: false, movement: 'observational handheld' },
-      lighting: { style: 'available natural light', direction: 'motivated practicals', contrast: 44 },
-      texture: { filmGrain: 36, filmStock: 'documentary 16mm feel', sharpness: 58 },
-      mood: { emotion: 'observant empathy', atmosphere: 'raw real-world workplaces' },
-      promptTemplate:
-        'realist documentary look, natural light, subtle handheld, lived-in social drama scenes, honest grade',
-      promptTemplateZh:
-        '真实纪实，自然光线，轻微手持感，生活化社会剧场景，诚实调色',
-    }),
+  },
+  {
+    id: 'cg',
+    name: 'CG风格',
+    nameEn: 'CG',
+    description: '三维渲染',
+    descriptionEn: '3D CGI',
+    lookEn: '3D CGI render',
+    lookZh: 'CG风格',
+    accent: '#5b8def',
+  },
+  {
+    id: 'cartoon',
+    name: '卡通风格',
+    nameEn: 'Cartoon',
+    description: '卡通造型',
+    descriptionEn: 'Cartoon',
+    lookEn: 'stylized cartoon',
+    lookZh: '卡通风格',
+    accent: '#e8b4a0',
+  },
+  {
+    id: 'anime',
+    name: '动漫风格',
+    nameEn: 'Anime',
+    description: '日式赛璐珞',
+    descriptionEn: 'Anime cel',
+    lookEn: 'Japanese anime',
+    lookZh: '动漫风格',
+    accent: '#d4a5c9',
+  },
+  {
+    id: 'ink',
+    name: '水墨风格',
+    nameEn: 'Ink Wash',
+    description: '水墨笔触',
+    descriptionEn: 'Ink wash',
+    lookEn: 'ink-wash painting',
+    lookZh: '水墨风格',
+    accent: '#6b7c8a',
+  },
+  {
+    id: 'oil',
+    name: '油画风格',
+    nameEn: 'Oil Paint',
+    description: '厚涂油画',
+    descriptionEn: 'Oil paint',
+    lookEn: 'oil painting',
+    lookZh: '油画风格',
+    accent: '#b8956c',
+  },
+  {
+    id: 'clay',
+    name: '粘土风格',
+    nameEn: 'Claymation',
+    description: '定格粘土',
+    descriptionEn: 'Claymation',
+    lookEn: 'claymation stop-motion',
+    lookZh: '粘土风格',
+    accent: '#c47a5a',
+  },
+  {
+    id: 'sketch',
+    name: '素描风格',
+    nameEn: 'Sketch',
+    description: '铅笔线稿',
+    descriptionEn: 'Pencil sketch',
+    lookEn: 'pencil sketch line art',
+    lookZh: '素描风格',
+    accent: '#9aa3ad',
+  },
+  {
+    id: 'pixel',
+    name: '像素风格',
+    nameEn: 'Pixel',
+    description: '像素块面',
+    descriptionEn: 'Pixel art',
+    lookEn: 'pixel art',
+    lookZh: '像素风格',
+    accent: '#6ecf8e',
+  },
+  {
+    id: 'illustration',
+    name: '插画风格',
+    nameEn: 'Illustration',
+    description: '平面插画',
+    descriptionEn: 'Illustration',
+    lookEn: 'flat illustration',
+    lookZh: '插画风格',
+    accent: '#8b7ec8',
   },
 ] as const;
+
+/** 色调：单选（名称即精简铅字） */
+export const VISUAL_GRADE_OPTIONS: readonly VisualGradeOption[] = [
+  {
+    id: 'dark_cyan',
+    name: '暗青色调',
+    nameEn: 'Dark Cyan',
+    description: '冷青',
+    descriptionEn: 'Cool teal',
+    gradeEn: 'dark cyan grade',
+    gradeZh: '暗青色调',
+    accent: '#3d9b8f',
+    color: { temperature: -28, saturation: 42, contrast: 68, blackLevel: 16 },
+  },
+  {
+    id: 'cold_blue',
+    name: '冷蓝色调',
+    nameEn: 'Cold Blue',
+    description: '冷蓝',
+    descriptionEn: 'Cold blue',
+    gradeEn: 'cold blue grade',
+    gradeZh: '冷蓝色调',
+    accent: '#7eb8d4',
+    color: { temperature: -42, saturation: 38, contrast: 62, blackLevel: 20 },
+  },
+  {
+    id: 'warm_amber',
+    name: '暖琥珀色调',
+    nameEn: 'Warm Amber',
+    description: '琥珀暖',
+    descriptionEn: 'Warm amber',
+    gradeEn: 'warm amber grade',
+    gradeZh: '暖琥珀色调',
+    accent: '#c4a574',
+    color: { temperature: 36, saturation: 48, contrast: 52, blackLevel: 28 },
+  },
+  {
+    id: 'muted_gray',
+    name: '灰雾色调',
+    nameEn: 'Muted Gray',
+    description: '低饱和',
+    descriptionEn: 'Muted',
+    gradeEn: 'muted gray grade',
+    gradeZh: '灰雾色调',
+    accent: '#8b9bb4',
+    color: { temperature: -6, saturation: 22, contrast: 58, blackLevel: 22 },
+  },
+  {
+    id: 'noir',
+    name: '高反差黑白',
+    nameEn: 'Noir Mono',
+    description: '黑白',
+    descriptionEn: 'Mono',
+    gradeEn: 'high-contrast monochrome',
+    gradeZh: '高反差黑白',
+    accent: '#8a8f98',
+    color: { temperature: 0, saturation: 4, contrast: 88, blackLevel: 8 },
+  },
+  {
+    id: 'soft_pastel',
+    name: '柔和粉彩',
+    nameEn: 'Soft Pastel',
+    description: '粉彩',
+    descriptionEn: 'Pastel',
+    gradeEn: 'soft pastel grade',
+    gradeZh: '柔和粉彩',
+    accent: '#d4a5c9',
+    color: { temperature: 14, saturation: 52, contrast: 38, blackLevel: 40 },
+  },
+  {
+    id: 'golden_hour',
+    name: '金色时段',
+    nameEn: 'Golden Hour',
+    description: '金暖光',
+    descriptionEn: 'Golden hour',
+    gradeEn: 'golden-hour grade',
+    gradeZh: '金色时段',
+    accent: '#d4a017',
+    color: { temperature: 48, saturation: 55, contrast: 58, blackLevel: 24 },
+  },
+  {
+    id: 'neon_night',
+    name: '霓虹夜色',
+    nameEn: 'Neon Night',
+    description: '霓虹',
+    descriptionEn: 'Neon',
+    gradeEn: 'neon night grade',
+    gradeZh: '霓虹夜色',
+    accent: '#5b8def',
+    color: { temperature: -55, saturation: 72, contrast: 78, blackLevel: 14 },
+  },
+  {
+    id: 'earthy',
+    name: '泥土暖褐',
+    nameEn: 'Earthy',
+    description: '暖褐',
+    descriptionEn: 'Earthy',
+    gradeEn: 'earthy brown grade',
+    gradeZh: '泥土暖褐',
+    accent: '#a67c52',
+    color: { temperature: 22, saturation: 40, contrast: 50, blackLevel: 26 },
+  },
+  {
+    id: 'clean_white',
+    name: '干净浅亮',
+    nameEn: 'Clean Bright',
+    description: '浅亮',
+    descriptionEn: 'Bright',
+    gradeEn: 'clean bright grade',
+    gradeZh: '干净浅亮',
+    accent: '#c8d0d8',
+    color: { temperature: 4, saturation: 32, contrast: 42, blackLevel: 48 },
+  },
+] as const;
+
+export function getVisualLookOption(id: string | undefined | null): VisualLookOption | null {
+  const key = String(id || '').trim();
+  return VISUAL_LOOK_OPTIONS.find((p) => p.id === key) || null;
+}
+
+export function getVisualGradeOption(id: string | undefined | null): VisualGradeOption | null {
+  const key = String(id || '').trim();
+  return VISUAL_GRADE_OPTIONS.find((p) => p.id === key) || null;
+}
+
+export function composeVisualStylePresetId(lookId: string, gradeId: string): VisualStylePresetId | '' {
+  const look = getVisualLookOption(lookId);
+  const grade = getVisualGradeOption(gradeId);
+  if (!look || !grade) return '';
+  return `${look.id}__${grade.id}` as VisualStylePresetId;
+}
+
+export function parseVisualStyleLookGrade(raw: string | undefined | null): {
+  lookId: VisualLookId | '';
+  gradeId: VisualGradeId | '';
+} {
+  const key = String(raw || '').trim();
+  if (!key) return { lookId: '', gradeId: '' };
+  const m = key.match(/^([a-z_]+)__([a-z_]+)$/i);
+  if (m) {
+    const look = getVisualLookOption(m[1]);
+    const grade = getVisualGradeOption(m[2]);
+    return {
+      lookId: (look?.id || '') as VisualLookId | '',
+      gradeId: (grade?.id || '') as VisualGradeId | '',
+    };
+  }
+  // 兼容：仅画风 id
+  const lookOnly = getVisualLookOption(key);
+  if (lookOnly) return { lookId: lookOnly.id, gradeId: '' };
+  return { lookId: '', gradeId: '' };
+}
+
+function dnaForLookGrade(
+  look: VisualLookOption,
+  grade: VisualGradeOption,
+): VisualStylePreset['visualDNA'] {
+  // 权威铅字用中文；promptTemplate 保留英文对照供调试/旧路径
+  const promptTemplateZh = `${look.lookZh}，${grade.gradeZh}`;
+  const promptTemplate = promptTemplateZh;
+  const cameraByLook: Record<VisualLookId, VisualStylePreset['visualDNA']['camera']> = {
+    live: { lens: 35, depthOfField: 48, anamorphic: false, movement: '轻微动机运镜' },
+    cg: { lens: 35, depthOfField: 55, anamorphic: false, movement: '平滑滑移' },
+    cartoon: { lens: 50, depthOfField: 62, anamorphic: false, movement: '轻推镜头' },
+    anime: { lens: 50, depthOfField: 68, anamorphic: false, movement: '动感漫画推镜' },
+    ink: { lens: 50, depthOfField: 45, anamorphic: false, movement: '缓慢横移' },
+    oil: { lens: 50, depthOfField: 52, anamorphic: false, movement: '缓慢推镜' },
+    clay: { lens: 35, depthOfField: 58, anamorphic: false, movement: '定格步进' },
+    sketch: { lens: 50, depthOfField: 40, anamorphic: false, movement: '轻推镜头' },
+    pixel: { lens: 35, depthOfField: 30, anamorphic: false, movement: '方块步进' },
+    illustration: { lens: 50, depthOfField: 55, anamorphic: false, movement: '平滑滑移' },
+  };
+  const grainByLook: Record<VisualLookId, number> = {
+    live: 28,
+    cg: 8,
+    cartoon: 6,
+    anime: 6,
+    ink: 12,
+    oil: 18,
+    clay: 10,
+    sketch: 8,
+    pixel: 4,
+    illustration: 6,
+  };
+  return {
+    color: { ...grade.color },
+    camera: cameraByLook[look.id],
+    lighting: {
+      style: '动机主光',
+      direction: '侧主光+柔辅光',
+      contrast: grade.color.contrast,
+    },
+    texture: {
+      filmGrain: grainByLook[look.id],
+      filmStock: look.id === 'live' ? '干净数码胶片' : '干净数码',
+      sharpness: look.id === 'anime' || look.id === 'cg' || look.id === 'pixel' ? 78 : 62,
+    },
+    mood: { emotion: '', atmosphere: '' },
+    promptTemplate,
+    promptTemplateZh,
+  };
+}
+
+export function buildVisualStylePreset(lookId: string, gradeId: string): VisualStylePreset | null {
+  const look = getVisualLookOption(lookId);
+  const grade = getVisualGradeOption(gradeId);
+  if (!look || !grade) return null;
+  const id = composeVisualStylePresetId(look.id, grade.id);
+  if (!id) return null;
+  return {
+    id,
+    name: `${look.name} · ${grade.name}`,
+    nameEn: `${look.nameEn} · ${grade.nameEn}`,
+    coverImage: '',
+    previewVideo: '',
+    description: `${look.description}；${grade.description}`,
+    descriptionEn: `${look.descriptionEn}; ${grade.descriptionEn}`,
+    tags: [look.name, grade.name],
+    accent: grade.accent || look.accent,
+    visualDNA: dnaForLookGrade(look, grade),
+  };
+}
+
+/** 画风×色调笛卡尔积（供 resolve / 兼容旧遍历） */
+export const VISUAL_STYLE_PRESETS: readonly VisualStylePreset[] = VISUAL_LOOK_OPTIONS.flatMap((look) =>
+  VISUAL_GRADE_OPTIONS.map((grade) => buildVisualStylePreset(look.id, grade.id)!),
+);
 
 export function getVisualStylePreset(id: string | undefined | null): VisualStylePreset | null {
   const key = String(id || '').trim();
   if (!key) return null;
+  const parsed = parseVisualStyleLookGrade(key);
+  if (parsed.lookId && parsed.gradeId) {
+    return buildVisualStylePreset(parsed.lookId, parsed.gradeId);
+  }
   return VISUAL_STYLE_PRESETS.find((p) => p.id === key) || null;
 }
 
-/** 旧预设 id → 新库映射（含更早 5 预设与上一版 10 预设） */
+/** 旧 10 风格卡 → 新 画风+色调 */
 const LEGACY_PRESET_MAP: Record<string, VisualStylePresetId> = {
-  dark_western: 'film_cinematic',
-  western_revenge: 'film_cinematic',
-  film_noir: 'noir_suspense',
-  noir_thriller: 'noir_suspense',
-  sci_fi_neon: 'cyber_neon',
-  cyber_future: 'cyber_neon',
-  epic_costume: 'guofeng_ink',
-  fantasy_china: 'guofeng_ink',
-  jp_healing: 'japanese_healing',
-  japanese_drama: 'japanese_healing',
-  horror_sci_fi: 'noir_suspense',
-  commercial_drama: 'luxury_chic',
-  documentary: 'realist_doc',
-  dream_fantasy: 'anime_comic',
-  epic_cinema: 'film_cinematic',
+  film_cinematic: 'live__muted_gray',
+  korean_clear: 'live__soft_pastel',
+  japanese_healing: 'live__warm_amber',
+  cyber_neon: 'cg__neon_night',
+  noir_suspense: 'live__noir',
+  retro_hk: 'live__warm_amber',
+  guofeng_ink: 'ink__dark_cyan',
+  anime_comic: 'anime__soft_pastel',
+  luxury_chic: 'live__golden_hour',
+  realist_doc: 'live__earthy',
+  dark_western: 'live__muted_gray',
+  western_revenge: 'live__muted_gray',
+  film_noir: 'live__noir',
+  noir_thriller: 'live__noir',
+  sci_fi_neon: 'cg__neon_night',
+  cyber_future: 'cg__neon_night',
+  epic_costume: 'ink__dark_cyan',
+  fantasy_china: 'ink__dark_cyan',
+  jp_healing: 'live__warm_amber',
+  japanese_drama: 'live__warm_amber',
+  horror_sci_fi: 'live__noir',
+  commercial_drama: 'live__golden_hour',
+  documentary: 'live__earthy',
+  dream_fantasy: 'illustration__soft_pastel',
+  epic_cinema: 'live__muted_gray',
 };
 
 export function resolveVisualStylePresetId(raw: string | undefined | null): string {
   const key = String(raw || '').trim();
   if (!key || key === 'custom' || key === 'unset') return '';
-  if (getVisualStylePreset(key)) return key;
+  if (getVisualStylePreset(key)) return getVisualStylePreset(key)!.id;
   return LEGACY_PRESET_MAP[key] || '';
 }
 
-/** 应用风格卡片 → 冻结 Project Visual Bible */
-export function applyVisualStylePreset(
-  presetId: string,
+/** 应用画风 + 色调 → 冻结 Project Visual Bible */
+export function applyVisualStyleLookGrade(
+  lookId: string,
+  gradeId: string,
   prev?: Partial<DramaProjectVisualBible>,
 ): DramaProjectVisualBible {
-  const resolved = resolveVisualStylePresetId(presetId) || String(presetId || '').trim();
-  const preset = getVisualStylePreset(resolved);
+  const preset = buildVisualStylePreset(lookId, gradeId);
   if (!preset) {
     return createEmptyDramaProjectVisualBible({
       ...prev,
@@ -299,7 +453,6 @@ export function applyVisualStylePreset(
     });
   }
   const visualDNA = visualDnaFromStylePreset(preset);
-  // 保留用户上传的参考图
   if (prev?.visualDNA?.referenceImages?.length) {
     visualDNA.referenceImages = prev.visualDNA.referenceImages;
   }
@@ -317,45 +470,59 @@ export function applyVisualStylePreset(
   });
 }
 
+/** 应用风格卡片 → 冻结 Project Visual Bible（兼容复合 id / 旧 id） */
+export function applyVisualStylePreset(
+  presetId: string,
+  prev?: Partial<DramaProjectVisualBible>,
+): DramaProjectVisualBible {
+  const resolved = resolveVisualStylePresetId(presetId) || String(presetId || '').trim();
+  const parsed = parseVisualStyleLookGrade(resolved);
+  if (parsed.lookId && parsed.gradeId) {
+    return applyVisualStyleLookGrade(parsed.lookId, parsed.gradeId, prev);
+  }
+  return createEmptyDramaProjectVisualBible({
+    ...prev,
+    presetId: 'unset',
+    selected_at: 0,
+  });
+}
+
 /**
- * AI 推荐视觉方案占位（暂不接模型）
- * 根据剧本关键词做简单启发式，固定返回 3 个预设 id。
+ * AI 推荐占位：返回 3 个 画风+色调 组合
  */
 export function recommendVisualStylePresets(opts?: {
   scriptText?: string;
   keywords?: string[];
 }): VisualStylePreset[] {
   const blob = `${opts?.scriptText || ''} ${(opts?.keywords || []).join(' ')}`.toLowerCase();
-  const scored = VISUAL_STYLE_PRESETS.map((p) => {
-    let score = 0;
-    for (const tag of p.tags) {
-      if (blob.includes(tag.toLowerCase()) || blob.includes(p.nameEn.toLowerCase())) score += 3;
+  let look: VisualLookId = 'live';
+  if (/二次元|动漫|anime|漫画/.test(blob)) look = 'anime';
+  else if (/卡通|cartoon/.test(blob)) look = 'cartoon';
+  else if (/cg|三维|3d|渲染/.test(blob)) look = 'cg';
+
+  const gradePool: VisualGradeId[] = ['dark_cyan', 'muted_gray', 'warm_amber'];
+  if (/霓虹|科幻|夜|neon/.test(blob)) gradePool.unshift('neon_night');
+  if (/黑白|悬疑|noir|犯罪/.test(blob)) gradePool.unshift('noir');
+  if (/甜|粉|治愈|pastel/.test(blob)) gradePool.unshift('soft_pastel');
+  if (/金|暖|日落|golden/.test(blob)) gradePool.unshift('golden_hour');
+
+  const seen = new Set<string>();
+  const out: VisualStylePreset[] = [];
+  for (const g of gradePool) {
+    const p = buildVisualStylePreset(look, g);
+    if (p && !seen.has(p.id)) {
+      seen.add(p.id);
+      out.push(p);
     }
-    if (/都市|悬疑|商战|电影/.test(blob) && p.id === 'film_cinematic') score += 5;
-    if (/甜宠|校园|爱情|韩式|清透/.test(blob) && p.id === 'korean_clear') score += 5;
-    if (/治愈|日系|青春|生活|情感/.test(blob) && p.id === 'japanese_healing') score += 5;
-    if (/科幻|霓虹|逆袭|异能|cyber/.test(blob) && p.id === 'cyber_neon') score += 5;
-    if (/悬疑|犯罪|复仇|惊悚|noir/.test(blob) && p.id === 'noir_suspense') score += 5;
-    if (/港风|年代|情仇|港剧/.test(blob) && p.id === 'retro_hk') score += 5;
-    if (/古装|玄幻|历史|国风|仙侠|水墨/.test(blob) && p.id === 'guofeng_ink') score += 5;
-    if (/二次元|漫画|奇幻|漫感|anime/.test(blob) && p.id === 'anime_comic') score += 5;
-    if (/总裁|豪门|轻奢|霸总/.test(blob) && p.id === 'luxury_chic') score += 5;
-    if (/纪录|真实|社会|职业|现实/.test(blob) && p.id === 'realist_doc') score += 5;
-    return { p, score };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  const top = scored.filter((x) => x.score > 0).slice(0, 3).map((x) => x.p);
-  if (top.length >= 3) return top;
-  const fallbackIds: VisualStylePresetId[] = [
-    'film_cinematic',
-    'luxury_chic',
-    'japanese_healing',
-  ];
-  const out = [...top];
-  for (const id of fallbackIds) {
     if (out.length >= 3) break;
-    const p = getVisualStylePreset(id);
-    if (p && !out.some((x) => x.id === p.id)) out.push(p);
+  }
+  for (const g of VISUAL_GRADE_OPTIONS) {
+    if (out.length >= 3) break;
+    const p = buildVisualStylePreset(look, g.id);
+    if (p && !seen.has(p.id)) {
+      seen.add(p.id);
+      out.push(p);
+    }
   }
   return out.slice(0, 3);
 }
@@ -391,7 +558,10 @@ export function getDramaVisualDnaPreset(id: string | undefined | null) {
   return DRAMA_VISUAL_DNA_PRESETS.find((x) => x.id === p.id) || null;
 }
 
-export function applyDramaVisualDnaPreset(presetId: string, prev?: { referenceImages?: DramaProjectVisualBible['visualDNA']['referenceImages'] }) {
+export function applyDramaVisualDnaPreset(
+  presetId: string,
+  prev?: { referenceImages?: DramaProjectVisualBible['visualDNA']['referenceImages'] },
+) {
   const bible = applyVisualStylePreset(presetId, {
     visualDNA: prev?.referenceImages
       ? ({ referenceImages: prev.referenceImages } as any)

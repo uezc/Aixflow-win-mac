@@ -1,0 +1,34 @@
+{
+  "started_at": "2026-09-03T11:03:28.478Z",
+  "prefix": "__p5live_mtlf2pr2_",
+  "scheduler_n": 20,
+  "user_n": 50,
+  "queued_n": 0,
+  "max_claimed": 115,
+  "max_platform_occupied": 99,
+  "max_user_occupied": 5,
+  "oversould": true,
+  "duplicate_claim": false,
+  "reservation_leak": false,
+  "refill_ok": false,
+  "lease_recovery_ok": false,
+  "reconcile_ok": false,
+  "video_image_isolated": false,
+  "phase6_deployed": false,
+  "steps": [
+    "[p5-live] FC targets: https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run (HK-only for stress)",
+    "[p5-live] platform snap0 video=0 image=0",
+    "[p5-live] create 50 users…",
+    "[p5-live] enqueue 500 video + 30 image queued…",
+    "[p5-live] local OTS storm 20 workers on our tasks…",
+    "[p5-live] local wave0: ok=115 claimed=115 queued=385 plat=99 maxUser=5",
+    "[p5-live] AFTER STORM claimed=115 plat=99",
+    "[p5-live] cleanup…",
+    "[p5-live] snapFinal video=0 image=0"
+  ],
+  "errors": [
+    "A fail claimed=115",
+    "A fail claimed=115"
+  ],
+  "ok": false
+}

@@ -1,0 +1,105 @@
+{
+  "started_at": "2026-09-05T06:10:20.725Z",
+  "prefix": "__p92live_mtnzhgad_",
+  "fc_endpoint": "https://nexflow-api-voswynhbpf.cn-hongkong.fcapp.run",
+  "create": {
+    "http": 200,
+    "code": null,
+    "error": null,
+    "task_id": "e1fa1695-433a-4b84-b2d6-7a0c6bb753ec",
+    "quoted": 8
+  },
+  "golden_e2e": {
+    "aixflow_task_id": "e1fa1695-433a-4b84-b2d6-7a0c6bb753ec",
+    "rh_task_id": "2096118831545282561",
+    "region": "cn",
+    "path": "/run/ai-app/2085682347676102657",
+    "charge_amount": 8,
+    "initial_balance": 2000,
+    "balance_before_workers": 2000,
+    "final_balance": 1992,
+    "quoted_on_create": 8,
+    "final_status": "success",
+    "execution_stage": "done",
+    "video_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p84-audio_iumpe_1788588948.mp4",
+    "user_occupied": 0,
+    "platform_occupied": 0,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "worker_timeout": false,
+    "dispatch": {
+      "ok": true,
+      "provider_task_id": "2096118831545282561"
+    },
+    "note": "dispatch/poll targeted locally with FC RH keys; FC scan backlog of NO_FORWARD_PAYLOAD charged tasks",
+    "stages_tail": [
+      {
+        "round": 29,
+        "poll": {
+          "ok": true,
+          "in_flight": true,
+          "provider_status": "RUNNING"
+        },
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096118831545282561"
+      },
+      {
+        "round": 30,
+        "poll": {
+          "ok": true,
+          "in_flight": true,
+          "provider_status": "RUNNING"
+        },
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096118831545282561"
+      },
+      {
+        "round": 31,
+        "poll": {
+          "ok": true,
+          "in_flight": true,
+          "provider_status": "RUNNING"
+        },
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096118831545282561"
+      },
+      {
+        "round": 32,
+        "poll": {
+          "ok": true,
+          "in_flight": true,
+          "provider_status": "RUNNING"
+        },
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096118831545282561"
+      },
+      {
+        "round": 33,
+        "poll": {
+          "ok": true,
+          "in_flight": true,
+          "provider_status": "RUNNING"
+        },
+        "status": "running",
+        "stage": "provider_submitted",
+        "pid": "2096118831545282561"
+      },
+      {
+        "round": 34,
+        "poll": {
+          "ok": true,
+          "status": "success"
+        },
+        "status": "success",
+        "stage": "done",
+        "pid": "2096118831545282561"
+      }
+    ]
+  },
+  "conclusion": "PASS",
+  "errors": []
+}

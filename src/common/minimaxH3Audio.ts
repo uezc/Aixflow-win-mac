@@ -50,7 +50,17 @@ export const MINIMAX_H3_AUDIO_AUDIO_NODE = {
   description: '参考音',
 } as const;
 
-/** 仅 720P → megapixels 0.9（与其它 H3 一致，勿传 1080） */
+/** 480P → 0.4；720P → 0.9（与其它 H3 一致，勿传 1080） */
+export {
+  MINIMAX_H3_DEFAULT_RESOLUTION,
+  MINIMAX_H3_MEGAPIXELS_BY_RESOLUTION,
+  MINIMAX_H3_RESOLUTION_OPTIONS,
+  minimaxH3MegapixelsForResolution,
+  normalizeMinimaxH3Resolution,
+  type MinimaxH3Resolution,
+} from './minimaxH3Resolution.js';
+
+/** @deprecated 请用 minimaxH3MegapixelsForResolution；默认 720P */
 export const MINIMAX_H3_AUDIO_MEGAPIXELS = '0.9';
 
 /**

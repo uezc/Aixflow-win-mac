@@ -1,6 +1,5 @@
 /**
- * 剧本分析工作台 — 单栏表格（可编辑 / 添加 / 删除）
- * Tabs：故事 / 视觉 / 声音 / 角色 / 场景 / 势力 / 道具 / 分镜脚本
+ * 剧本分析工作台 — 本集分镜脚本表（可编辑 / 添加 / 删除）
  */
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -28,10 +27,15 @@ import {
   resolveSoundBible,
   resolveVisualBible,
   suggestionsNeedDurationInit,
-  type ShotDurationPaceStyle,
+  mergeDramaShotSuggestionsByIds,
+  coalesceAdjacentShortDurationShots,
+  isDramaScriptDesignShotTable,
+  collectSeriesCharacterAppearanceOrder,
+  sortDramaCharactersByAppearanceOrder,
+  isDramaSystemSpeakerCharacter,
 } from '../../../shared/directorDomain';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
-import { DurationToolbar, ShotDurationCell } from './ShotDurationCell';
+import { ShotDurationCell } from './ShotDurationCell';
 
 function mutedCls(isDark: boolean) {
   return isDark ? 'text-white/55' : 'text-gray-500';
@@ -456,9 +460,11 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
 }) => {
   const { locale } = useAppLocale();
   const en = locale === 'en';
-  const [tab, setTab] = useState<ProjectTab>('story');
+  const [tab] = useState<ProjectTab>('shots');
   const [showOtherCast, setShowOtherCast] = useState(false);
   const [showDossier, setShowDossier] = useState(false);
+  const [selectedShotIds, setSelectedShotIds] = useState<string[]>([]);
+  const [mergeHint, setMergeHint] = useState('');
   const visual = resolveVisualBible(session, episodeBible.episode_id);
   const sound = resolveSoundBible(session, episodeBible.episode_id);
   const story = session.bible.story;
@@ -487,45 +493,81 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
     [appearingIds, bible.characters],
   );
   const visibleCharacters = useMemo(() => {
-    if (!appearingIds.size) return bible.characters;
-    if (showOtherCast) return bible.characters;
-    return bible.characters.filter((c) => appearingIds.has(c.character_id));
-  }, [appearingIds, bible.characters, showOtherCast]);
+    const base = !appearingIds.size
+      ? bible.characters
+      : showOtherCast
+        ? bible.characters
+        : bible.characters.filter((c) => appearingIds.has(c.character_id));
+    const order = collectSeriesCharacterAppearanceOrder(session);
+    return sortDramaCharactersByAppearanceOrder(base, order).filter(
+      (c) => !isDramaSystemSpeakerCharacter(c),
+    );
+  }, [appearingIds, bible.characters, showOtherCast, session.episodes, session.episode_bibles]);
 
   const commit = (next: DramaDirectorSession) => onChange?.(next);
+
+  useEffect(() => {
+    setSelectedShotIds([]);
+    setMergeHint('');
+  }, [epId]);
+
+  const toggleShotSelected = (id: string, on: boolean) => {
+    const key = String(id || '').trim();
+    if (!key) return;
+    setMergeHint('');
+    setSelectedShotIds((prev) => {
+      if (on) return prev.includes(key) ? prev : [...prev, key];
+      return prev.filter((x) => x !== key);
+    });
+  };
+
+  const mergeSelectedShots = () => {
+    const list = episodeBible.shot_suggestions || [];
+    // 按表顺序合并，不按勾选先后
+    const orderedIds = list
+      .map((s) => String(s.suggestion_id || '').trim())
+      .filter((id) => id && selectedShotIds.includes(id));
+    const result = mergeDramaShotSuggestionsByIds(list, orderedIds);
+    if (!result.ok) {
+      setMergeHint(result.error);
+      return;
+    }
+    commit(
+      withEpisodeBible(session, epId, (b) => ({
+        ...b,
+        shot_suggestions: result.suggestions,
+      })),
+    );
+    setSelectedShotIds([]);
+    setMergeHint(`已合并为 ${result.suggestions.length} 镜`);
+  };
+
+  const coalesceShortShots = () => {
+    const list = episodeBible.shot_suggestions || [];
+    if (list.length < 2) {
+      setMergeHint('至少需要 2 镜才能短镜凑档');
+      return;
+    }
+    const next = coalesceAdjacentShortDurationShots(list);
+    const before = list.length;
+    const after = next.length;
+    if (after >= before) {
+      setMergeHint('没有可凑档的相邻短镜（需同场：10+10→20 / 6+10→15 / 6+6→10）');
+      return;
+    }
+    commit(
+      withEpisodeBible(session, epId, (b) => ({
+        ...b,
+        shot_suggestions: next,
+      })),
+    );
+    setSelectedShotIds([]);
+    setMergeHint(`短镜凑档：${before} → ${after} 镜`);
+  };
 
   const durationPaceStyle = normalizeShotDurationPaceStyle(session.meta.durationPaceStyle);
   const durationTotalCapSec =
     Number(session.meta.durationTotalCapSec) > 0 ? Number(session.meta.durationTotalCapSec) : null;
-  const durationSumSec = useMemo(() => {
-    let sum = 0;
-    for (const s of episodeBible.shot_suggestions || []) {
-      const n = Number(s.duration_sec);
-      if (Number.isFinite(n) && n > 0) sum += n;
-    }
-    return Math.round(sum * 10) / 10;
-  }, [episodeBible.shot_suggestions]);
-
-  const patchDurationMeta = (patch: {
-    durationPaceStyle?: ShotDurationPaceStyle;
-    durationTotalCapSec?: number | null;
-  }) => {
-    commit({
-      ...session,
-      meta: {
-        ...session.meta,
-        ...(patch.durationPaceStyle != null ? { durationPaceStyle: patch.durationPaceStyle } : {}),
-        ...(patch.durationTotalCapSec !== undefined
-          ? {
-              durationTotalCapSec:
-                patch.durationTotalCapSec != null && patch.durationTotalCapSec > 0
-                  ? patch.durationTotalCapSec
-                  : undefined,
-            }
-          : {}),
-      },
-    });
-  };
 
   const recalculateDurations = () => {
     commit(
@@ -539,18 +581,21 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
     );
   };
 
-  /** 旧分镜无区间时：进表自动补一次（不覆盖已有 locked 秒数） */
   const durationInitKeyRef = useRef('');
+  // 挂载时：剧本拆分已写入精确秒（locked / min=max）则不再被旧时长引擎打散
   useEffect(() => {
-    if (tab !== 'shots') return;
     const list = episodeBible.shot_suggestions || [];
-    if (!list.length || !suggestionsNeedDurationInit(list)) return;
+    if (!list.length) return;
+    if (list.every((s) => s.duration_locked || (Number(s.duration_min) > 0 && Number(s.duration_max) > 0))) {
+      return;
+    }
+    if (!suggestionsNeedDurationInit(list)) return;
     const key = `${epId}:${list.map((s) => s.suggestion_id).join(',')}`;
     if (durationInitKeyRef.current === key) return;
     durationInitKeyRef.current = key;
     recalculateDurations();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在缺区间时补一次
-  }, [tab, epId, episodeBible.shot_suggestions]);
+  }, [epId, episodeBible.shot_suggestions]);
 
   const t = useMemo(
     () =>
@@ -600,7 +645,7 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
             vibePending: 'mood TBD',
             emotionPending: 'emotion TBD',
             shotsHint:
-              'Unhappy? Use the buttons above to regenerate structure, or thicken existing rows from character dossiers (camera / action / emotion / sound). Time·Env = dawn/sunrise/noon/afternoon/dusk/night/late-night/daybreak · short setting note.',
+              '① Scene split by original scenes. ② Duration split to 6/10/15. ③ Confirm → assets → match cast/scene/voice. ④ Board: H3 seal then generate.',
             dossierTitle: 'Standard dossiers (optional)',
             dossierHint: 'Shot planning only. Looks stay in the table above.',
             dossierEmpty: 'No dossier yet. Optional: “Regenerate dossiers”.',
@@ -630,6 +675,10 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
               size: 'Size',
               move: 'Move',
               action: 'Action',
+              original: 'Original',
+              script: 'Script',
+              assetMatch: 'Assets',
+              visualStyle: 'Visual style',
               purpose: 'Intent',
               dialogue: 'Dialogue + subtext',
               emotionPlay: 'Actor emotion',
@@ -688,7 +737,8 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
             lookPending: '外貌待补',
             vibePending: '时空氛围待补',
             emotionPending: '情绪待补',
-            shotsHint: '不满意用上方按钮整表重跑；已有人设时也可只加厚运镜/动作/情绪/声音，不改镜数。时段环境填：朦胧亮/日出/正午/下午/傍晚/晚上/深夜/黎明 · 环境简述。',
+            shotsHint:
+              '①「分集」→②「分场」→③「时长拆镜，去素材准备」→④顶部「画风色调」→⑤「素材匹配」→⑥导演分镜「提示词优化」后再出片。',
             dossierTitle: '标准化人设（可选）',
             dossierHint: '仅供自动拆镜；平时可收起。外貌看上表。',
             dossierEmpty: '还没有人设表。可选：点「重新生成人设」。',
@@ -718,6 +768,10 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
               size: '景别',
               move: '运镜',
               action: '画面动作',
+              original: '原文',
+              script: '脚本',
+              assetMatch: '素材匹配',
+              visualStyle: '视觉风格',
               purpose: '镜头目的',
               dialogue: '对白+潜台词',
               emotionPlay: '演员情绪',
@@ -734,6 +788,18 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
           },
     [en],
   );
+
+  const scriptDesignMode = isDramaScriptDesignShotTable(episodeBible.shot_suggestions);
+  const literalOriginalMode =
+    !scriptDesignMode &&
+    (episodeBible.shot_suggestions || []).every(
+      (s) =>
+        !String(s.size || '').trim() &&
+        !String(s.move || s.camera || '').trim() &&
+        !String(s.dialogue || '').trim() &&
+        !String(s.emotion_play || '').trim() &&
+        !String(s.subtext || '').trim(),
+    );
 
   const storyRows: KvRow[] = [
     { id: 'worldview', label: t.worldview, value: story?.worldview || '', labelLocked: true, minRows: 3 },
@@ -924,35 +990,27 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
   return (
     <div className={`flex flex-col min-h-0 h-full text-[17px] ${cardCls(isDark)} p-5`}>
       <div className="shrink-0 flex items-center justify-between gap-2 mb-3">
-        <div className={`text-[15px] ${mutedCls(isDark)}`}>{t.projectHint}</div>
+        <div className={`text-[15px] ${mutedCls(isDark)}`}>{t.shotsHint}</div>
       </div>
-      <div className="shrink-0 flex flex-wrap gap-2 mb-4">
-        {PROJECT_TABS.map((key) => (
-          <button
-            key={key}
-            type="button"
-            className={`nodrag rounded-lg px-3.5 py-2 text-[15px] ${
-              tab === key
-                ? isDark
-                  ? 'bg-sky-500/30 text-sky-100'
-                  : 'bg-sky-100 text-sky-900'
-                : isDark
-                  ? 'bg-white/5 hover:bg-white/10'
-                  : 'bg-gray-100 hover:bg-gray-200'
-            }`}
-            onClick={() => setTab(key)}
-          >
-            {t.tabs[key]}
-          </button>
-        ))}
-      </div>
-      <div
-        className={`flex-1 min-h-0 pr-1 ${
-          tab === 'shots'
-            ? 'overflow-y-auto overflow-x-hidden'
-            : 'overflow-auto custom-scrollbar-dark'
-        }`}
-      >
+      {episodeBible.analysis_summary ? (
+        <div
+          className={`shrink-0 mb-3 rounded-lg px-3 py-2 text-[13px] leading-relaxed ${
+            isDark ? 'bg-white/5 text-white/80' : 'bg-gray-50 text-gray-700'
+          }`}
+        >
+          本集分析：{episodeBible.analysis_summary.scene_count} 场 ·{' '}
+          {episodeBible.analysis_summary.segment_count} 个原文片段 · 人物{' '}
+          {episodeBible.analysis_summary.character_matched} 已匹配 /{' '}
+          {episodeBible.analysis_summary.character_pending} 待匹配 · 声音{' '}
+          {episodeBible.analysis_summary.voice_matched} 已匹配 /{' '}
+          {episodeBible.analysis_summary.voice_pending} 待匹配
+          {episodeBible.analysis_summary.visual_bible_bound ? ' · 已绑定 Visual Bible' : ' · 未绑定 Visual Bible'}
+          {episodeBible.original_integrity && !episodeBible.original_integrity.ok
+            ? ' · 原文完整性待检查'
+            : ''}
+        </div>
+      ) : null}
+      <div className="flex-1 min-h-0 pr-1 overflow-y-auto overflow-x-hidden">
         {tab === 'story' ? (
           <EditableKvTable
             isDark={isDark}
@@ -1774,16 +1832,94 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
 
         {tab === 'shots' ? (
           <div className="overflow-x-hidden">
-            <p className={`mt-3 mb-3 text-[13px] ${mutedCls(isDark)}`}>{t.shotsHint}</p>
-            <DurationToolbar
-              isDark={isDark}
-              totalCapSec={durationTotalCapSec}
-              paceStyle={durationPaceStyle}
-              sumSec={durationSumSec}
-              onCapChange={(cap) => patchDurationMeta({ durationTotalCapSec: cap })}
-              onPaceChange={(pace) => patchDurationMeta({ durationPaceStyle: pace })}
-              onRecalculate={recalculateDurations}
-            />
+            {!episodeBible.shot_suggestions.length ? (
+              <div
+                className={`rounded-xl border px-4 py-8 text-center ${
+                  isDark ? 'border-white/10 bg-white/[0.03] text-white/70' : 'border-gray-200 bg-gray-50 text-gray-600'
+                }`}
+              >
+                <div className="text-[15px] font-medium">
+                  {episodeBible.analysis_summary
+                    ? '分析已完成，分镜脚本还是空的'
+                    : '还没有分镜脚本'}
+                </div>
+                <div className={`mt-2 text-[13px] leading-relaxed ${mutedCls(isDark)}`}>
+                  {episodeBible.analysis_summary
+                    ? `已整理 ${episodeBible.analysis_summary.scene_count} 场、${episodeBible.analysis_summary.segment_count} 个原文片段，但没有可写入的分镜。可再点一次「剧本拆分」。`
+                    : '请先点「剧本拆分」。'}
+                </div>
+              </div>
+            ) : (
+            <>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={selectedShotIds.length < 2}
+                className={`nodrag rounded-md px-2.5 py-1 text-[12px] font-medium ${
+                  selectedShotIds.length < 2
+                    ? isDark
+                      ? 'bg-white/5 text-white/35'
+                      : 'bg-gray-100 text-gray-400'
+                    : isDark
+                      ? 'bg-violet-500/85 text-white hover:bg-violet-500'
+                      : 'bg-violet-600 text-white hover:bg-violet-700'
+                }`}
+                onClick={mergeSelectedShots}
+              >
+                合并所选（{selectedShotIds.length}）
+              </button>
+              <button
+                type="button"
+                title="同场相邻：10+10→20 · 6+10→15 · 6+6→10"
+                disabled={(episodeBible.shot_suggestions || []).length < 2}
+                className={`nodrag rounded-md px-2.5 py-1 text-[12px] font-medium ${
+                  (episodeBible.shot_suggestions || []).length < 2
+                    ? isDark
+                      ? 'bg-white/5 text-white/35'
+                      : 'bg-gray-100 text-gray-400'
+                    : isDark
+                      ? 'bg-emerald-500/80 text-white hover:bg-emerald-500'
+                      : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                }`}
+                onClick={coalesceShortShots}
+              >
+                短镜凑档
+              </button>
+              {selectedShotIds.length > 0 ? (
+                <button
+                  type="button"
+                  className={`nodrag rounded-md px-2 py-1 text-[12px] ${
+                    isDark ? 'text-white/55 hover:text-white/80' : 'text-gray-500 hover:text-gray-800'
+                  }`}
+                  onClick={() => {
+                    setSelectedShotIds([]);
+                    setMergeHint('');
+                  }}
+                >
+                  清空勾选
+                </button>
+              ) : null}
+              <span className={`text-[12px] ${mutedCls(isDark)}`}>
+                {literalOriginalMode || scriptDesignMode
+                  ? '勾选连续行可合并；「短镜凑档」自动 10+10→20 / 6+10→15 / 6+6→10'
+                  : '勾选连续行可合并；「短镜凑档」自动 10+10→20 / 6+10→15 / 6+6→10'}
+              </span>
+              {mergeHint ? (
+                <span
+                  className={`text-[12px] ${
+                    mergeHint.startsWith('已合并')
+                      ? isDark
+                        ? 'text-emerald-300/90'
+                        : 'text-emerald-700'
+                      : isDark
+                        ? 'text-amber-200'
+                        : 'text-amber-700'
+                  }`}
+                >
+                  {mergeHint}
+                </span>
+              ) : null}
+            </div>
             <table
               className={`w-full table-fixed border-collapse text-left text-[14px] leading-[1.5] ${
                 isDark
@@ -1792,50 +1928,80 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
               }`}
             >
               <colgroup>
-                <col className="w-[3%]" />
-                <col className="w-[6%]" />
-                <col className="w-[7%]" />
-                <col className="w-[3%]" />
-                <col className="w-[5%]" />
-                <col className="w-[9%]" />
-                <col className="w-[6%]" />
-                <col className="w-[11%]" />
-                <col className="w-[7%]" />
-                <col className="w-[8%]" />
-                <col className="w-[8%]" />
-                <col className="w-[5%]" />
-                <col className="w-[5%]" />
-                <col className="w-[5%]" />
-                <col className="w-[7%]" />
-                <col className="w-[4%]" />
+                {literalOriginalMode || scriptDesignMode ? (
+                  <>
+                    <col className="w-[2.5%]" />
+                    <col className="w-[2.5%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[4%]" />
+                    <col className="w-[56%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[5%]" />
+                  </>
+                ) : (
+                  <>
+                    <col className="w-[2.5%]" />
+                    <col className="w-[2.5%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[3%]" />
+                    <col className="w-[5%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[8%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[5%]" />
+                    <col className="w-[5%]" />
+                    <col className="w-[5%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[4%]" />
+                  </>
+                )}
               </colgroup>
               <thead>
                 <tr>
                   {(
-                    [
-                      '#',
-                      t.col.scene,
-                      t.col.timeEnv,
-                      t.col.shot,
-                      t.col.size,
-                      t.col.move,
-                      t.col.blocking,
-                      t.col.action,
-                      t.col.emotionPlay,
-                      t.col.dialogue,
-                      t.col.purpose,
-                      t.col.lighting,
-                      t.col.sfx,
-                      t.col.cast,
-                      t.col.duration,
-                      '',
-                    ] as const
-                  ).map((label, i) => (
+                    (literalOriginalMode || scriptDesignMode
+                      ? [
+                          '',
+                          '#',
+                          t.col.scene,
+                          t.col.timeEnv,
+                          t.col.shot,
+                          scriptDesignMode ? t.col.script : t.col.original,
+                          t.col.cast,
+                          t.col.duration,
+                          '',
+                        ]
+                      : [
+                          '',
+                          '#',
+                          t.col.scene,
+                          t.col.timeEnv,
+                          t.col.shot,
+                          t.col.size,
+                          t.col.move,
+                          t.col.blocking,
+                          t.col.action,
+                          t.col.emotionPlay,
+                          t.col.dialogue,
+                          t.col.purpose,
+                          t.col.lighting,
+                          t.col.sfx,
+                          t.col.cast,
+                          t.col.duration,
+                          '',
+                        ]) as readonly string[]
+                  ).map((label, i, arr) => (
                     <th
                       key={i}
                       className={`sticky top-0 z-[1] px-1.5 py-2 text-[12px] font-semibold whitespace-normal break-words ${
                         isDark ? 'bg-[#16181f] text-white/65' : 'bg-gray-50 text-gray-600'
-                      } ${i === 15 ? 'text-right' : ''}`}
+                      } ${i === arr.length - 1 ? 'text-right' : ''}`}
                     >
                       {label}
                     </th>
@@ -1845,6 +2011,16 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
               <tbody>
                 {episodeBible.shot_suggestions.map((s, i) => (
                   <tr key={s.suggestion_id || i}>
+                    <td className="px-1 py-2 align-top">
+                      <input
+                        type="checkbox"
+                        className="nodrag h-3.5 w-3.5 cursor-pointer"
+                        checked={selectedShotIds.includes(String(s.suggestion_id || ''))}
+                        onChange={(e) => toggleShotSelected(String(s.suggestion_id || ''), e.target.checked)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`选择第 ${i + 1} 镜`}
+                      />
+                    </td>
                     <td className={`px-1.5 py-2 align-top break-words ${mutedCls(isDark)}`}>{i + 1}</td>
                     <td className="px-1.5 py-2 align-top break-words">
                       <ShotPlainCell
@@ -1887,14 +2063,16 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                       />
                     </td>
                     {(
-                      [
-                        ['shot', s.shot, false],
-                        ['size', s.size, false],
-                        ['move', s.move || s.camera, true],
-                        ['blocking', s.blocking || '', true],
-                        ['action', s.action, true],
-                        ['emotion_play', s.emotion_play || '', true],
-                      ] as const
+                      (literalOriginalMode || scriptDesignMode
+                        ? ([['shot', s.shot, false]] as const)
+                        : ([
+                            ['shot', s.shot, false],
+                            ['size', s.size, false],
+                            ['move', s.move || s.camera, true],
+                            ['blocking', s.blocking || '', true],
+                            ['action', s.action, true],
+                            ['emotion_play', s.emotion_play || '', true],
+                          ] as const))
                     ).map(([key, val, multiline]) => (
                       <td key={key} className="px-1.5 py-2 align-top break-words">
                         <ShotPlainCell
@@ -1920,6 +2098,63 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                         />
                       </td>
                     ))}
+                    {literalOriginalMode || scriptDesignMode ? (
+                      <td className="px-1.5 py-2 align-top break-words">
+                        {scriptDesignMode ? (
+                          <>
+                            <ShotSubLabel isDark={isDark}>{t.col.assetMatch}</ShotSubLabel>
+                            <ShotPlainCell
+                              isDark={isDark}
+                              multiline
+                              value={s.asset_match || ''}
+                              onChange={(v) =>
+                                commit(
+                                  withEpisodeBible(session, epId, (b) => ({
+                                    ...b,
+                                    shot_suggestions: b.shot_suggestions.map((x) =>
+                                      x.suggestion_id === s.suggestion_id ? { ...x, asset_match: v } : x,
+                                    ),
+                                  })),
+                                )
+                              }
+                            />
+                            <ShotSubLabel isDark={isDark}>{t.col.visualStyle}</ShotSubLabel>
+                            <ShotPlainCell
+                              isDark={isDark}
+                              multiline
+                              value={s.visual_style || ''}
+                              onChange={(v) =>
+                                commit(
+                                  withEpisodeBible(session, epId, (b) => ({
+                                    ...b,
+                                    shot_suggestions: b.shot_suggestions.map((x) =>
+                                      x.suggestion_id === s.suggestion_id ? { ...x, visual_style: v } : x,
+                                    ),
+                                  })),
+                                )
+                              }
+                            />
+                            <ShotSubLabel isDark={isDark}>{t.col.original}</ShotSubLabel>
+                          </>
+                        ) : null}
+                        <ShotPlainCell
+                          isDark={isDark}
+                          multiline
+                          value={s.action}
+                          onChange={(v) =>
+                            commit(
+                              withEpisodeBible(session, epId, (b) => ({
+                                ...b,
+                                shot_suggestions: b.shot_suggestions.map((x) =>
+                                  x.suggestion_id === s.suggestion_id ? { ...x, action: v } : x,
+                                ),
+                              })),
+                            )
+                          }
+                        />
+                      </td>
+                    ) : null}
+                    {literalOriginalMode || scriptDesignMode ? null : (
                     <td className="px-1.5 py-2 align-top break-words">
                       <ShotPlainCell
                         isDark={isDark}
@@ -1953,13 +2188,16 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                         }
                       />
                     </td>
+                    )}
                     {(
-                      [
-                        ['purpose', s.purpose, true],
-                        ['lighting', s.lighting || '', true],
-                        ['sound', s.sound || '', true],
-                        ['cast', (s.cast_names || []).join('、'), false],
-                      ] as const
+                      (literalOriginalMode || scriptDesignMode
+                        ? ([['cast', (s.cast_names || []).join('、'), false]] as const)
+                        : ([
+                            ['purpose', s.purpose, true],
+                            ['lighting', s.lighting || '', true],
+                            ['sound', s.sound || '', true],
+                            ['cast', (s.cast_names || []).join('、'), false],
+                          ] as const))
                     ).map(([key, val, multiline]) => (
                       <td key={key} className="px-1.5 py-2 align-top break-words">
                         <ShotPlainCell
@@ -1992,6 +2230,7 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                         durationAi={s.duration_ai}
                         locked={!!s.duration_locked}
                         why={s.duration_why}
+                        showExportTier={false}
                         onChangeSec={(sec) =>
                           commit(
                             withEpisodeBible(session, epId, (b) => ({
@@ -2022,7 +2261,8 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                       <button
                         type="button"
                         className={delBtnCls(isDark)}
-                        onClick={() =>
+                        onClick={() => {
+                          const id = String(s.suggestion_id || '');
                           commit(
                             withEpisodeBible(session, epId, (b) => ({
                               ...b,
@@ -2030,8 +2270,9 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
                                 (x) => x.suggestion_id !== s.suggestion_id,
                               ),
                             })),
-                          )
-                        }
+                          );
+                          if (id) setSelectedShotIds((prev) => prev.filter((x) => x !== id));
+                        }}
                       >
                         删除
                       </button>
@@ -2059,6 +2300,8 @@ export const AnalyzeDirectorWorkspace: React.FC<AnalyzeDirectorWorkspaceProps> =
             >
               {t.addShot}
             </button>
+            </>
+            )}
           </div>
         ) : null}
       </div>

@@ -21,7 +21,8 @@ if errorlevel 1 (
     )
 )
 
-echo [提示] 默认端口 9510。内嵌窗口需先执行: pip install -r requirements-desktop.txt
+echo [提示] 默认端口 9510，将用系统浏览器打开。
+echo [提示] 若要内嵌窗口：先 pip install -r requirements-desktop.txt，再 set NEXFLOW_ADMIN_WEBVIEW=1
 echo.
 
 python "%~dp0launch_desktop.py"

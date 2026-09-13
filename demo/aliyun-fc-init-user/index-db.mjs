@@ -6,7 +6,7 @@
  *   DB_TYPE              - 存储类型：tablestore | oss_json（默认 tablestore）
  *   API_SECRET_TOKEN     - 请求头 x-nexflow-token 校验
  *   BLTCY_API_KEY        - 核心算力 API Key
- *   BLTCY_API_BASE       - 默认 https://api.bltcy.ai
+ *   BLTCY_API_BASE       - 默认 https://api.apilio.ai
  *   RUNNINGHUB_API_KEY   - 插件算力 API Key
  *   RUNNINGHUB_API_BASE  - 默认 https://www.runninghub.cn/openapi/v2
  *
@@ -64,7 +64,7 @@ async function runTask(machineId, taskBody) {
 
   if (provider === 'bltcy') {
     apiKey = process.env.BLTCY_API_KEY;
-    baseUrl = (process.env.BLTCY_API_BASE || 'https://api.bltcy.ai').replace(/\/$/, '');
+    baseUrl = (process.env.BLTCY_API_BASE || 'https://api.apilio.ai').replace(/\/$/, '');
     if (!apiKey) throw new Error('BLTCY_API_KEY_NOT_CONFIGURED');
   } else if (provider === 'runninghub') {
     apiKey = process.env.RUNNINGHUB_API_KEY;

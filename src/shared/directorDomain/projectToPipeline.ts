@@ -18,12 +18,22 @@ import type { DramaDirectorSession } from './types.js';
 import { dramaStudioNodeTitle } from './episodes.js';
 import { coreDramaPersonName, namesLikelySameDramaPerson } from './extractCastFromScript.js';
 import { normDramaAssetName } from './mergeAnalyzeBible.js';
+import {
+  composeDramaSystemVisualPrompt,
+  DRAMA_SYSTEM_SPEAKER_ID,
+  DRAMA_SYSTEM_VISUAL_ASSET_NAME,
+  resolveDramaSystemVoice,
+} from './voiceEntity.js';
 
 function assetMediaUrl(a: DirectorAsset | undefined): string {
   return String(a?.imageUrl || '').trim();
 }
 
 function assetsLikelySameName(a: string, b: string): boolean {
+  // 「江澈·造型2」是造型卡，不能按人名糊成人物主卡
+  const lookA = String(a || '').includes('·');
+  const lookB = String(b || '').includes('·');
+  if (lookA !== lookB) return false;
   const na = normDramaAssetName(a);
   const nb = normDramaAssetName(b);
   if (!na || !nb) return false;
@@ -82,27 +92,72 @@ export function mergeDramaPipelineAssetsFromSession(
   session: DramaDirectorSession,
   prev?: DirectorPipelineState['assets'] | null,
 ): DirectorPipelineState['assets'] {
-  const characters = mergeProjectedAssetsKeepImages(
-    session.bible.characters.map((c, i) => {
+  const characterAssets = (session.bible?.characters || []).map((c, i) => {
+    const a = createEmptyDirectorAsset(
+      'character',
+      c.name,
+      c.prompt,
+      i,
+      c.gender === 'male' || c.gender === 'female' ? c.gender : '',
+    );
+    return {
+      ...a,
+      id: c.character_id || a.id,
+      imageUrl: c.imageUrl,
+      status: c.status,
+    };
+  });
+  let costumeIndex = characterAssets.length;
+  for (const c of session.bible?.characters || []) {
+    for (const cos of c.costumes || []) {
+      const cid = String(cos.costume_id || '').trim();
+      if (!cid) continue;
+      const url = String(cos.images?.[0] || '').trim();
       const a = createEmptyDirectorAsset(
         'character',
-        c.name,
-        c.prompt,
-        i,
-        c.gender === 'male' || c.gender === 'female' ? c.gender : '',
+        `${c.name}·${cos.name || '造型'}`,
+        String(cos.prompt || c.prompt || '').trim(),
+        costumeIndex,
       );
-      return {
+      costumeIndex += 1;
+      characterAssets.push({
         ...a,
-        id: c.character_id || a.id,
-        imageUrl: c.imageUrl,
-        status: c.status,
-      };
-    }),
-    prev?.characters,
-  );
+        id: cid,
+        imageUrl: url,
+        status: url ? ('ready' as const) : ('pending' as const),
+      });
+    }
+  }
+  // 系统提示音形象：pipeline 生图槽，不进 bible.characters / Subject
+  const systemVoice = resolveDramaSystemVoice(session);
+  if (systemVoice) {
+    const img = String(systemVoice.imageUrl || '').trim();
+    const prompt = composeDramaSystemVisualPrompt(systemVoice.image_prompt);
+    const a = createEmptyDirectorAsset(
+      'character',
+      DRAMA_SYSTEM_VISUAL_ASSET_NAME,
+      prompt,
+      costumeIndex,
+    );
+    characterAssets.push({
+      ...a,
+      id: DRAMA_SYSTEM_SPEAKER_ID,
+      imageUrl: img,
+      status:
+        systemVoice.image_status === 'generating' ||
+        systemVoice.image_status === 'error' ||
+        systemVoice.image_status === 'ready' ||
+        systemVoice.image_status === 'pending'
+          ? systemVoice.image_status
+          : img
+            ? ('ready' as const)
+            : ('pending' as const),
+    });
+  }
+  const characters = mergeProjectedAssetsKeepImages(characterAssets, prev?.characters);
 
   const scenes = mergeProjectedAssetsKeepImages(
-    session.bible.scenes.map((s, i) => {
+    (session.bible?.scenes || []).map((s, i) => {
       const a = createEmptyDirectorAsset('scene', s.name, s.prompt, i);
       return { ...a, id: s.scene_id || a.id, imageUrl: s.imageUrl, status: s.status };
     }),
@@ -135,7 +190,7 @@ export function projectDramaSessionToPipeline(
   const shots: DirectorShot[] = (session.shots || []).map((s, i) => {
     const beat = session.scene_beats.find((b) => b.scene_beat_id === s.scene_beat_id);
     const castNames = (s.character_ids || [])
-      .map((id) => session.bible.characters.find((c) => c.character_id === id)?.name || '')
+      .map((id) => (session.bible?.characters || []).find((c) => c.character_id === id)?.name || '')
       .filter(Boolean)
       .join('、');
     return {
@@ -218,6 +273,26 @@ export function projectDramaSessionToPipeline(
     })(),
     videoBatchLipsyncModel:
       session.meta.videoBatchLipsyncModel || base?.videoBatchLipsyncModel || 'minimax-h3-audio',
+    videoBatchResolution: (() => {
+      const raw =
+        session.meta.videoBatchResolution ||
+        base?.videoBatchResolution ||
+        '720p';
+      const s = String(raw).trim().toLowerCase();
+      if (s === '480p' || s === '480' || s === '0.4') return '480p';
+      return '720p';
+    })(),
+    videoBatchLipsyncResolution: (() => {
+      const raw =
+        session.meta.videoBatchLipsyncResolution ||
+        session.meta.videoBatchResolution ||
+        base?.videoBatchLipsyncResolution ||
+        base?.videoBatchResolution ||
+        '720p';
+      const s = String(raw).trim().toLowerCase();
+      if (s === '480p' || s === '480' || s === '0.4') return '480p';
+      return '720p';
+    })(),
     videoBatchAspectRatio:
       session.meta.aspect_ratio || base?.videoBatchAspectRatio || base?.mvAspectRatio || '9:16',
     mvAspectRatio: (session.meta.aspect_ratio === '16:9' ||
@@ -239,23 +314,48 @@ export function projectDramaSessionToPipeline(
         const no = String(s.shot_no || '').trim();
         const url = String(s.video_url || '').trim();
         const vst = String(s.video_status || '').trim();
-        if (!no || !url) continue;
-        // 生成中勿把 Domain 旧成片强行盖成 ready，避免与画布 generating 对打 → 死循环
-        if (vst === 'generating' || vst === 'queued') continue;
+        if (!no) continue;
         const key = directorDramaStoryboardKey(epId, no);
         const prev = next[key] || createEmptyDirectorShotStoryboard();
         const prevVideoSt = String(prev.videoStatus || '').trim();
+        const sbImg = String(s.storyboard_image_url || '').trim();
+        // 本镜正在出片：把画布表改成 generating，保留旧 URL，避免对账把旧 ready 当成完成
+        if (vst === 'generating' || vst === 'queued') {
+          next[key] = {
+            ...prev,
+            ...(sbImg ? { imageUrl: sbImg, status: 'ready' as const } : {}),
+            videoStatus: 'generating',
+            videoGeneratingStartedAt:
+              Number(prev.videoGeneratingStartedAt) > 0
+                ? Number(prev.videoGeneratingStartedAt)
+                : Date.now(),
+          };
+          continue;
+        }
+        if (!url && !sbImg) continue;
         if (
           (prevVideoSt === 'generating' || prevVideoSt === 'queued') &&
           vst !== 'ready' &&
           vst !== 'success'
         ) {
+          if (sbImg) {
+            next[key] = {
+              ...prev,
+              imageUrl: sbImg,
+              status: 'ready',
+            };
+          }
           continue;
         }
         next[key] = {
           ...prev,
-          videoUrl: url,
-          videoStatus: 'ready',
+          ...(sbImg ? { imageUrl: sbImg, status: 'ready' as const } : {}),
+          ...(url
+            ? {
+                videoUrl: url,
+                videoStatus: 'ready' as const,
+              }
+            : {}),
         };
       }
       return next;
@@ -275,7 +375,7 @@ export function projectDramaSessionToPipeline(
         characters: session.bible.characters
           .map((c) => `${c.name}：${c.prompt}`)
           .join('\n'),
-        scenes: session.bible.scenes.map((s) => `${s.name}：${s.prompt}`).join('\n'),
+        scenes: (session.bible?.scenes || []).map((s) => `${s.name}：${s.prompt}`).join('\n'),
         props: session.bible.props.map((p) => `${p.name}：${p.prompt || p.description}`).join('\n'),
       },
     },

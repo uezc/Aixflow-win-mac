@@ -1,0 +1,38 @@
+{
+  "started_at": "2026-09-06T03:52:23.545Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "live_ok": {
+    "aixflow_task_id": "95d84fe9-5a58-4bb6-91c5-94f057caca98",
+    "runninghub_task_id": "2096446577240670209",
+    "region": "cn",
+    "path": "/run/ai-app/2048742865043460098",
+    "billing_sku": "ltx-2-3-start-end-720p-5s",
+    "quoted_cost": 4,
+    "actual_charge": 4,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/LTX2/ltx2-i2v_00001_p86-audio_rjjhq_1788666909.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 4,
+    "error_code": ""
+  },
+  "live_fail_refund": {
+    "ok": true,
+    "status": "failed",
+    "charge": "refunded",
+    "bal0": 500,
+    "bal1": 500
+  },
+  "regressions": {
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS",
+    "invalid_forward": "PASS"
+  },
+  "ots_price": 4,
+  "finished_at": "2026-09-06T03:56:26.133Z"
+}

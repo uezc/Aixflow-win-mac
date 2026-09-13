@@ -30,6 +30,8 @@ type Props = {
   /** 列表格用磁盘缩略图，悬停仍看原图 */
   preferListThumb?: boolean;
   listThumbMaxEdge?: number;
+  /** 同 URL 重新生成后拆缩略图缓存 */
+  cacheNonce?: string | number;
   /** 格子显示原图，但限制同时解码张数，避免卡顿 */
   gateOriginalLoad?: boolean;
   /**
@@ -111,6 +113,7 @@ export const RefImageHoverThumb: React.FC<Props> = ({
   listThumbMaxEdge = 256,
   gateOriginalLoad = false,
   boxAspect,
+  cacheNonce,
 }) => {
   const reactId = useId();
   const [hovered, setHovered] = useState(false);
@@ -231,6 +234,7 @@ export const RefImageHoverThumb: React.FC<Props> = ({
             imgClassName={fillImgClass}
             imgStyle={fillImgStyle}
             maxEdge={boxAspect ? Math.max(listThumbMaxEdge, 288) : listThumbMaxEdge}
+            cacheNonce={cacheNonce}
             alt={alt}
           />
         ) : (

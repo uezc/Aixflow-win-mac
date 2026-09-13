@@ -299,6 +299,8 @@ export type VideoInputPanelStrings = {
   videoUpscalePriceLabel: (credits: string, billableSec: string) => string;
   videoUpscalePriceFallback: string;
   videoUpscaleTooLong: string;
+  /** 时长未识别时禁止超分 */
+  videoUpscaleNeedDuration: string;
   /** 悬停菜单：识别时长（与播放器一致）+ 计费秒数 */
   videoUpscaleDurationLine: (clock: string, billableSec: string) => string;
   videoUpscaleDurationUnknown: string;
@@ -322,7 +324,7 @@ const zh: VideoInputPanelStrings = {
     '首尾帧；海外站；首帧必填、尾帧可选；时长仅 8s；比例 16:9/9:16；分辨率 720p/1080p/4k',
   modelMinimaxH3Audio: 'MiniMax-H3 口型同步',
   modelMinimaxH3AudioTitle:
-    '1–5 张参考图 + 必填参考音；720P；成片时长跟参考音；计费按 6/10/15/20 秒档向上取整',
+    '1–5 张参考图 + 必填参考音；480P/720P；成片时长跟参考音；计费按 6/10/15/20 秒档向上取整',
   modelMinimaxH3AudioNeedRefAudio: 'MiniMax-H3 口型同步需连接参考音',
   resolutionLabel: '分辨率:',
   shotLabel: '镜头:',
@@ -450,7 +452,7 @@ const zh: VideoInputPanelStrings = {
   titleMinimaxH3Duration: 'MiniMax-H3 时长',
   titleMinimaxH3AudioBillingDuration:
     '按参考音实际时长向上取整到 6/10/15/20 秒计费档；读不到时长时按 20s；超过 20s 封顶 20s',
-  titleMinimaxH3Resolution: 'MiniMax-H3 分辨率（仅 720P=0.9）',
+  titleMinimaxH3Resolution: 'MiniMax-H3 分辨率（480P=0.4 / 720P=0.9）',
   titleMinimaxH3Aspect: 'MiniMax-H3 比例',
   optimizePromptButton: '优化提示词',
   optimizePromptBusy: '优化中…',
@@ -570,7 +572,7 @@ const zh: VideoInputPanelStrings = {
   videoSmartMattingPriceTitle:
     '预估元宝按秒计费：优先 nx_model_config「viapi-segment-video-body」（元/分钟），否则本地 20 元宝/分钟',
   videoUpscaleButton: '超分放大',
-  videoUpscaleTitle: '视频超分放大：按目标分辨率与时长计费（最短 5 秒）',
+  videoUpscaleTitle: '视频超分放大：按目标分辨率与实际识别时长计费（读不到时长不可用）',
   videoUpscaleNeedVideo: '请先上传或生成视频后再超分放大',
   videoUpscaleRunning: '超分放大中…',
   videoUpscaleFailed: '超分放大失败',
@@ -581,9 +583,10 @@ const zh: VideoInputPanelStrings = {
   videoUpscalePriceLabel: (c, s) => `约 ${c} 元宝（计费 ${s} 秒）`,
   videoUpscalePriceFallback: '价格按视频时长与分辨率计算',
   videoUpscaleTooLong: '视频超分最长支持 10 分钟',
+  videoUpscaleNeedDuration: '无法识别视频时长，暂不能超分放大。请待时长读取完成后再试。',
   videoUpscaleDurationLine: (clock, billableSec) =>
     `识别时长 ${clock} · 计费 ${billableSec} 秒`,
-  videoUpscaleDurationUnknown: '识别时长：读取中…',
+  videoUpscaleDurationUnknown: '识别时长：读取中…（未完成前不可超分）',
 };
 
 const en: VideoInputPanelStrings = {
@@ -604,7 +607,7 @@ const en: VideoInputPanelStrings = {
     'Start–end frames; overseas; first frame required, last optional; 8s only; 16:9/9:16; 720p/1080p/4k',
   modelMinimaxH3Audio: 'MiniMax-H3 Lip Sync',
   modelMinimaxH3AudioTitle:
-    '1–5 ref images + required ref audio; 720P; output follows audio; bill ceil to 6/10/15/20s',
+    '1–5 ref images + required ref audio; 480P/720P; output follows audio; bill ceil to 6/10/15/20s',
   modelMinimaxH3AudioNeedRefAudio: 'MiniMax-H3 Lip Sync requires reference audio',
   resolutionLabel: 'Resolution:',
   shotLabel: 'Shots:',
@@ -731,7 +734,7 @@ const en: VideoInputPanelStrings = {
   titleMinimaxH3Duration: 'MiniMax-H3 duration',
   titleMinimaxH3AudioBillingDuration:
     'Ceil ref-audio length to 6/10/15/20s billing tier; unread → 20s; over 20s capped at 20s',
-  titleMinimaxH3Resolution: 'MiniMax-H3 resolution (720P=0.9 only)',
+  titleMinimaxH3Resolution: 'MiniMax-H3 resolution (480P=0.4 / 720P=0.9)',
   titleMinimaxH3Aspect: 'MiniMax-H3 aspect ratio',
   optimizePromptButton: 'Optimize prompt',
   optimizePromptBusy: 'Optimizing…',
@@ -851,7 +854,8 @@ const en: VideoInputPanelStrings = {
   videoSmartMattingPriceTitle:
     'Estimated credits billed per second: prefer nx_model_config「viapi-segment-video-body」(CNY/min), else local 20 credits/min',
   videoUpscaleButton: 'Upscale',
-  videoUpscaleTitle: 'Video upscale: billed by target resolution × duration (min 5s)',
+  videoUpscaleTitle:
+    'Video upscale: billed by target resolution × detected duration (unavailable until duration is known)',
   videoUpscaleNeedVideo: 'Add or generate a video before upscaling',
   videoUpscaleRunning: 'Upscaling…',
   videoUpscaleFailed: 'Upscale failed',
@@ -862,9 +866,10 @@ const en: VideoInputPanelStrings = {
   videoUpscalePriceLabel: (c, s) => `About ${c} credits (${s}s billed)`,
   videoUpscalePriceFallback: 'Price depends on duration and resolution',
   videoUpscaleTooLong: 'Upscale supports videos up to 10 minutes',
+  videoUpscaleNeedDuration: 'Video duration unknown; cannot upscale yet. Wait until duration is ready.',
   videoUpscaleDurationLine: (clock, billableSec) =>
     `Duration ${clock} · billed ${billableSec}s`,
-  videoUpscaleDurationUnknown: 'Reading duration…',
+  videoUpscaleDurationUnknown: 'Reading duration… (upscale disabled until ready)',
 };
 
 export function videoInputPanelT(locale: AppLocale): VideoInputPanelStrings {

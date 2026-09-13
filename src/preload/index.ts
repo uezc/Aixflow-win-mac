@@ -250,8 +250,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
       today_revenue_yuanbao: number;
       total_coupon_codes: number;
       pending_failed_or_timeout_tasks: number;
+      queued_tasks: number;
+      producing_tasks: number;
+      claimed_tasks: number;
+      running_tasks: number;
+      pending_tasks: number;
+      processing_tasks: number;
+      queued_video_tasks: number;
+      queued_image_tasks: number;
+      producing_video_tasks: number;
+      producing_image_tasks: number;
+      platform_video_running: number | null;
+      platform_video_max: number | null;
+      platform_image_running: number | null;
+      platform_image_max: number | null;
       tx_rows_scanned: number;
       task_rows_scanned: number;
+      task_scan_truncated: boolean;
       coupon_full_scan: boolean;
     }>,
   adminFailedTasks: () =>

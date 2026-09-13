@@ -14,5 +14,5 @@
     "types": ["node"]
   },
   "include": ["src/main/**/*", "src/shared/**/*", "src/common/**/*"],
-  "exclude": ["node_modules", "dist-electron"]
+  "exclude": ["node_modules", "dist-electron", "**/*.selftest.ts"]
 }

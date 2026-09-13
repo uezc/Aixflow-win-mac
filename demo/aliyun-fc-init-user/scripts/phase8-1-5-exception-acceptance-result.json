@@ -1,0 +1,259 @@
+{
+  "phase": "8.1.5",
+  "passed": true,
+  "flags": {
+    "double_charge": false,
+    "double_refund": false,
+    "double_rh": false,
+    "oversell": false,
+    "slot_leak": false,
+    "permanent_stuck": false
+  },
+  "matrix": [
+    {
+      "name": "A_insufficient_balance",
+      "pass": true,
+      "detail": {
+        "status": "failed",
+        "pid": "",
+        "rh_delta": 0,
+        "bal": 0,
+        "snap": {
+          "user_occ": 0,
+          "plat": 0
+        }
+      }
+    },
+    {
+      "name": "B_user_concurrency_full",
+      "pass": true,
+      "detail": {
+        "claimed": 5,
+        "sixth_before": "queued",
+        "sixth_after": "claimed",
+        "snap": {
+          "user_occ": 5,
+          "plat": 5
+        }
+      }
+    },
+    {
+      "name": "C_platform_cap_no_oversell",
+      "pass": true,
+      "detail": {
+        "plat_before_fill": 0,
+        "plat_after_fill": 30,
+        "probe_status": "claimed",
+        "oversell": false,
+        "note": "platform not fully filled in this env; oversell check only"
+      }
+    },
+    {
+      "name": "D_rh_create_fail_refund_once",
+      "pass": true,
+      "detail": {
+        "status": "failed",
+        "bal": {
+          "charged": 96,
+          "after": 100,
+          "after2": 100
+        },
+        "snap": {
+          "user_occ": 0,
+          "plat": 0
+        },
+        "settle2": {
+          "ok": true,
+          "idempotent": true,
+          "status": "failed"
+        }
+      }
+    },
+    {
+      "name": "E_rh_generate_fail_refund_once",
+      "pass": true,
+      "detail": {
+        "status": "failed",
+        "pid": "rh_gen_fail",
+        "bal": 100,
+        "bal2": 100,
+        "rhDelta": 1,
+        "settle2": {
+          "ok": true,
+          "idempotent": true,
+          "status": "failed"
+        }
+      }
+    },
+    {
+      "name": "F_poll_uncertain_then_success",
+      "pass": true,
+      "detail": {
+        "q1": {
+          "ok": false,
+          "reason": "QUERY_TIMEOUT",
+          "uncertain": true
+        },
+        "mid": {
+          "status": "running",
+          "held": {
+            "u": true,
+            "p": true
+          },
+          "bal": 96
+        },
+        "rhAfter": 1,
+        "final": {
+          "status": "success",
+          "bal": 96,
+          "snap": {
+            "user_occ": 0,
+            "plat": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "F2_poll_uncertain_then_fail_refund_once",
+      "pass": true,
+      "detail": {
+        "status": "failed",
+        "bal": 100,
+        "bal2": 100,
+        "r2": {
+          "ok": true,
+          "idempotent": true,
+          "refunded": false
+        }
+      }
+    },
+    {
+      "name": "G_repeat_dispatch_one_rh",
+      "pass": true,
+      "detail": {
+        "submits": 1,
+        "pid": "rh_storm_only"
+      }
+    },
+    {
+      "name": "H_repeat_charge_once",
+      "pass": true,
+      "detail": {
+        "bal1": 96,
+        "bal2": 96,
+        "r1": true,
+        "r2": {
+          "ok": true,
+          "idempotent": true,
+          "task_id": "ed544038-1fb6-43af-b3b2-4f81ca791b15",
+          "execution_stage": "charged"
+        },
+        "r3": {
+          "ok": true,
+          "idempotent": true,
+          "task_id": "ed544038-1fb6-43af-b3b2-4f81ca791b15",
+          "execution_stage": "charged"
+        }
+      }
+    },
+    {
+      "name": "I_repeat_refund_once",
+      "pass": true,
+      "detail": {
+        "bal1": 100,
+        "bal2": 100,
+        "r2": {
+          "ok": true,
+          "idempotent": true,
+          "refunded": false
+        },
+        "r3": {
+          "ok": true,
+          "idempotent": true,
+          "refunded": false
+        }
+      }
+    },
+    {
+      "name": "J_claim_lease_recover_no_double_charge",
+      "pass": true,
+      "detail": {
+        "rec": {
+          "ok": true,
+          "task_id": "fd9c8190-f047-4ab7-9e1f-2a04f1e0f9fd",
+          "released_platform": true,
+          "released_user": true
+        },
+        "after_unclaim": {
+          "status": "queued",
+          "snap": {
+            "user_occ": 0,
+            "plat": 0
+          },
+          "stage": "charged"
+        },
+        "reclaim": "claimed",
+        "bal": {
+          "charged": 96,
+          "after": 96
+        },
+        "ch2": {
+          "ok": true,
+          "idempotent": true,
+          "task_id": "fd9c8190-f047-4ab7-9e1f-2a04f1e0f9fd",
+          "execution_stage": "charged"
+        }
+      }
+    },
+    {
+      "name": "K_worker_interrupt_recovery",
+      "pass": true,
+      "detail": {
+        "charge_then_recover": {
+          "ok": true,
+          "pid": "rh_crash_chg",
+          "r2": {
+            "ok": true,
+            "provider_task_id": "rh_crash_chg"
+          }
+        },
+        "pid_then_recover": {
+          "ok": true,
+          "status": "success",
+          "pid": "rh_crash_pid",
+          "rh_delta": 0
+        }
+      }
+    },
+    {
+      "name": "L_region_dispatch_poll_match",
+      "pass": true,
+      "detail": {
+        "ai": "ai",
+        "cn": "cn",
+        "ai_poll": "ai",
+        "cn_poll": "cn"
+      }
+    },
+    {
+      "name": "M_user_concurrency_stress",
+      "pass": true,
+      "detail": {
+        "claimed": 5,
+        "snap": {
+          "user_occ": 5,
+          "plat": 6
+        }
+      }
+    },
+    {
+      "name": "M_platform_cap_ots_snapshot",
+      "pass": true,
+      "detail": {
+        "platform_running": 1,
+        "note": "hard cap checked on live OTS snapshot; full 100-claim race covered by Phase5 J2 mock"
+      }
+    }
+  ],
+  "finished_at": "2026-09-05T05:22:11.215Z"
+}

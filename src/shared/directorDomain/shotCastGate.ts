@@ -5,6 +5,8 @@
 
 import { characterHasUsableReference, resolveCharacterMasterReferenceUrl } from './constraints.js';
 import { resolveDramaCharacterIdByName } from './ensureAppearingCharacters.js';
+import { isSystemSpeakerName } from './extractCastFromScript.js';
+import { isDramaSystemVoiceId } from './voiceEntity.js';
 import type { DramaDirectorSession, DramaShot } from './types.js';
 
 const EMPTY_SHOT_RE = /空镜|无人物|无人出场|无人镜|纯空镜|environment.?only|empty.?shot/i;
@@ -83,11 +85,15 @@ export function resolveEffectiveDramaShotCharacterIds(
   shot: DramaShot,
 ): string[] {
   const byId = new Map((session.bible.characters || []).map((c) => [c.character_id, c]));
+  const removed = new Set((shot.removed_character_ids || []).map(String));
   const seen = new Set<string>();
   const out: string[] = [];
   const add = (raw: string) => {
     const id = String(raw || '').trim();
-    if (!id || seen.has(id) || !byId.has(id)) return;
+    if (!id || seen.has(id) || !byId.has(id) || removed.has(id)) return;
+    if (isDramaSystemVoiceId(id) || isSystemSpeakerName(id)) return;
+    const ch = byId.get(id);
+    if (ch && isSystemSpeakerName(ch.name)) return;
     seen.add(id);
     out.push(id);
   };
@@ -179,7 +185,7 @@ export function collectDramaShotCastGateIssues(
     return issues;
   }
   for (const id of ids) {
-    const ch = session.bible.characters.find((c) => c.character_id === id);
+    const ch = (session.bible?.characters || []).find((c) => c.character_id === id);
     if (!ch) {
       issues.push({
         code: 'missing_char_asset',

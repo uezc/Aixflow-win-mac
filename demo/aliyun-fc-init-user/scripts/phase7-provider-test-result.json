@@ -1,0 +1,139 @@
+{
+  "passed": true,
+  "stats": {
+    "rh_submit_calls": 10,
+    "double_rh_submit": false,
+    "double_refund": false,
+    "slot_leak": false,
+    "blind_retry_on_unknown": false,
+    "tests": [
+      {
+        "name": "A_dispatch_success",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": true,
+            "provider_task_id": "rh_a1"
+          },
+          "status": "running",
+          "stage": "provider_submitted",
+          "pid": "rh_a1"
+        }
+      },
+      {
+        "name": "B_timeout_no_blind_retry",
+        "ok": true,
+        "detail": {
+          "r1": {
+            "ok": false,
+            "reason": "DISPATCH_UNKNOWN",
+            "uncertain": true
+          },
+          "r2": {
+            "ok": false,
+            "reason": "DISPATCH_UNKNOWN_NO_RETRY"
+          },
+          "unknown": "1",
+          "calls": 2
+        }
+      },
+      {
+        "name": "C_provider_id_sot_no_resubmit",
+        "ok": true,
+        "detail": {
+          "r2": {
+            "ok": true,
+            "idempotent": true,
+            "reason": "ALREADY_HAS_PROVIDER_TASK_ID",
+            "provider_task_id": "rh_c"
+          },
+          "calls": 3
+        }
+      },
+      {
+        "name": "D_explicit_submit_fail",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": false,
+            "reason": "HTTP 400 bad request",
+            "failed": true
+          },
+          "status": "failed",
+          "held": false
+        }
+      },
+      {
+        "name": "F_provider_success_settle",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": true,
+            "status": "success"
+          },
+          "status": "success",
+          "url": "https://example.com/out.mp4"
+        }
+      },
+      {
+        "name": "G_provider_failed_settle",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": true,
+            "status": "failed"
+          },
+          "status": "failed"
+        }
+      },
+      {
+        "name": "H_refund_settle_idempotent",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "idempotent": true,
+          "status": "failed"
+        }
+      },
+      {
+        "name": "I_release_recovery",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": true,
+            "action": "release_only"
+          },
+          "heldU": false,
+          "heldP": false
+        }
+      },
+      {
+        "name": "C20_dispatch_storm",
+        "ok": true,
+        "detail": {
+          "submits": 1,
+          "okN": 1,
+          "pid": "rh_storm"
+        }
+      },
+      {
+        "name": "legacy_run_task_blocked",
+        "ok": true,
+        "detail": {
+          "stage": "charged"
+        }
+      },
+      {
+        "name": "CrashA_recover_dispatch",
+        "ok": true,
+        "detail": {
+          "r": {
+            "ok": true,
+            "provider_task_id": "rh_rec_a"
+          },
+          "pid": "rh_rec_a"
+        }
+      }
+    ]
+  }
+}

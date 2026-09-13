@@ -47,8 +47,12 @@ import {
 import {
   applyGazeTargetInText,
   collapseDuplicateActionText,
+  coerceDramaEmotion,
+  emotionIntensityToLabel,
   locationGazeLabel,
+  renderEmotionAsDirectorDirective,
   sanitizeSilentCharacterText,
+  stripAbstractEmotionFromPhysicalText,
   stripEmotionLabels,
 } from './visiblePerformance.js';
 import {
@@ -59,9 +63,10 @@ import {
   speakerIdForCharacter,
 } from './migrateH3Compiler.js';
 import { listDramaShotRefAudioSlots, listDramaShotRefImageSlots } from './shotRefs.js';
+import { stripDramaSpokenLineBody } from './characterDesignPrompt.js';
+import { isDramaSystemVoiceId } from './voiceEntity.js';
 import { resolveCharacterIdsForShot } from './shotTimeline.js';
 import { differentiateDuplicateTimelineCuts } from './timelineEvent.js';
-import { buildCinematicPromptZhFromVisualDna } from './visualDna.js';
 import { getVisualStylePreset } from './visualStylePresets.js';
 import {
   dramaVideoModelMaxRefImages,
@@ -110,7 +115,7 @@ function resolveCompileLocale(raw?: string | null): DramaH3CompileLocale {
 }
 
 function h3SpokenD(text: string): string {
-  const line = String(text || '').replace(/\s+/g, ' ').trim();
+  const line = stripDramaSpokenLineBody(String(text || '')).replace(/\s+/g, ' ').trim();
   return line ? `<d>[Chinese] ${line}</d>` : '';
 }
 
@@ -383,19 +388,20 @@ function lockIntentName(intent: DramaReferenceLockIntent, locale: DramaH3Compile
   return '身份';
 }
 
-function visualBibleStyle(session: DramaDirectorSession, locale: DramaH3CompileLocale): string {
-  const pvb = session.bible.projectVisualBible;
-  const dna = pvb?.visualDNA || session.bible.visualDNA;
-  if (locale !== 'en' && dna) {
-    const preset = getVisualStylePreset(pvb?.presetId || dna.presetId);
-    return buildCinematicPromptZhFromVisualDna(dna, preset?.visualDNA?.promptTemplateZh).trim();
-  }
-  return String(pvb?.stylePrompt || dna?.generatedPrompt || session.bible.visual?.style || '').trim();
+function visualBibleStyle(session: DramaDirectorSession, _locale: DramaH3CompileLocale): string {
+  const pvb = session.bible?.projectVisualBible;
+  const dna = pvb?.visualDNA || session.bible?.visualDNA;
+  const preset = getVisualStylePreset(pvb?.presetId || dna?.presetId);
+  const short =
+    String(preset?.visualDNA?.promptTemplateZh || preset?.visualDNA?.promptTemplate || '').trim() ||
+    String(pvb?.stylePrompt || dna?.generatedPrompt || '').trim();
+  if (short) return short;
+  return String(session.bible?.visual?.style || '').trim();
 }
 
 function visualBibleOnce(session: DramaDirectorSession, locale: DramaH3CompileLocale): string {
-  const pvb = session.bible.projectVisualBible;
-  const dna = pvb?.visualDNA || session.bible.visualDNA;
+  const pvb = session.bible?.projectVisualBible;
+  const dna = pvb?.visualDNA || session.bible?.visualDNA;
   if (locale !== 'en') {
     const style = visualBibleStyle(session, locale);
     return `【视觉圣经·全局一次】${style || '写实真人电影拍摄风格'}。以上全片只在此声明一次，后续镜头不要重复写风格/饱和/景深/胶片词，只写本镜机位、动作与表演。`;
@@ -440,10 +446,10 @@ export function compileDramaH3Prompt(
   const slots = listDramaShotRefImageSlots(session, shot, { maxImages });
   const charIds = resolveCharacterIdsForShot(session, shot);
   const chars = charIds
-    .map((id) => session.bible.characters.find((c) => c.character_id === id))
+    .map((id) => (session.bible?.characters || []).find((c) => c.character_id === id))
     .filter(Boolean) as DramaCharacter[];
   const scene: DramaSceneAsset | null =
-    session.bible.scenes.find((s) => s.scene_id === shot.scene_asset_id) || null;
+    (session.bible?.scenes || []).find((s) => s.scene_id === shot.scene_asset_id) || null;
   const storedBreakdown = shot.directing_breakdown;
   const storedBeatsOk =
     !!storedBreakdown?.beats?.length &&
@@ -493,7 +499,7 @@ export function compileDramaH3Prompt(
     timeline_events: events,
   });
   const nameById = new Map(
-    (session.bible.characters || []).map((c) => [c.character_id, c.name] as const),
+    (session.bible?.characters || []).map((c) => [c.character_id, c.name] as const),
   );
   const dialoguePlan = resolveDramaH3DialoguePlan(audioTimeline, nameById);
   const hasDlgEvents = dialoguePlan.dialogue;
@@ -621,12 +627,18 @@ export function compileDramaH3Prompt(
     );
   } else if (hasDlgEvents) {
     audioSlots.forEach((a, i) => {
+      if (isDramaSystemVoiceId(a.character_id)) {
+        audioDef.push(
+          `<音频${i + 1}> is the system voice reference. This is a non-human voice entity and must NEVER be assigned to any visible character. Timbre only — do not copy sample-script words.`,
+        );
+        return;
+      }
       const sn = subjectNoByChar.get(a.character_id);
       const sid = speakerIdForCharacter(session, a.character_id);
       audioDef.push(
         `<音频${i + 1}> is voice-timbre reference for 「${a.character_name}」${
           sid ? ` (${sid})` : ''
-        }${sn ? `, <主体${sn}>` : ''}. Timbre only — do not copy or speak the sample-script words from that clip.`,
+        }${sn ? `, <主体${sn}>` : ''}. Timbre only — do not copy or speak the sample-script words from that clip. Do not use this Audio for system dialogue.`,
       );
     });
   }
@@ -690,7 +702,7 @@ export function compileDramaH3Prompt(
       : '',
   ];
   const secC = section('C', titles.C, visualLines.filter(Boolean).join('\n'), [
-    { kind: 'visual_bible', ref: session.bible.projectVisualBible?.presetId || 'visual' },
+    { kind: 'visual_bible', ref: session.bible?.projectVisualBible?.presetId || 'visual' },
     ...slots.map((s) => ({ kind: 'reference', ref: `图${s.index}:${s.role}` })),
   ]);
 
@@ -763,8 +775,10 @@ export function compileDramaH3Prompt(
     const act = applyGazeTargetInText(
       stripConflictingCameraLanguage(
         collapseDuplicateActionText(
-          stripEmotionLabels(
-            sanitizeSilentCharacterText(stripLeadingNames(rawAct, names)),
+          stripAbstractEmotionFromPhysicalText(
+            stripEmotionLabels(
+              sanitizeSilentCharacterText(stripLeadingNames(rawAct, names)),
+            ),
           ),
           names,
         ),
@@ -952,14 +966,18 @@ export function compileDramaH3Prompt(
     const focus =
       !silentMulti && !en && idx === 0 && enhance?.focus_behavior
         ? `焦点：${stripConflictingCameraLanguage(
-            stripEmotionLabels(sanitizeSilentCharacterText(enhance.focus_behavior)),
+            stripAbstractEmotionFromPhysicalText(
+              stripEmotionLabels(sanitizeSilentCharacterText(enhance.focus_behavior)),
+            ),
             movement,
           )}。`
         : '';
     const envAct =
       !silentMulti && !en && idx === 0 && enhance?.subtle_environment_action
         ? `${stripConflictingCameraLanguage(
-            stripEmotionLabels(sanitizeSilentCharacterText(enhance.subtle_environment_action)),
+            stripAbstractEmotionFromPhysicalText(
+              stripEmotionLabels(sanitizeSilentCharacterText(enhance.subtle_environment_action)),
+            ),
             movement,
           )}。`
         : '';
@@ -1118,16 +1136,52 @@ export function compileDramaH3Prompt(
     }
   }
 
+  // ========== Section F 三层表演结构：导演情绪意图 → 可见微相 → 具体动作 ==========
+  // 聚合本镜主导情绪：优先 cast[0]（主人物）/ 有对白 cast 的结构化 emotion
+  const castOrdered = [...(shot.cast || [])].sort((a, b) => {
+    const aSpeaker = audioTimeline.some((x) => x.character_id === a.character_id) ? 0 : 1;
+    const bSpeaker = audioTimeline.some((x) => x.character_id === b.character_id) ? 0 : 1;
+    if (aSpeaker !== bSpeaker) return aSpeaker - bSpeaker;
+    return 0;
+  });
+  const primaryCastEmotion = castOrdered
+    .map((c) => coerceDramaEmotion(c.emotion))
+    .find((e) => e && e.primary);
+  const emotionDirectiveZh = renderEmotionAsDirectorDirective(primaryCastEmotion);
+  const emotionDirectiveEn = primaryCastEmotion?.primary
+    ? `Dominant tone: ${String(primaryCastEmotion.primary || '').trim()}${
+        primaryCastEmotion.secondary ? ` (colored by ${String(primaryCastEmotion.secondary).trim()})` : ''
+      }; intensity ${emotionIntensityToLabel(primaryCastEmotion.intensity).toLowerCase()}${
+        primaryCastEmotion.arc ? `; arc: ${String(primaryCastEmotion.arc).trim().replace(/→/, ' → ')}` : ''
+      }.`
+    : '';
+
   const secF = section(
     'F',
     titles.F,
     hasDlgEvents
-      ? [
-          'Performance by window: pre-speech (inhale / eyes set / mouth closed) → speaking (lips follow <d>) → pause (rest mouth) → after (close / react). Do not speak this line.',
-        ].join('')
+      ? silentMulti || en
+        ? [
+            emotionDirectiveEn ? `[Emotional Intent] ${emotionDirectiveEn} Do not render as on-screen text.` : '',
+            '[Visible Performance] Pre-speech micro-face: inhale flicker / eyes settle / lips sealed. Speaking: lip shape strictly follows <d> tags. After-speech: mouth rests, then reaction micro-move.',
+            '[Physical Action] Action by timeline window only; do not invent moves beyond the choreography below.',
+          ].filter(Boolean).join('\n')
+        : [
+            emotionDirectiveZh ? `【情绪意图】${emotionDirectiveZh}。不要在画面中渲染为字幕或画面元素。` : '',
+            '【可见表演】按对白窗口：准备吸气/眼神落位/双唇闭合 → 说话时唇形严格逐字贴合<d>标签 → 停顿收唇 → 收尾微反应。',
+            '【具体动作】按时间轴执行动作：不脱稿、不加戏、不在画面中渲染导演指令文字。',
+          ].filter(Boolean).join('\n')
       : silentMulti || en
-        ? 'No dialogue. Camera, action, Foley only.'
-        : '本镜无对白：只写机位、动作与环境音。',
+        ? [
+            emotionDirectiveEn ? `[Emotional Intent] ${emotionDirectiveEn} Do not render as on-screen text.` : '',
+            '[Visible Performance] No speaking characters. Natural resting posture; only subtle breath / gaze / tiny muscle shifts match the tone above.',
+            '[Physical Action] No dialogue. Camera, blocking, and Foley only; do not invent speech or director-note text.',
+          ].filter(Boolean).join('\n')
+        : [
+            emotionDirectiveZh ? `【情绪意图】${emotionDirectiveZh}。不要在画面中渲染为字幕或画面元素。` : '',
+            '【可见表演】本镜无对白。人物保持自然静止体态；仅轻微呼吸、眼神位移、肌肉微相对齐上方情绪意图。',
+            '【具体动作】本镜无对白：只写机位、动作与环境音。不得把导演指令渲染成画面内文字或字幕。',
+          ].filter(Boolean).join('\n'),
     [
       { kind: 'performance', source: 'system_constraint' },
       ...perf.map((b) => ({ kind: 'performance', ref: b.beat_id, source: b.source })),
@@ -1265,7 +1319,7 @@ export function compileDramaH3Prompt(
     audio_mode: lipsync ? 'lip_sync' : 'character_reference',
     duration_sec: dur,
     visual_bible: {
-      preset_id: session.bible.projectVisualBible?.presetId,
+      preset_id: session.bible?.projectVisualBible?.presetId,
       style_prompt: stylePrompt,
       used_in_section: 'C',
     },

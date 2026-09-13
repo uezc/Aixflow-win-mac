@@ -31,7 +31,13 @@ import { VideoNode, getVideoLastFrame } from './Canvas/VideoNode';
 import { AudioNode, AUDIO_NODE_HEIGHT, AUDIO_NODE_WIDTH, type AudioSeparateAllPayload } from './Canvas/AudioNode';
 import { AudioTranscribeNode } from './Canvas/AudioTranscribeNode';
 import VideoSpliceNode, { type TimelineClip, type VideoSpliceExportPayload } from './Canvas/VideoSpliceNode';
-import { resolveSpliceExportDimensions } from './Canvas/VideoSpliceAspectRatioDropdown';
+import {
+  resolveAssetPixelSizeFromNodeData,
+  resolveEffectiveSpliceAspectId,
+  resolveSpliceExportDimensions,
+  resolveSpliceSourcePixelSize,
+  splicePreviewAspectIdForImport,
+} from './Canvas/VideoSpliceAspectRatioDropdown';
 import PhotoCollageNode, { type CollageLayer } from './Canvas/PhotoCollageNode';
 import GridMapNode, { GRID_MAP_HMR_REV, nodeOuterSizeForCanvas } from './Canvas/GridMapNode';
 import ImageComparerNode, {
@@ -165,6 +171,7 @@ import { buildEmptyRvcTrainNode, buildRvcTrainNodeFromLibraryItem, resolveRvcTra
 import { resolveRvcTrainAudioFromEdges } from '../utils/rvcTrainNodeEdgeInputs';
 import { ensureOssAudioUrlForRhTrain, pickBestAudioUrlForRhTrainFromNodeData } from '../utils/rvcTrainAudioUrl';
 import { promptNxSaasLoginIfNeeded } from '../utils/cloudAiGateMessage';
+import { requestOpenRechargeUi } from './RechargeSettledNotifier';
 import { RVC_TRAIN_HEIGHT, RVC_TRAIN_WIDTH } from '../constants/rvcTrainLayout';
 import { IMAGE_TO_3D_HEIGHT, IMAGE_TO_3D_WIDTH } from '../constants/imageTo3dLayout';
 import {
@@ -173,10 +180,15 @@ import {
   needsModuleSizeScaleUpgrade,
   scaleModulePx,
   clampTextModuleSize,
+  clampTextModuleAutoSize,
   TEXT_MODULE_DEFAULT_W,
   TEXT_MODULE_DEFAULT_H,
 } from '../utils/moduleDisplayScale';
 import { DEFAULT_IMAGE_TO_3D_MODEL } from '../../shared/imageTo3dModels';
+import {
+  mapCloudTaskToUserQueueUx,
+  USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+} from '../../shared/userQueueTaskUx';
 import {
   createDefaultStoryboardScriptState,
   type StoryboardScriptState,
@@ -188,6 +200,7 @@ import {
   resolveDirectorShotVideoPromptForGen,
   ensureDirectorMvVideoPromptGuards,
   createDefaultDirectorPipelineState,
+  createEmptyDirectorAsset,
   getDirectorShotStoryboard,
   mergeDirectorShotVideoHistory,
   directorMediaUrlKey,
@@ -205,9 +218,11 @@ import {
   resolveDirectorShotPreferLipsync,
   shotAudioRangeHasHumanVoice,
   updateDirectorAsset,
+  upsertDirectorAsset,
   updateDirectorShotStoryboard,
   mergeDirectorMediaPreserve,
   ensureDirectorDramaVideoPromptGuards,
+  normalizeDirectorShotNoKey,
   type DirectorPipelineState,
 } from '../../shared/directorPipeline';
 import {
@@ -216,13 +231,22 @@ import {
   applyDramaSessionAssetImage,
   applyDramaSessionVoiceSample,
   healDramaSessionStuckAssetGenerating,
+  ensureDramaSystemVoice,
+  isDramaSystemVisualAssetId,
+  resolveDramaSystemVoice,
+  DRAMA_SYSTEM_SPEAKER_ID,
+  DRAMA_SYSTEM_VISUAL_ASSET_NAME,
   isDramaSupportedVideoModel,
   normalizeDramaSupportedVideoModel,
   compileH3AudioShotRequest,
   compileH3MultiShotRequest,
+  resolveDramaProductionH3Prompt,
+  sealDramaProductionCloudPrompt,
   dramaShotHasSpokenDialogue,
+  resolveDramaGenerateDurationSec,
   formatDramaShotVideoRequestAuditText,
   NEXFLOW_DRAMA_VIDEO_REQUEST_AUDIT_EVENT,
+  projectDramaSessionToPipeline,
   type DramaDirectorSession,
 } from '../../shared/directorDomain';
 import { importImageTo3dAssetsToCharacters } from '../utils/importImageTo3dAsset';
@@ -273,6 +297,7 @@ import {
   validateLtx23HdrMultiInputs,
   mergeLtx23HdrMultiPreserveOrder,
 } from '../../common/ltx23HdrMulti';
+import { normalizeMinimaxH3Resolution } from '../../common/minimaxH3Resolution.js';
 import { isRetiredAudioModel, normalizeAudioModelIfRetired } from '../config/audioModelUiPolicy';
 import {
   normalizeGrok3DurationStr,
@@ -1005,8 +1030,14 @@ const resolveImageTo3dInputUrl = (node: Node, edges: Edge[], nodes: Node[]): str
 /**
  * 参考图：务必以**源 Image 节点当前 data** 为准，其次才用建连时缓存在边上的 imageAsset。
  * 若优先边缓存，源节点出图/换图后边数据若未及时与节点一致，下游会一直用错参考图（图生图内容跑偏）。
+ * 布局专用边（importLayoutOnly）不参与参考图收集。
  */
+const isImportLayoutOnlyEdge = (edge: any): boolean =>
+  !!(edge?.data && (edge.data as { importLayoutOnly?: boolean }).importLayoutOnly) ||
+  edge?.targetHandle === 'import-layout';
+
 const pickPreviewFromEdgeOrNode = (edge: any, sourceNodeData: any): string => {
+  if (isImportLayoutOnlyEdge(edge)) return '';
   const fromNode = pickPreviewUrl(buildDualImageAssetFromNodeData(sourceNodeData));
   if (fromNode) return fromNode;
   return ((edge?.data as any)?.imageAsset?.preview as string | undefined) || '';
@@ -1016,6 +1047,7 @@ const pickPreviewFromEdgeOrNode = (edge: any, sourceNodeData: any): string => {
 function collectImageTargetInputImagesFromEdges(imageId: string, nds: Node[], eds: Edge[]): string[] {
   const imageSourceEdges = eds.filter((e) => {
     if (e.target !== imageId) return false;
+    if (isImportLayoutOnlyEdge(e)) return false;
     const src = nds.find((n) => n.id === e.source);
     if (src?.type === 'image') return true;
     if (src?.type === 'character') {
@@ -1334,6 +1366,16 @@ const formatImagePath = async (path: string, projectId?: string): Promise<string
   return formattedPath;
 };
 
+/** 短剧 Domain 内部分析 JSON，不进用户任务列表 */
+function isInternalDirectorDomainTextTask(prompt: string | undefined): boolean {
+  const p = String(prompt || '').trim();
+  if (!p) return false;
+  if (/"schemaVersion"\s*:\s*"director-domain\.v2"/i.test(p)) return true;
+  if (/"type"\s*:\s*"director-drama-domain-/i.test(p)) return true;
+  if (/director-drama-domain-analyze/i.test(p)) return true;
+  return false;
+}
+
 /** 任务列表去重：忽略 query、统一路径大小写与编码，避免同一结果因 URL 形态不同出现多条 */
 function normalizeMediaUrlForTaskDedup(url: string | undefined): string {
   const s = String(url || '').trim();
@@ -1622,6 +1664,144 @@ function patchVideoNodeData(node: Node, nodeId: string, updates: Record<string, 
     };
   }
   return next;
+}
+
+function dramaShotNosEqual(a: string | undefined, b: string | undefined): boolean {
+  const x = String(a || '').trim();
+  const y = String(b || '').trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const nx = x.replace(/^0+/, '') || '0';
+  const ny = y.replace(/^0+/, '') || '0';
+  return /^\d+$/.test(nx) && /^\d+$/.test(ny) && nx === ny;
+}
+
+function pickDirectorVideoNodeUrl(data: Record<string, unknown> | undefined | null): string {
+  if (!data) return '';
+  for (const key of ['originalVideoUrl', 'outputVideo', 'outputVideoUrl', 'videoUrl'] as const) {
+    const u = String(data[key] || '').trim();
+    if (u && !looksLikeAudioMediaUrl(u)) return u;
+  }
+  return '';
+}
+
+function patchDirectorShotVideoResult(
+  nds: Node[],
+  videoNodeId: string,
+  shotNo: string,
+  directorId: string,
+  videoUrl: string,
+): Node[] {
+  const url = String(videoUrl || '').trim();
+  const no = String(shotNo || '').trim();
+  const dirId = String(directorId || '').trim();
+  if (!url || !no || !dirId) return nds;
+  return nds.map((node) => {
+    if (node.id !== dirId || !isDirectorNodeType(node.type)) return node;
+    let nextDir = createDefaultDirectorPipelineState(
+      (node.data as { director?: DirectorPipelineState })?.director || {},
+    );
+    nextDir = updateDirectorShotStoryboard(nextDir, no, {
+      videoUrl: url,
+      videoStatus: 'ready',
+      videoNodeId,
+      videoError: '',
+      videoGeneratingStartedAt: undefined,
+    });
+    const domain = (node.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain;
+    const domainNext = domain?.shots?.length
+      ? {
+          ...domain,
+          shots: domain.shots.map((s) =>
+            dramaShotNosEqual(s.shot_no, no)
+              ? {
+                  ...s,
+                  video_url: url,
+                  video_status: 'ready',
+                  video_node_id: videoNodeId,
+                  video_error: '',
+                }
+              : s,
+          ),
+        }
+      : domain;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        director: nextDir,
+        ...(domainNext ? { directorDomain: domainNext } : {}),
+      },
+    };
+  });
+}
+
+/** 导演隐藏视频节点仍在跑时，把分镜表/Domain 钉在 generating，避免 PROCESSING 对账把进度条清掉。 */
+function pinDirectorShotVideoGenerating(
+  nds: Node[],
+  videoNodeId: string,
+  videoDataPatch: Record<string, unknown>,
+): Node[] {
+  const videoNode = nds.find((n) => n.id === videoNodeId);
+  const shotNo = String(
+    (videoNode?.data as { directorShotNo?: string } | undefined)?.directorShotNo || '',
+  ).trim();
+  const directorId = String(
+    (videoNode?.data as { directorSourceId?: string } | undefined)?.directorSourceId || '',
+  ).trim();
+  // 注意：重新生成时节点上仍可能挂着旧成片 URL。START/PROCESSING 绝不能据此标 ready，
+  // 否则任务列表还在「进行中」、导演台进度条已被清掉。成片只在 SUCCESS 路径写回。
+  return nds.map((node) => {
+    if (node.id === videoNodeId) {
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          ...videoDataPatch,
+        },
+      };
+    }
+    if (!shotNo || !directorId || node.id !== directorId || !isDirectorNodeType(node.type)) {
+      return node;
+    }
+    let nextDir = createDefaultDirectorPipelineState(
+      (node.data as { director?: DirectorPipelineState })?.director || {},
+    );
+    const prevSb = getDirectorShotStoryboard(nextDir, shotNo);
+    nextDir = updateDirectorShotStoryboard(nextDir, shotNo, {
+      videoStatus: 'generating',
+      videoNodeId,
+      videoError: '',
+      videoGeneratingStartedAt:
+        Number(prevSb.videoGeneratingStartedAt) > 0
+          ? Number(prevSb.videoGeneratingStartedAt)
+          : Date.now(),
+    });
+    const domain = (node.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain;
+    const domainNext = domain?.shots?.length
+      ? {
+          ...domain,
+          shots: domain.shots.map((s) =>
+            dramaShotNosEqual(s.shot_no, shotNo)
+              ? {
+                  ...s,
+                  video_status: 'generating',
+                  video_node_id: videoNodeId,
+                  video_error: '',
+                }
+              : s,
+          ),
+        }
+      : domain;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        director: nextDir,
+        ...(domainNext ? { directorDomain: domainNext } : {}),
+      },
+    };
+  });
 }
 
 const Workspace: React.FC<WorkspaceProps> = () => {
@@ -2623,6 +2803,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 if (!sourceNode) continue;
 
                 if (sourceNode.type === 'image') {
+                  // 导入布局边不参与参考图/提示词同步，避免把源图写进 inputImages 后清空主图展示
+                  if (isImportLayoutOnlyEdge(edge)) continue;
                   const imgUrl = pickPreviewFromEdgeOrNode(edge, sourceNode.data) || (sourceNode.data?.inputImages as string[])?.[0];
                   if (imgUrl && !collectedImages.includes(imgUrl)) collectedImages.push(imgUrl);
                   const pp = sourceNode.data?.prompt_payload as { qwen_instruction?: string; prompt_metadata?: { formatted_output?: string }; full_camera_prompt?: string; camera_tags?: string } | undefined;
@@ -2676,12 +2858,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 const firstRef = newInputImages[0] || '';
                 const outImg = String(node.data?.outputImage || '').trim();
                 const outList = Array.isArray(node.data?.outputImages) ? node.data.outputImages : [];
+                // 已有生成痕迹时禁止清掉 output（否则任务列表有图、画布变空→「图片加载失败」）
+                const hasGenerationTrace = !!(
+                  String(node.data?.cloudTaskId || '').trim() ||
+                  String(node.data?.originalImageUrl || '').trim() ||
+                  String(node.data?.localPath || '').trim() ||
+                  String((node.data?.imageAsset as { preview?: string } | undefined)?.preview || '').trim() ||
+                  (Array.isArray(outList) && outList.length > 0) ||
+                  Number(node.data?.progress) === 100
+                );
                 const clearRefOnlyOutput =
                   collectedImages.length > 0 &&
                   !!firstRef &&
                   !!outImg &&
                   formatImagePathSync(outImg) === formatImagePathSync(firstRef) &&
-                  outList.length === 0;
+                  outList.length === 0 &&
+                  !hasGenerationTrace;
                 if (selectedNode?.id === node.id) {
                   const skipPanelPromptUpdate = Date.now() - lastImagePromptUserEditRef.current < 2500;
                   setImageInputPanelData((prev) => {
@@ -3192,6 +3384,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             if (node.type === 'cameraControl') {
               let inputImageUrl = '';
               for (const edge of incomingEdges) {
+                if (isImportLayoutOnlyEdge(edge)) continue;
                 const sourceNode = nodeById.get(edge.source);
                 if (sourceNode?.type === 'image') {
                   const imgUrl = pickPreviewFromEdgeOrNode(edge, sourceNode.data) || (sourceNode.data?.outputImage as string) || (sourceNode.data?.inputImages as string[])?.[0];
@@ -3310,6 +3503,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const dedupedSortedTasks = useMemo(() => {
     const uniqueTasksMap = new Map<string, Task>();
     for (const task of tasks) {
+      if (
+        (task.taskType === 'text' || !task.taskType) &&
+        isInternalDirectorDomainTextTask(task.prompt)
+      ) {
+        continue;
+      }
       const ty = task.taskType || 'image';
       const mediaUrl = taskMediaUrl(task);
       const norm =
@@ -3605,7 +3804,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     durationLtx23T2v?: '5' | '10' | '15';
     resolutionLtx23T2v?: '720' | '1280' | '1920';
     durationMinimaxH3?: '6' | '10' | '15' | '20';
-    resolutionMinimaxH3?: '720p';
+    resolutionMinimaxH3?: '480p' | '720p';
     durationLtx23HdrMulti?: '5' | '10' | '15';
     resolutionLtx23HdrMulti?: '720' | '1280';
     sora2Channel?: 'plugin' | 'core';
@@ -3701,11 +3900,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   } | null>(null);
 
   const createNodeFromTask = useCallback(
-    (task: Task, position: { x: number; y: number }) => {
+    async (task: Task, position: { x: number; y: number }) => {
       let taskType =
         task.taskType ||
         (task.imageUrl ? 'image' : task.videoUrl ? 'video' : task.audioUrl ? 'audio' : task.prompt?.trim() ? 'text' : 'image');
-      const imageUrl = task.imageUrl || (task.localFilePath ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
       let videoUrl = task.videoUrl || (task.localFilePath && taskType === 'video' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
       let audioUrl = task.audioUrl || (task.localFilePath && taskType === 'audio' ? `local-resource://${task.localFilePath.replace(/\\/g, '/')}` : '');
       // 历史误标：音频被写成 taskType=video + videoUrl=mp3 → 放入画布会变成空视频节点
@@ -3720,7 +3918,117 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const nodeTitle = (task.nodeTitle || taskType).replace(/[/\\?*:|"]/g, '_');
       const textContent = (task.prompt || '').trim();
 
-      if (taskType === 'image' && imageUrl) {
+      const preferMappedUrl = async (url: string): Promise<string> => {
+        const formatted = formatImagePathSync(url);
+        if (!formatted) return '';
+        if (projectId && formatted.startsWith('local-resource://')) {
+          try {
+            return (await mapProjectPath(formatted, projectId)) || formatted;
+          } catch {
+            return formatted;
+          }
+        }
+        return formatted;
+      };
+
+      const toLocalResourceUrl = (p: string): string => {
+        const s = String(p || '').trim();
+        if (!s) return '';
+        if (s.startsWith('local-resource://') || s.startsWith('file://') || s.startsWith('http://') || s.startsWith('https://') || s.startsWith('data:')) {
+          return formatImagePathSync(s) || s;
+        }
+        return formatImagePathSync(`local-resource://${s.replace(/\\/g, '/')}`) || '';
+      };
+
+      if (taskType === 'image') {
+        // 与 TaskImageDisplay 一致：本地路径 / outputImages 优先于可能过期的 OSS imageUrl
+        const outputList = (Array.isArray(task.outputImages) ? task.outputImages : [])
+          .map((u) => String(u || '').trim())
+          .filter(Boolean);
+        const localRawAll = String(task.localFilePath || '').trim();
+        // 拒绝被 AICore 误写成 .txt 的 localFilePath
+        const localRaw =
+          localRawAll && !/\.(txt|json|md|csv|html?|xml)$/i.test(localRawAll) ? localRawAll : '';
+        const primaryRaw =
+          (localRaw ? toLocalResourceUrl(localRaw) : '') ||
+          outputList[0] ||
+          String(task.imageUrl || '').trim() ||
+          '';
+
+        // 若任务来源节点仍在画布且已能显示，直接复用其已验证字段
+        const sourceNode = nodes.find((n) => n.id === task.nodeId && n.type === 'image');
+        const srcData = sourceNode?.data as
+          | {
+              outputImage?: string;
+              outputImages?: string[];
+              originalImageUrl?: string;
+              localPath?: string;
+              tinyThumbUrl?: string;
+              avgColorHex?: string;
+              imageAsset?: {
+                preview?: string;
+                original?: string;
+                tiny?: string;
+                ghost?: string;
+                avgColorHex?: string;
+                width?: number;
+                height?: number;
+              };
+            }
+          | undefined;
+
+        let imageUrl = '';
+        let localPath = localRaw;
+        let originalImageUrl = String(task.originalImageUrl || '').trim();
+        let mappedOutputs: string[] = [];
+        let tinyThumbUrl = '';
+        let avgColorHex = '';
+        let ghostBase64 = '';
+        let assetWidth: number | undefined;
+        let assetHeight: number | undefined;
+
+        if (srcData) {
+          const srcPrimary =
+            String(srcData.localPath || '').trim() ||
+            String(srcData.outputImage || '').trim() ||
+            (Array.isArray(srcData.outputImages) ? String(srcData.outputImages[0] || '').trim() : '') ||
+            String(srcData.imageAsset?.preview || '').trim();
+          if (srcPrimary) {
+            imageUrl = (await preferMappedUrl(toLocalResourceUrl(srcPrimary) || srcPrimary)) || srcPrimary;
+            localPath = String(srcData.localPath || localPath || '').trim();
+            originalImageUrl =
+              String(srcData.originalImageUrl || srcData.imageAsset?.original || originalImageUrl || '').trim() ||
+              imageUrl;
+            mappedOutputs = Array.isArray(srcData.outputImages) && srcData.outputImages.length > 0
+              ? (
+                  await Promise.all(
+                    srcData.outputImages.map(async (u) => (await preferMappedUrl(String(u || '').trim())) || String(u || '').trim()),
+                  )
+                ).filter(Boolean)
+              : [imageUrl];
+            tinyThumbUrl = String(srcData.tinyThumbUrl || srcData.imageAsset?.tiny || '').trim();
+            avgColorHex = String(srcData.avgColorHex || srcData.imageAsset?.avgColorHex || '').trim();
+            ghostBase64 = String(srcData.imageAsset?.ghost || '').trim();
+            assetWidth = srcData.imageAsset?.width;
+            assetHeight = srcData.imageAsset?.height;
+          }
+        }
+
+        if (!imageUrl && primaryRaw) {
+          imageUrl = (await preferMappedUrl(primaryRaw)) || primaryRaw;
+          if (!localPath && (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://'))) {
+            localPath = imageUrl.replace(/^(local-resource:\/\/|file:\/\/\/?)/, '').replace(/\//g, '\\');
+            if (localPath.match(/^\/[a-zA-Z]:/)) localPath = localPath.substring(1);
+          }
+          if (!originalImageUrl) originalImageUrl = String(task.imageUrl || imageUrl).trim() || imageUrl;
+          const outsSrc = outputList.length > 0 ? outputList : [imageUrl];
+          mappedOutputs = (
+            await Promise.all(outsSrc.map(async (u) => (await preferMappedUrl(toLocalResourceUrl(u) || u)) || u))
+          ).filter(Boolean);
+        }
+
+        if (!imageUrl) return;
+
         const nodeId = `image-${Date.now()}`;
         const newNode: Node = {
           id: nodeId,
@@ -3729,7 +4037,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           data: {
             label: 'image',
             outputImage: imageUrl,
-            originalImageUrl: imageUrl,
+            outputImages: mappedOutputs.length > 0 ? mappedOutputs : [imageUrl],
+            originalImageUrl: originalImageUrl || imageUrl,
+            localPath: localPath || undefined,
+            tinyThumbUrl: tinyThumbUrl || undefined,
+            avgColorHex: avgColorHex || undefined,
+            imageAsset: {
+              preview: imageUrl,
+              original: originalImageUrl || imageUrl,
+              tiny: tinyThumbUrl || undefined,
+              ghost: ghostBase64 || undefined,
+              avgColorHex: avgColorHex || undefined,
+              width: assetWidth,
+              height: assetHeight,
+            },
             title: nodeTitle,
             prompt: task.prompt || '',
             width: IMAGE_NODE_DEFAULT_W,
@@ -3881,7 +4202,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         setAudioInputPanelData(null);
       }
     },
-    [setNodes, setSelectedNode, setVideoInputPanelData, setLlmInputPanelData, setImageInputPanelData, setCharacterInputPanelData, setAudioInputPanelData]
+    [
+      setNodes,
+      setSelectedNode,
+      setVideoInputPanelData,
+      setLlmInputPanelData,
+      setImageInputPanelData,
+      setCharacterInputPanelData,
+      setAudioInputPanelData,
+      projectId,
+      nodes,
+    ],
   );
 
   const handleTaskPlaceToCanvas = useCallback(
@@ -3889,16 +4220,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const api = flowContentApiRef.current;
       const wrapper = reactFlowWrapper.current;
       if (!api?.screenToFlowPosition || !wrapper) {
-        createNodeFromTask(task, { x: 100, y: 100 });
+        void createNodeFromTask(task, { x: 100, y: 100 });
         return;
       }
       const rect = wrapper.getBoundingClientRect();
       const centerX = rect.left + rect.width / 2;
       const centerY = rect.top + rect.height / 2;
       const flowPos = api.screenToFlowPosition({ x: centerX, y: centerY });
-      createNodeFromTask(task, flowPos);
+      void createNodeFromTask(task, flowPos);
     },
-    [createNodeFromTask]
+    [createNodeFromTask],
   );
 
   // 侧边栏展开/收起状态
@@ -4374,9 +4705,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             width = Math.max(MIN_WIDTH, width);
             height = Math.max(MIN_HEIGHT, height);
 
-            // 文本模块：纠正异常撑大（RO/历史脏尺寸会撑满视口并导致缩放发糊）
+            // 文本模块：未手动缩放时纠正 RO/历史脏尺寸；用户拉过的尺寸原样保留
             if (node.type === 'text' || node.type === 'minimalistText' || node.type === 'llm') {
-              const clamped = clampTextModuleSize(Number(width), Number(height));
+              const userResized = (node.data as { isUserResized?: boolean } | undefined)?.isUserResized === true;
+              const clamped = userResized
+                ? clampTextModuleSize(Number(width), Number(height))
+                : clampTextModuleAutoSize(Number(width), Number(height));
               width = clamped.width;
               height = clamped.height;
             }
@@ -5986,7 +6320,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
   /**
    * 视频超分：节点与连线已由 VideoNode 建好，此处仅对 target 提交 RH 任务。
-   * 计费 Quantity = max(floor(mediaDurationSec), 5)。
+   * 计费 Quantity = floor(mediaDurationSec)；缺时长禁止提交（不保底）。
    */
   const handleVideoUpscaleRun = useCallback(
     async (params: {
@@ -6000,12 +6334,20 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (!videoUrl || !targetNodeId || !window.electronAPI?.invokeAI) return;
       const tr = params.targetResolution;
       const dur = Number(params.mediaDurationSec) || 0;
+      if (!(dur > 0)) {
+        handleVideoNodeDataChange(targetNodeId, {
+          progress: 0,
+          progressMessage: '',
+          errorMessage: locale === 'en' ? 'Video duration unknown; cannot upscale yet' : '无法识别视频时长，暂不能超分放大',
+        });
+        return;
+      }
       const payload = {
         prompt: '',
         model: 'rhart-video-upscaler' as const,
         referenceVideoUrl: videoUrl,
         targetResolution: tr,
-        ...(dur > 0 ? { mediaDurationSec: dur } : {}),
+        mediaDurationSec: dur,
         projectId: projectId || undefined,
       };
       // 等新节点写入 React Flow 后再提交，避免状态包落到不存在的 nodeId
@@ -6516,14 +6858,26 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
       const spliceData = (spliceNode.data || {}) as {
         previewAspectId?: string;
+        previewAspectUserPicked?: boolean;
         exportOutputWidth?: number;
         exportOutputHeight?: number;
       };
-      const exportDims = resolveSpliceExportDimensions({
-        previewAspectId: spliceData.previewAspectId ?? payload.previewAspectId,
-        exportOutputWidth: spliceData.exportOutputWidth ?? payload.options.outputWidth,
-        exportOutputHeight: spliceData.exportOutputHeight ?? payload.options.outputHeight,
-      });
+      const sourceSize = resolveSpliceSourcePixelSize(
+        payload.videoTracks.flat(),
+        latestNodesRef.current,
+      );
+      const exportDims = resolveSpliceExportDimensions(
+        {
+          previewAspectId: resolveEffectiveSpliceAspectId({
+            previewAspectId: spliceData.previewAspectId ?? payload.previewAspectId,
+            previewAspectUserPicked: spliceData.previewAspectUserPicked,
+          }),
+          previewAspectUserPicked: spliceData.previewAspectUserPicked,
+          exportOutputWidth: spliceData.exportOutputWidth ?? payload.options.outputWidth,
+          exportOutputHeight: spliceData.exportOutputHeight ?? payload.options.outputHeight,
+        },
+        sourceSize,
+      );
       const res = await window.electronAPI.exportTimelineVideoToProject(
         projectId,
         payload.videoTracks,
@@ -7753,6 +8107,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     if (!tasksListHydratedRef.current) return;
 
     const urlByDirector = new Map<string, Record<string, string>>();
+    const taskAtByDirector = new Map<string, Record<string, number>>();
     for (const task of directorImgTasks) {
       const m = String(task.nodeId || '').match(/^(.+)-director-img-(.+)$/);
       if (!m) continue;
@@ -7764,8 +8119,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       if (!raw) continue;
       const formatted = formatImagePathSync(raw);
       const bag = urlByDirector.get(directorNodeId) || {};
-      if (!bag[assetId]) bag[assetId] = formatted;
+      const atBag = taskAtByDirector.get(directorNodeId) || {};
+      const createdAt = Number(task.createdAt) || 0;
+      if (!bag[assetId] || createdAt >= (atBag[assetId] || 0)) {
+        bag[assetId] = formatted;
+        atBag[assetId] = createdAt;
+      }
       urlByDirector.set(directorNodeId, bag);
+      taskAtByDirector.set(directorNodeId, atBag);
     }
 
     const dramaNodes = latestNodesRef.current.filter((n) => isDirectorDramaNodeType(n.type));
@@ -7791,12 +8152,56 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           if (voiceId) preserveGenerating.add(voiceId);
         }
       }
-      const healed = healDramaSessionStuckAssetGenerating(
-        domainPrev,
+
+      // 系统形象：任务列表已成功时强制收回 Voice.imageUrl（heal 若只盯 character 会漏）
+      let workingDomain = domainPrev;
+      let systemSynced = false;
+      for (const [assetId, imageUrl] of Object.entries(fromTasks)) {
+        if (!isDramaSystemVisualAssetId(assetId, workingDomain)) continue;
+        if (preserveGenerating.has(assetId) || preserveGenerating.has(DRAMA_SYSTEM_SPEAKER_ID)) {
+          continue;
+        }
+        workingDomain = ensureDramaSystemVoice(workingDomain);
+        const sys = resolveDramaSystemVoice(workingDomain);
+        const own = String(sys?.imageUrl || '').trim();
+        const st = String(sys?.image_status || '').trim();
+        if (own === imageUrl && st === 'ready') continue;
+        // 空图或 generating：用任务成图收回系统卡（勿覆盖用户已 ready 的本地替换）
+        if (st !== 'generating' && own) continue;
+        const patched = applyDramaSessionAssetImage(workingDomain, assetId, {
+          imageUrl,
+          status: 'ready',
+        });
+        if (patched) {
+          workingDomain = patched;
+          systemSynced = true;
+        }
+      }
+
+      const healedRaw = healDramaSessionStuckAssetGenerating(
+        workingDomain,
         fromTasks,
         preserveGenerating,
       );
-      if (!healed) continue;
+      if (!healedRaw && !systemSynced) continue;
+      const healed = {
+        ...(healedRaw || workingDomain),
+        shots: ((healedRaw || workingDomain).shots || []).map((s) => {
+          const live = (domainPrev.shots || []).find(
+            (x) =>
+              String(x.shot_id || '').trim() === String(s.shot_id || '').trim() ||
+              String(x.shot_no || '').trim() === String(s.shot_no || '').trim(),
+          );
+          const liveSt = String(live?.video_status || '').trim();
+          if (liveSt !== 'generating' && liveSt !== 'queued') return s;
+          return {
+            ...s,
+            video_status: liveSt,
+            video_node_id: live?.video_node_id || s.video_node_id,
+            video_error: '',
+          };
+        }),
+      };
 
       const prevDir = createDefaultDirectorPipelineState(
         (node.data as { director?: DirectorPipelineState })?.director || {},
@@ -7863,7 +8268,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         return { spawned: 0, reason: 'no-director-node' as const };
       }
 
-      const director = createDefaultDirectorPipelineState({
+      const directorRaw = createDefaultDirectorPipelineState({
         ...((dirNode.data as { director?: DirectorPipelineState })?.director || {}),
         mode:
           directorModeForNodeType(dirNode.type) ||
@@ -7884,15 +8289,27 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           ).trim(),
       });
       const isDramaDirector =
-        director.mode === 'drama' || isDirectorDramaNodeType(dirNode.type);
-      const onlyShotNos =
+        directorRaw.mode === 'drama' || isDirectorDramaNodeType(dirNode.type);
+      // 短剧：出片前用 Domain 同步投影镜头表，避免 React setNodes 未落盘时 latestNodesRef 仍是空/旧表，
+      // 导致 UI 已「生成中」但从未创建视频节点、平台收不到请求。
+      const dramaDomainFresh = (dirNode.data as { directorDomain?: DramaDirectorSession | null })
+        ?.directorDomain;
+      const director =
+        isDramaDirector && (dramaDomainFresh?.shots || []).length > 0
+          ? projectDramaSessionToPipeline(dramaDomainFresh, directorRaw)
+          : directorRaw;
+      const onlyShotNosRaw =
         Array.isArray(opts?.shotNos) && opts!.shotNos!.length > 0
-          ? new Set(opts!.shotNos!.map((n) => String(n || '').trim()).filter(Boolean))
+          ? opts!.shotNos!.map((n) => String(n || '').trim()).filter(Boolean)
           : null;
+      const onlyShotNos = onlyShotNosRaw
+        ? new Set(onlyShotNosRaw.flatMap((n) => [n, normalizeDirectorShotNoKey(n)].filter(Boolean)))
+        : null;
       // 未指定镜号（确认生成等入口）：与批量一致，跳过已有成片的镜头
       const batchOnlyMissing = !onlyShotNos;
       const shots = (director.shots || []).filter((s, i) => {
         const shotNo = String(s['镜号'] || i + 1);
+        const shotKey = normalizeDirectorShotNoKey(shotNo);
         // 短剧：提示词由 Domain H3 Compiler 现场编译，不要求 pipeline 已有最终提示词/画面描述
         if (
           !isDramaDirector &&
@@ -7900,7 +8317,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         ) {
           return false;
         }
-        if (onlyShotNos && !onlyShotNos.has(shotNo)) return false;
+        if (
+          onlyShotNos &&
+          !onlyShotNos.has(shotNo) &&
+          !onlyShotNos.has(shotKey)
+        ) {
+          return false;
+        }
         if (batchOnlyMissing) {
           const sb = getDirectorShotStoryboard(director, shotNo);
           if (!directorShotNeedsVideoGeneration(sb)) return false;
@@ -7960,6 +8383,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         return { spawned: 0 as const, reason, shotNos: revertNos };
       };
       if (shots.length === 0) {
+        console.warn('[Director] spawn skipped: no matching shots', {
+          pipelineShots: (director.shots || []).length,
+          domainShots: (dramaDomainFresh?.shots || []).length,
+          onlyShotNos: onlyShotNosRaw,
+          isDramaDirector,
+        });
         return revertDramaSpawnFailure(
           isDramaDirector
             ? '未能发起视频生成：没有可生成的镜头（请确认本镜已确认，或先点「放弃等待」后再试）'
@@ -8094,11 +8523,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         let dramaDomain: DramaDirectorSession | null | undefined;
         let dramaDShot: DramaDirectorSession['shots'][number] | undefined;
         if (isDramaDirector) {
-          dramaDomain = (dirNode.data as { directorDomain?: DramaDirectorSession | null })
-            ?.directorDomain;
-          dramaDShot = dramaDomain?.shots?.find(
-            (x) => String(x.shot_no || '').trim() === shotNo || x.shot_id === shotNo,
-          );
+          dramaDomain =
+            dramaDomainFresh ||
+            (dirNode.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain;
+          const wantKey = normalizeDirectorShotNoKey(shotNo);
+          dramaDShot = dramaDomain?.shots?.find((x) => {
+            const no = String(x.shot_no || '').trim();
+            return (
+              no === shotNo ||
+              normalizeDirectorShotNoKey(no) === wantKey ||
+              x.shot_id === shotNo
+            );
+          });
           dramaShotAudioUrl = String(dramaDShot?.audio_url || '').trim();
           dramaHasDialogue = dramaDShot
             ? dramaShotHasSpokenDialogue(dramaDShot) || !!String(shot['对白旁白'] || '').trim()
@@ -8191,7 +8627,16 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         });
         const durationForShot =
           shotDurSec > 0
-            ? pickNearestDirectorVideoBatchDuration(shotModel, shotDurSec)
+            ? (() => {
+                const nearest = pickNearestDirectorVideoBatchDuration(shotModel, shotDurSec);
+                if (!isDramaDirector) return nearest;
+                return String(
+                  resolveDramaGenerateDurationSec(
+                    Number(nearest) || shotDurSec,
+                    dramaDShot?.model_params,
+                  ),
+                );
+              })()
             : normalizeDirectorVideoBatchDuration(shotModel, batchDuration);
         const aspectForShot =
           director.mode === 'mv' || isDramaDirector
@@ -8221,15 +8666,27 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           dramaCompiledAudios = compiled.inputAudios || [];
           dramaCompiledFromDomain = true;
           dramaCompiledHasDialogue = compiled.audit?.dialogue;
-          const skillPrompt = String(dramaDShot.h3_skill_prompt || '').trim();
-          if (skillPrompt) {
-            // 中文 api 整合稿原样上云；英文六段稿仍剥 <d> 外汉字
-            prompt = ensureDirectorDramaVideoPromptGuards(skillPrompt, {
-              skipDialogueSfxFlatten: true,
-              skipSoundscapeGuard: true,
-              hasDialogue: dramaCompiledHasDialogue,
-            });
-          }          if (compiled.mode === 'h3-audio' && dramaCompiledAudios[0]) {
+          // 生产上云：与「查看优化稿」同一份已优化中文稿。优先 spawn 覆盖。
+          const sourcePrompt = overridePrompt
+            ? overridePrompt
+            : resolveDramaProductionH3Prompt(dramaDomain, dramaDShot, {
+                durationSec: (() => {
+                  const n = Number(durationForShot);
+                  return Number.isFinite(n) && n > 0 ? n : undefined;
+                })(),
+                locale,
+              });
+          prompt = sealDramaProductionCloudPrompt(sourcePrompt, {
+            hasDialogue: dramaCompiledHasDialogue,
+            preserveChinese: /[\u4e00-\u9fff]/.test(sourcePrompt),
+            session: dramaDomain,
+            shot: dramaDShot,
+          });
+          if (compiled.audit?.api) {
+            compiled.audit.api.prompt = prompt;
+            compiled.audit.api.production_prompt = prompt;
+          }
+          if (compiled.mode === 'h3-audio' && dramaCompiledAudios[0]) {
             dramaShotAudioUrl = dramaCompiledAudios[0];
           }
           try {
@@ -8796,8 +9253,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const GAP = 48;
       const spliceW = 800;
       const spliceH = 500;
-      // 剪辑模块 previewAspectId 用 16-9 形式，导演 mvAspectRatio 用 16:9
-      const previewAspectId = String(director.mvAspectRatio || '16:9').replace(':', '-');
+      const previewAspectId = splicePreviewAspectIdForImport(
+        (existing?.data || {}) as {
+          previewAspectId?: string;
+          previewAspectUserPicked?: boolean;
+        },
+      );
 
       const focusSpliceModule = (spliceId: string) => {
         const fire = () => {
@@ -8839,8 +9300,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 selected: true,
                 data: {
                   ...n.data,
-                  previewAspectId,
                   ...nextSpliceTracks,
+                  previewAspectId,
+                  ...((existing.data as { previewAspectUserPicked?: boolean })?.previewAspectUserPicked
+                    ? {}
+                    : { exportOutputWidth: undefined, exportOutputHeight: undefined }),
                 },
               };
             }
@@ -8933,6 +9397,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           videoClips?: TimelineClip[];
           audioTracks?: TimelineClip[][];
           previewAspectId?: string;
+          previewAspectUserPicked?: boolean;
           exportOutputWidth?: number;
           exportOutputHeight?: number;
           videoTrackVolume?: number[];
@@ -8947,12 +9412,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const audioTracks = d.audioTracks && d.audioTracks.length > 0 ? d.audioTracks : [[]];
         if (!videoTracks.some((t) => t.length > 0)) return null;
 
-        const exportDims = resolveSpliceExportDimensions({
-          previewAspectId:
-            d.previewAspectId || String(director.mvAspectRatio || '16:9').replace(':', '-'),
-          exportOutputWidth: d.exportOutputWidth,
-          exportOutputHeight: d.exportOutputHeight,
-        });
+        const exportDims = resolveSpliceExportDimensions(
+          {
+            previewAspectId: resolveEffectiveSpliceAspectId(d),
+            previewAspectUserPicked: d.previewAspectUserPicked,
+            exportOutputWidth: d.exportOutputWidth,
+            exportOutputHeight: d.exportOutputHeight,
+          },
+          resolveSpliceSourcePixelSize(videoTracks.flat(), latest),
+        );
         if (!window.electronAPI?.exportTimelineVideoToProject) return null;
         const res = await window.electronAPI.exportTimelineVideoToProject(
           projectId,
@@ -9070,7 +9538,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const GAP = 48;
       const spliceW = 800;
       const spliceH = 500;
-      const previewAspectId = String(director.mvAspectRatio || '16:9').replace(':', '-');
+      const previewAspectId = splicePreviewAspectIdForImport(
+        (existing?.data || {}) as {
+          previewAspectId?: string;
+          previewAspectUserPicked?: boolean;
+        },
+      );
       // 一键铺轨：整轨替换（勿 merge 旧分镜图占位），避免「点了没反应」
       // 关闭视频轨左吸附：导演用 audioStartSec 绝对时间，压缝会与原曲错位
       // MV 静音视频轨以免与原曲叠播；短剧对白在成片音轨里，必须保留
@@ -9121,8 +9594,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 data: {
                   ...n.data,
                   title: isDrama ? '短剧剪辑' : n.data?.title || 'MV剪辑',
-                  previewAspectId,
                   ...nextSpliceTracks,
+                  previewAspectId,
+                  ...((existing.data as { previewAspectUserPicked?: boolean })?.previewAspectUserPicked
+                    ? {}
+                    : { exportOutputWidth: undefined, exportOutputHeight: undefined }),
                 },
               };
             }
@@ -9272,6 +9748,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         videoClips?: TimelineClip[];
         audioTracks?: TimelineClip[][];
         previewAspectId?: string;
+        previewAspectUserPicked?: boolean;
         exportOutputWidth?: number;
         exportOutputHeight?: number;
         videoTrackVolume?: number[];
@@ -9288,12 +9765,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       const clips = videoTracks.flat();
       if (!videoTracks.some((t) => t.length > 0)) return;
 
-      const exportDims = resolveSpliceExportDimensions({
-        previewAspectId:
-          d.previewAspectId || String(director.mvAspectRatio || '16:9').replace(':', '-'),
-        exportOutputWidth: d.exportOutputWidth,
-        exportOutputHeight: d.exportOutputHeight,
-      });
+      const exportDims = resolveSpliceExportDimensions(
+        {
+          previewAspectId: resolveEffectiveSpliceAspectId(d),
+          previewAspectUserPicked: d.previewAspectUserPicked,
+          exportOutputWidth: d.exportOutputWidth,
+          exportOutputHeight: d.exportOutputHeight,
+        },
+        resolveSpliceSourcePixelSize(clips, latest),
+      );
       const payload: VideoSpliceExportPayload = {
         videoTracks,
         clips,
@@ -9385,8 +9865,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               domainPrev?.shots?.length
                 ? createEmptyDramaSession({
                     ...domainPrev,
-                    shots: domainPrev.shots.map((s) =>
-                      String(s.shot_no || '').trim() === shotNo
+                    shots: domainPrev.shots.map((s) => {
+                      const no = String(s.shot_no || '').trim();
+                      const match =
+                        no === shotNo ||
+                        (/^\d+$/.test(no) &&
+                          /^\d+$/.test(shotNo) &&
+                          Number.parseInt(no, 10) === Number.parseInt(shotNo, 10));
+                      return match
                         ? {
                             ...s,
                             video_url: url,
@@ -9394,8 +9880,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                             video_node_id: videoNodeId,
                             video_error: '',
                           }
-                        : s,
-                    ),
+                        : s;
+                    }),
                   })
                 : domainPrev;
             return {
@@ -9457,6 +9943,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       );
       const spliceId = String(director.linkedSpliceNodeId || '').trim();
       if (!spliceId) return;
+      const isDrama = director.mode === 'drama' || isDirectorDramaNodeType(dirNode.type);
       const sb = getDirectorShotStoryboard(director, no);
       const sourceNodeId = String(sb.videoNodeId || '').trim() || undefined;
       setNodes((nds) =>
@@ -9480,6 +9967,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               ...n.data,
               videoTracks: tracks,
               videoClips: tracks[0],
+              // 短剧模式：确保视频音轨打开（对白在成片音轨里）
+              ...(isDrama
+                ? { videoTrackMuted: [false], videoTrackMutedList: [false] }
+                : {}),
             },
           };
         }),
@@ -9570,7 +10061,40 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
         // 绑定节点已产出新成片 → ready（勿用表内旧 videoUrl 抢先标 ready，否则重生成无进度条）
         const fromNode = pickNodeVideoUrl(videoNode);
+        const nodeIdForTask = videoNode?.id || linkedId;
+        const isBusyStatus = (status: unknown) =>
+          ['running', 'processing'].includes(String(status || '').toLowerCase());
+        const isFailedStatus = (status: unknown) =>
+          ['failed', 'error', 'cancelled'].includes(String(status || '').toLowerCase());
+
         if (fromNode && videoNode) {
+          const d = (videoNode.data || {}) as Record<string, unknown>;
+          const runtime = tasks.find((t) => t.id === `runtime-${videoNode.id}`);
+          const runtimeBusy = !!runtime && isBusyStatus(runtime.status);
+          const exactTasks = tasks.filter(
+            (t) => t.taskType === 'video' && t.nodeId === videoNode.id,
+          );
+          const exactRunning = exactTasks.some((t) => isBusyStatus(t.status));
+          const anyNodeTaskBusy = tasks.some(
+            (t) => t.nodeId === videoNode.id && isBusyStatus(t.status),
+          );
+          const nodeProgress = Number(d.progress || 0);
+          const nodeStillWorking = nodeProgress > 0 && nodeProgress < 100;
+          // 重新生成：节点上仍是旧片、任务还在跑 → 禁止抢写 ready
+          if (runtimeBusy || exactRunning || anyNodeTaskBusy || nodeStillWorking) {
+            continue;
+          }
+          const exactSuccess = exactTasks
+            .filter((t) => t.status === 'success' && String(t.videoUrl || '').trim())
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
+          // 宽限内且没有「本次生成之后」的成功任务：旧 URL 不能收条
+          if (
+            startedAt > 0 &&
+            Date.now() - startedAt < 12 * 60 * 1000 &&
+            !(exactSuccess && (exactSuccess.createdAt || 0) >= startedAt)
+          ) {
+            continue;
+          }
           patches.push({
             kind: 'ready',
             directorId: dirNode.id,
@@ -9580,12 +10104,6 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           });
           continue;
         }
-
-        const nodeIdForTask = videoNode?.id || linkedId;
-        const isBusyStatus = (status: unknown) =>
-          ['running', 'processing'].includes(String(status || '').toLowerCase());
-        const isFailedStatus = (status: unknown) =>
-          ['failed', 'error', 'cancelled'].includes(String(status || '').toLowerCase());
 
         // 重新生成：隐藏视频节点已在跑/刚 spawn，禁止用「同镜旧 success」抢写 ready（否则进度条闪一下就没）
         if (videoNode && !fromNode) {
@@ -9600,25 +10118,35 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             .filter((t) => t.status === 'success' && String(t.videoUrl || '').trim())
             .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0];
           if (exactSuccess?.videoUrl) {
-            patches.push({
-              kind: 'ready',
-              directorId: dirNode.id,
-              shotNo,
-              videoNodeId: videoNode.id,
-              url: String(exactSuccess.videoUrl).trim(),
-            });
-            continue;
+            if (startedAt > 0 && (exactSuccess.createdAt || 0) < startedAt) {
+              // 旧成功任务，忽略
+            } else {
+              patches.push({
+                kind: 'ready',
+                directorId: dirNode.id,
+                shotNo,
+                videoNodeId: videoNode.id,
+                url: String(exactSuccess.videoUrl).trim(),
+              });
+              continue;
+            }
           }
           const exactRunning = exactTasks.some((t) => isBusyStatus(t.status));
-          // 仅以「任务/runtime 真正在跑」视为进行中；progress=1 但无任务时不应永久等待
-          if (!err && (runtimeBusy || exactRunning)) {
+          const anyNodeTaskBusy = tasks.some(
+            (t) => t.nodeId === videoNode.id && isBusyStatus(t.status),
+          );
+          const nodeProgress = Number(d.progress || 0);
+          const nodeStillWorking = nodeProgress > 0 && nodeProgress < 100;
+          // 任务/runtime/节点进度任一在跑即视为进行中。勿要求 runningHubTaskId：
+          // H3 提交后首段 PROCESSING 只有 text，还没有 RH id，否则进度条会被对账清掉。
+          if (!err && (runtimeBusy || exactRunning || anyNodeTaskBusy || nodeStillWorking)) {
             continue;
           }
           if (!err && exactTasks.length === 0) {
             if (!tasksListHydratedRef.current) continue;
             // 刚 spawn：给 invokeAI / 任务登记留宽限，避免 600ms reconcile 误判中断
             const spawnedAt = Number(d.directorVideoSpawnedAt || startedAt || 0);
-            if (spawnedAt > 0 && Date.now() - spawnedAt < 120_000) {
+            if (spawnedAt > 0 && Date.now() - spawnedAt < 12 * 60 * 1000) {
               continue;
             }
             // 无时间戳的残留空节点 → 落到下方 interrupt
@@ -9684,9 +10212,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           continue;
         }
 
-        const stillRunning = relatedTasks.some(
-          (t) => isBusyStatus(t.status) && !!String(t.runningHubTaskId || '').trim(),
-        );
+        const stillRunning = relatedTasks.some((t) => isBusyStatus(t.status));
         if (stillRunning) continue;
         // 任务列表未加载完时不误判中断
         if (!tasksListHydratedRef.current) continue;
@@ -9755,13 +10281,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         const domainPrev = (n.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain;
         let domainNext = domainPrev;
         if (domainPrev?.shots?.length && (mineReady.length > 0 || mineInt.length > 0)) {
-          const readyMap = new Map(mineReady.map((r) => [r.shotNo, r] as const));
-          const intSet = new Set(mineInt.map((r) => r.shotNo));
+          const shotNoMatch = (a: string, b: string) => {
+            const x = String(a || '').trim();
+            const y = String(b || '').trim();
+            if (x === y) return true;
+            if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
+              return Number.parseInt(x, 10) === Number.parseInt(y, 10);
+            }
+            return false;
+          };
+          const readyMap = mineReady;
+          const intList = mineInt;
           domainNext = createEmptyDramaSession({
             ...domainPrev,
             shots: domainPrev.shots.map((s) => {
               const no = String(s.shot_no || '').trim();
-              const hit = readyMap.get(no);
+              const hit = readyMap.find((r) => shotNoMatch(r.shotNo, no));
               if (hit) {
                 return {
                   ...s,
@@ -9771,12 +10306,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   video_error: '',
                 };
               }
-              if (intSet.has(no)) {
-                const ir = mineInt.find((x) => x.shotNo === no);
+              const ir = intList.find((x) => shotNoMatch(x.shotNo, no));
+              if (ir) {
                 return {
                   ...s,
                   video_status: 'error',
-                  video_error: ir?.reason === 'timeout' ? timeoutMsg : interruptMsg,
+                  video_error: ir.reason === 'timeout' ? timeoutMsg : interruptMsg,
                 };
               }
               return s;
@@ -9832,7 +10367,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     });
   }, [hydrateDirectorPipelineFromNode, setNodes, tasks]);
 
-  const directorVideoReconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const directorVideoReconcileTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
     if (!projectId) return;
     if (hydratedProjectIdRef.current !== projectId) return;
@@ -9846,15 +10381,31 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         return getDirectorShotStoryboard(director, shotNo).videoStatus === 'generating';
       });
     });
-    if (!hasGenerating) return;
-    if (directorVideoReconcileTimerRef.current) clearTimeout(directorVideoReconcileTimerRef.current);
-    directorVideoReconcileTimerRef.current = setTimeout(() => {
+    // 无生成中镜头：确保停止轮询
+    if (!hasGenerating) {
+      if (directorVideoReconcileTimerRef.current) {
+        clearInterval(directorVideoReconcileTimerRef.current);
+        directorVideoReconcileTimerRef.current = null;
+      }
+      return;
+    }
+    // 已在轮询则跳过，避免 reconcile 写回触发本 effect 后重复建 interval
+    if (directorVideoReconcileTimerRef.current) return;
+    // 持续轮询：即使 task/nodes 卡住（无事件），超时/失败也能最终被对账，进度条不会永久转圈
+    directorVideoReconcileTimerRef.current = setInterval(() => {
       reconcileDirectorGeneratingVideos();
-    }, 600);
-    return () => {
-      if (directorVideoReconcileTimerRef.current) clearTimeout(directorVideoReconcileTimerRef.current);
-    };
+    }, 3000);
   }, [projectId, nodes, tasks, reconcileDirectorGeneratingVideos]);
+
+  useEffect(
+    () => () => {
+      if (directorVideoReconcileTimerRef.current) {
+        clearInterval(directorVideoReconcileTimerRef.current);
+        directorVideoReconcileTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const invokeSpawnStoryboardSelectedImages = useCallback(
     (nodeId: string) => {
@@ -10008,35 +10559,91 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       return;
     }
 
-    let outputImage = rawUrl;
-    let originalImageUrl = rawUrl;
-    let localPath = '';
-    let tinyThumbUrl = '';
-    let avgColorHex = '';
-    let ghostBase64 = '';
-    let assetWidth: number | undefined;
-    let assetHeight: number | undefined;
+    const preferMappedUrl = async (url: string): Promise<string> => {
+      const formatted = formatImagePathSync(url);
+      if (!formatted) return '';
+      if (projectId && formatted.startsWith('local-resource://')) {
+        try {
+          return (await mapProjectPath(formatted, projectId)) || formatted;
+        } catch {
+          return formatted;
+        }
+      }
+      return formatted;
+    };
 
-    // 本地化失败不阻断导入，仍用原始 URL 建节点
-    try {
-      const api = window.electronAPI;
-      if (api?.createImageLocalResourceFromBuffer && projectId) {
-        if (rawUrl.startsWith('local-resource://') || rawUrl.startsWith('file://')) {
-          let fsPath = rawUrl.replace(/^(local-resource:\/\/|file:\/\/\/?)/, '');
-          if (fsPath.match(/^\/[a-zA-Z]:/)) fsPath = fsPath.substring(1);
-          fsPath = fsPath.replace(/\//g, '\\');
-          if (api.createImageLocalResourceFromFile && fsPath) {
-            const resource = await api.createImageLocalResourceFromFile(projectId, fsPath);
-            outputImage = resource.previewUrl;
-            originalImageUrl = resource.originalUrl;
-            localPath = resource.originalPath;
-            tinyThumbUrl = resource.tinyUrl || '';
-            avgColorHex = resource.avgColorHex || '';
-            ghostBase64 = resource.ghostBase64 || '';
-            assetWidth = resource.width;
-            assetHeight = resource.height;
-          }
-        } else {
+    const urlsLikelySame = (a: string, b: string): boolean => {
+      const x = formatImagePathSync(String(a || '').trim());
+      const y = formatImagePathSync(String(b || '').trim());
+      if (!x || !y) return false;
+      if (x === y) return true;
+      try {
+        return decodeURIComponent(x) === decodeURIComponent(y);
+      } catch {
+        return false;
+      }
+    };
+
+    const srcData = sourceNode.data as {
+      outputImage?: string;
+      outputImages?: string[];
+      originalImageUrl?: string;
+      localPath?: string;
+      tinyThumbUrl?: string;
+      avgColorHex?: string;
+      imageAsset?: {
+        preview?: string;
+        original?: string;
+        tiny?: string;
+        ghost?: string;
+        avgColorHex?: string;
+        width?: number;
+        height?: number;
+      };
+      width?: number;
+      height?: number;
+    };
+
+    // 优先复用源节点已能显示的字段（任务列表/左侧画布已验证），避免二次本地化写出坏路径
+    const srcCandidates = [
+      srcData.outputImage,
+      ...(Array.isArray(srcData.outputImages) ? srcData.outputImages : []),
+      srcData.imageAsset?.preview,
+      srcData.originalImageUrl,
+      srcData.localPath,
+    ]
+      .map((u) => String(u || '').trim())
+      .filter(Boolean);
+
+    const matchedSrcUrl =
+      srcCandidates.find((u) => urlsLikelySame(u, rawUrl)) ||
+      srcCandidates[0] ||
+      '';
+
+    let outputImage = (await preferMappedUrl(matchedSrcUrl || rawUrl)) || matchedSrcUrl || rawUrl;
+    let originalImageUrl =
+      String(srcData.originalImageUrl || srcData.imageAsset?.original || '').trim() || outputImage;
+    let localPath = String(srcData.localPath || '').trim();
+    let tinyThumbUrl = String(srcData.tinyThumbUrl || srcData.imageAsset?.tiny || '').trim();
+    let avgColorHex = String(srcData.avgColorHex || srcData.imageAsset?.avgColorHex || '').trim();
+    let ghostBase64 = String(srcData.imageAsset?.ghost || '').trim();
+    let assetWidth: number | undefined =
+      srcData.imageAsset?.width ||
+      (typeof srcData.width === 'number' ? srcData.width : undefined);
+    let assetHeight: number | undefined =
+      srcData.imageAsset?.height ||
+      (typeof srcData.height === 'number' ? srcData.height : undefined);
+
+    const alreadyLocal =
+      outputImage.startsWith('local-resource://') ||
+      outputImage.startsWith('file://') ||
+      !!localPath;
+
+    // 仅对远程/内存图做一次落盘；已是项目内本地资源则直接复用，禁止再 copy 出坏链
+    if (!alreadyLocal && projectId) {
+      try {
+        const api = window.electronAPI;
+        if (api?.createImageLocalResourceFromBuffer) {
           let buffer: ArrayBuffer | null = null;
           if (rawUrl.startsWith('data:')) {
             const base64 = rawUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -10046,14 +10653,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             buffer = bytes.buffer;
           } else if (api.readImageAsDataUrl) {
             const formatted = formatImagePathSync(rawUrl);
-            const srcData = sourceNode.data as {
-              originalImageUrl?: string;
-              localPath?: string;
-            };
             const { dataUrl } = await api.readImageAsDataUrl(
               formatted,
-              srcData?.originalImageUrl,
-              srcData?.localPath,
+              srcData.originalImageUrl,
+              srcData.localPath,
               /^https?:\/\//i.test(rawUrl) ? rawUrl : undefined,
             );
             if (dataUrl?.startsWith('data:')) {
@@ -10074,19 +10677,30 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               `import-canvas-${Date.now()}.png`,
               buffer,
             );
-            outputImage = resource.previewUrl;
-            originalImageUrl = resource.originalUrl;
+            outputImage = (await preferMappedUrl(resource.previewUrl)) || resource.previewUrl;
+            originalImageUrl = resource.originalUrl || outputImage;
             localPath = resource.originalPath;
-            tinyThumbUrl = resource.tinyUrl || '';
-            avgColorHex = resource.avgColorHex || '';
-            ghostBase64 = resource.ghostBase64 || '';
-            assetWidth = resource.width;
-            assetHeight = resource.height;
+            tinyThumbUrl = resource.tinyUrl || tinyThumbUrl;
+            avgColorHex = resource.avgColorHex || avgColorHex;
+            ghostBase64 = resource.ghostBase64 || ghostBase64;
+            assetWidth = resource.width || assetWidth;
+            assetHeight = resource.height || assetHeight;
           }
         }
+      } catch (err) {
+        console.warn('[Workspace] 导入图本地化失败，使用源节点/预览 URL', err);
+        outputImage = (await preferMappedUrl(matchedSrcUrl || rawUrl)) || matchedSrcUrl || rawUrl;
+        originalImageUrl = String(srcData.originalImageUrl || '').trim() || outputImage;
+        localPath = String(srcData.localPath || '').trim();
       }
-    } catch (err) {
-      console.warn('[Workspace] 导入图本地化失败，使用原始 URL', err);
+    } else if (outputImage.startsWith('local-resource://') || outputImage.startsWith('file://')) {
+      // 确保展示 URL 经项目映射（与任务列表缩略图一致）
+      outputImage = (await preferMappedUrl(outputImage)) || outputImage;
+    }
+
+    if (!outputImage) {
+      showAlert(imgc.importToCanvasFailed);
+      return;
     }
 
     const logicalW = assetWidth && assetWidth > 0 ? assetWidth : 720;
@@ -10188,8 +10802,9 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             source: sourceNodeId,
             target: newNodeId,
             sourceHandle: 'output',
+            // 仍挂到已有 image-input 锚点（视觉连线），但标记为布局专用，不参与参考图同步
             targetHandle: 'image-input',
-            data: { imageAsset: edgeImageAsset },
+            data: { imageAsset: edgeImageAsset, importLayoutOnly: true },
           },
           eds,
         );
@@ -11200,6 +11815,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               ) {
                 const textSourceEdges = updatedEdges.filter((e) => {
                   if (e.target !== params.target) return false;
+                  if (isImportLayoutOnlyEdge(e)) return false;
                   const src = nds.find((n) => n.id === e.source);
                   return (
                     src &&
@@ -11214,6 +11830,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 });
                 const imageSourceEdges = updatedEdges.filter((e) => {
                   if (e.target !== params.target) return false;
+                  if (isImportLayoutOnlyEdge(e)) return false;
                   const src = nds.find((n) => n.id === e.source);
                   if (src?.type === 'image') return true;
                   if (src?.type === 'character') {
@@ -11302,6 +11919,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 // Image 连接到 Image：收集输入图片，切换到图生图模式（含来自角色节点的 avatar 入边）
                 const incomingEdges = updatedEdges.filter((e) => {
                   if (e.target !== params.target) return false;
+                  if (isImportLayoutOnlyEdge(e)) return false;
                   const src = nds.find((n) => n.id === e.source);
                   if (src?.type === 'image') return true;
                   if (src?.type === 'character') {
@@ -11320,6 +11938,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     return;
                   }
                   if (edgeSourceNode && edgeSourceNode.type === 'image') {
+                    if (isImportLayoutOnlyEdge(edge)) return;
                     const imgUrl =
                       pickPreviewFromEdgeOrNode(edge, edgeSourceNode.data) ||
                       pickPreviewUrl(buildDualImageAssetFromNodeData(edgeSourceNode.data));
@@ -13830,7 +14449,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             videoNode.data?.durationMinimaxH3 as string | number | undefined,
             10,
           ),
-          resolutionMinimaxH3: '720p',
+          resolutionMinimaxH3: normalizeMinimaxH3Resolution(videoNode.data?.resolutionMinimaxH3),
           durationLtx23HdrMulti: normalizeLtx23DurationChoice(videoNode.data?.durationLtx23HdrMulti, 15),
           resolutionLtx23HdrMulti: (() => {
             const r = String(videoNode.data?.resolutionLtx23HdrMulti ?? '720');
@@ -15098,14 +15717,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           payload.resolutionLtx23T2v = (nodeData.resolutionLtx23T2v as '720' | '1280' | '1920') || '720';
           payload.aspect_ratio = (nodeData.aspectRatio as '16:9' | '9:16') || '16:9';
         }
-        // MiniMax-H3 文生/图生/全能参考/口型同步：分辨率(仅 720P)、比例、时长；全能参考可选参考音（无参考视频）；口型同步必填参考音
+        // MiniMax-H3 文生/图生/全能参考/口型同步：分辨率(480P/720P)、比例、时长；全能参考可选参考音（无参考视频）；口型同步必填参考音
         if (
           payload.model === 'minimax-h3-t2v' ||
           payload.model === 'minimax-h3-i2v' ||
           payload.model === 'minimax-h3-multi' ||
           payload.model === 'minimax-h3-audio'
         ) {
-          payload.resolutionMinimaxH3 = '720p';
+          payload.resolutionMinimaxH3 = normalizeMinimaxH3Resolution(nodeData.resolutionMinimaxH3);
           payload.aspect_ratio = nodeData.aspectRatio || '16:9';
           if (payload.model === 'minimax-h3-multi' || payload.model === 'minimax-h3-audio') {
             const maxImgs = payload.model === 'minimax-h3-audio' ? 5 : 9;
@@ -15752,21 +16371,67 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           ? originalVideoUrl.trim()
           : undefined) || (/^https?:\/\//i.test(trimmedUrl) ? trimmedUrl : undefined);
       const incomingNorm = normalizeMediaUrlForTaskDedup(remoteForDedup || trimmedUrl);
+      const incomingPrompt = String(prompt || '').trim() || '无提示词';
+      const now = Date.now();
 
-      const existingTask = prevTasks.find(
-        (task) =>
-          task.nodeId === nodeId &&
-          task.taskType === 'video' &&
-          task.status === 'success' &&
-          (mediaUrlsLikelySameArtifact(task.videoUrl, trimmedUrl) ||
-            (() => {
-              const tNorm = taskVideoDedupNorm(task);
-              return Boolean(tNorm && incomingNorm && tNorm === incomingNorm);
-            })()),
-      );
-      if (existingTask && !String(existingTask.id).startsWith('runtime-')) {
-        console.log('[Workspace] 视频任务已存在，跳过添加');
-        return prevTasks;
+      const preferVideoUrl = (a?: string, b?: string) => {
+        const aa = String(a || '').trim();
+        const bb = String(b || '').trim();
+        if (/^https?:\/\//i.test(aa) && !/^https?:\/\//i.test(bb)) return aa;
+        if (/^https?:\/\//i.test(bb) && !/^https?:\/\//i.test(aa)) return bb;
+        return aa || bb;
+      };
+
+      const isSameVideoSuccess = (task: Task) => {
+        if (task.nodeId !== nodeId || task.taskType !== 'video' || task.status !== 'success') return false;
+        if (String(task.id).startsWith('runtime-')) return false;
+        if (mediaUrlsLikelySameArtifact(task.videoUrl, trimmedUrl)) return true;
+        if (
+          remoteForDedup &&
+          task.originalVideoUrl &&
+          mediaUrlsLikelySameArtifact(task.originalVideoUrl, remoteForDedup)
+        ) {
+          return true;
+        }
+        const tNorm = taskVideoDedupNorm(task);
+        if (tNorm && incomingNorm && tNorm === incomingNorm) return true;
+        // 双链路竞态：同一节点、短时、同提示词 → 合并（http / local-resource 文件名常不一致）
+        const taskPrompt = String(task.prompt || '').trim() || '无提示词';
+        if (taskPrompt === incomingPrompt && now - task.createdAt < 120_000) return true;
+        return false;
+      };
+
+      const existingTask = prevTasks.find(isSameVideoSuccess);
+      if (existingTask) {
+        console.log('[Workspace] 视频任务已存在，合并更新而非新增');
+        const runtimeTask = prevTasks.find((t) => t.id === `runtime-${nodeId}`);
+        const durationSec =
+          existingTask.durationSec ??
+          (runtimeTask != null
+            ? typeof runtimeTask.durationSec === 'number'
+              ? runtimeTask.durationSec
+              : Math.max(0, Math.floor((now - runtimeTask.createdAt) / 1000))
+            : undefined);
+        const yuanbaoConsumed =
+          existingTask.yuanbaoConsumed ??
+          (runtimeTask != null && typeof runtimeTask.yuanbaoConsumed === 'number'
+            ? runtimeTask.yuanbaoConsumed
+            : undefined);
+        return prevTasks
+          .filter((t) => t.id !== `runtime-${nodeId}`)
+          .map((t) =>
+            t.id === existingTask.id
+              ? {
+                  ...t,
+                  videoUrl: preferVideoUrl(trimmedUrl, t.videoUrl),
+                  ...(remoteForDedup || t.originalVideoUrl
+                    ? { originalVideoUrl: remoteForDedup || t.originalVideoUrl }
+                    : {}),
+                  ...(durationSec !== undefined ? { durationSec } : {}),
+                  ...(yuanbaoConsumed !== undefined ? { yuanbaoConsumed } : {}),
+                }
+              : t,
+          );
       }
 
       // 刚 spawn 的下游视频节点可能尚未写入 React state，优先 latestNodesRef；节点缺失时仍入库
@@ -15779,7 +16444,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         runtimeTask != null
           ? typeof runtimeTask.durationSec === 'number'
             ? runtimeTask.durationSec
-            : Math.max(0, Math.floor((Date.now() - runtimeTask.createdAt) / 1000))
+            : Math.max(0, Math.floor((now - runtimeTask.createdAt) / 1000))
           : undefined;
       const yuanbaoConsumed =
         runtimeTask != null && typeof runtimeTask.yuanbaoConsumed === 'number'
@@ -15791,8 +16456,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         nodeTitle,
         videoUrl: trimmedUrl,
         ...(remoteForDedup ? { originalVideoUrl: remoteForDedup } : {}),
-        prompt: prompt || '无提示词',
-        createdAt: Date.now(),
+        prompt: incomingPrompt,
+        createdAt: now,
         status: 'success',
         taskType: 'video',
         ...(durationSec !== undefined ? { durationSec } : {}),
@@ -16211,6 +16876,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handleAddTextTask = useCallback((nodeId: string, outputText: string, _inputPrompt?: string) => {
     const trimmedOutput = (outputText || '').trim();
     if (!trimmedOutput) return;
+    if (isInternalDirectorDomainTextTask(trimmedOutput)) return;
 
     setTasks((prevTasks) => {
       const existingTask = prevTasks.find(
@@ -16317,7 +16983,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         try {
           const row = await window.electronAPI.nxCloudTaskStatus(taskId);
           state.failureCount = 0;
-          state.nextDelayMs = 60_000;
+          // 视频 queue 任务缩短轮询间隔，避免 RH 已完成后画布长时间拿不到结果
+          state.nextDelayMs = taskKind === 'video' ? 8_000 : 60_000;
           if (typeof row.balance === 'number' && Number.isFinite(row.balance)) {
             setLafBalance(row.balance);
           }
@@ -16383,18 +17050,43 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
           if (terminalFail) {
             stopCloudTaskPollById(taskId);
-            const err = String(row.error_msg || '任务失败');
+            const uxFail = mapCloudTaskToUserQueueUx({
+              status: row.status,
+              execution_stage: row.execution_stage,
+              error_msg: row.error_msg,
+              error_code: row.error_code,
+              refunded: row.refunded,
+            });
+            const err =
+              uxFail.failureDetail?.replace(/^失败原因：/, '') ||
+              String(row.error_msg || '任务失败');
+            const errDisplay = row.refunded
+              ? `${uxFail.progressMessage}${err ? `：${err}` : ''}`
+              : err;
             if (taskKind === 'image') {
-              handleImageNodeDataChange(nodeId, { progress: 0, progressMessage: '', errorMessage: err });
+              handleImageNodeDataChange(nodeId, { progress: 0, progressMessage: '', errorMessage: errDisplay });
             } else if (taskKind === 'video') {
-              handleVideoNodeDataChange(nodeId, { progress: 0, progressMessage: '', errorMessage: err });
+              handleVideoNodeDataChange(nodeId, { progress: 0, progressMessage: '', errorMessage: errDisplay });
             } else if (taskKind === 'audio') {
-              handleAudioNodeDataChange(nodeId, { errorMessage: err });
+              handleAudioNodeDataChange(nodeId, { errorMessage: errDisplay });
             }
             return 'stop';
           }
-          if (st === 'pending' || st === 'running') {
-            const cloudMsg = st === 'pending' ? '云端任务排队中…' : '云端任务处理中…';
+          if (st === 'pending' || st === 'running' || st === 'queued' || st === 'claimed') {
+            const ux = mapCloudTaskToUserQueueUx({
+              status: row.status,
+              execution_stage: row.execution_stage,
+              ahead_count: row.ahead_count,
+              queue_position: row.queue_position,
+              queue_position_available: row.queue_position_available,
+              queue_position_complete: row.queue_position_complete,
+              refunded: row.refunded,
+            });
+            const cloudMsg = ux.progressMessage;
+            // queued 略加快刷新以便 ahead 更新；不新建 Poll
+            if (state && taskKind === 'video') {
+              state.nextDelayMs = st === 'queued' ? 4_000 : 8_000;
+            }
             if (taskKind === 'image') {
               handleImageNodeDataChange(nodeId, {
                 progress: 1,
@@ -16403,7 +17095,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               });
             } else if (taskKind === 'video') {
               handleVideoNodeDataChange(nodeId, {
-                progress: 1,
+                progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
                 progressMessage: cloudMsg,
                 errorMessage: undefined,
               });
@@ -16424,7 +17116,10 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               stopCloudTaskPollById(taskId);
               return 'stop';
             }
-            state.nextDelayMs = Math.max(60_000, Math.min(state.nextDelayMs * 2, 480_000));
+            state.nextDelayMs = Math.max(
+              taskKind === 'video' ? 8_000 : 60_000,
+              Math.min(state.nextDelayMs * 2, 480_000),
+            );
           }
           /* 下一周期再试 */
         } finally {
@@ -16449,18 +17144,18 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               const after = cloudTaskPollByTaskIdRef.current.get(taskId);
               if (!after) return;
               scheduleNext(after.nextDelayMs);
-            }, Math.max(60_000, delayMs));
+            }, Math.max(taskKind === 'video' ? 8_000 : 60_000, delayMs));
           };
           cloudTaskPollByTaskIdRef.current.set(taskId, {
             timer: null,
             isSyncing: false,
             failureCount: 0,
-            nextDelayMs: 60_000,
+            nextDelayMs: taskKind === 'video' ? 8_000 : 60_000,
           });
           const first = await runTick();
           if (first === 'stop') return;
           if (!cloudTaskPollByTaskIdRef.current.has(taskId)) return;
-          scheduleNext(60_000);
+          scheduleNext(taskKind === 'video' ? 8_000 : 60_000);
         } finally {
           cloudTaskPollBootstrapRef.current.delete(taskId);
         }
@@ -17003,6 +17698,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         aiStatus: isAudioType ? 'idle' : undefined,
         videoClips: isVideoSpliceType ? [] : undefined,
         audioTracks: isVideoSpliceType ? [[]] : undefined,
+        previewAspectId: isVideoSpliceType ? 'auto' : undefined,
         collageCanvasW: isPhotoCollageType ? 800 : undefined,
         collageCanvasH: isPhotoCollageType ? 600 : undefined,
         layers: isPhotoCollageType ? [] : undefined,
@@ -17384,6 +18080,13 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           const { clipType, url } = resolved;
           const sourceDur = resolveSourceMediaDurationSec(sourceNode);
           const duration = clipType === 'image' ? 3 : sourceDur > 0 ? sourceDur : 0;
+          const sourcePx =
+            clipType === 'audio'
+              ? null
+              : resolveAssetPixelSizeFromNodeData(
+                  sourceNode.data as Record<string, unknown>,
+                  clipType,
+                );
           const newClip: TimelineClip = {
             id: `${clipType}-${Date.now()}-${connectFrom.sourceNodeId}`,
             type: clipType,
@@ -17392,6 +18095,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             startTime: 0,
             name: clipType === 'video' ? '视频' : clipType === 'image' ? '图片' : '音频',
             sourceNodeId: connectFrom.sourceNodeId,
+            ...(sourcePx ? { sourceWidth: sourcePx.width, sourceHeight: sourcePx.height } : {}),
           };
           if (clipType === 'audio') {
             nodeToAdd = {
@@ -17601,7 +18305,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           nodeToAdd.data?.durationMinimaxH3 as string | number | undefined,
           10,
         ),
-        resolutionMinimaxH3: '720p',
+        resolutionMinimaxH3: normalizeMinimaxH3Resolution(nodeToAdd.data?.resolutionMinimaxH3),
         sora2Channel: ((nodeToAdd.data?.sora2Channel as string) || 'plugin') as 'plugin' | 'core',
         isConnected: inputImages.length > 0,
       });
@@ -19168,20 +19872,25 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     event.dataTransfer.dropEffect = useCopy ? 'copy' : 'move';
   }, []);
 
-  const handleLafClick = useCallback(async () => {
+  const handleLafClick = useCallback(() => {
+    // 顶栏「云端元宝」→ 账户页并打开充值弹窗（顺带刷新余额）
+    requestOpenRechargeUi();
+    navigate('/settings');
     if (!window.electronAPI) return;
-    try {
-      setLafStatus('connecting');
-      const state = window.electronAPI.nxCloudGetProfile
-        ? await window.electronAPI.nxCloudGetProfile()
-        : await window.electronAPI.initLafUser();
-      setLafStatus(state.status as 'idle' | 'connecting' | 'success' | 'error');
-      setLafBalance(state.status === 'success' ? state.balance : null);
-    } catch {
-      setLafStatus('error');
-      setLafBalance(null);
-    }
-  }, []);
+    void (async () => {
+      try {
+        setLafStatus('connecting');
+        const state = window.electronAPI.nxCloudGetProfile
+          ? await window.electronAPI.nxCloudGetProfile()
+          : await window.electronAPI.initLafUser();
+        setLafStatus(state.status as 'idle' | 'connecting' | 'success' | 'error');
+        setLafBalance(state.status === 'success' ? state.balance : null);
+      } catch {
+        setLafStatus('error');
+        setLafBalance(null);
+      }
+    })();
+  }, [navigate]);
 
   // 监听 AI 状态更新（通过 ref 只注册一次监听，避免依赖变化导致多监听器泄漏）
   useEffect(() => {
@@ -19278,19 +19987,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           }
           // 视频模块：START 即清失败态（H3/RH 曾失败再成功时避免 errorMessage 残留）
           if (targetNode && isVideoModuleNodeType(targetNode.type)) {
-            return nds.map((node) =>
-              node.id === packet.nodeId
-                ? {
-                    ...node,
-                    data: {
-                      ...node.data,
-                      progress: Math.max(1, Number(node.data?.progress) || 1),
-                      progressMessage: packet.payload?.text || node.data?.progressMessage || '正在生成...',
-                      errorMessage: undefined,
-                    },
-                  }
-                : node
-            );
+            return pinDirectorShotVideoGenerating(nds, packet.nodeId, {
+              progress: Math.max(1, Number(targetNode.data?.progress) || 1),
+              progressMessage: packet.payload?.text || targetNode.data?.progressMessage || '正在生成...',
+              errorMessage: undefined,
+            });
           }
           return nds;
         });
@@ -19345,19 +20046,11 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             );
           }
           if (targetNode && isVideoModuleNodeType(targetNode.type)) {
-            return nds.map((node) =>
-              node.id === packet.nodeId
-                ? {
-                    ...node,
-                    data: {
-                      ...node.data,
-                      progress: Math.max(1, packet.payload?.progress ?? 1),
-                      progressMessage: packet.payload?.text || node.data?.progressMessage,
-                      errorMessage: undefined,
-                    },
-                  }
-                : node
-            );
+            return pinDirectorShotVideoGenerating(nds, packet.nodeId, {
+              progress: Math.max(1, packet.payload?.progress ?? 1),
+              progressMessage: packet.payload?.text || targetNode.data?.progressMessage,
+              errorMessage: undefined,
+            });
           }
           // 更新 Audio / RVC 训练节点的状态为 PROCESSING
           if (targetNode && (targetNode.type === 'audio' || targetNode.type === 'rvcTrain')) {
@@ -19748,7 +20441,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             // 添加任务到任务列表：与图片节点一致，仅当底部 VideoInputPanel 未对该节点展示时由全局写入，
             // 否则由 VideoInputPanel 的 onOutputVideoChange 写入，避免双链路各加一条（URL 形态不同还会绕过去重）。
             const currentNode = updatedNodes.find((n) => n.id === nodeId);
-            if (currentNode && formattedVideoUrl) {
+            const sel = selectedNodeRef.current;
+            const panel = videoInputPanelDataRef.current;
+            const videoPanelVisibleForNode =
+              !previewImage &&
+              !previewAudio &&
+              panel?.nodeId === nodeId &&
+              sel?.id === nodeId &&
+              isVideoModuleNodeType(sel?.type);
+            if (currentNode && formattedVideoUrl && !videoPanelVisibleForNode) {
               const taskUrl =
                 networkUrl ||
                 (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl) ||
@@ -19759,6 +20460,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                 currentNode.data?.prompt || '',
                 networkUrl || (formattedVideoUrl.startsWith('local-resource://') ? undefined : formattedVideoUrl),
               );
+            } else if (videoPanelVisibleForNode) {
+              console.log('[Workspace] 视频任务列表由 VideoInputPanel 写入，跳过全局 SUCCESS 重复入库');
             }
           }, 0);
           
@@ -19851,6 +20554,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
       
       // 处理图片节点的 SUCCESS 状态（批量运行时，未选中的节点没有 ImageInputPanel，需要在这里更新）
+      // 注意：视频/音频 SUCCESS 也会带 localPath；若此处不拦截，会把 .mp4 写成 image 任务 → 列表「图片加载失败」重复卡片
       if (
         packet.status === 'SUCCESS' &&
         (packet.payload?.imageUrl ||
@@ -19858,25 +20562,52 @@ const Workspace: React.FC<WorkspaceProps> = () => {
           (Array.isArray(packet.payload?.outputImages) && packet.payload.outputImages.length > 0))
       ) {
         const nodeId = packet.nodeId;
+        const nImgEarly = latestNodesRef.current.find((x) => x.id === nodeId);
+        const looksVideoMediaUrl = (u?: string | null) =>
+          !!u && /\.(mp4|webm|mov|mkv|avi|m4v)(?:$|[?#])/i.test(String(u).trim());
+        const skipAsNonImageSuccess =
+          isVideoModuleNodeType(nImgEarly?.type) ||
+          nImgEarly?.type === 'audio' ||
+          nImgEarly?.type === 'rvcTrain' ||
+          !!packet.payload?.videoUrl ||
+          !!packet.payload?.audioUrl ||
+          looksVideoMediaUrl(packet.payload?.localPath) ||
+          looksVideoMediaUrl(packet.payload?.imageUrl) ||
+          looksVideoMediaUrl(packet.payload?.url);
+        if (skipAsNonImageSuccess) {
+          // 交由上方视频/下方音频分支处理，勿 upsert 图片任务
+        } else {
         const outputImagesRaw = Array.isArray(packet.payload?.outputImages)
           ? packet.payload.outputImages.filter((u: unknown) => typeof u === 'string' && String(u).trim() !== '')
           : [];
-        const localPath =
+        // AICore 曾误把「生成完成」落成 .txt 并塞进 localPath；拒绝非图片本地路径
+        const rawLocalPath =
           typeof packet.payload.localPath === 'string' ? packet.payload.localPath.trim() : undefined;
+        const localPath =
+          rawLocalPath && !/\.(txt|json|md|csv|html?|xml)$/i.test(rawLocalPath) && !looksVideoMediaUrl(rawLocalPath)
+            ? rawLocalPath
+            : undefined;
         let imageUrl = String(packet.payload.imageUrl || outputImagesRaw[0] || '').trim();
+        // 若 imageUrl 也被污染成 .txt，回退到 outputImages / 丢弃
+        if (imageUrl && /\.(txt|json|md|csv)(?:$|[?#])/i.test(imageUrl)) {
+          imageUrl = String(outputImagesRaw[0] || '').trim();
+        }
         if (!imageUrl && localPath) {
           imageUrl = formatImagePathSync(localPath);
         }
-        if (!imageUrl) return;
+        if (!imageUrl) {
+          /* fall through — no image payload */
+        } else {
         const payloadOriginalForTask =
           typeof packet.payload.originalImageUrl === 'string'
             ? packet.payload.originalImageUrl.trim()
             : undefined;
-        const nImg = latestNodesRef.current.find((x) => x.id === nodeId);
+        const nImg = nImgEarly;
         const ybImg = estimateYuanbaoForTaskNodeStatic(nImg, cloudMapRef.current);
         upsertRuntimeTask(nodeId, {
           status: 'success',
           imageUrl: String(imageUrl || ''),
+          ...(localPath ? { localFilePath: localPath } : {}),
           ...(outputImagesRaw.length > 0 ? { outputImages: outputImagesRaw } : {}),
           ...(ybImg !== undefined ? { yuanbaoConsumed: ybImg } : {}),
         });
@@ -19904,13 +20635,41 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             const prev = createDefaultDirectorPipelineState(
               (directorNode.data as { director?: DirectorPipelineState })?.director || {},
             );
-            const nextDirector = updateDirectorAsset(prev, assetId, {
-              imageUrl: formattedImageUrl,
-              status: 'ready',
-              error: undefined,
-            });
-            const domainPrev = (directorNode.data as { directorDomain?: DramaDirectorSession | null })
+            const assetExists = [
+              ...(prev.assets.characters || []),
+              ...(prev.assets.scenes || []),
+              ...(prev.assets.props || []),
+              ...(prev.assets.creatures || []),
+            ].some((a) => a.id === assetId);
+            let nextDirector = assetExists
+              ? updateDirectorAsset(prev, assetId, {
+                  imageUrl: formattedImageUrl,
+                  status: 'ready',
+                  error: undefined,
+                })
+              : upsertDirectorAsset(prev, {
+                  ...createEmptyDirectorAsset(
+                    'character',
+                    assetId === DRAMA_SYSTEM_SPEAKER_ID
+                      ? DRAMA_SYSTEM_VISUAL_ASSET_NAME
+                      : assetId,
+                    '',
+                    0,
+                  ),
+                  id: assetId,
+                  imageUrl: formattedImageUrl,
+                  status: 'ready',
+                  error: undefined,
+                });
+            let domainPrev = (directorNode.data as { directorDomain?: DramaDirectorSession | null })
               ?.directorDomain;
+            if (
+              isDirectorDramaNodeType(directorNode.type) &&
+              domainPrev &&
+              isDramaSystemVisualAssetId(assetId, domainPrev)
+            ) {
+              domainPrev = ensureDramaSystemVoice(domainPrev);
+            }
             const domainNext =
               isDirectorDramaNodeType(directorNode.type) && domainPrev
                 ? applyDramaSessionAssetImage(domainPrev, assetId, {
@@ -20153,6 +20912,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             /* 探测失败时保留当前外框 */
           }
         })();
+        } // else has imageUrl
+        } // else !skipAsNonImageSuccess
       }
       
       // RVC 训练完成（模型 zip，非可播放音频）
@@ -21064,7 +21825,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                   ? normalizeMinimaxH3AudioDurationChoice(videoInputPanelData.durationMinimaxH3, 20)
                   : normalizeMinimaxH3DurationChoice(videoInputPanelData.durationMinimaxH3, 10)
               }
-              resolutionMinimaxH3="720p"
+              resolutionMinimaxH3={normalizeMinimaxH3Resolution(videoInputPanelData.resolutionMinimaxH3)}
               sora2Channel={videoInputPanelData.sora2Channel ?? 'plugin'}
               isConnected={videoInputPanelData.isConnected}
               projectId={projectId}
@@ -21900,11 +22661,22 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                     Array.isArray(outputImagesFromPayload) && outputImagesFromPayload.length > 0
                       ? outputImagesFromPayload.map((u) => formatImagePathSync(String(u || ''))).filter(Boolean)
                       : undefined;
+                  let derivedLocalPath: string | undefined;
+                  if (formattedImageUrl.startsWith('local-resource://')) {
+                    let body = formattedImageUrl.replace(/^local-resource:\/\/+/, '');
+                    try {
+                      body = decodeURIComponent(body);
+                    } catch {
+                      /* keep */
+                    }
+                    derivedLocalPath = body.replace(/\//g, '\\');
+                  }
                   console.log('[Workspace] onOutputImageChange 被调用:', {
                     targetNodeId,
                     imageUrl: formattedImageUrl,
                     publicOrig: publicOrig || '—',
                     outputCount: formattedOutputImages?.length ?? 1,
+                    localPath: derivedLocalPath || '—',
                   });
 
                   const probeUrl = formattedOutputImages?.[0] || formattedImageUrl;
@@ -21935,6 +22707,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           data: {
                             ...node.data,
                             ...layoutPatchedNode.data,
+                            ...(derivedLocalPath ? { localPath: derivedLocalPath } : {}),
                             progress: 0,
                             progressMessage: undefined,
                             errorMessage: undefined,
@@ -21951,6 +22724,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                             ? { outputImages: formattedOutputImages }
                             : {}),
                           ...(publicOrig ? { originalImageUrl: publicOrig } : {}),
+                          ...(derivedLocalPath ? { localPath: derivedLocalPath } : {}),
                           prompt: (node.data?.prompt as string | undefined) ?? promptToKeep,
                           progress: 0,
                           progressMessage: undefined,
@@ -21965,6 +22739,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                         ? { outputImages: formattedOutputImages }
                         : {}),
                       originalImageUrl: publicOrig,
+                      ...(derivedLocalPath ? { localPath: derivedLocalPath } : {}),
                       progress: 0,
                       progressMessage: undefined,
                       errorMessage: undefined,

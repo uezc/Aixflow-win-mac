@@ -69,7 +69,8 @@ DEFAULT_OTS_TX_PK = "transaction_id"
 DEFAULT_OTS_EMAIL_TABLE = "nx_email_user"
 DEFAULT_OTS_USERS_TABLE = "nx_users"
 DEFAULT_OTS_TASKS_TABLE = "nx_tasks"
-DEFAULT_PLATFORM_API_BASE = "https://api.bltcy.ai"
+DEFAULT_OTS_QUEUE_COUNTERS_TABLE = "nx_queue_counters"
+DEFAULT_PLATFORM_API_BASE = "https://api.apilio.ai"
 DEFAULT_PLUGIN_API_BASE = "https://www.runninghub.cn"
 
 # 与 FC demo/aliyun-fc-init-user RECHARGE_TIERS_CNY 一致
@@ -118,6 +119,136 @@ def get_ots_access_key_secret() -> str:
     if s:
         return s
     return os.environ.get("ALIYUN_ACCESS_KEY_SECRET", "").strip()
+
+
+def _load_repo_dotenv_once() -> None:
+    """从仓库根 .env 补齐 RESEND_*（不覆盖已有环境变量）。仅本机管理后台用。"""
+    if os.environ.get("_AIXFLOW_ADMIN_DOTENV_LOADED") == "1":
+        return
+    os.environ["_AIXFLOW_ADMIN_DOTENV_LOADED"] = "1"
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        env_path = os.path.join(root, ".env")
+        if not os.path.isfile(env_path):
+            return
+        with open(env_path, "r", encoding="utf-8") as f:
+            text = f.read()
+        if text.startswith("\ufeff"):
+            text = text[1:]
+        for line in text.splitlines():
+            if not line or line.strip().startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.strip()
+            if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                v = v[1:-1]
+            if not k:
+                continue
+            if k.startswith("RESEND_") and not os.environ.get(k):
+                os.environ[k] = v
+    except Exception:
+        pass
+
+
+def get_resend_api_key() -> str:
+    _load_repo_dotenv_once()
+    s = _get_secret("resend_api_key", "")
+    if s:
+        return s
+    return os.environ.get("RESEND_API_KEY", "").strip()
+
+
+def get_resend_from_email() -> str:
+    _load_repo_dotenv_once()
+    s = _get_secret("resend_from_email", "")
+    if s:
+        return s
+    env = os.environ.get("RESEND_FROM_EMAIL", "").strip()
+    return env or "AIXFLOW <auth@aixflow.ai>"
+
+
+def send_official_resend_email(
+    *,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    from_email: str | None = None,
+) -> dict[str, Any]:
+    """
+    以 AIXFLOW 官方身份经 Resend 发信。
+    成功返回 {ok: True, id: ...}；失败返回 {ok: False, error: ...}。
+    """
+    api_key = get_resend_api_key()
+    if not api_key:
+        return {"ok": False, "error": "未配置 RESEND_API_KEY（secrets 或仓库 .env）"}
+    to_addr = str(to_email or "").strip()
+    if not to_addr or "@" not in to_addr:
+        return {"ok": False, "error": "收件人邮箱无效"}
+    subj = str(subject or "").strip()
+    if not subj:
+        return {"ok": False, "error": "主题不能为空"}
+    text = str(body_text or "").strip()
+    if not text:
+        return {"ok": False, "error": "正文不能为空"}
+    frm = str(from_email or get_resend_from_email()).strip() or "AIXFLOW <auth@aixflow.ai>"
+
+    html = body_html
+    if not html:
+        # 简单把换行转成段落，深色品牌风
+        paras = "".join(
+            f'<p style="margin:0 0 14px;font-size:15px;line-height:1.7;color:#d1d5db;">{p}</p>'
+            for p in text.replace("\r\n", "\n").split("\n\n")
+            if p.strip()
+        )
+        if not paras:
+            paras = f'<p style="margin:0 0 14px;font-size:15px;line-height:1.7;color:#d1d5db;">{text}</p>'
+        html = (
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\" /></head>"
+            '<body style="margin:0;padding:0;background:#0b0f14;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
+            '<div style="max-width:560px;margin:40px auto;padding:32px 28px;background:#121820;border-radius:12px;color:#e5e7eb;">'
+            '<p style="margin:0 0 8px;font-size:13px;letter-spacing:0.12em;color:#9ca3af;">AIXFLOW</p>'
+            f"{paras}"
+            '<p style="margin:24px 0 0;font-size:13px;color:#6b7280;">— AIXFLOW 团队</p>'
+            "</div></body></html>"
+        )
+
+    payload = json.dumps(
+        {
+            "from": frm,
+            "to": [to_addr],
+            "subject": subj,
+            "text": text,
+            "html": html,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    req = urlrequest.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # Cloudflare 会拦截 Python-urllib 默认 UA，表现为 HTTP 403 error code: 1010
+            "User-Agent": "AixflowAdmin/1.0 (+https://aixflow.ai; Resend)",
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            return {"ok": True, "id": data.get("id"), "from": frm, "to": to_addr}
+    except urlerror.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
+        hint = ""
+        if e.code == 403 and "1010" in (err_body or ""):
+            hint = "（疑似 Cloudflare 拦截请求；已设置 User-Agent，请再试一次）"
+        return {"ok": False, "error": f"HTTP {e.code}: {err_body or e.reason}{hint}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def get_ots_coupons_table_default() -> str:
@@ -177,6 +308,16 @@ def get_ots_tasks_table_default() -> str:
         return s.strip()
     return os.environ.get("OTS_TABLE_TASKS", DEFAULT_OTS_TASKS_TABLE).strip() or DEFAULT_OTS_TASKS_TABLE
 
+
+def get_ots_queue_counters_table_default() -> str:
+    """平台并发计数表，与 OTS_TABLE_QUEUE_COUNTERS / nx_queue_counters 一致。"""
+    s = _get_secret("ots_table_queue_counters", "")
+    if s:
+        return s.strip()
+    return (
+        os.environ.get("OTS_TABLE_QUEUE_COUNTERS", DEFAULT_OTS_QUEUE_COUNTERS_TABLE).strip()
+        or DEFAULT_OTS_QUEUE_COUNTERS_TABLE
+    )
 
 def get_platform_api_base_default() -> str:
     s = _get_secret("platform_api_base", "")
@@ -1168,6 +1309,353 @@ def scan_coupons_used_summary(
     return used_n, cny_sum, scanned
 
 
+def scan_queue_factory_stats(
+    client: Any,
+    *,
+    tasks_table: str,
+    queue_counters_table: str = DEFAULT_OTS_QUEUE_COUNTERS_TABLE,
+    max_task_scan: int = 40000,
+) -> dict[str, Any]:
+    """
+    扫描全站 nx_tasks：排队中 / 生产中（全用户）。
+    生产中 = claimed + running + legacy pending/processing。
+    可选读取 nx_queue_counters 平台槽占用。
+    """
+    from tablestore import Direction, INF_MAX, INF_MIN
+
+    tt = tasks_table.strip()
+    inclusive = [("task_id", INF_MIN)]
+    exclusive = [("task_id", INF_MAX)]
+    cursor = inclusive
+    scanned = 0
+    queued = 0
+    claimed = 0
+    running = 0
+    pending = 0
+    processing = 0
+    failed = 0
+    queued_video = 0
+    queued_image = 0
+    producing_video = 0
+    producing_image = 0
+    failed_statuses = {"failed", "timeout", "time_out"}
+
+    while scanned < max_task_scan:
+        _consumed, next_pk, row_list, _next_token = client.get_range(
+            tt,
+            Direction.FORWARD,
+            cursor,
+            exclusive,
+            columns_to_get=["status", "task_type"],
+            limit=min(500, max_task_scan - scanned),
+        )
+        for row in row_list or []:
+            if scanned >= max_task_scan:
+                break
+            scanned += 1
+            rec = _row_to_dict(row)
+            st_raw = str(rec.get("status") or "").strip().lower()
+            ttype = str(rec.get("task_type") or "").strip().lower()
+            if st_raw in failed_statuses:
+                failed += 1
+            if st_raw == "queued":
+                queued += 1
+                if ttype == "video":
+                    queued_video += 1
+                elif ttype == "image":
+                    queued_image += 1
+            elif st_raw == "claimed":
+                claimed += 1
+                if ttype == "video":
+                    producing_video += 1
+                elif ttype == "image":
+                    producing_image += 1
+            elif st_raw == "running":
+                running += 1
+                if ttype == "video":
+                    producing_video += 1
+                elif ttype == "image":
+                    producing_image += 1
+            elif st_raw == "pending":
+                pending += 1
+                if ttype == "video":
+                    producing_video += 1
+                elif ttype == "image":
+                    producing_image += 1
+            elif st_raw == "processing":
+                processing += 1
+                if ttype == "video":
+                    producing_video += 1
+                elif ttype == "image":
+                    producing_image += 1
+        if not next_pk or scanned >= max_task_scan:
+            break
+        cursor = next_pk
+
+    producing = claimed + running + pending + processing
+
+    platform_video_running: int | None = None
+    platform_image_running: int | None = None
+    qt = (queue_counters_table or "").strip()
+    if qt:
+        for pool_id, key in (("video", "platform_video_running"), ("image", "platform_image_running")):
+            rec = _ots_get_row_dict(client, qt, [("pool_id", pool_id)])
+            if not rec:
+                continue
+            n = int(float(rec.get("running") or 0)) if str(rec.get("running") or "").strip() != "" else 0
+            if key == "platform_video_running":
+                platform_video_running = n
+            else:
+                platform_image_running = n
+
+    return {
+        "queued_tasks": queued,
+        "producing_tasks": producing,
+        "claimed_tasks": claimed,
+        "running_tasks": running,
+        "pending_tasks": pending,
+        "processing_tasks": processing,
+        "queued_video_tasks": queued_video,
+        "queued_image_tasks": queued_image,
+        "producing_video_tasks": producing_video,
+        "producing_image_tasks": producing_image,
+        "pending_failed_or_timeout_tasks": failed,
+        "platform_video_running": platform_video_running,
+        "platform_image_running": platform_image_running,
+        "task_rows_scanned": scanned,
+        "task_scan_truncated": scanned >= max_task_scan,
+        "tasks_table": tt,
+        "queue_counters_table": qt,
+    }
+
+
+def aggregate_recent_usage_and_active(
+    client: Any,
+    *,
+    tx_table: str,
+    tx_pk: str,
+    users_table: str,
+    window_days: int = 7,
+    max_tx_scan: int = 80000,
+    top_accounts: int = 200,
+    include_login_active: bool = True,
+    max_detail_rows: int = 8000,
+) -> dict[str, Any]:
+    """
+    近期全站用量（nx_transactions type=consume）与活跃账号。
+    活跃 = 窗口内至少 1 笔扣费；可选同窗 last_login 登录活跃数（用户表）。
+    另附 detail_rows：全站混合逐笔明细（账号/时间/模型/元宝），供按日筛选展示。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    days = max(1, min(90, int(window_days)))
+    tz = timezone(timedelta(hours=8))  # Asia/Shanghai（无夏令时）
+    now = datetime.now(tz)
+    end_ms = int(now.timestamp() * 1000)
+    start_ms = int((now - timedelta(days=days)).timestamp() * 1000)
+    window_label = f"近 {days} 天（上海时区）"
+    today_key = now.strftime("%Y-%m-%d")
+
+    tx_rows, tx_truncated = fetch_transaction_rows_scan(
+        client, tx_table, tx_pk, max_rows=max_tx_scan
+    )
+
+    total_yuanbao = 0
+    total_count = 0
+    # user_id -> stats
+    by_user: dict[str, dict[str, Any]] = {}
+    # day key YYYY-MM-DD -> stats
+    by_day: dict[str, dict[str, Any]] = {}
+    # model_id -> {n, yuanbao}
+    by_model: dict[str, dict[str, float]] = {}
+    detail_raw: list[dict[str, Any]] = []
+
+    for rec in tx_rows:
+        typ = str(rec.get("type") or "").strip().lower()
+        if typ != "consume":
+            continue
+        cms = _tx_consume_created_ms(rec)
+        if cms < start_ms or cms > end_ms:
+            continue
+        amt = _tx_amount_abs_int(rec)
+        if amt <= 0:
+            continue
+        uid = str(rec.get("user_id") or "").strip()
+        if not uid:
+            continue
+
+        total_yuanbao += amt
+        total_count += 1
+
+        u = by_user.get(uid)
+        if u is None:
+            u = {
+                "user_id": uid,
+                "consume_yuanbao": 0,
+                "consume_count": 0,
+                "last_consume_ms": 0,
+            }
+            by_user[uid] = u
+        u["consume_yuanbao"] += amt
+        u["consume_count"] += 1
+        if cms > int(u["last_consume_ms"]):
+            u["last_consume_ms"] = cms
+
+        dkey = _shanghai_calendar_keys_profit(cms)[0]
+        d = by_day.get(dkey)
+        if d is None:
+            d = {"day": dkey, "consume_yuanbao": 0, "consume_count": 0, "_uids": set()}
+            by_day[dkey] = d
+        d["consume_yuanbao"] += amt
+        d["consume_count"] += 1
+        d["_uids"].add(uid)
+
+        mid = _model_id_from_tx_description_profit(str(rec.get("description") or "")) or "_unknown"
+        m = by_model.get(mid)
+        if m is None:
+            m = {"model_id": mid, "consume_yuanbao": 0.0, "consume_count": 0.0}
+            by_model[mid] = m
+        m["consume_yuanbao"] += float(amt)
+        m["consume_count"] += 1.0
+
+        detail_raw.append(
+            {
+                "day": dkey,
+                "created_at_ms": cms,
+                "user_id": uid,
+                "model_id": mid,
+                "yuanbao": int(amt),
+                "task_id": str(rec.get("task_id") or "").strip(),
+                "transaction_id": str(
+                    rec.get("transaction_id") or rec.get("tx_id") or ""
+                ).strip(),
+                "description": str(rec.get("description") or "").strip(),
+            }
+        )
+
+    active_n = len(by_user)
+    ranked = sorted(
+        by_user.values(),
+        key=lambda x: (int(x["consume_yuanbao"]), int(x["consume_count"])),
+        reverse=True,
+    )
+    top = ranked[: max(1, min(2000, int(top_accounts)))]
+
+    # 明细：按时间倒序，截断
+    detail_cap = max(100, min(50_000, int(max_detail_rows)))
+    detail_raw.sort(key=lambda x: int(x.get("created_at_ms") or 0), reverse=True)
+    detail_truncated = len(detail_raw) > detail_cap
+    detail_rows = detail_raw[:detail_cap]
+
+    # 补邮箱：Top 账号 + 明细涉及的用户（上限，避免全表）
+    ut = users_table.strip()
+    email_cache: dict[str, str] = {}
+
+    def _email_for(uid: str) -> str:
+        if uid in email_cache:
+            return email_cache[uid]
+        urec = _ots_get_row_dict(client, ut, [("user_id", uid)]) if ut else None
+        email = str((urec or {}).get("email") or "").strip() or "—"
+        email_cache[uid] = email
+        return email
+
+    for row in top:
+        uid = str(row["user_id"])
+        urec = _ots_get_row_dict(client, ut, [("user_id", uid)]) if ut else None
+        email = str((urec or {}).get("email") or "").strip()
+        row["email"] = email or "—"
+        email_cache[uid] = row["email"]
+        ll = _ots_attr_ts_to_ms((urec or {}).get("last_login_at")) if urec else None
+        row["last_login_ms"] = ll
+        row["status"] = str((urec or {}).get("status") or "normal") if urec else "—"
+
+    detail_email_budget = 2500
+    seen_detail_uids: set[str] = set()
+    for dr in detail_rows:
+        uid = str(dr["user_id"])
+        if uid in email_cache:
+            dr["email"] = email_cache[uid]
+            continue
+        if len(seen_detail_uids) >= detail_email_budget and uid not in email_cache:
+            dr["email"] = "—"
+            continue
+        seen_detail_uids.add(uid)
+        dr["email"] = _email_for(uid)
+
+    day_rows = []
+    for dkey in sorted(by_day.keys()):
+        d = by_day[dkey]
+        day_rows.append(
+            {
+                "day": dkey,
+                "consume_yuanbao": int(d["consume_yuanbao"]),
+                "consume_count": int(d["consume_count"]),
+                "active_accounts": len(d["_uids"]),
+            }
+        )
+
+    model_rows = sorted(
+        (
+            {
+                "model_id": m["model_id"],
+                "consume_yuanbao": int(m["consume_yuanbao"]),
+                "consume_count": int(m["consume_count"]),
+            }
+            for m in by_model.values()
+        ),
+        key=lambda x: x["consume_yuanbao"],
+        reverse=True,
+    )[:50]
+
+    # 登录活跃：窗口内 last_login_at（可选，全表扫描较慢）
+    login_active = -1 if not include_login_active else 0
+    users_scanned = 0
+    users_trunc = False
+    if include_login_active:
+        try:
+            all_users, users_trunc = fetch_all_users_sanitized(client, ut, max_users=100_000)
+            users_scanned = len(all_users)
+            login_active = 0
+            for ur in all_users:
+                ll = ur.get("last_login")
+                if ll is None:
+                    continue
+                try:
+                    ln = int(ll)
+                except Exception:
+                    continue
+                if start_ms <= ln <= end_ms:
+                    login_active += 1
+        except Exception:
+            login_active = -1  # 表示未能统计
+
+    avg_yb = int(round(total_yuanbao / active_n)) if active_n > 0 else 0
+
+    return {
+        "window_days": days,
+        "window_label": window_label,
+        "today_key": today_key,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "total_consume_yuanbao": total_yuanbao,
+        "total_consume_count": total_count,
+        "active_accounts": active_n,
+        "avg_yuanbao_per_active": avg_yb,
+        "login_active_accounts": login_active,
+        "users_scanned_for_login": users_scanned,
+        "users_login_scan_truncated": users_trunc,
+        "include_login_active": include_login_active,
+        "daily": day_rows,
+        "top_accounts": top,
+        "top_models": model_rows,
+        "detail_rows": detail_rows,
+        "detail_rows_total": len(detail_raw),
+        "detail_rows_truncated": detail_truncated,
+        "tx_rows_scanned": len(tx_rows),
+        "tx_scan_truncated": tx_truncated,
+    }
+
+
 def aggregate_profit_analytics_streamlit(
     client: Any,
     *,
@@ -1475,17 +1963,33 @@ def hydrate_transaction_rows_from_main_table(
 
 
 def _format_tx_created_at_display(v: Any) -> str | None:
+    """流水 created_at → 上海时区可读时间（OTS 存的是 epoch ms / UTC）。"""
     if v is None:
         return None
     n = _scalar_display(v)
     if isinstance(n, int) and n > 0:
         ms = n if n > 1_000_000_000_000 else n * 1000
         try:
-            return pd.Timestamp(ms, unit="ms").strftime("%Y-%m-%d %H:%M:%S")
+            return (
+                pd.Timestamp(ms, unit="ms", tz="UTC")
+                .tz_convert("Asia/Shanghai")
+                .strftime("%Y-%m-%d %H:%M:%S")
+            )
         except Exception:
-            return str(n)
+            try:
+                # Windows 无 tzdata 时退回固定 +08:00
+                return (pd.Timestamp(ms, unit="ms") + pd.Timedelta(hours=8)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                return str(n)
     try:
-        return pd.Timestamp(str(v)).strftime("%Y-%m-%d %H:%M:%S")
+        ts = pd.Timestamp(str(v))
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC").tz_convert("Asia/Shanghai")
+        else:
+            ts = ts.tz_convert("Asia/Shanghai")
+        return ts.strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return str(v) if str(v).strip() else None
 
@@ -2028,8 +2532,9 @@ def main() -> None:
     )
     st.title("Aixflow管理员界面")
     st.caption(
-        "阿里云表格存储 · **模型定价**、**兑换码**、**用户管理**、**财务分析**（本页直连 OTS 扫描）；"
-        "桌面端 **NEXFLOW** 另有 **#/admin** / **#/admin/finance**（需 Ctrl+Shift+A 解锁，走 FC 聚合）。"
+        "阿里云表格存储 · **工厂队列**、**近期用量**、**官方邮件**、**模型定价**、**兑换码**、**用户管理**、**财务分析**（本页直连 OTS）；"
+        "全站排队/用量请在本工具对应页签查看。"
+        "桌面端 **NEXFLOW #/admin** 仅作兑换码等运营入口，不展示全站队列。"
     )
 
     if "_aixflow_auth_ok" not in st.session_state:
@@ -2071,7 +2576,7 @@ def main() -> None:
         core_api_base = st.text_input(
             "核心算力 API URL",
             key=_field_key("core_base"),
-            help="填根地址即可，例如 https://api.bltcy.ai；若粘贴完整路径 …/v1/token/quota 也可，不会重复拼接。",
+            help="填根地址即可，例如 https://api.apilio.ai；若粘贴完整路径 …/v1/token/quota 也可，不会重复拼接。",
         )
         core_api_key = st.text_input(
             "核心算力 API Key",
@@ -2216,15 +2721,31 @@ def main() -> None:
         st.session_state.pop("_all_users_truncated", None)
         st.session_state.pop("_all_users_cache_max", None)
         st.session_state.pop("_profit_result", None)
+        st.session_state.pop("_queue_factory_stats", None)
+        st.session_state.pop("_recent_usage_stats", None)
 
     tx_gsi_name = get_ots_tx_gsi_name_default()
     tx_sort_key = get_ots_tx_sort_key_default()
     email_table = get_ots_email_table_default()
     users_table = get_ots_users_table_default()
     tasks_table = get_ots_tasks_table_default()
+    queue_counters_table = get_ots_queue_counters_table_default()
 
-    tab_model, tab_coupon, tab_users_mgmt, tab_finance, tab_user_query, tab_user_gen = st.tabs(
+    (
+        tab_queue,
+        tab_usage,
+        tab_mail,
+        tab_model,
+        tab_coupon,
+        tab_users_mgmt,
+        tab_finance,
+        tab_user_query,
+        tab_user_gen,
+    ) = st.tabs(
         [
+            "工厂队列",
+            "近期用量",
+            "官方邮件",
             "模型定价（nx_model_config）",
             "兑换码（nx_coupons）",
             "用户管理（nx_users）",
@@ -2233,6 +2754,510 @@ def main() -> None:
             "任务记录",
         ]
     )
+
+    with tab_queue:
+        st.subheader("全站工厂负载（所有用户）")
+        st.caption(
+            f"直连扫描 **`{tasks_table}`**：排队中 = `queued`；"
+            "生产中 = `claimed` + `running`（含 legacy `pending` / `processing`）。"
+            f" 平台槽读 **`{queue_counters_table}`**（若表存在）。"
+        )
+        q_max = st.number_input(
+            "最多扫描任务行数",
+            min_value=5000,
+            max_value=200000,
+            value=40000,
+            step=5000,
+            key="queue_factory_max_scan",
+            help="越大越准但越慢；达到上限后计数可能略低。",
+        )
+        if st.button("刷新队列统计", type="primary", key="btn_queue_factory_refresh"):
+            st.session_state.pop("_queue_factory_stats", None)
+            with st.spinner("正在扫描 nx_tasks…"):
+                try:
+                    st.session_state["_queue_factory_stats"] = scan_queue_factory_stats(
+                        client,
+                        tasks_table=tasks_table,
+                        queue_counters_table=queue_counters_table,
+                        max_task_scan=int(q_max),
+                    )
+                except Exception as e:
+                    st.session_state["_queue_factory_stats"] = {"_error": str(e)}
+
+        qs: Any = st.session_state.get("_queue_factory_stats")
+        if qs is None:
+            st.info("点击 **刷新队列统计** 查看当前全站排队 / 生产数量。")
+        elif isinstance(qs, dict) and qs.get("_error"):
+            st.error(f"扫描失败：{qs['_error']}")
+        elif isinstance(qs, dict):
+            if qs.get("task_scan_truncated"):
+                st.warning(
+                    f"任务扫描已达上限（{qs.get('task_rows_scanned', 0)} 行），计数可能略低于真实值。"
+                )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric(
+                    "排队中",
+                    int(qs.get("queued_tasks", 0)),
+                    help="status=queued",
+                )
+                st.caption(
+                    f"视频 {int(qs.get('queued_video_tasks', 0))} · "
+                    f"图片 {int(qs.get('queued_image_tasks', 0))}"
+                )
+            with c2:
+                st.metric(
+                    "生产中",
+                    int(qs.get("producing_tasks", 0)),
+                    help="claimed + running + pending + processing",
+                )
+                st.caption(
+                    f"视频 {int(qs.get('producing_video_tasks', 0))} · "
+                    f"图片 {int(qs.get('producing_image_tasks', 0))}"
+                )
+                st.caption(
+                    f"claimed {int(qs.get('claimed_tasks', 0))} · "
+                    f"running {int(qs.get('running_tasks', 0))}"
+                )
+            with c3:
+                st.metric(
+                    "失败 / 超时（表内）",
+                    int(qs.get("pending_failed_or_timeout_tasks", 0)),
+                )
+                st.caption(f"已扫描 {int(qs.get('task_rows_scanned', 0))} 行任务")
+
+            st.divider()
+            p1, p2 = st.columns(2)
+            with p1:
+                vr = qs.get("platform_video_running")
+                st.write("**平台视频并发槽占用**")
+                st.write("—" if vr is None else str(int(vr)))
+            with p2:
+                ir = qs.get("platform_image_running")
+                st.write("**平台图片并发槽占用**")
+                st.write("—" if ir is None else str(int(ir)))
+
+    with tab_usage:
+        st.subheader("近期使用量与活跃账号")
+        st.caption(
+            f"扫描流水表 **`{get_ots_transactions_table_default()}`**（`type=consume`）统计窗口内全站消耗；"
+            "活跃账号 = 窗口内至少产生 1 笔扣费的用户。登录活跃另按 **`nx_users.last_login_at`** 统计。"
+            "下方 **全站模型生成明细** 可按日期、按某一模型筛选，查看该模型最近所有用户的使用（日期 / 账号 / 模型 / 消耗价格）。"
+        )
+        uc1, uc2, uc3 = st.columns(3)
+        with uc1:
+            usage_days = st.selectbox(
+                "统计窗口",
+                options=[1, 3, 7, 14, 30],
+                index=2,
+                format_func=lambda d: f"近 {d} 天",
+                key="recent_usage_days",
+            )
+        with uc2:
+            usage_max_tx = st.number_input(
+                "最多扫描流水行数",
+                min_value=5000,
+                max_value=200000,
+                value=80000,
+                step=5000,
+                key="recent_usage_max_tx",
+            )
+        with uc3:
+            usage_top_n = st.number_input(
+                "活跃账号榜显示条数",
+                min_value=20,
+                max_value=500,
+                value=100,
+                step=20,
+                key="recent_usage_top_n",
+            )
+        usage_include_login = st.checkbox(
+            "同时统计登录活跃（扫描用户表，较慢）",
+            value=True,
+            key="recent_usage_include_login",
+        )
+
+        if st.button("查询近期用量", type="primary", key="btn_recent_usage_run"):
+            st.session_state.pop("_recent_usage_stats", None)
+            with st.spinner("正在扫描流水与补全账号邮箱，请稍候…"):
+                try:
+                    st.session_state["_recent_usage_stats"] = aggregate_recent_usage_and_active(
+                        client,
+                        tx_table=get_ots_transactions_table_default(),
+                        tx_pk=tx_sort_key,
+                        users_table=users_table,
+                        window_days=int(usage_days),
+                        max_tx_scan=int(usage_max_tx),
+                        top_accounts=int(usage_top_n),
+                        include_login_active=bool(usage_include_login),
+                    )
+                except Exception as e:
+                    st.session_state["_recent_usage_stats"] = {"_error": str(e)}
+
+        ru: Any = st.session_state.get("_recent_usage_stats")
+        if ru is None:
+            st.info("选择窗口后点击 **查询近期用量**。")
+        elif isinstance(ru, dict) and ru.get("_error"):
+            st.error(f"查询失败：{ru['_error']}")
+        elif isinstance(ru, dict):
+            if ru.get("tx_scan_truncated"):
+                st.warning("流水扫描已达行数上限，近期用量可能不完整；可提高扫描上限后重查。")
+            st.caption(
+                f"{ru.get('window_label', '')} · 流水扫描 {int(ru.get('tx_rows_scanned', 0))} 行"
+            )
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("消耗元宝", f"{int(ru.get('total_consume_yuanbao', 0)):,}")
+            with m2:
+                st.metric("扣费笔数", f"{int(ru.get('total_consume_count', 0)):,}")
+            with m3:
+                st.metric("活跃账号（有扣费）", f"{int(ru.get('active_accounts', 0)):,}")
+            with m4:
+                st.metric("人均消耗（元宝）", f"{int(ru.get('avg_yuanbao_per_active', 0)):,}")
+
+            login_n = ru.get("login_active_accounts")
+            if ru.get("include_login_active") is False:
+                st.caption("未勾选登录活跃统计。")
+            elif login_n is not None and int(login_n) >= 0:
+                st.caption(
+                    f"同窗登录活跃（`last_login_at`）：**{int(login_n):,}** "
+                    f"（用户表扫描 {int(ru.get('users_scanned_for_login', 0))} 行"
+                    f"{'，已截断' if ru.get('users_login_scan_truncated') else ''}）"
+                )
+            elif login_n is not None and int(login_n) < 0:
+                st.caption("登录活跃统计失败（用户表不可读），不影响扣费用量。")
+
+            st.divider()
+            st.markdown("##### 按日趋势")
+            daily = ru.get("daily") or []
+            if daily:
+                df_day = pd.DataFrame(daily).rename(
+                    columns={
+                        "day": "日期",
+                        "consume_yuanbao": "消耗元宝",
+                        "consume_count": "扣费笔数",
+                        "active_accounts": "当日活跃账号",
+                    }
+                )
+                st.dataframe(df_day, use_container_width=True, hide_index=True)
+                try:
+                    chart_df = df_day.set_index("日期")[["消耗元宝"]]
+                    st.line_chart(chart_df)
+                except Exception:
+                    pass
+            else:
+                st.info("该窗口内无扣费流水。")
+
+            st.divider()
+            st.markdown("##### 活跃账号榜（按消耗元宝）")
+            tops = ru.get("top_accounts") or []
+            if tops:
+                rows_disp: list[dict[str, Any]] = []
+                for a in tops:
+                    last_c = int(a.get("last_consume_ms") or 0)
+                    last_c_s = "—"
+                    if last_c > 0:
+                        try:
+                            last_c_s = pd.Timestamp(last_c, unit="ms").strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            last_c_s = str(last_c)
+                    ll = a.get("last_login_ms")
+                    ll_s = "—"
+                    if ll is not None:
+                        try:
+                            ln = int(ll)
+                            if ln > 0:
+                                ll_s = pd.Timestamp(ln, unit="ms").strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            pass
+                    rows_disp.append(
+                        {
+                            "邮箱": a.get("email") or "—",
+                            "用户 ID": a.get("user_id") or "",
+                            "消耗元宝": int(a.get("consume_yuanbao") or 0),
+                            "扣费笔数": int(a.get("consume_count") or 0),
+                            "最近扣费": last_c_s,
+                            "最近登录": ll_s,
+                            "状态": a.get("status") or "—",
+                        }
+                    )
+                df_acc = pd.DataFrame(rows_disp)
+                st.dataframe(df_acc, use_container_width=True, hide_index=True)
+                csv_buf = io.StringIO()
+                df_acc.to_csv(csv_buf, index=False)
+                st.download_button(
+                    "下载活跃账号 CSV",
+                    data=csv_buf.getvalue().encode("utf-8-sig"),
+                    file_name=f"active_accounts_{int(ru.get('window_days', 7))}d.csv",
+                    mime="text/csv",
+                    key="dl_recent_usage_accounts",
+                )
+            else:
+                st.info("无活跃账号。")
+
+            st.divider()
+            st.markdown("##### 模型消耗 Top（窗口内）")
+            models = ru.get("top_models") or []
+            if models:
+                df_m = pd.DataFrame(models).rename(
+                    columns={
+                        "model_id": "模型 ID",
+                        "consume_yuanbao": "消耗元宝",
+                        "consume_count": "扣费笔数",
+                    }
+                )
+                st.dataframe(df_m, use_container_width=True, hide_index=True)
+            else:
+                st.caption("无模型维度数据。")
+
+            st.divider()
+            st.markdown("##### 全站模型生成明细（所有用户混合）")
+            st.caption(
+                "逐笔扣费：**日期 / 账号 / 模型 / 消耗价格（元宝）**。"
+                "可按日期、按某一模型筛选（查该模型最近所有用户的使用情况）。"
+            )
+            if ru.get("detail_rows_truncated"):
+                st.warning(
+                    f"明细已截断：窗口内共 {int(ru.get('detail_rows_total', 0)):,} 笔，"
+                    f"仅保留最近 {len(ru.get('detail_rows') or []):,} 笔。"
+                )
+            details = ru.get("detail_rows") or []
+            if not details:
+                st.info("该窗口内无扣费明细。")
+            else:
+                from datetime import date as _date_cls
+
+                today_key = str(ru.get("today_key") or "").strip()
+                day_options = [str(d.get("day") or "") for d in (ru.get("daily") or []) if d.get("day")]
+                day_options = sorted(set(day_options), reverse=True)
+
+                # 窗口内出现过的模型（明细 + Top 汇总），供下拉选择
+                model_ids_in_window: list[str] = []
+                seen_m: set[str] = set()
+                for mrow in ru.get("top_models") or []:
+                    mid0 = str(mrow.get("model_id") or "").strip()
+                    if mid0 and mid0 not in seen_m:
+                        seen_m.add(mid0)
+                        model_ids_in_window.append(mid0)
+                for r0 in details:
+                    mid0 = str(r0.get("model_id") or "").strip()
+                    if mid0 == "_unknown":
+                        mid0 = str(r0.get("description") or "").strip() or "_unknown"
+                    if mid0 and mid0 not in seen_m:
+                        seen_m.add(mid0)
+                        model_ids_in_window.append(mid0)
+                model_ids_in_window = sorted(model_ids_in_window, key=lambda s: s.lower())
+
+                fc1, fc2 = st.columns([1, 2])
+                with fc1:
+                    day_mode = st.radio(
+                        "日期筛选",
+                        options=["今天", "指定日期", "窗口内全部"],
+                        index=0,
+                        horizontal=True,
+                        key="recent_usage_detail_day_mode",
+                    )
+                pick_day = today_key
+                with fc2:
+                    if day_mode == "指定日期":
+                        default_d = _date_cls.today()
+                        if today_key:
+                            try:
+                                y, m, dd = today_key.split("-")
+                                default_d = _date_cls(int(y), int(m), int(dd))
+                            except Exception:
+                                pass
+                        # 可选范围：窗口内有数据的日期；否则允许任意日
+                        min_d = default_d
+                        max_d = default_d
+                        if day_options:
+                            try:
+                                min_d = _date_cls.fromisoformat(day_options[-1])
+                                max_d = _date_cls.fromisoformat(day_options[0])
+                            except Exception:
+                                pass
+                        picked = st.date_input(
+                            "选择日期",
+                            value=default_d if min_d <= default_d <= max_d else max_d,
+                            min_value=min_d,
+                            max_value=max_d,
+                            key="recent_usage_detail_date",
+                        )
+                        pick_day = picked.isoformat() if hasattr(picked, "isoformat") else str(picked)
+                    elif day_mode == "今天":
+                        pick_day = today_key
+                        st.caption(f"今天（上海）：**{today_key or '—'}**")
+                    else:
+                        pick_day = ""
+                        st.caption("显示统计窗口内全部明细（已按时间倒序）。")
+
+                mc_sel, mc_kw = st.columns([2, 2])
+                with mc_sel:
+                    model_pick = st.selectbox(
+                        "模型筛选",
+                        options=["（全部模型）"] + model_ids_in_window,
+                        index=0,
+                        key="recent_usage_detail_model",
+                        help="选择某一模型后，只看该模型在窗口内所有用户的扣费明细。",
+                    )
+                with mc_kw:
+                    model_kw = st.text_input(
+                        "或输入模型 ID（包含匹配）",
+                        value="",
+                        key="recent_usage_detail_model_kw",
+                        placeholder="例如 rhart-video-upscaler-4k",
+                        help="填写后优先按此关键字过滤（不区分大小写，子串匹配）；留空则用上方下拉。",
+                    )
+
+                filtered = details
+                if day_mode != "窗口内全部" and pick_day:
+                    filtered = [r for r in filtered if str(r.get("day") or "") == pick_day]
+
+                kw = str(model_kw or "").strip().lower()
+                if kw:
+                    def _row_model_id(r: dict[str, Any]) -> str:
+                        mid = str(r.get("model_id") or "").strip()
+                        if mid == "_unknown" or not mid:
+                            mid = str(r.get("description") or "").strip() or ""
+                        return mid
+
+                    filtered = [r for r in filtered if kw in _row_model_id(r).lower()]
+                elif model_pick and model_pick != "（全部模型）":
+                    want = str(model_pick).strip().lower()
+
+                    def _row_model_id2(r: dict[str, Any]) -> str:
+                        mid = str(r.get("model_id") or "").strip()
+                        if mid == "_unknown" or not mid:
+                            mid = str(r.get("description") or "").strip() or ""
+                        return mid
+
+                    filtered = [r for r in filtered if _row_model_id2(r).lower() == want]
+
+                disp_rows: list[dict[str, Any]] = []
+                sum_yb = 0
+                accounts_in_filter: set[str] = set()
+                for r in filtered:
+                    cms = int(r.get("created_at_ms") or 0)
+                    t_s = "—"
+                    if cms > 0:
+                        try:
+                            t_s = pd.Timestamp(cms, unit="ms", tz="Asia/Shanghai").strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                        except Exception:
+                            t_s = str(cms)
+                    yb = int(r.get("yuanbao") or 0)
+                    sum_yb += yb
+                    mid = str(r.get("model_id") or "_unknown")
+                    if mid == "_unknown":
+                        mid = str(r.get("description") or "—") or "—"
+                    email = str(r.get("email") or "—").strip() or "—"
+                    uid = str(r.get("user_id") or "").strip()
+                    accounts_in_filter.add(uid or email)
+                    disp_rows.append(
+                        {
+                            "日期": str(r.get("day") or "") or "—",
+                            "账号": email,
+                            "模型": mid,
+                            "消耗价格（元宝）": yb,
+                            "时间": t_s,
+                            "用户 ID": uid,
+                            "task_id": r.get("task_id") or "—",
+                        }
+                    )
+
+                mc1, mc2, mc3 = st.columns(3)
+                with mc1:
+                    st.metric("本筛选笔数", f"{len(disp_rows):,}")
+                with mc2:
+                    st.metric("本筛选消耗价格（元宝）", f"{sum_yb:,}")
+                with mc3:
+                    st.metric("本筛选账号数", f"{len(accounts_in_filter):,}")
+
+                if not disp_rows:
+                    st.info("当前日期/模型筛选下无扣费记录。")
+                else:
+                    # 主表突出：日期 / 账号 / 模型 / 消耗价格
+                    df_det = pd.DataFrame(disp_rows)[
+                        ["日期", "账号", "模型", "消耗价格（元宝）", "时间", "用户 ID", "task_id"]
+                    ]
+                    st.dataframe(df_det, use_container_width=True, hide_index=True)
+                    csv_det = io.StringIO()
+                    df_det.to_csv(csv_det, index=False)
+                    day_tag = pick_day or f"{int(ru.get('window_days', 7))}d"
+                    model_tag = "all"
+                    if kw:
+                        model_tag = kw.replace("/", "_")[:48]
+                    elif model_pick and model_pick != "（全部模型）":
+                        model_tag = str(model_pick).replace("/", "_")[:48]
+                    st.download_button(
+                        "下载明细 CSV",
+                        data=csv_det.getvalue().encode("utf-8-sig"),
+                        file_name=f"usage_detail_{day_tag}_{model_tag}.csv",
+                        mime="text/csv",
+                        key="dl_recent_usage_detail",
+                    )
+
+    with tab_mail:
+        st.subheader("以 AIXFLOW 官方身份发邮件")
+        st.caption(
+            "经 **Resend** 发送，发件人默认与登录验证码一致（`RESEND_FROM_EMAIL`，如 "
+            "`AIXFLOW <auth@aixflow.ai>`）。密钥读取顺序：`.streamlit/secrets.toml` → 环境变量 → 仓库根目录 `.env`。"
+        )
+        rk = get_resend_api_key()
+        rf = get_resend_from_email()
+        if rk:
+            st.success(f"Resend 已配置 · From：`{rf}` · Key：`re_…{rk[-4:]}`")
+        else:
+            st.error(
+                "未找到 `RESEND_API_KEY`。请写入仓库 `.env` 或本工具 "
+                "`.streamlit/secrets.toml` 的 `resend_api_key`。"
+            )
+
+        preset = st.selectbox(
+            "快捷模板",
+            options=["空白", "超分扣费说明（示例）"],
+            index=0,
+            key="admin_mail_preset",
+        )
+        if st.button("套用模板到下方表单", key="btn_admin_mail_apply_preset"):
+            if preset == "超分扣费说明（示例）":
+                st.session_state["admin_mail_to"] = "fhy1231@outlook.com"
+                st.session_state["admin_mail_subj"] = "【AIXFLOW】关于视频超分放大扣费的说明"
+                st.session_state["admin_mail_body"] = (
+                    "AIXFLOW 用户您好：\n\n"
+                    "观察到您近期使用「视频超分放大」时存在异常扣费情况：实际应扣费约 650 元宝，"
+                    "实际扣费 11 元宝。系统已经补扣相应额度 500 元宝。\n\n"
+                    "往期的视频超分放大扣费若也有类似情况，差额由平台自行承担，希望理解，谢谢。\n\n"
+                    "如有疑问，可联系管理员微信：howells532"
+                )
+            else:
+                st.session_state["admin_mail_to"] = ""
+                st.session_state["admin_mail_subj"] = ""
+                st.session_state["admin_mail_body"] = ""
+
+        mail_to = st.text_input("收件人邮箱", key="admin_mail_to")
+        mail_subj = st.text_input("主题", key="admin_mail_subj")
+        mail_body = st.text_area("正文", height=220, key="admin_mail_body")
+        if "admin_mail_from" not in st.session_state:
+            st.session_state["admin_mail_from"] = rf
+        mail_from = st.text_input(
+            "发件人（一般无需改）",
+            key="admin_mail_from",
+        )
+
+        if st.button("发送邮件", type="primary", key="btn_admin_mail_send", disabled=not bool(rk)):
+            with st.spinner("正在通过 Resend 发送…"):
+                result = send_official_resend_email(
+                    to_email=mail_to,
+                    subject=mail_subj,
+                    body_text=mail_body,
+                    from_email=mail_from,
+                )
+            if result.get("ok"):
+                st.success(f"已发送 · id=`{result.get('id')}` → `{result.get('to')}`")
+            else:
+                st.error(f"发送失败：{result.get('error')}")
 
     with tab_coupon:
         st.subheader("云端兑换码生成")

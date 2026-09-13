@@ -1,10 +1,13 @@
 /**
- * 对话 LLM 上游分流：BLTCY vs RunningHub OpenAI 兼容（llm.runninghub.ai）
+ * 对话 LLM 上游分流：BLTCY/Apilio vs RunningHub OpenAI 兼容（llm.runninghub.ai）
  */
 
 export const RH_LLM_MODEL_GPT56_TERRA = 'openai/gpt-5.6-terra';
 
 export const DEFAULT_RH_LLM_BASE = 'https://llm.runninghub.ai/v1';
+
+/** 原 BLTCY，现已迁至 Apilio；可用环境变量 BLTCY_API_BASE 覆盖 */
+export const DEFAULT_BLTCY_API_BASE = 'https://api.apilio.ai';
 
 /** 走 RunningHub LLM 网关的模型（可按需扩展） */
 export const RUNNINGHUB_LLM_MODEL_IDS = new Set([RH_LLM_MODEL_GPT56_TERRA]);
@@ -35,9 +38,10 @@ export function resolveLlmUpstream(modelId) {
       keyError: 'RUNNINGHUB_LLM_API_KEY_NOT_CONFIGURED',
     };
   }
+  const base = (process.env.BLTCY_API_BASE || DEFAULT_BLTCY_API_BASE).replace(/\/$/, '');
   return {
     provider: 'bltcy',
-    url: 'https://api.bltcy.ai/v1/chat/completions',
+    url: `${base}/v1/chat/completions`,
     apiKey: process.env.BLTCY_API_KEY?.trim() || '',
     keyError: 'BLTCY_API_KEY_NOT_CONFIGURED',
   };

@@ -17,6 +17,10 @@ import type {
   DramaVisualLensMm,
   VisualStylePreset,
 } from './types.js';
+import {
+  isScenicAtmospherePhrase,
+  scrubVisualStyleToLookAndColor,
+} from './visualStyleLookColor.js';
 
 const LENSES: DramaVisualLensMm[] = [18, 24, 35, 50, 85, 135];
 
@@ -115,13 +119,14 @@ export function createEmptyDramaVisualDnaReferenceImage(
 }
 
 /**
- * 根据 Visual DNA 参数自动生成电影感 cinematic prompt。
+ * 根据 Visual DNA 参数生成「画风 + 色彩基调」铅字。
+ * 不含题材/地点/场景氛围（场景以 Picture 为准）。
  */
 export function buildCinematicPromptFromVisualDna(
   dna: Pick<DramaVisualDNA, 'color' | 'camera' | 'lighting' | 'texture' | 'mood'>,
   promptTemplate?: string,
 ): string {
-  const tpl = String(promptTemplate || '').trim();
+  const tpl = scrubVisualStyleToLookAndColor(String(promptTemplate || '').trim());
   const parts: string[] = [];
   if (tpl) parts.push(tpl);
 
@@ -135,7 +140,7 @@ export function buildCinematicPromptFromVisualDna(
   else parts.push('moderate depth of field');
 
   if (dna.camera.anamorphic) parts.push('anamorphic flares, oval bokeh');
-  if (dna.camera.movement) parts.push(dna.camera.movement);
+  // 运镜属分镜/机位，不进风格铅字（避免漂浮诗意等题材暗示）
 
   const temp = dna.color.temperature;
   if (temp <= -35) parts.push('cool blue cinematic grading');
@@ -164,25 +169,28 @@ export function buildCinematicPromptFromVisualDna(
   if (dna.texture.sharpness >= 70) parts.push('crisp detail');
   else if (dna.texture.sharpness <= 35) parts.push('soft organic sharpness');
 
-  if (dna.mood.atmosphere) parts.push(dna.mood.atmosphere);
-  if (dna.mood.emotion) parts.push(`${dna.mood.emotion} mood`);
+  // mood.atmosphere 常含地点/题材，风格铅字一律不注入
+  if (dna.mood.emotion && !isScenicAtmospherePhrase(dna.mood.emotion)) {
+    parts.push(`${dna.mood.emotion} mood`);
+  }
 
   parts.push('cinematic still, movie lighting, photoreal');
-  return parts
-    .map((s) => String(s || '').trim())
-    .filter(Boolean)
-    .join(', ');
+  return scrubVisualStyleToLookAndColor(
+    parts
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+      .join(', '),
+  );
 }
 
 /**
- * 中文对照版 cinematic prompt。
- * 短剧 H3 中文编译使用本函数；英文 generatedPrompt 仍作历史字段与英文模式。
+ * 中文对照版：仅画风 + 色彩基调。
  */
 export function buildCinematicPromptZhFromVisualDna(
   dna: Pick<DramaVisualDNA, 'color' | 'camera' | 'lighting' | 'texture' | 'mood'>,
   promptTemplateZh?: string,
 ): string {
-  const tpl = String(promptTemplateZh || '').trim();
+  const tpl = scrubVisualStyleToLookAndColor(String(promptTemplateZh || '').trim());
   const parts: string[] = [];
   if (tpl) parts.push(tpl);
 
@@ -194,22 +202,6 @@ export function buildCinematicPromptZhFromVisualDna(
   else parts.push('中等景深');
 
   if (dna.camera.anamorphic) parts.push('变形镜头光晕、椭圆焦外');
-  if (dna.camera.movement) {
-    const moveMap: Record<string, string> = {
-      'subtle handheld': '轻微手持',
-      'motivated push-in': '动机性推进',
-      'gentle gimbal': '柔和云台运镜',
-      'gentle drift': '轻柔漂移',
-      'gliding steadicam': '稳定器滑行',
-      'locked-off tension': '锁定机位压迫感',
-      'classic tracking': '经典跟拍',
-      'floating lyrical drift': '漂浮诗意运镜',
-      'dynamic comic push': '动态漫画式推进',
-      'smooth luxury glide': '平滑奢华滑镜',
-      'observational handheld': '观察式手持',
-    };
-    parts.push(moveMap[dna.camera.movement] || dna.camera.movement);
-  }
 
   const temp = dna.color.temperature;
   if (temp <= -35) parts.push('冷蓝电影调色');
@@ -229,23 +221,27 @@ export function buildCinematicPromptZhFromVisualDna(
   const lightStyleMap: Record<string, string> = {
     cinematic: '电影光',
     'cinematic motivated key': '电影动机主光',
+    'motivated key': '动机主光',
+    动机主光: '动机主光',
     'beauty soft key': '美颜柔光主光',
     'soft window natural light': '窗边自然柔光',
     'neon practicals': '霓虹实景光',
     'noir hard light with red accent': '黑色电影硬光与局部红光',
-    'classic HK drama practicals': '经典港剧实景光',
-    'misty soft dawn key': '薄雾晨光柔主光',
+    'classic HK drama practicals': '经典暖调实景光',
+    'misty soft dawn key': '薄雾柔主光',
     'cel-shaded soft key': '赛璐珞感柔主光',
     'soft high-key beauty': '柔和高调美光',
     'available natural light': '现成自然光',
   };
   if (dna.lighting.style) {
-    parts.push(`${lightStyleMap[dna.lighting.style] || dna.lighting.style}光效`);
+    const mapped = lightStyleMap[dna.lighting.style] || dna.lighting.style;
+    parts.push(/光效$|光$/.test(mapped) ? mapped : `${mapped}光效`);
   }
 
   const lightDirMap: Record<string, string> = {
     'side key': '侧主光',
     'side key with soft fill': '侧主光+柔辅光',
+    '侧主光+柔辅光': '侧主光+柔辅光',
     'front soft wrap': '正面柔光包裹',
     'front soft key': '正面柔主光',
     'multi-color rim': '多色轮廓光',
@@ -270,6 +266,10 @@ export function buildCinematicPromptZhFromVisualDna(
       'Ilford HP5 push': '伊尔福 HP5 增感',
       'clean digital beauty': '干净数码美颜',
       'digital clean': '干净数码',
+      'clean digital': '干净数码',
+      'clean digital film': '干净数码胶片',
+      干净数码: '干净数码',
+      干净数码胶片: '干净数码胶片',
       'warm 35mm film': '暖调 35mm 胶片',
       'soft cinema grain': '柔和电影颗粒',
       'clean anime-inspired digital': '干净动漫数码',
@@ -277,47 +277,35 @@ export function buildCinematicPromptZhFromVisualDna(
       'documentary 16mm feel': '纪录 16mm 质感',
     };
     const stock = dna.texture.filmStock || '胶片';
-    parts.push(`${stockMap[stock] || stock}颗粒`);
+    const mapped = stockMap[stock] || stock;
+    parts.push(/颗粒$/.test(mapped) ? mapped : `${mapped}颗粒`);
   }
   if (dna.texture.sharpness >= 70) parts.push('锐利细节');
   else if (dna.texture.sharpness <= 35) parts.push('柔和有机锐度');
 
-  const atmosphereMap: Record<string, string> = {
-    'urban night drama': '都市夜戏氛围',
-    'bright clean romance': '明亮干净浪漫',
-    'warm slice-of-life streets': '温暖市井日常',
-    'rainy neon megacity': '雨夜霓虹巨城',
-    'cold crime night': '寒冷犯罪夜色',
-    '1980s Hong Kong night streets': '八十年代港夜街头',
-    'ink-wash oriental landscape': '水墨东方意境',
-    'stylized comic panels': '风格化漫画分镜',
-    'gold-black penthouse elegance': '金黑豪宅轻奢',
-    'raw real-world workplaces': '真实职场生活感',
-  };
   const emotionMap: Record<string, string> = {
     'tense sophistication': '紧绷精致',
     'sweet clarity': '清甜通透',
     'tender nostalgia': '温柔怀旧',
     'electrified ambition': '带电野心',
     'paranoid dread': '偏执恐惧',
-    'nostalgic rivalry': '怀旧情仇',
+    'nostalgic rivalry': '怀旧张力',
     'poetic stillness': '诗意静谧',
-    'bright fantasy romance': '明快奇幻浪漫',
+    'bright fantasy romance': '明快浪漫',
     'polished desire': '精致欲望',
     'observant empathy': '观察式共情',
   };
-  if (dna.mood.atmosphere) {
-    parts.push(atmosphereMap[dna.mood.atmosphere] || dna.mood.atmosphere);
-  }
-  if (dna.mood.emotion) {
+  if (dna.mood.emotion && !isScenicAtmospherePhrase(dna.mood.emotion)) {
     parts.push(`${emotionMap[dna.mood.emotion] || dna.mood.emotion}情绪`);
   }
 
   parts.push('电影静帧、电影布光、写实影像');
-  return parts
-    .map((s) => String(s || '').trim())
-    .filter(Boolean)
-    .join('，');
+  return scrubVisualStyleToLookAndColor(
+    parts
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+      .join('，'),
+  );
 }
 
 export function createEmptyDramaVisualDNA(
@@ -351,7 +339,7 @@ export function createEmptyDramaVisualDNA(
   return base;
 }
 
-/** 从风格预设生成冻结 Visual DNA */
+/** 从风格预设生成冻结 Visual DNA（画风/色调铅字固定中文、精简） */
 export function visualDnaFromStylePreset(preset: VisualStylePreset): DramaVisualDNA {
   const dnaCore = preset.visualDNA;
   const dna = createEmptyDramaVisualDNA({
@@ -363,7 +351,10 @@ export function visualDnaFromStylePreset(preset: VisualStylePreset): DramaVisual
     presetId: preset.id,
     generatedPrompt: '',
   });
-  dna.generatedPrompt = buildCinematicPromptFromVisualDna(dna, dnaCore.promptTemplate);
+  // 权威铅字只要「画风 + 色调」短句，不展开镜头/光效长文
+  dna.generatedPrompt = scrubVisualStyleToLookAndColor(
+    dnaCore.promptTemplateZh || dnaCore.promptTemplate || '',
+  );
   dna.updated_at = Date.now();
   return dna;
 }

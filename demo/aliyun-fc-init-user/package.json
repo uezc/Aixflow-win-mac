@@ -7,6 +7,7 @@
   "scripts": {
     "test:local": "node test-local.js",
     "deploy": "node scripts/deploy-fc.cjs",
+    "cron:queue": "node scripts/cron-queue-pipeline.mjs",
     "cron:settle": "node scripts/cron-settle-stale-tasks.mjs",
     "migrate:is-first-recharge": "node scripts/migrate-users-is-first-recharge.mjs",
     "test:recharge-bonus": "node scripts/test-recharge-bonus.mjs"

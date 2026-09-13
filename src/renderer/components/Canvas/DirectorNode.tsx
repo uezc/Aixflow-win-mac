@@ -83,6 +83,8 @@ import {
 import { useCanvasTheme } from '../../contexts/CanvasThemeContext';
 import { useNxModelPricing } from '../../contexts/NxModelPricingContext';
 import {
+  DRAMA_PROMPT_OPTIMIZE_MODEL_ID,
+  getDramaPromptOptimizeYuanbao,
   LLM_CHAT_DISPLAY_MODEL_ID,
   LLM_CHAT_MODEL_GPT56_TERRA,
   LLM_CHAT_MODEL_IDS,
@@ -242,6 +244,7 @@ import {
   buildDirectorSceneImagePrompt,
   buildDirectorCharacterImagePrompt,
   buildDirectorPropImagePrompt,
+  buildDirectorSystemVisualImagePrompt,
   directorAssetAspectRatio,
   ensureDirectorSceneBuiltinPrompt,
   rebindDirectorPipelineAssetRefs,
@@ -331,6 +334,7 @@ import { audioDisplayTitleFromFileName } from '../../utils/audioSongModels';
 import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
 import { getCharactersCoalesced } from '../../utils/characterLibraryCache';
 import { ReferenceAudioWaveStrip } from './ReferenceAudioWaveStrip';
+import AssetLibLazyThumb from '../AssetLibLazyThumb';
 import { MusicPlayer } from '../Workspace/MusicPlayer';
 import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import { PanelOptionDropdown, forceRemoveOrphanPanelDropdownPortals } from './PanelOptionDropdown';
@@ -355,12 +359,15 @@ import {
   applyDramaSessionAssetImage,
   applyDramaSessionVoiceSample,
   composeDramaCharacterCostumePrompt,
+  resolveCharacterMasterReferenceUrl,
   healDramaSessionStuckAssetGenerating,
   restoreDramaBibleMediaFromPipeline,
   composeDramaVoiceSampleLine,
   ensureVoiceSampleTexts,
   buildDramaShotDoubaoAudioPrompt,
   collectDramaShotVoiceRefUrls,
+  dramaShotHasOnlySystemDialogue,
+  dramaShotHasSpokenDialogue,
   dramaShotNeedsAudioContent,
   domainPhaseToUserPhase,
   preferredDomainPhaseForUserPhase,
@@ -368,9 +375,19 @@ import {
   confirmDramaAssets,
   isDramaAssetsConfirmed,
   isDramaUserPhaseDone,
+  isDramaVisualStyleLocked,
+  isDramaSystemVisualAssetId,
+  resolveDramaSystemVoice,
+  composeDramaSystemVisualPrompt,
+  DRAMA_SYSTEM_SPEAKER_ID,
+  DRAMA_SYSTEM_VISUAL_ASSET_NAME,
   DRAMA_USER_PHASES,
   DRAMA_USER_PHASE_LABELS,
   DRAMA_USER_PHASE_SUB,
+  inferDramaSceneSettingPeriod,
+  dramaStyleHintLooksAncient,
+  listDramaShotStoryboardSourceRefs,
+  composeDramaShotStoryboardImagePrompt,
   type DramaUserPhase,
 } from '../../../shared/directorDomain';
 import { DOUBAO_SEED_AUDIO_MODEL_ID } from '../../utils/doubaoSeedAudioModel';
@@ -381,14 +398,19 @@ const SHOT_ROW_DRAG_THRESHOLD_PX = 8;
 
 /** 导演对话下拉：与 LLM 聊天共用目录（含 GPT-5.6 Terra） */
 const DIRECTOR_CHAT_MODELS = LLM_CHAT_MODEL_IDS;
-const DIRECTOR_CHAT_MODEL_OPTIONS = DIRECTOR_CHAT_MODELS.map((m) => ({
-  value: m,
-  label: LLM_CHAT_MODEL_LABELS[m] || m,
-}));
 const DIRECTOR_CHAT_MODEL_DEFAULT =
   (DIRECTOR_CHAT_MODELS as readonly string[]).includes('gpt-4o')
     ? 'gpt-4o'
     : LLM_CHAT_DISPLAY_MODEL_ID;
+
+function directorChatModelOptions(includeDramaPrice: boolean) {
+  return DIRECTOR_CHAT_MODELS.map((m) => ({
+    value: m,
+    label: includeDramaPrice
+      ? `${LLM_CHAT_MODEL_LABELS[m] || m} · ${getDramaPromptOptimizeYuanbao(m)}元宝`
+      : LLM_CHAT_MODEL_LABELS[m] || m,
+  }));
+}
 
 export interface DirectorNodeData {
   director?: DirectorPipelineState;
@@ -829,30 +851,10 @@ const DIRECTOR_MV_TABLE_ROW_CV: React.CSSProperties = {
 const REF_THUMB_MAX_H_PX = 108;
 const REF_THUMB_MAX_W_PX = 160;
 
-/** 将图片比例吸附到常见画幅（场景固定 16:9；角色/分镜常用 16:9 / 1:1 / 9:16） */
-function snapConfirmFrameRatio(
-  naturalW: number,
-  naturalH: number,
-  mode: 'scene' | 'cast' | 'storyboard',
-): number {
-  if (mode === 'scene') return 16 / 9;
-  const r = naturalW / Math.max(1, naturalH);
-  const candidates = [16 / 9, 1, 9 / 16];
-  let best = candidates[0];
-  let bestDist = Infinity;
-  for (const c of candidates) {
-    const d = Math.abs(Math.log(r / c));
-    if (d < bestDist) {
-      bestDist = d;
-      best = c;
-    }
-  }
-  return best;
-}
-
 /**
  * 定高限宽 + object-contain。
- * frame：圆角比例框——scene 固定 16:9；cast/storyboard 按图片吸附 16:9 / 1:1 / 9:16。
+ * frame：圆角比例框——scene 固定 16:9；cast/storyboard 固定常用比例（不再挂载时 new Image 测原图，避免急切解码）。
+ * 列表预览走 AssetLibLazyThumb 磁盘小图。
  */
 const DirectorAspectThumbButton = memo(function DirectorAspectThumbButton({
   url,
@@ -881,23 +883,9 @@ const DirectorAspectThumbButton = memo(function DirectorAspectThumbButton({
   frame?: 'scene' | 'cast' | 'storyboard';
   className?: string;
 }) {
-  const [ratio, setRatio] = React.useState(() =>
-    frame === 'scene' ? 16 / 9 : frame === 'cast' ? 9 / 16 : frame === 'storyboard' ? 16 / 9 : 1,
-  );
-
-  React.useEffect(() => {
-    if (!frame || frame === 'scene' || !url) return;
-    let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (cancelled) return;
-      setRatio(snapConfirmFrameRatio(img.naturalWidth, img.naturalHeight, frame));
-    };
-    img.src = url;
-    return () => {
-      cancelled = true;
-    };
-  }, [url, frame]);
+  const ratio =
+    frame === 'scene' || frame === 'storyboard' ? 16 / 9 : frame === 'cast' ? 9 / 16 : 1;
+  const listEdge = Math.max(96, Math.min(320, Math.round(Math.max(maxH, maxW) * 1.25)));
 
   if (frame) {
     const landscape = ratio >= 0.95;
@@ -926,13 +914,12 @@ const DirectorAspectThumbButton = memo(function DirectorAspectThumbButton({
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
       >
-        <img
+        <AssetLibLazyThumb
           src={url}
           alt={alt}
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-contain pointer-events-none"
-          draggable={false}
+          maxEdge={listEdge}
+          className="h-full w-full"
+          imgClassName="h-full w-full object-contain pointer-events-none"
         />
       </button>
     );
@@ -951,19 +938,153 @@ const DirectorAspectThumbButton = memo(function DirectorAspectThumbButton({
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      <img
+      <AssetLibLazyThumb
         src={url}
         alt={alt}
-        loading="lazy"
-        decoding="async"
-        className={
+        maxEdge={listEdge}
+        className={fill ? 'max-h-full max-w-full' : 'h-full w-auto max-w-full'}
+        imgClassName={
           fill
             ? 'max-h-full max-w-full w-auto h-auto object-contain pointer-events-none'
             : 'h-full w-auto max-w-full object-contain pointer-events-none'
         }
-        draggable={false}
       />
     </button>
+  );
+});
+
+/** 视频表成片：默认只显示 poster/分镜小图；悬停再挂载 <video> 解码，离开卸载释放解码器。 */
+const DirectorMvShotVideoThumb = memo(function DirectorMvShotVideoThumb({
+  videoUrl,
+  posterUrl,
+  shotNo,
+  maxH,
+  maxW,
+  playWithSound,
+  panelActive,
+  videoGenerating,
+  isPreviewBlocked,
+  pauseOtherThumbs,
+  onClick,
+  children,
+}: {
+  videoUrl: string;
+  posterUrl?: string;
+  shotNo: string;
+  maxH: number;
+  maxW: number;
+  playWithSound: boolean;
+  panelActive: boolean;
+  videoGenerating: boolean;
+  isPreviewBlocked: () => boolean;
+  pauseOtherThumbs: (except?: HTMLVideoElement | null) => void;
+  onClick: (e: React.MouseEvent) => void;
+  children?: React.ReactNode;
+}) {
+  const [armed, setArmed] = React.useState(false);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const src = toElectronVideoElementSrc(videoUrl) || videoUrl;
+  const posterEdge = Math.max(128, Math.min(360, Math.round(Math.max(maxH, maxW) * 1.2)));
+
+  React.useEffect(() => {
+    if (!armed || !panelActive) return;
+    const v = videoRef.current;
+    if (!v) return;
+    if (isPreviewBlocked() || videoGenerating) return;
+    pauseOtherThumbs(v);
+    v.loop = true;
+    v.muted = !playWithSound;
+    void v.play().catch(() => undefined);
+  }, [armed, panelActive, playWithSound, videoGenerating, isPreviewBlocked, pauseOtherThumbs, src]);
+
+  React.useEffect(() => {
+    if (panelActive) return;
+    setArmed(false);
+  }, [panelActive]);
+
+  React.useEffect(() => {
+    if (armed && panelActive) return;
+    const v = videoRef.current;
+    if (!v) return;
+    v.pause();
+    try {
+      v.removeAttribute('src');
+      v.load();
+    } catch {
+      /* ignore */
+    }
+  }, [armed, panelActive]);
+
+  return (
+    <div
+      className="relative inline-flex max-w-full group/vidf"
+      onMouseEnter={() => {
+        if (!panelActive || isPreviewBlocked() || videoGenerating) return;
+        setArmed(true);
+      }}
+      onMouseLeave={() => {
+        const v = videoRef.current;
+        if (v) {
+          v.pause();
+          try {
+            v.currentTime = 0;
+            v.removeAttribute('src');
+            v.load();
+          } catch {
+            /* ignore */
+          }
+        }
+        setArmed(false);
+      }}
+    >
+      {armed && panelActive ? (
+        <video
+          ref={videoRef}
+          src={src}
+          data-director-shot-video=""
+          data-director-shot-no={shotNo}
+          className="nodrag max-h-full rounded-lg object-contain bg-black/40 ring-1 ring-transparent group-hover/vidf:ring-blue-500/70"
+          style={{ maxHeight: maxH, maxWidth: maxW }}
+          muted={!playWithSound}
+          loop
+          playsInline
+          preload="metadata"
+          poster={posterUrl || undefined}
+          onClick={onClick}
+          onPointerDown={(e) => e.stopPropagation()}
+        />
+      ) : posterUrl ? (
+        <button
+          type="button"
+          className="nodrag max-h-full rounded-lg overflow-hidden bg-black/40 ring-1 ring-transparent group-hover/vidf:ring-blue-500/70 cursor-pointer"
+          style={{ maxHeight: maxH, maxWidth: maxW }}
+          title="悬停预览成片"
+          onClick={onClick}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <AssetLibLazyThumb
+            src={posterUrl}
+            alt=""
+            maxEdge={posterEdge}
+            className="max-h-full max-w-full"
+            imgClassName="max-h-full max-w-full object-contain pointer-events-none"
+            imgStyle={{ maxHeight: maxH, maxWidth: maxW }}
+          />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="nodrag flex items-center justify-center rounded-lg bg-black/40 text-[10px] text-white/45 ring-1 ring-transparent group-hover/vidf:ring-blue-500/70"
+          style={{ height: Math.min(72, maxH), width: Math.min(128, maxW) }}
+          title="悬停预览成片"
+          onClick={onClick}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          视频
+        </button>
+      )}
+      {children}
+    </div>
   );
 });
 
@@ -1579,6 +1700,27 @@ function clearDirectorChatTextStash(chatNodeId: string) {
   directorChatTextByNodeId.delete(chatNodeId);
 }
 
+/** 镜号在进度表 / 画布表里可能是 6、06、ep:id:06，放弃等待必须一起清 */
+function directorShotNoKeyAliases(
+  shotNo: string,
+  state?: { mode?: string; activeDramaEpisodeId?: string } | null,
+): string[] {
+  const no = String(shotNo || '').trim();
+  if (!no) return [];
+  const keys = new Set<string>([no]);
+  if (/^\d+$/.test(no)) {
+    keys.add(no.padStart(2, '0'));
+    keys.add(String(Number.parseInt(no, 10)));
+  }
+  const ep = String(state?.activeDramaEpisodeId || '').trim();
+  if (state?.mode === 'drama' && ep) {
+    for (const n of [...keys]) {
+      if (!n.startsWith('ep:')) keys.add(`ep:${ep}:${n}`);
+    }
+  }
+  return [...keys];
+}
+
 /** 只取「这一次请求」迟到的正文；不会把上一轮成功结果当成新故事。 */
 function consumeStashedDirectorChatText(
   chatNodeId: string,
@@ -1693,7 +1835,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           : raw.title === 'AI短剧导演' || !String(raw.title || '').trim()
             ? 'MV导演'
             : raw.title,
-      activeDramaEpisodeId: dramaActiveEpisodeId,
+      // 与 epForBoards / Workspace.hydrate 一致：空 active 时回退首集，避免 migrate 到 ep:首集 后 lookup 打空 sb
+      activeDramaEpisodeId: dramaActiveEpisodeId || dramaFirstEpisodeId,
       storyboardsByShotNo: boards,
     });
   }, [data?.director, moduleMode, dramaActiveEpisodeId, dramaFirstEpisodeId]);
@@ -1946,30 +2089,95 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   /** 短剧成片：生成中镜号（即时绿条 + 防连点；与 storyboard.videoStatus 互补） */
   const [videoGenProgressIds, setVideoGenProgressIds] = useState<Record<string, true>>({});
   const videoGenProgressIdsRef = useRef<Record<string, true>>({});
+  /** 本轮是否已看到画布表进入 generating（避免旧 ready 成片把绿条清掉） */
+  const videoGenSeenGeneratingRef = useRef<Record<string, true>>({});
+  /** 点生成时的旧成片 URL：只有 URL 变化才视为本轮完成 */
+  const videoGenPrevUrlRef = useRef<Record<string, string>>({});
+  /** 点生成时刻：storyboard 尚未写入 startedAt 时，对账用此宽限，避免重生成绿条闪一下就灭 */
+  const videoGenMarkedAtRef = useRef<Record<string, number>>({});
+  /** 用户点过「放弃等待」的镜号：禁止从 Domain generating 把绿条钉回来 */
+  const videoWaitAbandonedRef = useRef<Set<string>>(new Set());
   const markVideoGenProgress = useCallback((shotNo: string, on: boolean) => {
     const id = String(shotNo || '').trim();
     if (!id) return;
+    const aliases = directorShotNoKeyAliases(id, directorStateRef.current);
+    if (on) {
+      for (const a of aliases) videoWaitAbandonedRef.current.delete(a);
+    } else {
+      for (const a of aliases) videoWaitAbandonedRef.current.add(a);
+    }
     setVideoGenProgressIds((prev) => {
-      const has = !!prev[id];
-      if (on && has) return prev;
-      if (!on && !has) return prev;
+      const aliasSet = new Set(aliases);
       if (on) {
-        const next = { ...prev, [id]: true };
+        const has = aliases.some((a) => prev[a]);
+        if (has && prev[id]) return prev;
+        const sb = getDirectorShotStoryboard(directorStateRef.current, id);
+        const markedAt = Date.now();
+        videoGenSeenGeneratingRef.current[id] = true;
+        videoGenPrevUrlRef.current[id] = String(sb.videoUrl || '').trim();
+        videoGenMarkedAtRef.current[id] = markedAt;
+        for (const a of aliases) {
+          videoGenSeenGeneratingRef.current[a] = true;
+          if (!(a in videoGenPrevUrlRef.current)) {
+            videoGenPrevUrlRef.current[a] = String(sb.videoUrl || '').trim();
+          }
+          videoGenMarkedAtRef.current[a] = markedAt;
+        }
+        const next: Record<string, true> = { ...prev, [id]: true };
         videoGenProgressIdsRef.current = next;
         return next;
       }
-      const next = { ...prev };
-      delete next[id];
+      let changed = false;
+      const next: Record<string, true> = { ...prev };
+      for (const k of Object.keys(next)) {
+        const kAliases = directorShotNoKeyAliases(k, directorStateRef.current);
+        if (aliasSet.has(k) || kAliases.some((a) => aliasSet.has(a))) {
+          delete next[k];
+          delete videoGenSeenGeneratingRef.current[k];
+          delete videoGenPrevUrlRef.current[k];
+          delete videoGenMarkedAtRef.current[k];
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
       videoGenProgressIdsRef.current = next;
       return next;
     });
+    // 重生成：旧成片仍 ready 时立刻把画布表钉成 generating，否则对账会在 startedAt 空窗把绿条清掉
+    if (on) {
+      const board = directorStateRef.current;
+      const sb = getDirectorShotStoryboard(board, id);
+      const startedAt =
+        Number(sb.videoGeneratingStartedAt) > 0
+          ? Number(sb.videoGeneratingStartedAt)
+          : Date.now();
+      if (
+        String(sb.videoStatus || '').trim() !== 'generating' &&
+        String(sb.videoStatus || '').trim() !== 'queued'
+      ) {
+        patchRef.current(
+          updateDirectorShotStoryboard(board, id, {
+            videoStatus: 'generating',
+            videoError: '',
+            videoGeneratingStartedAt: startedAt,
+          }),
+        );
+      } else if (!(Number(sb.videoGeneratingStartedAt) > 0)) {
+        patchRef.current(
+          updateDirectorShotStoryboard(board, id, {
+            videoGeneratingStartedAt: startedAt,
+          }),
+        );
+      }
+    }
   }, []);
   /**
    * 成片绿条对账（P0）：不依赖 SUCCESS 是否被早退。
    * - 有 URL 且 status=ready/error → 立刻清绿条
    * - 有 URL 且仍标 generating：重新生成宽限内保留；宽限外视为矛盾，收成 ready 并清条
+   * - startedAt 缺失时不得永久卡绿条（旧逻辑要求 startedAt>0 导致永不收条）
    */
-  const VIDEO_GEN_PROGRESS_GRACE_MS = 120_000;
+  const VIDEO_GEN_PROGRESS_GRACE_MS = 12 * 60 * 1000;
   const reconcileVideoGenProgress = useCallback(() => {
     const board = directorStateRef.current;
     const progressIds = Object.keys(videoGenProgressIdsRef.current);
@@ -1992,15 +2200,59 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const st = String(sb.videoStatus || '').trim();
       const hasUrl = !!String(sb.videoUrl || '').trim();
       const startedAt = Number(sb.videoGeneratingStartedAt || 0);
-      const inGrace = startedAt > 0 && now - startedAt < VIDEO_GEN_PROGRESS_GRACE_MS;
+      const markedAt = Number(videoGenMarkedAtRef.current[id] || 0);
+      // 无 startedAt：退回用点生成时刻；二者皆无才视为已过宽限
+      const inGrace =
+        (startedAt > 0 && now - startedAt < VIDEO_GEN_PROGRESS_GRACE_MS) ||
+        (markedAt > 0 && now - markedAt < VIDEO_GEN_PROGRESS_GRACE_MS);
+      const marked = !!videoGenProgressIdsRef.current[id];
+      const prevUrl = String(videoGenPrevUrlRef.current[id] || '');
+      const curUrl = String(sb.videoUrl || '').trim();
+      const isNewResult = !!curUrl && curUrl !== prevUrl;
 
-      if (st === 'ready' || st === 'error') {
+      if (st === 'error') {
+        clearProgress.push(id);
+        continue;
+      }
+
+      if (marked) {
+        if (st === 'generating' || st === 'queued') {
+          videoGenSeenGeneratingRef.current[id] = true;
+          // 宽限外仍是旧片 URL / 或无 startedAt：视为卡死，收条
+          if (hasUrl && !inGrace && !isNewResult) {
+            nextBoard = updateDirectorShotStoryboard(nextBoard, id, {
+              videoStatus: 'ready',
+              videoError: '',
+              videoGeneratingStartedAt: undefined,
+            });
+            boardChanged = true;
+            clearProgress.push(id);
+          }
+          continue;
+        }
+        // 旧成片仍是 ready：本轮还没写出新片，不能清绿条（仅宽限内）
+        if (st === 'ready' && !isNewResult) {
+          if (!inGrace) clearProgress.push(id);
+          continue;
+        }
+        if (st === 'ready' && isNewResult) {
+          clearProgress.push(id);
+          continue;
+        }
+        // spawn 失败回滚成 pending：绿条必须立刻收，否则 12 镜会假「生成中」而 API 无请求
+        if (!st || st === 'pending') {
+          clearProgress.push(id);
+        }
+        continue;
+      }
+
+      if (st === 'ready') {
         clearProgress.push(id);
         continue;
       }
       // 假卡死：成片 URL 已在，却仍标 generating（SUCCESS 早退 / Domain 不同步）
       if (hasUrl && (st === 'generating' || st === 'queued')) {
-        if (inGrace) continue; // 重新生成：旧片仍在，宽限内保留绿条
+        if (inGrace && !isNewResult) continue; // 重新生成：旧片仍在，宽限内保留绿条
         nextBoard = updateDirectorShotStoryboard(nextBoard, id, {
           videoStatus: 'ready',
           videoError: '',
@@ -2023,31 +2275,49 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         isGenerating: nextBoard.isGenerating,
         error: nextBoard.error || undefined,
       });
-      // Domain 镜状态与画布表对齐，避免分镜卡仍显示「生成中」
+    }
+    // Domain 必须与清条同步：storyboard 已 ready 时 boardChanged 可能仍为 false
+    if (clearProgress.length) {
       const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
       if (domain?.shots?.length) {
-        const clearSet = new Set(clearProgress);
-        // 浅拷贝即可（domain 已规范化），避免 createEmptyDramaSession 深重建导致视频生成对账卡死/OOM
-        dataRef.current?.onUpdate?.({
-          directorDomain: {
-            ...domain,
-            shots: domain.shots.map((s) => {
-              const no = String(s.shot_no || '').trim();
-              if (!clearSet.has(no)) return s;
-              const url = String(s.video_url || '').trim();
-              if (!url && !String(getDirectorShotStoryboard(nextBoard, no).videoUrl || '').trim()) {
-                return s;
-              }
-              return {
-                ...s,
-                video_url:
-                  String(getDirectorShotStoryboard(nextBoard, no).videoUrl || '').trim() ||
-                  s.video_url,
-                video_status: 'ready',
-              };
-            }),
-          },
+        const clearSet = new Set<string>();
+        for (const id of clearProgress) {
+          for (const a of directorShotNoKeyAliases(id, nextBoard)) clearSet.add(a);
+        }
+        let domainChanged = false;
+        const nextShots = domain.shots.map((s) => {
+          const no = String(s.shot_no || '').trim();
+          if (!clearSet.has(no) && !directorShotNoKeyAliases(no, nextBoard).some((a) => clearSet.has(a))) {
+            return s;
+          }
+          const boardUrl = String(getDirectorShotStoryboard(nextBoard, no).videoUrl || '').trim();
+          const url = String(s.video_url || '').trim() || boardUrl;
+          if (!url) {
+            if (String(s.video_status || '').trim() === 'generating' || String(s.video_status || '').trim() === 'queued') {
+              domainChanged = true;
+              return { ...s, video_status: 'pending', video_error: '' };
+            }
+            return s;
+          }
+          if (String(s.video_status || '').trim() === 'ready' && String(s.video_url || '').trim() === url) {
+            return s;
+          }
+          domainChanged = true;
+          return {
+            ...s,
+            video_url: url,
+            video_status: 'ready',
+            video_error: '',
+          };
         });
+        if (domainChanged) {
+          dataRef.current?.onUpdate?.({
+            directorDomain: {
+              ...domain,
+              shots: nextShots,
+            },
+          });
+        }
       }
     }
 
@@ -2056,9 +2326,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         let changed = false;
         const next = { ...prev };
         for (const id of clearProgress) {
-          if (next[id]) {
-            delete next[id];
-            changed = true;
+          const aliases = new Set(directorShotNoKeyAliases(id, nextBoard));
+          for (const k of Object.keys(next)) {
+            if (aliases.has(k) || directorShotNoKeyAliases(k, nextBoard).some((a) => aliases.has(a))) {
+              delete next[k];
+              delete videoGenSeenGeneratingRef.current[k];
+              delete videoGenPrevUrlRef.current[k];
+              delete videoGenMarkedAtRef.current[k];
+              changed = true;
+            }
           }
         }
         if (!changed) return prev;
@@ -2083,6 +2359,164 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     }, 2000);
     return () => window.clearInterval(timer);
   }, [videoGenProgressIds, state.storyboardsByShotNo, reconcileVideoGenProgress]);
+  /** 节点重挂载或 Domain 被 PROCESSING 重新钉住时，把绿条 id 从 video_status 补回来 */
+  useEffect(() => {
+    const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+    const shots = domain?.shots || [];
+    if (!shots.length) return;
+    const board = directorStateRef.current;
+    const healReady: Array<{ no: string; url: string }> = [];
+    setVideoGenProgressIds((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const s of shots) {
+        const no = String(s.shot_no || '').trim();
+        if (!no) continue;
+        const aliases = directorShotNoKeyAliases(no, board);
+        if (aliases.some((a) => videoWaitAbandonedRef.current.has(a))) continue;
+        const st = String(s.video_status || '').trim();
+        if (st !== 'generating' && st !== 'queued') continue;
+        const sb = getDirectorShotStoryboard(board, no);
+        const sbSt = String(sb.videoStatus || '').trim();
+        const sbUrl = String(sb.videoUrl || '').trim();
+        const domainUrl = String(s.video_url || '').trim();
+        const url = sbUrl || domainUrl;
+        const startedAt = Number(sb.videoGeneratingStartedAt || 0);
+        const markedAt = Math.max(
+          0,
+          ...aliases.map((a) => Number(videoGenMarkedAtRef.current[a] || 0)),
+        );
+        const inGrace =
+          (startedAt > 0 && Date.now() - startedAt < VIDEO_GEN_PROGRESS_GRACE_MS) ||
+          (markedAt > 0 && Date.now() - markedAt < VIDEO_GEN_PROGRESS_GRACE_MS);
+        const progressMarked = aliases.some((a) => next[a] || videoGenProgressIdsRef.current[a]);
+        const prevUrl =
+          aliases.map((a) => String(videoGenPrevUrlRef.current[a] || '').trim()).find(Boolean) ||
+          '';
+        const isNewResult = !!url && !!prevUrl && url !== prevUrl;
+
+        // 重新生成：旧成片 URL / 画布仍 ready 不得立刻治愈。
+        // 旧逻辑 `!inGrace || sbSt === 'ready'` 会在宽限内因 ready 清绿条；
+        // 且 `domainUrl` 恒真导致点生成瞬间 startedAt 空窗也治愈。
+        if (url && (sbSt === 'ready' || (!sbSt && sbUrl) || domainUrl)) {
+          if (isNewResult) {
+            healReady.push({ no, url });
+            for (const a of aliases) {
+              if (next[a]) {
+                delete next[a];
+                changed = true;
+              }
+            }
+            continue;
+          }
+          if (inGrace || progressMarked) {
+            // 宽限内或已钉绿条：保留 generating，必要时补 id
+            if (!aliases.some((a) => next[a])) {
+              next[no] = true;
+              changed = true;
+            }
+            continue;
+          }
+          // 宽限外且未钉条：才把卡死的 Domain generating 收成 ready
+          healReady.push({ no, url });
+          for (const a of aliases) {
+            if (next[a]) {
+              delete next[a];
+              changed = true;
+            }
+          }
+          continue;
+        }
+        if (!aliases.some((a) => next[a])) {
+          next[no] = true;
+          changed = true;
+        }
+      }
+      if (!changed) return prev;
+      videoGenProgressIdsRef.current = next;
+      return next;
+    });
+    if (healReady.length && domain?.shots?.length) {
+      const map = new Map(healReady.map((h) => [h.no, h.url] as const));
+      dataRef.current?.onUpdate?.({
+        directorDomain: {
+          ...domain,
+          shots: domain.shots.map((s) => {
+            const no = String(s.shot_no || '').trim();
+            const url =
+              map.get(no) ||
+              [...map.entries()].find(([k]) =>
+                directorShotNoKeyAliases(k, board).includes(no),
+              )?.[1];
+            if (!url) return s;
+            return {
+              ...s,
+              video_url: url,
+              video_status: 'ready',
+              video_error: '',
+            };
+          }),
+        },
+      });
+    }
+  }, [data?.directorDomain]);
+  /** 点生成后立刻把画布表标成 generating，避免对账看到旧 ready 把绿条清掉 */
+  useEffect(() => {
+    const ids = Object.keys(videoGenProgressIds);
+    if (!ids.length) return;
+    let next = directorStateRef.current;
+    let changed = false;
+    const clearIds: string[] = [];
+    for (const id of ids) {
+      const aliases = directorShotNoKeyAliases(id, next);
+      if (aliases.some((a) => videoWaitAbandonedRef.current.has(a))) continue;
+      const sb = getDirectorShotStoryboard(next, id);
+      const st = String(sb.videoStatus || '').trim();
+      const curUrl = String(sb.videoUrl || '').trim();
+      const prevUrl =
+        aliases.map((a) => String(videoGenPrevUrlRef.current[a] || '').trim()).find(Boolean) ||
+        String(videoGenPrevUrlRef.current[id] || '');
+      const isNewResult = !!curUrl && !!prevUrl && curUrl !== prevUrl;
+      const startedAt = Number(sb.videoGeneratingStartedAt || 0);
+      const markedAt = Math.max(
+        0,
+        ...aliases.map((a) => Number(videoGenMarkedAtRef.current[a] || 0)),
+      );
+      const inGrace =
+        (startedAt > 0 && Date.now() - startedAt < VIDEO_GEN_PROGRESS_GRACE_MS) ||
+        (markedAt > 0 && Date.now() - markedAt < VIDEO_GEN_PROGRESS_GRACE_MS);
+      // 已成片：仅「新 URL」或「宽限外」才清条；宽限内旧 ready 必须钉回 generating
+      if (st === 'ready') {
+        if (isNewResult || !inGrace) {
+          clearIds.push(id);
+          continue;
+        }
+        next = updateDirectorShotStoryboard(next, id, {
+          videoStatus: 'generating',
+          videoError: '',
+          videoGeneratingStartedAt: startedAt || markedAt || Date.now(),
+        });
+        changed = true;
+        continue;
+      }
+      // 有成片 URL 却仍 pending：当作已完成，清条，勿钉 generating
+      if (curUrl && (!st || st === 'pending') && (!inGrace || isNewResult)) {
+        clearIds.push(id);
+        continue;
+      }
+      if (st === 'generating' || st === 'queued') continue;
+      next = updateDirectorShotStoryboard(next, id, {
+        videoStatus: 'generating',
+        videoError: '',
+        videoGeneratingStartedAt: Number(sb.videoGeneratingStartedAt) || Date.now(),
+      });
+      changed = true;
+    }
+    if (changed) patchRef.current(next);
+    if (clearIds.length) {
+      for (const id of clearIds) markVideoGenProgress(id, false);
+    }
+  }, [videoGenProgressIds, markVideoGenProgress]);
   /** 音乐步 AI识别 / 歌曲分析：取消令牌（递增 gen 使进行中的 await 失效） */
   const musicJobGenRef = useRef(0);
   const musicJobCancelledRef = useRef(false);
@@ -2198,31 +2632,38 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       const no = String(shotNo || '').trim();
       if (!no) return;
       markVideoGenProgress(no, false);
-      const sb = getDirectorShotStoryboard(directorStateRef.current, no);
-      if (sb.videoStatus === 'generating') {
-        const hasUrl = !!String(sb.videoUrl || '').trim();
-        patch(
-          updateDirectorShotStoryboard(directorStateRef.current, no, {
-            videoStatus: hasUrl ? 'ready' : 'pending',
-            videoError: '',
-          }),
-        );
-      }
-      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      const board = directorStateRef.current;
+      const sb = getDirectorShotStoryboard(board, no);
+      const hasUrl = !!String(sb.videoUrl || '').trim();
+      patch(
+        updateDirectorShotStoryboard(board, no, {
+          videoStatus: hasUrl ? 'ready' : 'pending',
+          videoError: '',
+          videoGeneratingStartedAt: undefined,
+        }),
+      );
+      const cur = dataRef.current;
+      const domain = (cur?.directorDomain as DramaDirectorSession | null) || null;
       if (domain?.shots?.length) {
-        dataRef.current?.onUpdate?.({
-          directorDomain: createEmptyDramaSession({
-            ...domain,
-            shots: domain.shots.map((s) =>
-              String(s.shot_no || '').trim() === no
-                ? {
-                    ...s,
-                    video_status: String(s.video_url || '').trim() ? 'ready' : 'pending',
-                  }
-                : s,
-            ),
+        const aliasSet = new Set(directorShotNoKeyAliases(no, board));
+        const nextDomain: DramaDirectorSession = {
+          ...domain,
+          shots: domain.shots.map((s) => {
+            const sn = String(s.shot_no || '').trim();
+            if (!sn) return s;
+            const hit =
+              aliasSet.has(sn) ||
+              directorShotNoKeyAliases(sn, board).some((a) => aliasSet.has(a));
+            if (!hit) return s;
+            const url = String(s.video_url || '').trim() || String(sb.videoUrl || '').trim();
+            return {
+              ...s,
+              video_status: url ? 'ready' : 'pending',
+            };
           }),
-        });
+        };
+        dataRef.current = cur ? { ...cur, directorDomain: nextDomain } : cur;
+        cur?.onUpdate?.({ directorDomain: nextDomain });
       }
     },
     [markVideoGenProgress, patch],
@@ -3611,6 +4052,27 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     setIsNodeFullscreen(false);
   }, [isDramaMode, id]);
 
+  // 短剧提示词优化默认 GPT-4o（旧工程 3.5 一并迁过来）
+  useEffect(() => {
+    if (!isDramaMode) return;
+    const raw = String(directorStateRef.current.chatModel || state.chatModel || '').trim();
+    if (raw === DRAMA_PROMPT_OPTIMIZE_MODEL_ID) return;
+    if (raw && raw !== 'gpt-3.5-turbo' && raw !== LLM_CHAT_DISPLAY_MODEL_ID) return;
+    patch({
+      ...directorStateRef.current,
+      chatModel: DRAMA_PROMPT_OPTIMIZE_MODEL_ID,
+    });
+    const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+    if (domain) {
+      dataRef.current?.onUpdate?.({
+        directorDomain: createEmptyDramaSession({
+          ...domain,
+          meta: { ...domain.meta, chatModel: DRAMA_PROMPT_OPTIMIZE_MODEL_ID },
+        }),
+      });
+    }
+  }, [isDramaMode, id, patch]);
+
   // 同步 React Flow 节点宽高，避免蓝色选框尺寸/位置错位
   useLayoutEffect(() => {
     data?.onUpdate?.({ width: sizeW, height: sizeH });
@@ -4107,13 +4569,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   }, [state.chatModel]);
 
   const chatRunYuanbao = useMemo((): number | null => {
+    if (isDramaMode) {
+      return getDramaPromptOptimizeYuanbao(chatModelForPrice);
+    }
     try {
       const y = getLlmChatDisplayPrice(cloudMap, 1, chatModelForPrice);
       return Number.isFinite(y) && y > 0 ? y : null;
     } catch {
       return null;
     }
-  }, [cloudMap, chatModelForPrice]);
+  }, [cloudMap, chatModelForPrice, isDramaMode]);
 
   /** 云端 fun-asr 文件转写按次价（与 FC /asr/file-transcribe 扣费对齐） */
   const fileTranscribeYuanbao = useMemo((): number | null => {
@@ -4467,7 +4932,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       >
         <PanelOptionDropdown
           value={chatModelForPrice}
-          options={DIRECTOR_CHAT_MODEL_OPTIONS}
+          options={directorChatModelOptions(isDramaMode)}
           onChange={(v) => {
             patch({
               ...directorStateRef.current,
@@ -4567,8 +5032,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     );
   };
 
-  const renderImageResolutionSelect = (opts?: { compact?: boolean }) => {
-    const res = normalizeDirectorImageResolution(state.imageResolution);
+  const renderImageResolutionSelect = (opts?: {
+    compact?: boolean;
+    /** 分镜图：不提供 4K */
+    exclude4K?: boolean;
+  }) => {
+    const resRaw = normalizeDirectorImageResolution(state.imageResolution);
+    const tiers = (opts?.exclude4K ? (['1K', '2K'] as const) : (['1K', '2K', '4K'] as const));
+    const res = opts?.exclude4K && resRaw === '4K' ? '2K' : resRaw;
     return (
       <select
         className={`${modelSelectCls} shrink-0 ${
@@ -4586,7 +5057,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         }
         onClick={(e) => e.stopPropagation()}
       >
-        {(['1K', '2K', '4K'] as const).map((r) => (
+        {tiers.map((r) => (
           <option key={r} value={r}>
             {r}
           </option>
@@ -4598,8 +5069,22 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
   const renderImageGenControls = (opts?: {
     compact?: boolean;
     kind?: DirectorAssetKind;
+    /** 分镜图生图：用分镜可用模型，且分辨率不含 4K */
+    forStoryboard?: boolean;
   }) => {
-    const filter = directorAssetModelFilter(opts?.kind);
+    const filter = opts?.forStoryboard
+      ? {
+          hasRefs: directorOrderedImageRefs.length > 0 || !!directorStyleRefForFilter,
+          refCount: Math.min(
+            4,
+            Math.max(
+              1,
+              directorOrderedImageRefs.length + (directorStyleRefForFilter ? 1 : 0),
+            ),
+          ),
+          models: directorStoryboardImageModels,
+        }
+      : directorAssetModelFilter(opts?.kind);
     return (
       <div
         className={`flex items-center gap-1 ${
@@ -4612,7 +5097,10 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           models: filter.models,
           compact: opts?.compact,
         })}
-        {renderImageResolutionSelect({ compact: opts?.compact })}
+        {renderImageResolutionSelect({
+          compact: opts?.compact,
+          exclude4K: !!opts?.forStoryboard,
+        })}
       </div>
     );
   };
@@ -5975,12 +6463,14 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                       .filter((a) => a?.kind === 'character');
                     const sceneNames = String(sceneAsset?.name || '').trim();
                     const sceneUrl = String(sceneAsset?.imageUrl || '').trim();
-                    const sb = isWizardMode ? getDirectorShotStoryboard(state, shotNo) : null;
+                    const sb = (isWizardMode || isDramaMode)
+                      ? getDirectorShotStoryboard(state, shotNo)
+                      : null;
                     const sbUrl = String(sb?.imageUrl || '').trim();
                     const sbVersions = listDirectorShotStoryboardImages(sb);
                     const sbGenerating =
-                      !!sb &&
-                      (sb.status === 'generating' || sbGenInFlightRef.current.has(shotNo));
+                      (sb?.status === 'generating' || sbGenInFlightRef.current.has(shotNo)) &&
+                      !!(isWizardMode || isDramaMode);
                     const rowUnseen = isShotRowUnseen(sb);
                     const finalVal = resolveShotFinalPrompt(shot);
                     const audioRange = shotMusicRanges[rowIndex] || {
@@ -7133,9 +7623,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       },
     ) => {
       if (!isDramaMode) return;
-      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      const cur = dataRef.current;
+      const domain = (cur?.directorDomain as DramaDirectorSession | null) || null;
       const next = applyDramaSessionAssetImage(domain, assetId, opts);
       if (!next) return;
+      if (cur) dataRef.current = { ...cur, directorDomain: next };
       dataRef.current?.onUpdate?.({ directorDomain: next });
     },
     [isDramaMode],
@@ -7243,6 +7735,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         await Promise.all(
           toInvoke.map(async ({ voiceId, text }) => {
             const voice = domain!.bible.voices.find((v) => v.voice_id === voiceId);
+            const ch = domain!.bible.characters.find((c) => c.character_id === voice?.character_id);
+            const refAudio = String(voice?.sample_url || voice?.identity?.reference_audio || '').trim();
+            const charImageUrl = String(ch?.imageUrl || '').trim();
+            // 人物卡片声音生成：优先参考音频复刻；其次照片猜声音；都没有则用预设音色直接生成
+            const hasRefAudio = !!refAudio;
+            const hasImage = !hasRefAudio && !!charImageUrl;
+            const fallbackSpeaker = !hasRefAudio && !hasImage ? 'zh_female_vv_uranus_bigtts' : '';
             try {
               await window.electronAPI!.invokeAI({
                 modelId: 'audio',
@@ -7253,12 +7752,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   enable_base64_output: false,
                   english_normalization: false,
                   speechRate: 0,
-                  loudnessRate: 100,
+                  loudnessRate: 0,
                   pitch: 0,
                   doubaoFormat: 'mp3',
                   doubaoSampleRate: '24000',
                   projectId: data?.projectId || undefined,
                   nodeTitle: `导演声音-${voice?.voice_id || voiceId}`,
+                  ...(hasRefAudio
+                    ? { doubaoAudioUrls: [refAudio], referenceAudioUrl: refAudio }
+                    : hasImage
+                      ? { doubaoImageUrl: charImageUrl }
+                      : { doubaoSpeaker: fallbackSpeaker }),
                 },
               });
             } catch (e) {
@@ -7418,20 +7922,35 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
 
     if (queueBusy) {
       // 生图进行中：pipeline 已有成图的 id 必须立刻回写 Domain（否则任务列表完成、卡片一直「等待」）
+      // 但跳过正在生成中的 id（避免重新生成已有图的角色时进度条被立即清除）
       let next = domain;
       let changed = false;
       for (const [assetId, url] of Object.entries(urlByAssetId)) {
         const id = String(assetId || '').trim();
         if (!id || !url) continue;
+        // 跳过正在生成中的 id（imageGenProgressIds 或 inflight 标记）
+        if (imageGenProgressIds[id] || imageGenInFlightRef.current.has(id)) continue;
         const ch = next.bible.characters.find((c) => c.character_id === id);
         const sc = next.bible.scenes.find((s) => s.scene_id === id);
         const pr = next.bible.props.find((p) => p.prop_id === id);
         const cr = next.bible.creatures.find((c) => c.creature_id === id);
-        const target = ch || sc || pr || cr;
+        const sysVoice =
+          isDramaSystemVisualAssetId(id, next) ? resolveDramaSystemVoice(next) : null;
+        const target = ch || sc || pr || cr || sysVoice;
         if (!target) continue;
-        const own = String((target as { imageUrl?: string }).imageUrl || '').trim();
-        const st = String((target as { status?: string }).status || '').trim();
-        if (own === url && st === 'ready') continue;
+        const own = String(
+          sysVoice
+            ? sysVoice.imageUrl || ''
+            : (target as { imageUrl?: string }).imageUrl || '',
+        ).trim();
+        const st = String(
+          sysVoice
+            ? sysVoice.image_status || ''
+            : (target as { status?: string }).status || '',
+        ).trim();
+        if (own === url && (sysVoice ? st === 'ready' || !st : st === 'ready')) continue;
+        // 只收口 generating / 填空。禁止用 pipeline 里的旧定妆盖掉 Domain 刚写上的新图。
+        if (st !== 'generating' && own) continue;
         const patched = applyDramaSessionAssetImage(next, id, {
           imageUrl: url,
           status: 'ready',
@@ -7475,11 +7994,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     (assetId: string, result: { imageUrl?: string; localPath?: string; url?: string }) => {
       let imageUrl = resolveDirectorImageUrl(result);
       if (!imageUrl) {
-        const hit = findDirectorAssetById(directorStateRef.current.assets, assetId);
-        imageUrl = String(hit?.asset.imageUrl || '').trim();
-      }
-      if (!imageUrl) {
-        // SUCCESS 无图时也要结束槽位，避免绿条/「等待生成结果」永久卡住
+        // 不要回退到 pipeline 旧图：Workspace 可能已写入新图，再用旧定妆回写会把主体框盖回去。
         finishDirectorImageSlot(assetId);
         return;
       }
@@ -7559,13 +8074,30 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
       const latest = directorStateRef.current;
       const live = findDirectorAssetById(latest.assets, nextAsset.id);
-      const asset = live?.asset || nextAsset;
+      let asset = live?.asset || nextAsset;
       const kind = live?.kind || nextAsset.kind;
       markImageGenProgress(asset.id, true);
       patch(updateDirectorAsset(latest, asset.id, { status: 'generating', error: undefined }));
       const imageNodeId = directorAssetImageNodeId(id, asset.id);
       try {
         const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        const isSystemVisual =
+          !!domain &&
+          (String(asset.id || '').trim() === DRAMA_SYSTEM_SPEAKER_ID ||
+            isDramaSystemVisualAssetId(asset.id, domain));
+        // 系统形象提示词以 Domain voice.image_prompt 为准，生成前强制同步，避免 pipeline 旧稿盖住用户修改
+        if (isSystemVisual && domain) {
+          const sysVoice = resolveDramaSystemVoice(domain);
+          const freshPrompt = composeDramaSystemVisualPrompt(sysVoice?.image_prompt);
+          if (freshPrompt && freshPrompt !== String(asset.prompt || '').trim()) {
+            patch(
+              updateDirectorAsset(directorStateRef.current, asset.id, {
+                prompt: freshPrompt,
+              }),
+            );
+            asset = { ...asset, prompt: freshPrompt };
+          }
+        }
         const genreLock = resolveDramaGenreLock({
           style: domain?.bible?.project?.style || latest.mvStoryAnalysis?.genre,
           type: domain?.bible?.project?.type,
@@ -7584,11 +8116,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           domain?.bible?.project?.style,
         );
         const assetPromptForGen =
-          kind === 'character'
+          kind === 'character' && !isSystemVisual
             ? ensureDramaCharacterPromptGenreLock(asset.prompt, genreLock)
             : asset.prompt;
         if (
           kind === 'character' &&
+          !isSystemVisual &&
           assetPromptForGen !== String(asset.prompt || '').trim()
         ) {
           patch(
@@ -7614,12 +8147,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             });
           }
         }
-        const prompt =
-          kind === 'scene'
+        const prompt = isSystemVisual
+          ? buildDirectorSystemVisualImagePrompt({
+              name: asset.name,
+              prompt: String(asset.prompt || '').trim(),
+              styleHint,
+            })
+          : kind === 'scene'
             ? buildDirectorSceneImagePrompt({
                 name: asset.name,
                 prompt: asset.prompt,
                 styleHint,
+                location: asset.location || asset.name,
+                kind: asset.kind,
+                spatial_structure: asset.spatial_structure,
+                architecture: asset.architecture,
+                materials: asset.materials,
+                lighting: asset.lighting,
+                time_default: asset.time_default,
+                fixed_elements: asset.fixed_elements,
               })
             : kind === 'character' || kind === 'creature'
               ? buildDirectorCharacterImagePrompt({
@@ -7656,12 +8202,46 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           latest.stylePresetId,
           latest.styleReferenceImageUrl,
         );
-        const styleRef = styleRefRaw ? await materializeStyleReferenceUrl(styleRefRaw) : '';
-        const useStyleRefImage = kind === 'scene' && !!styleRef;
+        // 现代场景禁用风格参考图：全片古风板/山水参考极易经 img2img 污染电竞房等当代空间
+        const scenePeriod =
+          kind === 'scene'
+            ? inferDramaSceneSettingPeriod(
+                asset.location || asset.name,
+                asset.kind,
+                (asset.fixed_elements || []).join('、'),
+                asset.prompt,
+                asset.spatial_structure,
+                asset.architecture,
+              )
+            : 'neutral';
+        const styleLooksAncient =
+          dramaStyleHintLooksAncient(styleHint) ||
+          dramaStyleHintLooksAncient(String(latest.stylePresetId || '')) ||
+          dramaStyleHintLooksAncient(String(latest.globalStyle || ''));
+        const skipSceneStyleRef =
+          kind === 'scene' &&
+          (scenePeriod === 'modern' || (scenePeriod === 'neutral' && styleLooksAncient));
+        const styleRef =
+          styleRefRaw && !skipSceneStyleRef
+            ? await materializeStyleReferenceUrl(styleRefRaw)
+            : '';
+        // 人物换装图生图：新建造型时用该人物现有定妆图作为参考图，保持相貌
+        let charRef = '';
+        if (kind === 'character') {
+          const owner = (domain?.bible.characters || []).find(
+            (c) =>
+              (c.costumes || []).some((cos) => cos.costume_id === asset.id) ||
+              c.character_id === asset.id,
+          );
+          const masterUrl = owner ? resolveCharacterMasterReferenceUrl(owner) : '';
+          if (masterUrl) charRef = await materializeStyleReferenceUrl(masterUrl);
+        }
+        const refImage = kind === 'scene' ? styleRef : charRef;
+        const useRefImage = !!refImage;
         const assetModel = pickDirectorImageModel(
           latest.imageModel,
-          useStyleRefImage,
-          useStyleRefImage ? 1 : 0,
+          useRefImage,
+          useRefImage ? 1 : 0,
         );
         await window.electronAPI.invokeAI({
           modelId: 'image',
@@ -7675,7 +8255,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             projectId: data?.projectId || undefined,
             nodeTitle: `导演资产-${asset.name || asset.id}`,
             directorAssetId: asset.id,
-            ...(useStyleRefImage ? { image: styleRef, inputImages: [styleRef] } : {}),
+            ...(useRefImage ? { image: refImage, inputImages: [refImage] } : {}),
           },
         });
       } catch (e) {
@@ -7826,6 +8406,27 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 error: undefined,
               }),
             );
+            // 短剧 Domain 同步本镜分镜图，供出片参考槽使用
+            const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+            if (domain?.shots?.length) {
+              const nextDomain = createEmptyDramaSession({
+                ...domain,
+                shots: domain.shots.map((s) =>
+                  String(s.shot_no || '').trim() === shotNo
+                    ? {
+                        ...s,
+                        storyboard_image_url: imageUrl,
+                        // 生成成功后默认勾上：出片参考用分镜图
+                        use_storyboard_as_video_ref:
+                          s.use_storyboard_as_video_ref === false ? false : true,
+                      }
+                    : s,
+                ),
+              });
+              const cur = dataRef.current;
+              if (cur) dataRef.current = { ...cur, directorDomain: nextDomain };
+              dataRef.current?.onUpdate?.({ directorDomain: nextDomain });
+            }
           } else {
             // 无图 SUCCESS 也要释放 inFlight，避免「重新生成」永久静默
             const cur = directorStateRef.current.storyboardsByShotNo?.[shotNo];
@@ -8033,11 +8634,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       }
 
       const latest = directorStateRef.current;
+      const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+      const dramaShot =
+        isDramaMode && domain
+          ? domain.shots.find((s) => String(s.shot_no || '').trim() === shotNo) || null
+          : null;
       const shot =
         latest.shots.find((s, i) => String(s['镜号'] || i + 1) === shotNo) || null;
       const hasFinal = !!String(shot?.['最终提示词'] || '').trim();
       const hasDesc = !!String(shot?.['画面描述'] || '').trim();
-      if (!shot || (!hasFinal && !hasDesc)) {
+      const hasDramaPrompt =
+        !!String(dramaShot?.h3_skill_prompt || '').trim() ||
+        !!String(dramaShot?.action || dramaShot?.purpose || '').trim();
+      if (isDramaMode) {
+        if (!dramaShot || !hasDramaPrompt) {
+          sbGenInFlightRef.current.delete(shotNo);
+          void runNextSbGenRef.current?.();
+          return;
+        }
+      } else if (!shot || (!hasFinal && !hasDesc)) {
         sbGenInFlightRef.current.delete(shotNo);
         void runNextSbGenRef.current?.();
         return;
@@ -8051,6 +8666,27 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       );
 
       try {
+        let prompt = '';
+        let refImages: string[] = [];
+        let sbAspect =
+          coerceDirectorMvAspectRatio(latest.mvAspectRatio || latest.videoBatchAspectRatio) ||
+          '16:9';
+
+        if (isDramaMode && domain && dramaShot) {
+          const sources = listDramaShotStoryboardSourceRefs(domain, dramaShot, 8);
+          refImages = sources.map((s) => s.url).filter(Boolean);
+          prompt = composeDramaShotStoryboardImagePrompt(domain, dramaShot, {
+            locale,
+          });
+          const ar = String(domain.meta.aspect_ratio || '').trim();
+          if (ar === '16:9' || ar === '9:16' || ar === '3:4' || ar === '4:3') {
+            sbAspect = ar;
+          }
+          if (!prompt.trim()) {
+            failAndPump(tt.generateFailed);
+            return;
+          }
+        } else {
         const styleHint = resolveDirectorStylePrompt(latest.stylePresetId, latest.globalStyle);
         const orderedRefs = getOrderedAssetsWithImages(latest);
         const shotRowIndex = latest.shots.findIndex(
@@ -8058,8 +8694,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         );
         const matchedIdx =
           latest.mode === 'mv' && shotRowIndex >= 0
-            ? getShotBoundRefIndices(shot, orderedRefs, shotRowIndex)
-            : matchDirectorAssetIndicesForShot(shot, orderedRefs, {
+            ? getShotBoundRefIndices(shot!, orderedRefs, shotRowIndex)
+            : matchDirectorAssetIndicesForShot(shot!, orderedRefs, {
                 leadAssetIds: listDirectorMvLeadAssetIds(latest),
               });
         const styleRefRaw = resolveDirectorStyleReferenceImageUrl(
@@ -8083,7 +8719,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const forcedCharUrls = [...charUrls];
         const emptyCast = userLockedCast
           ? sbCast.castAssetIds!.length === 0
-          : shotSuggestsNoCharacterRefs(shot) || forcedCharUrls.length === 0;
+          : shotSuggestsNoCharacterRefs(shot!) || forcedCharUrls.length === 0;
         // 分镜参考图固定槽位（图生，每镜都带风格图；空槽省略）：
         // 1) 风格 — 只锁光色（画风固定真人写实）
         // 2) 场景 — 环境结构锁（只借构图空间，不得覆盖风格光色）
@@ -8094,13 +8730,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           ? [...styleSlot, ...sceneUrls]
           : [...styleSlot, ...sceneUrls, ...forcedCharUrls];
         const maxSbRefs = 4;
-        let refImages = prioritizedRefs.slice(0, maxSbRefs);
+        refImages = prioritizedRefs.slice(0, maxSbRefs);
         if (styleRef && !refImages.includes(styleRef)) {
           // 极端情况下仍保证风格图在列（挤掉末位非风格图）
           refImages = [styleRef, ...refImages.filter((u) => u !== styleRef)].slice(0, maxSbRefs);
         }
         const monoStyle = directorStyleLooksMonochrome(styleHint);
-        const storyboardBody = composeDirectorShotStoryboardPrompt(shot, styleHint, {
+        const storyboardBody = composeDirectorShotStoryboardPrompt(shot!, styleHint, {
           hasStyleReferenceImage: !!styleRef,
           closeUpFraming: latest.mvCloseUpFraming !== false,
           stylePresetId: latest.stylePresetId,
@@ -8137,7 +8773,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             refNo += 1;
           });
         }
-        const prompt = [
+        prompt = [
           storyboardBody,
           refOrderLines.length
             ? `参考图顺序（必须遵守）：\n${refOrderLines.join('\n')}`
@@ -8150,15 +8786,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         ]
           .filter(Boolean)
           .join('\n\n');
+        }
+
         const imageNodeId = directorStoryboardImageNodeId(id, shotNo);
-        const sbAspect =
-          coerceDirectorMvAspectRatio(latest.mvAspectRatio || latest.videoBatchAspectRatio) ||
-          '16:9';
         const sbModel = pickDirectorImageModel(
           latest.imageModel,
           refImages.length > 0,
           refImages.length,
         );
+        const sbResRaw = normalizeDirectorImageResolution(latest.imageResolution);
+        // 分镜图不走 4K
+        const sbRes = sbResRaw === '4K' ? '2K' : sbResRaw;
         await window.electronAPI.invokeAI({
           modelId: 'image',
           nodeId: imageNodeId,
@@ -8167,7 +8805,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             prompt,
             response_format: 'url',
             aspect_ratio: sbAspect,
-            resolution: normalizeDirectorImageResolution(latest.imageResolution).toLowerCase(),
+            resolution: sbRes.toLowerCase(),
             projectId: data?.projectId || undefined,
             nodeTitle: `导演分镜-镜${shotNo}`,
             directorShotNo: shotNo,
@@ -8179,7 +8817,16 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         failAndPump(e instanceof Error ? e.message : tt.generateFailed);
       }
     },
-    [data?.projectId, getShotBoundRefIndices, id, materializeStyleReferenceUrl, patch, tt.generateFailed],
+    [
+      data?.projectId,
+      getShotBoundRefIndices,
+      id,
+      isDramaMode,
+      locale,
+      materializeStyleReferenceUrl,
+      patch,
+      tt.generateFailed,
+    ],
   );
 
   /** 并行泵：可同时跑多镜，点一行后仍可继续点其它行入队 */
@@ -8223,11 +8870,31 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         const shot = latest.shots.find(
           (s, i) => String(s['镜号'] || i + 1).trim() === shotNo,
         );
-        const canStoryboard =
-          !!String(shot?.['最终提示词'] || '').trim() || !!String(shot?.['画面描述'] || '').trim();
-        if (!shot || !canStoryboard) continue;
-        if (onlyMissing && String(latest.storyboardsByShotNo?.[shotNo]?.imageUrl || '').trim()) {
-          continue;
+        const canStoryboard = isDramaMode
+          ? (() => {
+              const domain =
+                (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+              const ds = domain?.shots?.find((s) => String(s.shot_no || '').trim() === shotNo);
+              return (
+                !!String(ds?.h3_skill_prompt || '').trim() ||
+                !!String(ds?.action || ds?.purpose || '').trim()
+              );
+            })()
+          : !!String(shot?.['最终提示词'] || '').trim() ||
+            !!String(shot?.['画面描述'] || '').trim();
+        if (!shot && !isDramaMode) continue;
+        if (!canStoryboard) continue;
+        if (onlyMissing) {
+          const pipeUrl = String(latest.storyboardsByShotNo?.[shotNo]?.imageUrl || '').trim();
+          const domainUrl = isDramaMode
+            ? String(
+                (
+                  (dataRef.current?.directorDomain as DramaDirectorSession | null)?.shots || []
+                ).find((s) => String(s.shot_no || '').trim() === shotNo)?.storyboard_image_url ||
+                  '',
+              ).trim()
+            : '';
+          if (pipeUrl || domainUrl) continue;
         }
         // 用户点「重新生成」：强制清掉卡死的 generating / inFlight，允许立刻重跑
         if (!onlyMissing) {
@@ -10206,30 +10873,66 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         hit = findDirectorAssetById(directorStateRef.current.assets, id);
       }
       if (!hit && domain && kind === 'characters') {
-        for (const ch of domain.bible.characters || []) {
-          const cos = (ch.costumes || []).find((x) => x.costume_id === id);
-          if (!cos) continue;
-          const prompt = composeDramaCharacterCostumePrompt(ch, cos);
-          const gender =
-            ch.gender === 'male' || ch.gender === 'female' ? ch.gender : '';
+        if (isDramaSystemVisualAssetId(id, domain)) {
+          const sysVoice = resolveDramaSystemVoice(domain);
+          const prompt = composeDramaSystemVisualPrompt(sysVoice?.image_prompt);
           const asset = {
             ...createEmptyDirectorAsset(
               'character',
-              `${ch.name}·${cos.name}`,
+              DRAMA_SYSTEM_VISUAL_ASSET_NAME,
               prompt,
               0,
-              gender,
+              '',
             ),
-            id,
-            imageUrl: String(cos.images?.[0] || '').trim(),
+            id: DRAMA_SYSTEM_SPEAKER_ID,
+            imageUrl: String(sysVoice?.imageUrl || '').trim(),
             status: 'pending' as const,
           };
           patch(upsertDirectorAsset(directorStateRef.current, asset));
-          hit = findDirectorAssetById(directorStateRef.current.assets, id);
-          break;
+          hit = findDirectorAssetById(directorStateRef.current.assets, DRAMA_SYSTEM_SPEAKER_ID);
+        } else {
+          for (const ch of domain.bible.characters || []) {
+            const cos = (ch.costumes || []).find((x) => x.costume_id === id);
+            if (!cos) continue;
+            const prompt = composeDramaCharacterCostumePrompt(ch, cos);
+            const gender =
+              ch.gender === 'male' || ch.gender === 'female' ? ch.gender : '';
+            const asset = {
+              ...createEmptyDirectorAsset(
+                'character',
+                `${ch.name}·${cos.name}`,
+                prompt,
+                0,
+                gender,
+              ),
+              id,
+              imageUrl: String(cos.images?.[0] || '').trim(),
+              status: 'pending' as const,
+            };
+            patch(upsertDirectorAsset(directorStateRef.current, asset));
+            hit = findDirectorAssetById(directorStateRef.current.assets, id);
+            break;
+          }
         }
       }
       if (hit && domain) {
+        if (kind === 'characters' && isDramaSystemVisualAssetId(id, domain)) {
+          const sysVoice = resolveDramaSystemVoice(domain);
+          const name = DRAMA_SYSTEM_VISUAL_ASSET_NAME;
+          const prompt = composeDramaSystemVisualPrompt(sysVoice?.image_prompt);
+          if (
+            name !== hit.asset.name ||
+            prompt !== String(hit.asset.prompt || '').trim()
+          ) {
+            patch(
+              updateDirectorAsset(directorStateRef.current, hit.asset.id, {
+                name,
+                prompt,
+              }),
+            );
+            hit = findDirectorAssetById(directorStateRef.current.assets, hit.asset.id);
+          }
+        } else {
         const bibleItem =
           kind === 'characters'
             ? domain.bible.characters.find((c) => c.character_id === id)
@@ -10273,6 +10976,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             }
             break;
           }
+        }
         }
       }
       return hit?.asset || null;
@@ -10473,7 +11177,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                   setSbPickerShotNo(null);
                 }}
               >
-                <img src={u} alt="" className="aspect-video w-full object-cover" draggable={false} />
+                <AssetLibLazyThumb
+                  src={u}
+                  alt=""
+                  maxEdge={160}
+                  className="aspect-video w-full"
+                  imgClassName="aspect-video w-full object-cover pointer-events-none"
+                />
                 {on ? (
                   <span className="absolute right-0.5 top-0.5 rounded-full bg-sky-500 p-0.5 text-white">
                     <Check className="w-2.5 h-2.5" />
@@ -11774,7 +12484,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
     return (
     <div
       className="flex min-h-0 flex-1 flex-col"
-      style={{ zoom: fontSizePx / DIRECTOR_FONT_DEFAULT }}
+      style={
+        /* 全屏门户里 CSS zoom 会让 Chromium 把 <video> 合成成黑块；字号已由门户 fontSize 接管 */
+        isNodeFullscreen
+          ? undefined
+          : { zoom: fontSizePx / DIRECTOR_FONT_DEFAULT }
+      }
     >
     <DramaStudioHost
       projectId={data?.projectId}
@@ -11793,6 +12508,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         disabled: isDirectorHardBusy,
       })}
       imageGenToolbarSlot={renderImageGenControls({ compact: true })}
+      storyboardImageGenSlot={renderImageGenControls({ compact: true, forStoryboard: true })}
       unitImagePriceLabel={unitPrice}
       unitChatPriceLabel={
         chatRunYuanbao != null
@@ -11811,6 +12527,31 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
       runChat={runChat}
       onSpawnVideos={(opts) => {
         const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
+        const requestedNos = (opts?.shotNos || []).map((n) => String(n || '').trim()).filter(Boolean);
+        const genStartedAt = Date.now();
+        // 短剧重生成：投影前先钉画布表 generating，避免旧 ready + 空 startedAt 把绿条对账清掉
+        {
+          let nextBoard = directorStateRef.current;
+          const nos =
+            requestedNos.length > 0
+              ? requestedNos
+              : (domain?.shots || [])
+                  .map((s) => String(s.shot_no || '').trim())
+                  .filter(Boolean);
+          for (const no of nos) {
+            markVideoGenProgress(no, true);
+            const sb = getDirectorShotStoryboard(nextBoard, no);
+            nextBoard = updateDirectorShotStoryboard(nextBoard, no, {
+              videoStatus: 'generating',
+              videoError: '',
+              videoGeneratingStartedAt:
+                Number(sb.videoGeneratingStartedAt) > 0
+                  ? Number(sb.videoGeneratingStartedAt)
+                  : genStartedAt,
+            });
+          }
+          if (nos.length) patch(nextBoard);
+        }
         if (domain?.shots?.length) {
           const projected = projectDramaSessionToPipeline(domain, directorStateRef.current);
           const cur = dataRef.current;
@@ -11819,31 +12560,20 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
           }
           patch(projected);
         }
-        const requestedNos = (opts?.shotNos || []).map((n) => String(n || '').trim()).filter(Boolean);
         void Promise.resolve(data?.onSpawnVideos?.(opts)).then((result) => {
-          const spawned = Number((result as { spawned?: number } | void)?.spawned || 0);
+          const r = result as { spawned?: number; reason?: string } | void;
+          const spawned = Number(r?.spawned || 0);
           if (spawned > 0) return;
-          // 未真正建出视频任务：只撤本批镜号的绿条，禁止清空其它镜并行进度
           const nos = requestedNos.length > 0 ? requestedNos : [];
           if (!nos.length) return;
-          for (const no of nos) markVideoGenProgress(no, false);
-          const cur = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
-          if (!cur?.shots?.length) return;
-          const noSet = new Set(nos);
-          dataRef.current?.onUpdate?.({
-            directorDomain: createEmptyDramaSession({
-              ...cur,
-              shots: cur.shots.map((s) =>
-                noSet.has(String(s.shot_no || '').trim()) &&
-                String(s.video_status || '').trim() === 'generating'
-                  ? {
-                      ...s,
-                      video_status: String(s.video_url || '').trim() ? 'ready' : 'pending',
-                    }
-                  : s,
-              ),
-            }),
-          });
+          // 未真正建出视频任务：立刻清绿条，避免 UI「生成中」但平台无请求
+          for (const no of nos) abandonVideoWait(no);
+          if (!r?.reason) {
+            console.warn('[Director] onSpawnVideos returned spawned=0 without reason', {
+              nos,
+              result: r,
+            });
+          }
         });
       }}
       getShotVideoPriceLabel={(durationSec, opts) => {
@@ -11878,13 +12608,23 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         syncDomainAssetImage(assetId, { status: 'generating' });
         generateOneAsset(asset);
       }}
+      onGenerateShotStoryboard={(shotNo, opts) => {
+        enqueueStoryboardShots([String(shotNo || '').trim()], {
+          onlyMissing: opts?.force ? false : true,
+        });
+      }}
       onUploadAssetImage={(kind, assetId, file) => {
         void (async () => {
           ensureDramaPipelineAsset(kind, assetId);
+          // 上传前标记 generating：绿条 + Domain generating，与 AI 生成一致
+          markImageGenProgress(assetId, true);
+          syncDomainAssetImage(assetId, { status: 'generating' });
           try {
             // 存文件拿 local-resource:// 路径，避免把 base64 塞进 session 导致卡顿/OOM
             const buf = await file.arrayBuffer();
-            const res = await window.electronAPI.directorV2SaveAssetFile(String(data?.projectId || ''), {
+            const pid = String(data?.projectId || dataRef.current?.projectId || '').trim();
+            if (!pid) throw new Error('项目未打开，无法保存图片');
+            const res = await window.electronAPI.directorV2SaveAssetFile(pid, {
               kind: 'image',
               filename: file.name,
               mime: file.type,
@@ -11903,6 +12643,8 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               );
             }
             syncDomainAssetImage(assetId, { status: 'error', error: msg });
+          } finally {
+            markImageGenProgress(assetId, false);
           }
         })();
       }}
@@ -11963,6 +12705,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         })();
       }}
       onVideosToSplice={handleVideosToSpliceClick}
+      onApplyShotVideoToSplice={data?.onApplyShotVideoToSplice}
       onGenerateShotAudio={(shotId) => {
         void (async () => {
           const domain = (dataRef.current?.directorDomain as DramaDirectorSession | null) || null;
@@ -11979,12 +12722,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             void showAlert(
               locale === 'en'
                 ? 'Add dialogue or SFX for this shot first'
-                : '请先为本镜填写对白或环境音效',
+                : '这一镜还没写内容哦～先填上对白、旁白或者环境音效，才能生成声音。',
             );
             return;
           }
           if (String(shot.audio_status || '') === 'generating') {
-            void showAlert(locale === 'en' ? 'Shot audio is generating' : '本镜声音正在生成中');
+            void showAlert(locale === 'en' ? 'Shot audio is generating' : '正在拼命生成中啦，稍等一下～');
             return;
           }
           if (!window.electronAPI?.invokeAI) {
@@ -11992,18 +12735,17 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             return;
           }
           const refs = collectDramaShotVoiceRefUrls(domain, shot, 3);
-          const hasDlg = (shot.dialogue || []).some((d) => String(d.text || '').trim());
-          if (hasDlg && refs.length === 0) {
+          const hasDlg = dramaShotHasSpokenDialogue(shot);
+          const onlySystemDlg = dramaShotHasOnlySystemDialogue(domain, shot);
+          if (hasDlg && refs.length === 0 && !onlySystemDlg) {
             void showAlert(
               locale === 'en'
                 ? 'Dialogue needs character reference voices — generate voice samples in Assets first'
-                : '本镜有对白但角色尚无参考音：请先在「素材准备」为角色生成/上传试听音',
+                : '这一镜有真实人物说话，但角色还没有声音样本哦～先去「素材准备」，给每个说话的角色生成或上传一段试听音，再回来生成配音。（纯系统旁白/系统提示音镜头可直接生成）',
             );
             return;
           }
-          const text = buildDramaShotDoubaoAudioPrompt(domain, shot, {
-            refNames: refs.map((r) => r.character_name),
-          });
+          const text = buildDramaShotDoubaoAudioPrompt(domain, shot);
           const audioNodeId = directorShotAudioNodeId(id, shotId);
           ensureDirectorShotAudioStatusListener();
           shotAudioStartedAtRef.current[shotId] = Date.now();
@@ -12138,13 +12880,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               const up = activeUser;
               if (up === 'final') return '';
               if (up === 'board')
-                return Number(domain.meta.board_confirmed_at || 0) > 0
-                  ? '导演表已确认'
-                  : '待确认导演表';
+                return (domain.shots || []).length > 0
+                  ? `${domain.shots.length} 镜 · 可出片`
+                  : '待准备分镜';
               if (up === 'assets')
                 return Number(domain.meta.assets_confirmed_at || 0) > 0
                   ? '素材已确认'
                   : '待确认素材';
+              if (up === 'visual')
+                return isDramaVisualStyleLocked(domain) ? '画风色调已锁定' : '待锁定画风色调';
               return domain.meta.analyze_confirmed || domain.bible.confirmed_at
                 ? '分析已确认'
                 : '待确认剧本分析';
@@ -12186,9 +12930,11 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                 ? 'board'
                                 : s.userPhase === 'assets'
                                   ? 'assets'
-                                  : s.userPhase === 'final'
-                                    ? 'review'
-                                    : 'analyze',
+                                  : s.userPhase === 'visual'
+                                    ? 'visual'
+                                    : s.userPhase === 'final'
+                                      ? 'review'
+                                      : 'analyze',
                             );
                             return;
                           }
@@ -12219,12 +12965,9 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                   : 'bg-gray-200/90 text-gray-500'
                           }`}
                           style={{ fontSize: badgeFs }}
+                          title={`第 ${i + 1} 步`}
                         >
-                          {past && !activeStep ? (
-                            <Check className="w-3 h-3" strokeWidth={2.5} />
-                          ) : (
-                            i + 1
-                          )}
+                          {i + 1}
                         </span>
                         <span
                           className={`min-w-0 font-medium leading-tight truncate ${
@@ -15452,11 +16195,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 }}
               >
                 {asset?.imageUrl ? (
-                  <img
+                  <AssetLibLazyThumb
                     src={asset.imageUrl}
                     alt={asset?.name || ''}
-                    className="w-full h-full object-cover pointer-events-none"
-                    draggable={false}
+                    maxEdge={200}
+                    className="w-full h-full"
+                    imgClassName="w-full h-full object-cover pointer-events-none"
                   />
                 ) : (
                   <Plus
@@ -15861,6 +16605,15 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                     videoBatchLipsyncModel,
                     e.target.value,
                   ),
+                  // 强制 H3 口型时与普通清晰度同步，避免价签/出片读到旧档
+                  ...(DIRECTOR_MV_FORCE_H3_LIPSYNC
+                    ? {
+                        videoBatchResolution: normalizeDirectorVideoBatchResolution(
+                          DIRECTOR_VIDEO_MINIMAX_LIPSYNC_MODEL,
+                          e.target.value,
+                        ),
+                      }
+                    : {}),
                 })
               }
             >
@@ -17452,48 +18205,25 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                         {...bindShotVideoDrop}
                       >
                         {videoUrl ? (
-                          <div
-                            className="relative inline-flex max-w-full group/vidf"
-                            onMouseEnter={(e) => {
-                              if (!panelActive || videoPreviewOpenRef.current || videoGenerating) return;
-                              const v = e.currentTarget.querySelector('video');
-                              if (!(v instanceof HTMLVideoElement)) return;
-                              pauseShotThumbVideos(v);
-                              v.loop = true;
-                              v.muted = !playWithSound;
-                              void v.play().catch(() => undefined);
-                            }}
-                            onMouseLeave={(e) => {
-                              const v = e.currentTarget.querySelector('video');
-                              if (!v) return;
-                              v.pause();
-                              try {
-                                v.currentTime = 0;
-                              } catch {
-                                /* ignore */
+                          <DirectorMvShotVideoThumb
+                            videoUrl={videoUrl}
+                            posterUrl={sbUrl || undefined}
+                            shotNo={shotNo}
+                            maxH={videoThumbH}
+                            maxW={videoThumbW}
+                            playWithSound={playWithSound}
+                            panelActive={panelActive}
+                            videoGenerating={videoGenerating}
+                            isPreviewBlocked={() => videoPreviewOpenRef.current}
+                            pauseOtherThumbs={pauseShotThumbVideos}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 多版本：点主成片打开选择；放大镜单独负责预览
+                              if (videoVersions.length > 1) {
+                                openVideoVersionPicker(shotNo, videoVersions.length);
                               }
                             }}
                           >
-                            <video
-                              src={toElectronVideoElementSrc(videoUrl) || videoUrl}
-                              data-director-shot-video=""
-                              data-director-shot-no={shotNo}
-                              className="nodrag max-h-full rounded-lg object-contain bg-black/40 ring-1 ring-transparent group-hover/vidf:ring-blue-500/70"
-                              style={{ maxHeight: videoThumbH, maxWidth: videoThumbW }}
-                              muted={!playWithSound}
-                              loop
-                              playsInline
-                              preload={panelActive ? 'metadata' : 'none'}
-                              poster={sbUrl || undefined}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                // 多版本：点主成片打开选择；放大镜单独负责预览
-                                if (videoVersions.length > 1) {
-                                  openVideoVersionPicker(shotNo, videoVersions.length);
-                                }
-                              }}
-                              onPointerDown={(e) => e.stopPropagation()}
-                            />
                             {videoVersions.length > 1 ? (
                               <button
                                 type="button"
@@ -17594,7 +18324,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                             </button>
                             ) : null}
                             {renderVideoVersionPopover(shotNo, videoVersions, videoUrl)}
-                          </div>
+                          </DirectorMvShotVideoThumb>
                         ) : videoGenerating ? (
                           <div
                             className={`relative rounded-lg overflow-hidden ring-1 ring-dashed ${
@@ -17734,11 +18464,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
               title={tt.viewImage}
               onClick={() => setImagePreview({ url: asset.imageUrl!, name: asset.name || '' })}
             >
-              <img
+              <AssetLibLazyThumb
                 src={asset.imageUrl}
                 alt={asset.name}
-                className="max-w-full max-h-full object-contain"
-                draggable={false}
+                maxEdge={200}
+                className="max-w-full max-h-full"
+                imgClassName="max-w-full max-h-full object-contain pointer-events-none"
               />
             </button>
           ) : (
@@ -18098,11 +18829,12 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
             title={tt.viewImage}
             onClick={() => setImagePreview({ url: asset.imageUrl!, name: asset.name || '' })}
           >
-            <img
+            <AssetLibLazyThumb
               src={asset.imageUrl}
               alt={asset.name}
-              className="max-w-full max-h-full w-auto h-auto object-contain"
-              draggable={false}
+              maxEdge={compact ? 160 : 280}
+              className="max-w-full max-h-full"
+              imgClassName="max-w-full max-h-full w-auto h-auto object-contain pointer-events-none"
             />
           </button>
         ) : (
@@ -18956,7 +19688,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
         {isMvMode && state.phase === 'story' && (
           <div className="flex flex-col flex-1 min-h-0 overflow-hidden">{renderMvStoryPanel()}</div>
         )}
-        {isDramaMode ? (
+        {isDramaMode && !isNodeFullscreen ? (
           <div className="director-keep-visible mb-1 flex flex-1 min-h-0 flex-col overflow-hidden">
             {renderDramaStudioV2()}
           </div>
@@ -18999,7 +19731,7 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                 )
                   .filter(([stepId]) => {
                     if (!isWizardMode) return true;
-                    // MV：角色在选角完成；不生成道具，只做场景九宫格
+                    // MV：角色在选角完成；不生成道具，只做场景图
                     return stepId === 'scenes';
                   })
                   .map(([stepId, label]) => {
@@ -21106,7 +21838,13 @@ const DirectorNode: React.FC<NodeProps<DirectorNodeData>> = ({ id, data, selecte
                                 className="nodrag w-16 h-16 rounded overflow-hidden ring-1 ring-sky-400/40"
                                 onClick={() => setImagePreview({ url: sbUrl, name: `镜${shotNo}` })}
                               >
-                                <img src={sbUrl} alt="" className="w-full h-full object-cover" draggable={false} />
+                                <AssetLibLazyThumb
+                                  src={sbUrl}
+                                  alt=""
+                                  maxEdge={128}
+                                  className="w-full h-full"
+                                  imgClassName="w-full h-full object-cover pointer-events-none"
+                                />
                               </button>
                             ) : sb.status === 'generating' ? (
                               <Loader2 className={`w-4 h-4 animate-spin ${accentSpin}`} />

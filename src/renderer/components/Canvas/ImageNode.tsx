@@ -102,6 +102,10 @@ import {
   messageContainsRefundHint,
 } from '../../utils/userErrorMessageCn';
 import { type ScratchColorId } from '../../theme/scratchColors';
+import {
+  fillCanvasImageDragTransfer,
+  endCanvasImageDrag,
+} from '../characterListShared';
 
 /** 工具栏「放大」：四角取景框 + 中心放大镜（currentColor） */
 function ImageUpscaleToolbarIcon({ className = 'w-4 h-4 shrink-0' }: { className?: string }) {
@@ -414,9 +418,8 @@ function resolveMainModuleDisplayUrl(
   const primaryKey = formatImagePath(primary);
   if (!inputRefSet.has(primaryKey)) return primary;
 
-  // 上游图片/角色连线传入的参考图：主模块不展示
-  if (hasIncomingImageSource) return '';
-
+  // 生成结果已显式写入 outputImage(s) 时必须展示（即便与某张参考图 URL 相同），
+  // 否则有上游连线时会被误清空 → 任务列表能看缩略图、画布却「图片加载失败」。
   const explicitKey = (dataOutputImage || '').trim()
     ? formatImagePath(String(dataOutputImage).trim())
     : '';
@@ -428,6 +431,9 @@ function resolveMainModuleDisplayUrl(
         .filter(Boolean)
     : [];
   if (dataOutList.length > 0 && dataOutList.includes(primaryKey)) return primary;
+
+  // 上游图片/角色连线传入的参考图：主模块不展示
+  if (hasIncomingImageSource) return '';
 
   return '';
 }
@@ -709,9 +715,19 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const updateNodeInternals = useUpdateNodeInternals();
   const hasIncomingImageSource = useStore(
     useCallback(
-      (state: { edges: { target: string; source: string }[]; nodeInternals: Map<string, { type?: unknown }> }) => {
+      (state: {
+        edges: {
+          target: string;
+          source: string;
+          targetHandle?: string | null;
+          data?: { importLayoutOnly?: boolean };
+        }[];
+        nodeInternals: Map<string, { type?: unknown }>;
+      }) => {
         for (const edge of state.edges) {
           if (edge.target !== id) continue;
+          // 「导入到画布」布局边不算参考图上游
+          if (edge.data?.importLayoutOnly || edge.targetHandle === 'import-layout') continue;
           const src = state.nodeInternals?.get(edge.source);
           const t = src?.type as string | undefined;
           if (t === 'image' || t === 'character') return true;
@@ -1089,9 +1105,10 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
   const bufferImageSrcRef = useRef('');
   /** 拖动画布时偶发 onError（请求被取消/竞态），限制次数内自动重试 */
   const transientImgErrorRetriesRef = useRef(0);
-  /** 拖出到桌面/资源管理器：pointerdown 起在主进程准备路径，dragstart 内发起原生拖出 */
+  /** 拖出到桌面/资源管理器：pointerdown 预准备路径；拖出窗口后再 startDrag，避免抢走应用内放下 */
   const nativeDragPreparePromiseRef = useRef<Promise<string | null> | null>(null);
   const nativeDragPreparedPathRef = useRef<string | null>(null);
+  const nativeDragStartedRef = useRef(false);
   const viewport = useFrozenFlowViewport();
   const isVisualInteractionLocked = useGlobalInteractionSelector((state) => state.isVisualInteractionLocked);
   const isGlobalInteracting = useGlobalInteractionSelector((state) => state.isGlobalInteracting);
@@ -1917,35 +1934,61 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
     })();
   }, [dragOutFileSourceUrl, projectId, title]);
 
+  const startNativeFileDragIfReady = useCallback(async () => {
+    if (nativeDragStartedRef.current) return;
+    let fp = nativeDragPreparedPathRef.current;
+    if (!fp && nativeDragPreparePromiseRef.current) {
+      try {
+        fp = await nativeDragPreparePromiseRef.current;
+      } catch {
+        fp = null;
+      }
+    }
+    if (!fp) {
+      const url = dragOutFileSourceUrl;
+      if (!url || url.startsWith('blob:')) return;
+      const mapped =
+        url.startsWith('local-resource://') && projectId ? await mapProjectPath(url, projectId) : url;
+      const base = (title || 'image').replace(/[/\\?*:|"]/g, '_').trim() || 'image';
+      const r = await window.electronAPI.prepareImageForExternalDrag({
+        imageUrl: mapped,
+        preferredBaseName: base,
+      });
+      fp = r.success && r.path ? r.path : null;
+    }
+    if (!fp || nativeDragStartedRef.current) return;
+    nativeDragStartedRef.current = true;
+    window.electronAPI.startNativeFileDrag(fp);
+  }, [dragOutFileSourceUrl, projectId, title]);
+
   const handleOutputImageDragStart = useCallback(
     (e: React.DragEvent) => {
       e.stopPropagation();
-      void (async () => {
-        let fp = nativeDragPreparedPathRef.current;
-        if (!fp && nativeDragPreparePromiseRef.current) {
-          try {
-            fp = await nativeDragPreparePromiseRef.current;
-          } catch {
-            fp = null;
-          }
-        }
-        if (!fp) {
-          const url = dragOutFileSourceUrl;
-          if (!url || url.startsWith('blob:')) return;
-          const mapped =
-            url.startsWith('local-resource://') && projectId ? await mapProjectPath(url, projectId) : url;
-          const base = (title || 'image').replace(/[/\\?*:|"]/g, '_').trim() || 'image';
-          const r = await window.electronAPI.prepareImageForExternalDrag({
-            imageUrl: mapped,
-            preferredBaseName: base,
-          });
-          fp = r.success && r.path ? r.path : null;
-        }
-        if (fp) window.electronAPI.startNativeFileDrag(fp);
-      })();
+      nativeDragStartedRef.current = false;
+      const dragUrl = String(dragOutFileSourceUrl || '').trim();
+      if (dragUrl && !dragUrl.startsWith('blob:') && e.dataTransfer) {
+        fillCanvasImageDragTransfer(e.dataTransfer, dragUrl);
+      }
     },
-    [dragOutFileSourceUrl, projectId, title],
+    [dragOutFileSourceUrl],
   );
+
+  const handleOutputImageDrag = useCallback(
+    (e: React.DragEvent) => {
+      const outside =
+        e.clientX <= 0 ||
+        e.clientY <= 0 ||
+        e.clientX >= window.innerWidth ||
+        e.clientY >= window.innerHeight;
+      if (outside) void startNativeFileDragIfReady();
+    },
+    [startNativeFileDragIfReady],
+  );
+
+  const handleOutputImageDragEnd = useCallback(() => {
+    nativeDragStartedRef.current = false;
+    endCanvasImageDrag();
+  }, []);
 
   const handleSplitGridToCanvas = useCallback(
     async (mode: GridSplitMode, e?: React.SyntheticEvent) => {
@@ -5882,6 +5925,8 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                 onPointerDown={handleOutputImagePointerDown}
                 onDoubleClick={handleOutputImageDoubleClick}
                 onDragStart={handleOutputImageDragStart}
+                onDrag={handleOutputImageDrag}
+                onDragEnd={handleOutputImageDragEnd}
                 title={
                   selected && outputImages.length <= 1
                     ? imgc.previewOpenHint
@@ -5893,7 +5938,7 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                         : '拖到桌面或文件夹以复制图片文件'
                       : undefined
                 }
-                className={`absolute inset-0 w-full h-full rounded-2xl select-none transition-opacity duration-150 ${
+                className={`nodrag nopan absolute inset-0 w-full h-full rounded-2xl select-none transition-opacity duration-150 ${
                   showCropModal ? 'object-fill' : 'object-contain'
                 }`}
                 style={{
@@ -5956,7 +6001,35 @@ const ImageNodeComponent: React.FC<ImageNodeProps> = (props) => {
                   formattedUrl: formatImagePath(primaryOutputImage),
                   actualSrc: src,
                   isLocalResource: originalUrl.startsWith('local-resource://'),
+                  localPath: data?.localPath,
                 });
+
+                // 与任务列表一致：远程/坏链失败时优先回退 localPath（经 mapProjectPath）
+                const diskRaw = String(data?.localPath || '').trim();
+                const diskLooksImage =
+                  !!diskRaw &&
+                  /\.(png|jpg|jpeg|webp|gif|bmp|svg)$/i.test(diskRaw) &&
+                  !/\.(txt|json|md|csv)$/i.test(diskRaw);
+                if (
+                  !isInlinePrimary &&
+                  diskLooksImage &&
+                  !String(src).includes('_nf_local_fb=') &&
+                  (src.startsWith('http://') ||
+                    src.startsWith('https://') ||
+                    !originalUrl ||
+                    isHttpLikeMediaUrl(originalUrl))
+                ) {
+                  try {
+                    let localUrl = await resolveImageSrcForElectronDisplay(diskRaw, projectId);
+                    if (localUrl && img.src !== localUrl) {
+                      const sep = localUrl.includes('?') ? '&' : '?';
+                      img.src = `${localUrl}${sep}_nf_local_fb=1`;
+                      return;
+                    }
+                  } catch (fbErr) {
+                    console.warn('[ImageNode] localPath 回退失败', fbErr);
+                  }
+                }
                 
                 // 如果当前使用的是 local-resource://，尝试检查文件是否存在
                 if (originalUrl.startsWith('local-resource://') && window.electronAPI) {

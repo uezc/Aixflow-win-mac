@@ -11,6 +11,7 @@ import {
   resolvePropMasterReferenceUrl,
   resolveSceneMasterReferenceUrl,
 } from './constraints.js';
+import { resolveDramaCharacterLookUrl } from './characterCostumes.js';
 import { defaultDramaReferenceLockIntent } from './migrateH3Compiler.js';
 import { collectDramaShotVoiceRefUrls } from './shotAudio.js';
 import { resolveEffectiveDramaShotCharacterIds } from './shotCastGate.js';
@@ -22,6 +23,15 @@ import type {
   DramaReferenceLockIntent,
   DramaShot,
 } from './types.js';
+
+/** 出片是否把分镜图当参考（缺省有图即用；显式 false 则走场景素材） */
+export function isDramaShotUsingStoryboardAsVideoRef(
+  shot: DramaShot | null | undefined,
+): boolean {
+  if (!shot) return false;
+  if (shot.use_storyboard_as_video_ref === false) return false;
+  return !!String(shot.storyboard_image_url || '').trim();
+}
 
 export type DramaShotRefImageSlotView = {
   /** 1-based，与提示词 <图片N> / 参考图N 一致 */
@@ -52,7 +62,7 @@ function buildMatchedAssets(session: DramaDirectorSession, shot: DramaShot) {
 
   const sceneId = shot.scene_asset_id;
   if (sceneId) {
-    const sc = session.bible.scenes.find((s) => s.scene_id === sceneId);
+    const sc = (session.bible?.scenes || []).find((s) => s.scene_id === sceneId);
     const url = resolveSceneMasterReferenceUrl(sc);
     if (url) {
       matched.push({
@@ -68,8 +78,12 @@ function buildMatchedAssets(session: DramaDirectorSession, shot: DramaShot) {
   const charIds = resolveEffectiveDramaShotCharacterIds(session, shot);
 
   for (const id of charIds) {
-    const c = session.bible.characters.find((x) => x.character_id === id);
-    const url = resolveCharacterMasterReferenceUrl(c);
+    const c = (session.bible?.characters || []).find((x) => x.character_id === id);
+    // 本镜造型覆盖（SHOT-LEVEL）：shot.cast 的 costume_id 优先，
+    // 不影响其他镜头；为空时回退角色 active costume。
+    const castMember = (shot.cast || []).find((m) => m.character_id === id);
+    const lookUrl = resolveDramaCharacterLookUrl(c, castMember?.costume_id);
+    const url = lookUrl || (!castMember?.costume_id ? resolveCharacterMasterReferenceUrl(c) : '');
     if (url) {
       matched.push({
         imageUrl: url,
@@ -119,20 +133,29 @@ export function countDramaShotRefImages(session: DramaDirectorSession, shot: Dra
   return urls.size;
 }
 
-/** 本镜参考图槽：短剧风格/分镜静帧不占 <图片N>；序号从场景/人物/道具等有图资产起算 */
+/** 本镜参考图槽：勾选「用分镜图」时 = 分镜+人/道具/生物；未勾选 = 场景+人/道具/生物 */
 export function listDramaShotRefImageSlots(
   session: DramaDirectorSession,
   shot: DramaShot,
   opts?: { maxImages?: number },
 ): DramaShotRefImageSlotView[] {
-  const matched = buildMatchedAssets(session, shot);
-  const byUrl = new Map(matched.map((m) => [String(m.imageUrl).trim(), m]));
+  const matchedAll = buildMatchedAssets(session, shot);
+  const useSb = isDramaShotUsingStoryboardAsVideoRef(shot);
+  const sbUrl = useSb ? String(shot.storyboard_image_url || '').trim() : '';
+  // 启用分镜 → 分镜+人物+道具+生物（不带场景）；未启用 → 场景+人物+道具+生物
+  const matched = sbUrl
+    ? matchedAll.filter((m) => String(m.kind || '') !== 'scene')
+    : matchedAll;
+  const queue = matched.map((m) => ({
+    url: String(m.imageUrl).trim(),
+    name: String(m.name || '').trim(),
+    kind: String(m.kind || '').trim(),
+    asset_id: String(m.asset_id || '').trim(),
+  }));
 
   const slots = buildMinimaxH3ZhRefImageSlots({
-    // 风格：仅 stylePrompt 文本约束，不提交风格图
     styleReferenceImageUrl: '',
-    // 短剧出片只用本镜绑定的人物/场景/道具。MV 残留分镜静帧若作为图片1会锁死成片身份。
-    storyboardImageUrl: '',
+    storyboardImageUrl: sbUrl,
     matchedAssets: matched,
     maxImages: opts?.maxImages ?? 9,
     onlyStoryboardAndCharacters: false,
@@ -140,13 +163,31 @@ export function listDramaShotRefImageSlots(
 
   return slots.map((s, i) => {
     const url = String(s.url || '').trim();
-    const hit = byUrl.get(url);
+    const role = String(s.role || '').trim();
+    const name = String(s.name || '').trim();
+    if (role === 'storyboard') {
+      return {
+        index: i + 1,
+        role: s.role,
+        name: name || '本镜分镜',
+        url,
+        asset_id: undefined,
+        lock_intent: defaultDramaReferenceLockIntent(s.role),
+      };
+    }
+    const idx = queue.findIndex(
+      (m) =>
+        m.url === url &&
+        (m.kind === role || (!m.kind && role === 'character')) &&
+        (!name || !m.name || m.name === name),
+    );
+    const hit = idx >= 0 ? queue.splice(idx, 1)[0] : undefined;
     return {
       index: i + 1,
       role: s.role,
-      name: String(s.name || hit?.name || ''),
+      name: name || hit?.name || '',
       url,
-      asset_id: hit?.asset_id,
+      asset_id: hit?.asset_id || undefined,
       lock_intent: defaultDramaReferenceLockIntent(s.role),
     };
   });

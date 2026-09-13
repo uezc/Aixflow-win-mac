@@ -13,6 +13,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import DirectorNode from '../components/Canvas/DirectorNode';
 import { DarkAlertProvider } from '../contexts/DarkAlertContext';
+import { CloudBalanceInsufficientAlertBridge } from '../components/CloudBalanceInsufficientAlertBridge';
 import { AppLocaleProvider } from '../contexts/AppLocaleContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import '../index.css';
@@ -224,6 +225,7 @@ export default function DramaStudioWindowApp() {
     <ErrorBoundary>
       <DarkAlertProvider>
         <AppLocaleProvider>
+          <CloudBalanceInsufficientAlertBridge />
           <ReactFlowProvider>
             <DramaStudioFlow bootstrap={bootstrap} />
           </ReactFlowProvider>

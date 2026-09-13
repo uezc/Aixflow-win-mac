@@ -1,9 +1,9 @@
 /**
- * 从剧本文本启发式提取出场人名（分析 LLM 漏提时的补全）。
- * 不做「创造」：只识别正文里已出现的说话人/称呼。
+ * 从剧本文本启发式提取出场人名（程序规则，不走 LLM）。
+ * 不做「创造」：只识别正文里已开口的说话人/称呼。
  */
 
-const STOP_NAMES = new Set(
+export const STOP_NAMES = new Set(
   [
     '旁白',
     '画外音',
@@ -46,8 +46,290 @@ const STOP_NAMES = new Set(
     '对白',
     '旁述',
     '叙述',
+    '系统提示',
+    '系统提示音',
+    '系统声音',
+    '系统播报',
+    '系统音',
+    '电子音',
+    '电子声音',
+    '机械音',
+    '机械声音',
+    '机械提示音',
+    '机械女声',
+    'system',
+    'SYSTEM',
+    '广播',
+    '播报',
+    '弹幕',
+    '弹幕浮字',
+    '蒙太奇',
+    '快速蒙太奇',
+    '特效',
+    '技能',
+    '商城',
+    '血条',
+    '峡谷',
+    '山门',
+    '会场',
+    '直播间',
+    '开场',
+    '转场',
+    '内景',
+    '外景',
   ].map((s) => s.toLowerCase()),
 );
+
+const SYSTEM_SPEAKER_NAME_RE =
+  /^(?:系统提示音|系统声音|系统提示|系统播报|系统音|系统|机械提示音|机械声音|机械女声|机械音|电子声音|电子音|旁白|画外音|system(?:[_\s-]?voice)?)$/i;
+
+/** 判断名字是否属于非人物说话者（系统/旁白/画外音等），需独立 speaker 不抢角色音色 */
+export function isSystemSpeakerName(raw: string): boolean {
+  const n = String(raw || '').trim().toLowerCase();
+  if (!n) return false;
+  if (STOP_NAMES.has(n)) return true;
+  if (SYSTEM_SPEAKER_NAME_RE.test(n)) return true;
+  return /系统提示|系统音|旁白|画外音/.test(n);
+}
+
+/** 小说场次过渡（切至/淡入），不是系统语音。 */
+export function isDramaSceneTransitionText(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (/^【\s*转\s*】/.test(t) && /切至|淡入|淡出/.test(t)) return true;
+  if (/^(?:切至|淡入|淡出)/.test(t)) return true;
+  return /^(?:CUT\s*TO|FADE\s*(?:IN|OUT))\b/i.test(t);
+}
+
+/** 真正会开口的系统/旁白名；切至等过渡词不算。 */
+export function isDramaSystemSpeechSpeaker(raw: string): boolean {
+  const n = String(raw || '').trim();
+  if (!n || isDramaSceneTransitionText(n) || isDramaSceneTransitionText(`${n}：`)) return false;
+  return SYSTEM_SPEAKER_NAME_RE.test(n) || /^(?:旁白|画外音)$/i.test(n);
+}
+
+/**
+ * 脑海中的系统/机械播报。单写「脑海中」不是系统；
+ * 「心想 / 内心 OS」也不是系统。
+ */
+export function looksLikeDramaInMindSystemVoice(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (/(?:心想|心里想|暗想|内心\s*OS|内心独白|心声)/.test(t) && !/(?:机械|系统|电子)/.test(t)) {
+    return false;
+  }
+  return /(?:脑海中|意识中)响起.{0,20}(?:机械|系统|电子)|响起一道?(?:机械|系统|电子)(?:声音|提示音|女声)?/.test(
+    t,
+  );
+}
+
+const SYSTEM_SPOKEN_LABEL_RE =
+  /^(?:【\s*(?:系统|SYSTEM)[^】]*】|(?:系统提示音|系统声音|系统提示|系统播报|系统音|系统|SYSTEM|System|机械声音|电子声音|机械提示音|机械女声)\s*[:：.。】])/i;
+
+/** 系统播报/商城语音：应进 <d>，不得当画面字。人物台词里提到「系统」不算。 */
+export function looksLikeDramaSystemSpokenText(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (isDramaSceneTransitionText(t)) return false;
+  if (SYSTEM_SPOKEN_LABEL_RE.test(t)) return true;
+  if (/^【\s*系统/.test(t)) return true;
+  if (/^新手引导\s*[：:]/.test(t)) return true;
+  if (looksLikeDramaInMindSystemVoice(t)) return true;
+  if (/叮——/.test(t) && /(?:系统|激活|金币|英雄|宿主|检测)/.test(t)) return true;
+  if (/(?:当前金币|无法购买任何英雄|可任意携带一位英雄|QWER四技能|更换英雄需冷却)/.test(t)) {
+    return true;
+  }
+  if (/是的[。.]宿主/.test(t)) return true;
+  return false;
+}
+
+const SYSTEM_LABEL_NAMES =
+  '系统提示音|系统声音|系统提示|系统播报|系统音|系统|SYSTEM|System|机械声音|电子声音|机械提示音|机械女声';
+
+/** 系统声 <d> 只保留台词；不剥人物对白里的「系统」。 */
+export function stripDramaSystemSpokenLabel(raw: string): string {
+  let t = String(raw || '').trim();
+  if (!t) return '';
+  t = t.replace(/^(?:【\s*(?:系统|SYSTEM)[^】]*】\s*)+/iu, '');
+  t = t.replace(new RegExp(`^(?:${SYSTEM_LABEL_NAMES})\\s*[:：.。]\\s*`, 'i'), '');
+  t = t.replace(new RegExp(`^(?:${SYSTEM_LABEL_NAMES})\\s*[\\r\\n]+`, 'i'), '');
+  t = t.trim();
+  if (new RegExp(`^(?:${SYSTEM_LABEL_NAMES})$`, 'i').test(t)) return '';
+  return t;
+}
+
+const NON_VISUAL_EYELINE_RE =
+  /^(?:脑海中|意识中|脑海|意识空间|机械提示|系统提示|系统声音|机械女声|自己|周围|周围环境|房间|这里|那里|思绪|内心|镜头(?:前|里|中)?)$/i;
+
+/** 场景容器名当视线不可靠；山/门外等可视地点不走这条。 */
+const SETTING_SCENE_EYELINE_RE = /(?:直播间|房间|室内|大厅|片场|舞台|工作室|卧室|客厅|走廊|办公室)$/;
+
+export function isNonVisualDramaEyeline(raw: string, sceneNames: string[] = []): boolean {
+  const t = String(raw || '').trim().replace(/[。．.]+$/g, '');
+  if (!t) return true;
+  if (NON_VISUAL_EYELINE_RE.test(t)) return true;
+  if (/^(?:the\s+)?(?:camera|viewer|lens|audience)$/i.test(t)) return true;
+  if (/(?:脑海中|意识中|意识空间|机械提示|系统提示|系统声音)/.test(t) && t.length <= 16) {
+    return true;
+  }
+  if (SETTING_SCENE_EYELINE_RE.test(t) && t.length <= 16) return true;
+  const compact = t.replace(/\s+/g, '');
+  if (
+    sceneNames.some((name) => {
+      const n = String(name || '').trim().replace(/\s+/g, '');
+      return !!n && (compact === n || t === name) && SETTING_SCENE_EYELINE_RE.test(n);
+    })
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function isDramaScreenTextVisual(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (isDramaSceneTransitionText(t) || looksLikeDramaSystemSpokenText(t)) return false;
+  if (isDramaNarrationVisual(t)) return false;
+  if (/^【\s*(?:弹幕|字幕|浮字|标题|屏幕文字|UI文字)/.test(t)) return true;
+  if (/^(?:弹幕浮字|弹幕|屏幕文字|浮字|字幕|标题|UI文字)\s*[:：]/.test(t)) return true;
+  if (/^(?:弹幕浮字|弹幕|屏幕文字|浮字|字幕|标题|UI文字)$/.test(t)) return true;
+  if (/^【[^】]{0,80}】$/.test(t) && /(?:弹幕|浮字|字幕|标题|屏幕文字|UI文字)/.test(t)) {
+    return true;
+  }
+  const stripped = stripDramaScreenTextFromVisual(t);
+  return !stripped && /弹幕|浮字|字幕|屏幕文字|UI文字|标题/.test(t);
+}
+
+export function stripDramaScreenTextFromVisual(raw: string): string {
+  const t = String(raw || '')
+    .replace(/【\s*(?:弹幕浮字|弹幕|字幕|浮字|标题|屏幕文字|UI文字)[^】]*】/g, '')
+    .replace(/(?:弹幕浮字|屏幕文字|UI文字)\s*[:：][^\n]*/g, '')
+    .replace(/弹幕[^，。；;\n]*/g, '')
+    .replace(/[，、；;]{2,}/g, '，')
+    .replace(/[。.]{2,}/g, '。')
+    .replace(/^[，、。.\s]+|[，、。.\s]+$/g, '')
+    .trim();
+  return t;
+}
+
+/** 从【弹幕浮字：A／B】抽出条目（供 TE→Prompt 画屏字） */
+export function parseDramaScreenOverlayItems(raw: string): string[] {
+  const t = String(raw || '').trim();
+  if (!t) return [];
+  const m =
+    t.match(/【\s*(?:弹幕浮字|弹幕|字幕|浮字|屏幕文字|UI文字)\s*[：:]\s*([^】]*)】/) ||
+    t.match(/(?:弹幕浮字|弹幕|屏幕文字|UI文字)\s*[：:]\s*(.+)$/);
+  const body = String(m?.[1] || '').trim();
+  if (!body) return [];
+  return body
+    .split(/[／/|｜]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** 专段弹幕/屏字 → 中文镜头稿（保留原文条目） */
+export function formatDramaScreenOverlayZh(raw: string): string {
+  const items = parseDramaScreenOverlayItems(raw);
+  if (!items.length) {
+    return isDramaScreenTextVisual(raw) ? '屏幕上弹出直播弹幕浮字。' : '';
+  }
+  return `屏幕弹幕浮字依次闪过：${items.map((x) => `「${x}」`).join('／')}。`;
+}
+
+/** 专段弹幕/屏字 → 英文 H3（条目可保留中文，作为画面字） */
+export function formatDramaScreenOverlayEn(raw: string): string {
+  const items = parseDramaScreenOverlayItems(raw);
+  if (!items.length) {
+    return isDramaScreenTextVisual(raw)
+      ? 'On-screen live-stream comment overlay scrolls across the display.'
+      : '';
+  }
+  return `On-screen live-stream comment overlay scrolls: ${items.map((x) => `"${x}"`).join(' / ')}.`;
+}
+
+export function isDramaNarrationVisual(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (isDramaSceneTransitionText(t)) return false;
+  if (/^【\s*旁白/.test(t)) return true;
+  if (/^(?:旁白|画外音)\s*[:：.。，,]/.test(t)) return true;
+  return false;
+}
+
+export function stripDramaNarrationLabel(raw: string): string {
+  let t = String(raw || '').trim();
+  if (!t) return '';
+  t = t.replace(/^【\s*旁白[^】]*】\s*[,，:：.。]?\s*/u, '');
+  t = t.replace(/^(?:旁白|画外音)\s*[:：.。，,]\s*/u, '');
+  return t.trim();
+}
+
+export function stripDramaNarrationFromVisual(raw: string): string {
+  const t = String(raw || '')
+    .replace(/【\s*旁白[^】]*】\s*[,，:：.。]?\s*[^，。；;\n]*/g, '')
+    .replace(/(?:^|[。\n])\s*(?:旁白|画外音)\s*[:：.。，,][^\n]*/g, '')
+    .replace(/[，、；;]{2,}/g, '，')
+    .replace(/[。.]{2,}/g, '。')
+    .replace(/^[，、。.\s]+|[，、。.\s]+$/g, '')
+    .trim();
+  return t;
+}
+
+export function isDramaInnerOsCue(raw: string): boolean {
+  const t = String(raw || '').trim();
+  if (!t) return false;
+  if (looksLikeDramaInMindSystemVoice(t) || looksLikeDramaSystemSpokenText(t)) return false;
+  return /内心\s*OS|内心独白|心声|心想|心里想|暗想|(?:^|[（(【\s])(?:OS|VO)(?:[）)】\s:,：]|$)/i.test(
+    t,
+  );
+}
+
+const INNER_OS_PHYSICAL_RE = /坐|站|走|看|拿|靠|睁|躺|跪|跑|转身|抬头|低头|蹲/;
+
+export function stripDramaInnerOsFromVisual(raw: string): string {
+  const source = String(raw || '').trim();
+  const t = source
+    .replace(/[（(【]\s*内心\s*OS[^）)】]*[）)】]/gi, '')
+    .replace(/内心\s*OS\s*[:：]?/gi, '')
+    .replace(/内心独白\s*[:：][^\n]*/g, '')
+    .replace(/心声\s*[:：][^\n]*/g, '')
+    .replace(/^[，、。.\s]+|[，、。.\s]+$/g, '')
+    .trim();
+  if (isDramaInnerOsCue(source) && t && !INNER_OS_PHYSICAL_RE.test(t)) return '';
+  return t;
+}
+
+const DIRECTOR_LENS_TAG_RE =
+  /(?:背影|正面|特写|近景|中景|全景|俯拍|仰拍)镜头|镜头切到|镜头转向|镜头拉近|镜头推进/g;
+
+/** 切段去重后加的景别/站位导演词（非小说原文），一律剥离，导演权交给后续 Skill */
+const AI_COVERAGE_BRACKET_RE =
+  /【(?:全景交代人物与环境位置|中景看肢体与站位|近景看面部与眼神|(?:全景交代|中景看|近景看)[^】]{0,20})】/g;
+const AI_COVERAGE_FOCUS_RE =
+  /(?:^|[。；;\n，,\s]+)(?:空间与站位|上半身与手部|面部与眼神)[：:][^。\n；;【]*/g;
+
+/** 原文脏机位词 + AI 景别站位装饰，不进 visual_action。不碰已有 camera_action。 */
+export function stripDramaDirectorLensTags(raw: string): string {
+  let t = String(raw || '')
+    .replace(AI_COVERAGE_BRACKET_RE, '')
+    .replace(AI_COVERAGE_FOCUS_RE, (m) => (/^[。；;\n]/.test(m) ? m[0] : ''))
+    .replace(DIRECTOR_LENS_TAG_RE, '')
+    .replace(/[，、；;]{2,}/g, '，')
+    .replace(/[。.]{2,}/g, '。')
+    .replace(/^[，、。.\s]+|[，、。.\s]+$/g, '')
+    .trim();
+  return t;
+}
+
+/** Timeline / Compiler 共用：屏幕字、旁白、内心 OS、脏机位词不进画面动作。 */
+export function cleanDramaMappedVisualAction(raw: string): string {
+  let t = stripDramaInnerOsFromVisual(
+    stripDramaNarrationFromVisual(stripDramaScreenTextFromVisual(String(raw || ''))),
+  );
+  t = stripDramaDirectorLensTags(t);
+  if (isDramaScreenTextVisual(t) || isDramaNarrationVisual(t)) return '';
+  return t;
+}
 
 function cleanName(raw: string): string {
   return String(raw || '')
@@ -317,10 +599,148 @@ function collapseAliasPersonNames(names: string[]): string[] {
 }
 
 /**
+ * 小说「XX道 / XX：」叙述引导，不是人物：冷冷道、问道、心想、注意、地点。
+ */
+export function isDramaSpeechAttributionLead(name: string): boolean {
+  const n = coreDramaPersonName(name) || cleanName(name);
+  if (!n) return false;
+  if (/^(?:心想|暗想|寻思|默念|低语|轻声|开口|接话|补充|答话|回话)$/.test(n)) return true;
+  if (/^(?:冷冷|沉声|低声|轻声|缓缓|慢慢|怒声|大声|小声|柔声|厉声|冷声)道$/.test(n)) return true;
+  if (/^(?:说|问|喊|叫|骂|答|回|应|叹|哼|怒|笑|哭|嘲)道$/.test(n)) return true;
+  if (/[说问喊叫骂答回应叹哼]道$/.test(n) && n.length <= 4) return true;
+  return false;
+}
+
+const NARRATION_COLON_LABELS = new Set(
+  [
+    '注意',
+    '提示',
+    '说明',
+    '备注',
+    '注释',
+    '地点',
+    '时间',
+    '场景',
+    '声音',
+    '音效',
+    '效果',
+    '字幕',
+    '旁白',
+    '画外',
+    '内心',
+    '独白',
+    '条件',
+    '规则',
+    '目标',
+    '参考',
+    '步骤',
+    '原因',
+    '结果',
+    '总之',
+    '另外',
+    '例如',
+    '比如',
+    '如下',
+    '其实',
+    '当然',
+    '显然',
+    '果然',
+    '居然',
+    '竟然',
+    '忽然',
+    '猛然',
+    '瞬间',
+    '只见',
+    '但见',
+    '原来',
+    '所以',
+    '如果',
+    '那么',
+    '可是',
+    '不过',
+    '而且',
+    '并且',
+    '或者',
+    '以及',
+    '还有',
+    '没有',
+    '不是',
+    '就是',
+    '还是',
+    '已经',
+    '正在',
+    '开始',
+    '结束',
+    '最后',
+    '首先',
+    '其次',
+    '再次',
+    '最终',
+    '此刻',
+    '此时',
+    '这时',
+    '随后',
+    '接着',
+    '同时',
+    '然后',
+    '但是',
+    '于是',
+    '突然',
+    '第一',
+    '第二',
+    '第三',
+    '第四',
+    '第五',
+    '看见',
+    '听到',
+    '感到',
+    '标题',
+    '正文',
+    '附录',
+    '要求',
+    '限制',
+    '禁止',
+    '必须',
+    '可以',
+    '应该',
+    '内容',
+    '简介',
+    '概述',
+    '背景',
+    '设定',
+    '世界观',
+    '任务',
+    '奖励',
+    '属性',
+    '数值',
+    '等级',
+    '经验',
+    '金币',
+    '血量',
+    '蓝量',
+    '攻略',
+    '提示音',
+  ].map((s) => s.toLowerCase()),
+);
+
+/** 行首「注意：」「地点：」这类结构标签，不是说话人 */
+export function isDramaNarrationColonLabel(name: string): boolean {
+  const n = (coreDramaPersonName(name) || cleanName(name)).toLowerCase();
+  if (!n) return false;
+  return NARRATION_COLON_LABELS.has(n) || STOP_NAMES.has(n);
+}
+
+/** 素材人物黑名单：叙述引导 + 结构标签（程序规则，不走 LLM） */
+export function isDramaNonCastLabel(name: string): boolean {
+  return isDramaSpeechAttributionLead(name) || isDramaNarrationColonLabel(name);
+}
+
+/**
  * 可当作角色名的称呼：周一川、便利店女孩、汤米·巴洛、火焰玫瑰。
- * 排除镜头动作、画面说明、字幕、身体局部、对白碎片、形容词堆砌。
+ * 排除镜头动作、画面说明、字幕、身体局部、对白碎片、形容词堆砌、地名/标题。
  */
 export function isDramaCharacterNamePlausible(name: string): boolean {
+  if (isDramaNonCastLabel(name)) return false;
   if (isDramaAnimalCreatureName(name)) return false;
   const n = coreDramaPersonName(name) || cleanName(name);
   if (!n || n.length < 2) return false;
@@ -331,7 +751,7 @@ export function isDramaCharacterNamePlausible(name: string): boolean {
   if (/[，。、；：:！!？?,.…]/.test(n)) return false;
   // 「戴头盔的德鲁」「周一川的眼睛动了一下」——描述不是名
   if (n.includes('的')) return false;
-  if (/画面|字幕|文字|进度|镜头|特写|构图|右下|左上|浮现|动态|小字|水印|标题|广告/.test(n)) {
+  if (/画面|字幕|文字|进度|镜头|特写|构图|右下|左上|浮现|动态|小字|水印|标题|广告|弹幕|蒙太奇|特效|技能/.test(n)) {
     return false;
   }
   if (/眼睛|眼神|喉结|嘴角|眉毛|手指|脚步|眨眼|血丝/.test(n)) return false;
@@ -351,9 +771,11 @@ export function isDramaCharacterNamePlausible(name: string): boolean {
   if (n.length >= 7 && /说|走|转|进|出|来|去|看|拿|选|步/.test(n)) return false;
   // 描写句 / 表情后缀 / 氛围词，不是称呼
   if (NAME_JUNK_LEXICON.test(n)) return false;
+  // 地名 / 场景标题 / 世界观地点：峡谷之巅、云霄峰、山门外、直播间
+  if (isDramaPlaceOrTitleName(n)) return false;
   // 地点开头但不是「地点+身份」
   if (
-    /^(平原|草原|街头|街道|雨夜|写字楼|电梯|走廊|办公室|大厅|门口|便利店|出租屋|纯白|白空间|房间|滨江)/.test(
+    /^(平原|草原|街头|街道|雨夜|写字楼|电梯|走廊|办公室|大厅|门口|便利店|出租屋|纯白|白空间|房间|滨江|峡谷|云霄|山门|会场|直播)/.test(
       n,
     ) &&
     !isDramaPlacePlusRoleName(n)
@@ -369,6 +791,32 @@ export function isDramaCharacterNamePlausible(name: string): boolean {
     return false;
   }
   return true;
+}
+
+/** 地名、场次标题、世界观地点 —— 禁止进人物卡 */
+export function isDramaPlaceOrTitleName(name: string): boolean {
+  const n = coreDramaPersonName(name) || cleanName(name);
+  if (!n) return false;
+  if (isDramaPlacePlusRoleName(n)) return false;
+  if (/(峰|山|谷|崖|湖|河|江|海|岛|城|镇|村|街|路|巷|桥|塔|殿|宫|寺|观|阁|楼|厅|室|间|场|馆|院|园|门外|门内|门口)$/.test(n)) {
+    return true;
+  }
+  if (/(之巅|之巅|直播间|会场|峡谷|商城|山门|大典|擂台|竞技场)$/.test(n)) return true;
+  if (/^(内景|外景|开场|转场)/.test(n)) return true;
+  return false;
+}
+
+/**
+ * 素材准备准入：必须像人名，且优先为对白说话人。
+ * 系统/旁白不算人物卡；地名/标题/生物不算。
+ */
+export function isDramaStrictCastName(name: string, sourceText?: string): boolean {
+  if (isSystemSpeakerName(name)) return false;
+  if (isDramaNonCastLabel(name)) return false;
+  if (isDramaAnimalCreatureName(name)) return false;
+  if (isDramaPlaceOrTitleName(name)) return false;
+  if (!isDramaCharacterNamePlausible(name)) return false;
+  return isDramaCharacterNameAcceptable(name, sourceText);
 }
 
 /** 剧本里能对上的才准入人物；地点+身份例外。无剧本时只做形态校验。 */
@@ -407,9 +855,23 @@ function isPlausiblePersonName(name: string): boolean {
 }
 
 /**
+ * 去掉行首尾 Markdown 加粗/斜体，便于识别 **林凡**（怒）：台词、**场景一：天庭**。
+ */
+export function stripDramaMarkdownDecor(raw: string): string {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  // 整行被 **…** 或 *…* 包裹
+  s = s.replace(/^\*{1,3}\s*([\s\S]*?)\s*\*{1,3}$/u, '$1').trim();
+  // 行内 **姓名** / *姓名*
+  s = s.replace(/\*{1,3}([^*\n]{1,24})\*{1,3}/gu, '$1');
+  return s.trim();
+}
+
+/**
  * 从剧本/对白字符串中提取可能的人名。
  * 覆盖：
  * - 「林默：……」「苏婉:……」
+ * - 「**林凡**（怒）：……」Markdown 剧本
  * - 「【林默】……」
  * - 连续台词块
  */
@@ -421,6 +883,8 @@ export function extractCharacterNamesFromScriptText(sourceText: string): string[
   const patterns: RegExp[] = [
     // 仅短称呼 + 冒号，避免把整句叙述当成说话人
     /^[\s]*([\u4e00-\u9fffA-Za-z·]{2,8})\s*[：:]\s*.+/gm,
+    // **姓名**（情绪）： / **姓名**：
+    /^[\s]*\*{1,3}\s*([\u4e00-\u9fffA-Za-z·]{2,8})\s*\*{1,3}\s*(?:[（(][^）\n]{0,16}[）)])?\s*[：:]/gm,
     // 【姓名】
     /【\s*([\u4e00-\u9fffA-Za-z·]{2,8})\s*】/g,
     // （姓名）独白/旁白以外的角色标注：姓名（情绪）
@@ -434,6 +898,18 @@ export function extractCharacterNamesFromScriptText(sourceText: string): string[
       const n = cleanName(m[1] || '');
       if (isPlausiblePersonName(n)) found.add(n);
     }
+  }
+
+  // 再扫一遍去壳后的行（兼容整行 **姓名（情绪）：台词**）
+  for (const line of text.split(/\r?\n/)) {
+    const plain = stripDramaMarkdownDecor(line);
+    if (!plain || plain === line.trim()) continue;
+    const m =
+      plain.match(/^([\u4e00-\u9fffA-Za-z·]{2,8})\s*(?:[（(][^）\n]{0,16}[）)])?\s*[：:]\s*.+/) ||
+      plain.match(/^([\u4e00-\u9fffA-Za-z·]{2,8})\s*(?:[（(][^）\n]{0,16}[）)])?\s*[：:]\s*$/);
+    if (!m) continue;
+    const n = cleanName(m[1] || '');
+    if (isPlausiblePersonName(n) && !/^场景/.test(n)) found.add(n);
   }
 
   return [...found];

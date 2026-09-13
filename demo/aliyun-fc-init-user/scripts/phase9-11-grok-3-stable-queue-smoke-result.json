@@ -1,0 +1,65 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "VIDEO_QUEUE_GROK_3_STABLE_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "in VIDEO_QUEUE_ONLY_MODEL_IDS",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "run path",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "rhRegion ai",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "duration string helper",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "VideoProvider adapter",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "VideoProvider gate wire",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "VideoProvider Direct reject",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "prepare HTTPS images",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "FC allowlist rhart-video-g-official",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

@@ -91,6 +91,60 @@ export function characterHasGlbForPreview(character: Character): boolean {
 /** 从角色库卡片拖到画布时 dataTransfer 使用的类型（Workspace onDrop 需同步识别） */
 export const NEXFLOW_CHARACTER_DRAG_MIME = 'application/x-nexflow-character';
 
+/** 画布图片节点拖到素材框时 dataTransfer 使用的类型 */
+export const NEXFLOW_CANVAS_IMAGE_DRAG_MIME = 'application/x-nexflow-canvas-image';
+
+/** 画布音频 / 角色参考音拖到素材框时 dataTransfer 使用的类型 */
+export const NEXFLOW_CANVAS_AUDIO_DRAG_MIME = 'application/x-nexflow-canvas-audio';
+
+let canvasImageDragUrl = '';
+let canvasAudioDragUrl = '';
+
+export function beginCanvasImageDrag(url: string) {
+  canvasImageDragUrl = String(url || '').trim();
+  canvasAudioDragUrl = '';
+}
+
+export function peekCanvasImageDragUrl(): string {
+  return canvasImageDragUrl;
+}
+
+export function endCanvasImageDrag() {
+  canvasImageDragUrl = '';
+}
+
+export function beginCanvasAudioDrag(url: string) {
+  canvasAudioDragUrl = String(url || '').trim();
+  canvasImageDragUrl = '';
+}
+
+export function peekCanvasAudioDragUrl(): string {
+  return canvasAudioDragUrl;
+}
+
+export function endCanvasAudioDrag() {
+  canvasAudioDragUrl = '';
+}
+
+export function fillCanvasImageDragTransfer(dt: DataTransfer, url: string) {
+  const u = String(url || '').trim();
+  if (!u) return;
+  dt.effectAllowed = 'copy';
+  dt.setData(NEXFLOW_CANVAS_IMAGE_DRAG_MIME, u);
+  dt.setData('text/uri-list', `${u}\r\n`);
+  dt.setData('text/plain', u);
+  beginCanvasImageDrag(u);
+}
+
+export function fillCanvasAudioDragTransfer(dt: DataTransfer, url: string) {
+  const u = String(url || '').trim();
+  if (!u) return;
+  dt.effectAllowed = 'copy';
+  dt.setData(NEXFLOW_CANVAS_AUDIO_DRAG_MIME, u);
+  dt.setData('text/plain', u);
+  beginCanvasAudioDrag(u);
+}
+
 /** 场景资产库条目（正常图 + 3D 展示图，拖入画布为图片节点） */
 export interface SceneLibraryItem {
   id: string;

@@ -13,10 +13,24 @@ import { normalizeDramaShotPlanPaceGear } from '../types.js';
 import { createEmptyDramaShotSuggestion } from '../episodeBible.js';
 import { normalizeDramaShotTimeOfDay } from '../types.js';
 import { DRAMA_CAMERA_MOVE_HANDBOOK } from './cameraMoveHandbook.js';
-import { DRAMA_SHOT_PLAN_ENRICH_PACE_SHORT_DRAMA, DRAMA_SHOT_PLAN_ENRICH_PACE_DENSE_15S } from './shotPlan.js';
+import { DRAMA_H3_CRAFT_ENRICH_CHECK, DRAMA_H3_CRAFT_SHOT_PLAN_RULES } from './h3VideoCraftHandbook.js';
+import {
+  DRAMA_H3_TIMING_SOUND_ENRICH_CHECK,
+  DRAMA_H3_TIMING_SOUND_SHOT_PLAN_RULES,
+} from './h3TimingSoundHandbook.js';
+import { DRAMA_SHOT_PLAN_ENRICH_PACE_SHORT_DRAMA, DRAMA_SHOT_PLAN_ENRICH_PACE_DENSE_15S, DRAMA_SHOT_PLAN_ENRICH_PACE_DENSE_20S } from './shotPlan.js';
+import { DRAMA_VISUAL_EMPHASIS_MAPPING } from '../shotPlanning.js';
 export const DRAMA_SHOT_PLAN_ENRICH_BATCH = 3;
 
 export const DRAMA_SHOT_PLAN_ENRICH_SYSTEM = `${DRAMA_CAMERA_MOVE_HANDBOOK}
+
+${DRAMA_H3_CRAFT_SHOT_PLAN_RULES}
+
+${DRAMA_H3_TIMING_SOUND_SHOT_PLAN_RULES}
+
+${DRAMA_H3_CRAFT_ENRICH_CHECK}
+
+${DRAMA_H3_TIMING_SOUND_ENRICH_CHECK}
 
 你是电影级分镜导演。任务：把已有骨架镜头按人设档案加厚，不是重新拆镜。
 
@@ -86,8 +100,10 @@ export function buildDramaShotPlanEnrichMessages(opts: {
     move: s.move,
     action: s.action,
     purpose: s.purpose,
+    intent_id: s.intent_id,
     dialogue: s.dialogue,
     cast_names: s.cast_names,
+    costume_tags: s.costume_tags,
     sfx: s.sound,
     expression: s.emotion_play,
     lighting: s.lighting,
@@ -97,11 +113,18 @@ export function buildDramaShotPlanEnrichMessages(opts: {
   }));
   const pace = normalizeDramaShotPlanPaceGear(opts.paceGear);
   const systemPrompt =
-    pace === 'short_drama'
+    (pace === 'short_drama'
       ? `${DRAMA_SHOT_PLAN_ENRICH_SYSTEM}\n\n${DRAMA_SHOT_PLAN_ENRICH_PACE_SHORT_DRAMA}`
       : pace === 'dense_15s'
         ? `${DRAMA_SHOT_PLAN_ENRICH_SYSTEM}\n\n${DRAMA_SHOT_PLAN_ENRICH_PACE_DENSE_15S}`
-        : DRAMA_SHOT_PLAN_ENRICH_SYSTEM;
+        : pace === 'dense_20s'
+          ? `${DRAMA_SHOT_PLAN_ENRICH_SYSTEM}\n\n${DRAMA_SHOT_PLAN_ENRICH_PACE_DENSE_20S}`
+          : DRAMA_SHOT_PLAN_ENRICH_SYSTEM)
+    + `\n\n【v3 VisualEmphasis → 可执行写法映射（如 shot 带 visual_emphasis，必须按下表落成具体写法）】\n${
+      Object.entries(DRAMA_VISUAL_EMPHASIS_MAPPING)
+        .map(([k, v]) => `- ${k}: ${v}`)
+        .join('\n')
+    }\n加厚时保留 intent_id / costume_tags 原值不变，不得删除或改写。`
   return {
     systemPrompt,
     userPrompt: [
@@ -110,7 +133,9 @@ export function buildDramaShotPlanEnrichMessages(opts: {
         ? '当前挡位：短剧快切（加厚时禁止扩回过程动作）'
         : pace === 'dense_15s'
           ? '当前挡位：15秒高密度（加厚时保持镜内时间子窗，禁止拆镜）'
-          : '当前挡位：正剧细致感',
+          : pace === 'dense_20s'
+            ? '当前挡位：20秒长视频高密度（加厚时保持 5 节拍窗口不变；只下钻 beats[] 内部 action/expression/light/sound；禁止把 20s 段拆成多镜）'
+            : '当前挡位：正剧细致感',
       '人设档案（含 action_index）：',
       String(opts.dossierJson || '').trim() || '无',
       opts.usedSignatureActions

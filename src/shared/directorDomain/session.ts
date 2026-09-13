@@ -11,6 +11,7 @@ import { reviewAllDramaShots } from './review.js';
 import { ensureAppearingCharactersInBible, resolveDramaCharacterIdByName } from './ensureAppearingCharacters.js';
 import { dramaPromptSourceFingerprint, dramaSuggestionAsPromptSource } from './boardPromptSync.js';
 import { createEmptyDramaEpisodeBible } from './episodeBible.js';
+import { ensureDramaShotTimelineEvents } from './timelineEvent.js';
 import type {
   DramaDirectorSession,
   DramaDomainPhase,
@@ -73,23 +74,50 @@ export function convertShotSuggestionsToDramaShots(
   }
 
   const sceneNoToBeat = new Map<string, DramaDirectorSession['scene_beats'][0]>();
-  const scene_beats: DramaDirectorSession['scene_beats'] = [];
-  for (const b of scene_beats) {
-    if (b.scene_no) sceneNoToBeat.set(b.scene_no, b);
+  const locationToBeat = new Map<string, DramaDirectorSession['scene_beats'][0]>();
+  for (const b of session.scene_beats || []) {
+    if (b.scene_no) sceneNoToBeat.set(String(b.scene_no), b);
+    if (b.location_name) locationToBeat.set(b.location_name, b);
   }
+  const scene_beats: DramaDirectorSession['scene_beats'] = [];
+
+  // 场景名宽松匹配：精确 → 去空白小写 → 包含，避免 LLM 场景名与素材名细微差异导致丢场景
+  const normScene = (s: string) => String(s || '').replace(/\s+/g, '').toLowerCase();
+  const resolveSceneId = (raw: string): string => {
+    const name = String(raw || '').trim();
+    if (!name) return '';
+    const exact = locToId.get(name);
+    if (exact) return exact;
+    const target = normScene(name);
+    if (!target) return '';
+    for (const sc of session.bible.scenes) {
+      if (normScene(sc.name) === target || normScene(sc.location) === target) return sc.scene_id;
+    }
+    for (const sc of session.bible.scenes) {
+      const n = normScene(sc.name);
+      const l = normScene(sc.location);
+      if ((n && (n.includes(target) || target.includes(n))) ||
+          (l && (l.includes(target) || target.includes(l)))) {
+        return sc.scene_id;
+      }
+    }
+    return '';
+  };
 
   const shots: DramaShot[] = [];
   list.forEach((sug, idx) => {
     let beat =
-      scene_beats.find((b) => b.location_name === sug.scene) ||
-      sceneNoToBeat.get(sug.scene);
+      locationToBeat.get(sug.scene) ||
+      sceneNoToBeat.get(sug.scene) ||
+      null;
     if (!beat) {
       beat = createEmptyDramaSceneBeat({
         scene_no: String(idx + 1),
         location_name: sug.scene,
-        scene_asset_id: locToId.get(sug.scene) || '',
+        scene_asset_id: resolveSceneId(sug.scene),
       });
       sceneNoToBeat.set(beat.scene_no, beat);
+      if (beat.location_name) locationToBeat.set(beat.location_name, beat);
       scene_beats.push(beat);
     }
     const resolveCastId = (name: string): string =>
@@ -116,8 +144,56 @@ export function convertShotSuggestionsToDramaShots(
     });
     const dialogue = spokenParts.filter((d) => d.text);
 
+    // 道具/生物绑定：优先用分镜建议的结构化 prop_names/creature_names 按名匹配素材；文本检测兜底
+    const shotText = [
+      sug.action,
+      sug.purpose,
+      sug.environment,
+      sug.visual_focus,
+      sug.blocking,
+      sug.dramatic_purpose,
+      String(sug.dialogue || ''),
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    const normName = (s: string) => String(s || '').replace(/\s+/g, '').toLowerCase();
+    const nameHit = (rawName: string, name: string): boolean => {
+      const a = normName(rawName);
+      const b = normName(name);
+      if (!a || !b) return false;
+      return a === b || (a.length >= 2 && b.length >= 2 && (a.includes(b) || b.includes(a)));
+    };
+    const resolvePropIds = (names: string[] | undefined): string[] =>
+      (names || [])
+        .map((rawName) => session.bible.props.find((p) => nameHit(rawName, p.name))?.prop_id)
+        .filter(Boolean) as string[];
+    const resolveCreatureIds = (names: string[] | undefined): string[] =>
+      (names || [])
+        .map((rawName) => session.bible.creatures.find((c) => nameHit(rawName, c.name))?.creature_id)
+        .filter(Boolean) as string[];
+    const structuredPropIds = resolvePropIds(sug.prop_names);
+    const structuredCreatureIds = resolveCreatureIds(sug.creature_names);
+    const mentionHit = (rawName: string): boolean => {
+      const n = normName(rawName);
+      return n.length >= 2 && !!shotText && shotText.includes(n);
+    };
+    const prop_ids = [
+      ...new Set([
+        ...structuredPropIds,
+        ...session.bible.props.filter((p) => mentionHit(p.name)).map((p) => p.prop_id),
+      ]),
+    ];
+    const creature_ids = [
+      ...new Set([
+        ...structuredCreatureIds,
+        ...session.bible.creatures.filter((c) => mentionHit(c.name)).map((c) => c.creature_id),
+      ]),
+    ];
+
     shots.push(
-      createEmptyDramaShot({
+      ensureDramaShotTimelineEvents(createEmptyDramaShot({
         scene_beat_id: beat.scene_beat_id,
         shot_no: sug.shot || String(idx + 1),
         duration_sec: parseDurationSec(sug.duration_sec, 6),
@@ -138,16 +214,23 @@ export function convertShotSuggestionsToDramaShots(
           .filter(Boolean)
           .join(' → '),
         character_ids: cast_names.map((n) => resolveCastId(n)).filter(Boolean),
-        scene_asset_id: beat.scene_asset_id,
+        scene_asset_id: beat.scene_asset_id || resolveSceneId(beat.location_name || sug.scene),
+        prop_ids,
+        creature_ids,
         dramatic_purpose: sug.dramatic_purpose || '',
         visual_focus: sug.visual_focus || '',
         transition_in: sug.transition_in || '',
         transition_out: sug.transition_out || '',
-        visual_event_ids: sug.visual_event_ids || [],
+        visual_event_ids:
+          (sug.visual_event_ids || []).length > 0
+            ? sug.visual_event_ids
+            : Array.isArray((sug as { event_ids?: string[] }).event_ids)
+              ? ((sug as { event_ids?: string[] }).event_ids || []).map(String).filter(Boolean)
+              : [],
         prompt_source_fingerprint: dramaPromptSourceFingerprint(
           dramaSuggestionAsPromptSource(sug),
         ),
-      }),
+      }), session),
     );
   });
 
@@ -392,15 +475,31 @@ export function confirmDramaBible(session: DramaDirectorSession): DramaDirectorS
 
 export function invalidateDramaConfirmationsAfter(
   session: DramaDirectorSession,
-  from: 'analyze' | 'board' | 'assets' | 'visual',
+  from: 'analyze' | 'board' | 'assets' | 'visual' | 'asset_match',
 ): DramaDirectorSession {
   const meta = { ...session.meta };
   if (from === 'analyze' || from === 'visual') {
     if (from === 'analyze') meta.analyze_confirmed = false;
     meta.board_confirmed_at = 0;
     meta.assets_confirmed_at = 0;
+    const epId = String(session.active_episode_id || '').trim();
+    let episode_bibles = session.episode_bibles || {};
+    if (epId && episode_bibles[epId]) {
+      const b = episode_bibles[epId];
+      episode_bibles = {
+        ...episode_bibles,
+        [epId]: {
+          ...b,
+          ...(from === 'analyze'
+            ? { asset_match_at: 0, duration_split_at: b.duration_split_at }
+            : {}),
+          ...(from === 'visual' ? { asset_match_at: 0 } : {}),
+        },
+      };
+    }
     return createEmptyDramaSession({
       ...session,
+      episode_bibles,
       bible: {
         ...session.bible,
         confirmed_at: from === 'analyze' ? 0 : session.bible.confirmed_at,
@@ -408,11 +507,18 @@ export function invalidateDramaConfirmationsAfter(
       meta,
     });
   }
-  if (from === 'assets') {
-    // 素材在分镜之前：改素材需重确认素材，并解除后续导演表确认
+  if (from === 'assets' || from === 'asset_match') {
     meta.assets_confirmed_at = 0;
     meta.board_confirmed_at = 0;
-    return createEmptyDramaSession({ ...session, meta });
+    const epId = String(session.active_episode_id || '').trim();
+    let episode_bibles = session.episode_bibles || {};
+    if (from === 'asset_match' && epId && episode_bibles[epId]) {
+      episode_bibles = {
+        ...episode_bibles,
+        [epId]: { ...episode_bibles[epId], asset_match_at: 0 },
+      };
+    }
+    return createEmptyDramaSession({ ...session, episode_bibles, meta });
   }
   // from === 'board'：只解除导演表，保留已确认素材
   meta.board_confirmed_at = 0;

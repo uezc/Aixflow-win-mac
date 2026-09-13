@@ -19,6 +19,7 @@ import {
   type DirectorShot,
   type DirectorShotColumnKey,
   type DirectorShotStoryboard,
+  getDirectorShotStoryboard,
   mergeDirectorShotStoryboardImageHistory,
   mergeDirectorShotVideoHistory,
   replaceDirectorShotVideoUrlInPlace,
@@ -625,9 +626,14 @@ export function mergeDirectorMediaPreserve(
           : 'ready'
         : n.status || p.status,
       videoStatus: videoUrl
-        ? n.videoStatus === 'generating'
-          ? n.videoStatus
-          : 'ready'
+        ? n.videoStatus === 'generating' &&
+          p.videoStatus === 'ready' &&
+          (directorMediaUrlKey(String(n.videoUrl || '')) || String(n.videoUrl || '').trim()) ===
+            (directorMediaUrlKey(String(p.videoUrl || '')) || String(p.videoUrl || '').trim())
+          ? 'ready'
+          : n.videoStatus === 'generating'
+            ? n.videoStatus
+            : 'ready'
         : n.videoStatus || p.videoStatus,
       videoNodeId: String(n.videoNodeId || p.videoNodeId || '').trim() || undefined,
     };
@@ -671,10 +677,8 @@ export function updateDirectorShotStoryboard(
 ): DirectorPipelineState {
   const key = resolveDirectorStoryboardStorageKey(state, shotNo);
   if (!key) return state;
-  const prev = state.storyboardsByShotNo?.[key] || {
-    imageUrl: '',
-    status: 'pending' as const,
-  };
+  // 与 getDirectorShotStoryboard 一致：ep 键空壳时合并裸镜号旧成片，regen 才能归档进 history
+  const prev = getDirectorShotStoryboard(state, shotNo);
   const nextUrl =
     patch.imageUrl !== undefined ? String(patch.imageUrl || '').trim() : prev.imageUrl;
   const nextHistory =

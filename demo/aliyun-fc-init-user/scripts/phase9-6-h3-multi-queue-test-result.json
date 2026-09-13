@@ -1,0 +1,187 @@
+{
+  "phase": "9.6-h3-multi",
+  "conclusion": "PASS",
+  "finished_at": "2026-09-07T10:33:01.247Z",
+  "rh_submit_calls": 5,
+  "pass": 22,
+  "fail": 0,
+  "tests": [
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "rhRegion": "cn",
+        "path": "/run/ai-app/2086289185186603010",
+        "imgs": 1,
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "duration_6s",
+      "ok": true,
+      "detail": {
+        "field": "6",
+        "sku": "minimax-h3-multi-720p-6s"
+      }
+    },
+    {
+      "name": "duration_10s",
+      "ok": true,
+      "detail": {
+        "field": "10",
+        "sku": "minimax-h3-multi-720p-10s"
+      }
+    },
+    {
+      "name": "duration_15s",
+      "ok": true,
+      "detail": {
+        "field": "15",
+        "sku": "minimax-h3-multi-720p-15s"
+      }
+    },
+    {
+      "name": "duration_20s",
+      "ok": true,
+      "detail": {
+        "field": "20",
+        "sku": "minimax-h3-multi-720p-20s"
+      }
+    },
+    {
+      "name": "audio_slot_ok",
+      "ok": true,
+      "detail": {
+        "audios": [
+          "openapi/p96/mock-audio1.mp3"
+        ]
+      }
+    },
+    {
+      "name": "test_create_queued",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "qat": 1788777100194
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed",
+        "claimed_at": 1788777101137
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 5,
+        "charged_at": 1788777106180
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_h3multi_single",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test_poll_cn",
+      "ok": true,
+      "detail": {
+        "seen": "cn"
+      }
+    },
+    {
+      "name": "test_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "stage": "done",
+        "completed_at": 1788777111272,
+        "occupied": 0
+      }
+    },
+    {
+      "name": "dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 5
+      }
+    },
+    {
+      "name": "media_must_be_rh_filename",
+      "ok": true,
+      "detail": {
+        "rejectedLocal": true,
+        "rejectedHttps": true
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 1985,
+        "bal1": 1985
+      }
+    },
+    {
+      "name": "provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 1985,
+        "bal1": 1985,
+        "bal2": 1985
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {
+        "on": true,
+        "onText": true
+      }
+    },
+    {
+      "name": "gate_off_no_flag",
+      "ok": true,
+      "detail": {
+        "off": false
+      }
+    },
+    {
+      "name": "gate_drama_excluded",
+      "ok": true,
+      "detail": {
+        "dramaOff": false
+      }
+    },
+    {
+      "name": "queue_only_forced",
+      "ok": true,
+      "detail": {
+        "queueOnly": true
+      }
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasEarly": true,
+        "directSealed": true
+      }
+    }
+  ]
+}

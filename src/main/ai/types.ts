@@ -44,6 +44,14 @@ export interface AIStatusPacket {
     /** 正式版 SaaS：需要登录云端账号后才能继续调用 FC */
     nxAuthRequired?: boolean;
     taskId?: string;    // 任务 ID（用于轮询查询任务状态）
+    /** Unified Queue 云端任务 ID（与 taskId 并存；UI 可展示排队进度） */
+    cloudTaskId?: string;
+    /** Unified Queue 执行阶段：queued / claimed / charged / running / … */
+    execution_stage?: string;
+    /** 用户 UX：排队位次（仅 queued；与 Claim FIFO 一致） */
+    queue_position?: number | null;
+    /** 用户 UX：前面还有几个 queued 任务 */
+    ahead_count?: number | null;
     prompt?: string;    // 提示词（用于保存元数据）
     model?: string;     // 使用的模型（用于保存元数据）
     nodeTitle?: string; // 节点标题（用于保存元数据）

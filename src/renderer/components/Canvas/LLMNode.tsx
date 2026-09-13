@@ -231,7 +231,7 @@ const LLMNodeComponent: React.FC<LLMNodeProps> = (props) => {
           progress: 0,
         });
         if (!isUserCancel && balanceInsufficient) {
-          showAlert('元宝不足，请联系管理员充值');
+          showAlert('元宝不足，请充值');
         }
         return;
       }

@@ -1587,7 +1587,7 @@ export function getDirectorMvScenesSectionText(state: {
 export const parseDirectorMvSceneEntries = parseDirectorMvCharacterEntries;
 
 /**
- * 按剧本场景库同步场景列表（九宫格空场景提示词）。
+ * 按剧本场景库同步场景列表（单张空场景提示词）。
  * MV 不生成道具，仅场景。
  */
 export function syncDirectorMvScenesFromScript(
@@ -3118,9 +3118,11 @@ export function createDefaultDirectorPipelineState(
     ),
     videoBatchDuration: String(partial?.videoBatchDuration ?? '10'),
     videoBatchAspectRatio: String(partial?.videoBatchAspectRatio ?? mvAspectRatio),
-    videoBatchResolution: String(partial?.videoBatchResolution ?? '1280'),
+    videoBatchResolution: String(
+      partial?.videoBatchResolution ?? (mode === 'drama' ? '720p' : '1280'),
+    ),
     videoBatchLipsyncResolution: String(
-      partial?.videoBatchLipsyncResolution ?? partial?.videoBatchResolution ?? '1280',
+      partial?.videoBatchLipsyncResolution ?? partial?.videoBatchResolution ?? '720p',
     ),
     videoBatchModelBeforeLipsync: String(partial?.videoBatchModelBeforeLipsync ?? ''),
     mvMusic: normalizeDirectorMvMusic(partial?.mvMusic),

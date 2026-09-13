@@ -1,0 +1,102 @@
+{
+  "started_at": "2026-09-06T01:23:22.581Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "ltx_i2v_e2e": {
+    "aixflow_task_id": "268ccade-9492-44f6-8114-2ed666db670a",
+    "runninghub_task_id": "2096409063138230273",
+    "submit_region": "cn",
+    "poll_region": "cn",
+    "billing_sku": "ltx-2-3-i2v-720-10s",
+    "quoted_cost": 8,
+    "actual_charge": 8,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/comfyui_00001_p84-audio_dsepd_1788657957.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "image_url": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/p93d-i2v-test/1788607602254_b2eac80c.jpg"
+  },
+  "regressions": {
+    "started_at": "2026-09-06T01:30:38.632Z",
+    "invalid_forward": "PASS",
+    "duplicate_charge": "PASS",
+    "duplicate_refund": "PASS",
+    "h3_t2v": {
+      "ok": true,
+      "status": "success",
+      "pid": "2096411037137063937",
+      "region": "cn",
+      "err": "",
+      "blocked_external": false
+    },
+    "ltx_t2v": {
+      "ok": true,
+      "status": "success",
+      "pid": "2096412732044636161",
+      "region": "ai",
+      "err": "",
+      "blocked_external": false
+    },
+    "h3_i2v": {
+      "ok": true,
+      "status": "success",
+      "pid": "2096413977029603330",
+      "region": "cn",
+      "err": "",
+      "blocked_external": false
+    },
+    "rhart_t2v": {
+      "ok": false,
+      "status": "failed",
+      "pid": "",
+      "region": "ai",
+      "err": "PROVIDER_NO_TASK_ID",
+      "blocked_external": true
+    },
+    "rhart_i2v": {
+      "ok": false,
+      "status": "failed",
+      "pid": "",
+      "region": "ai",
+      "err": "PROVIDER_NO_TASK_ID",
+      "blocked_external": true
+    },
+    "conclusion": "PASS",
+    "external_blocker": "rhart-video-x PROVIDER_NO_TASK_ID (likely RH.ai 605)",
+    "finished_at": "2026-09-06T01:52:25.111Z"
+  },
+  "continue": {
+    "continued_at": "2026-09-06T01:29:08.951Z",
+    "task_id": "268ccade-9492-44f6-8114-2ed666db670a",
+    "status": "success",
+    "provider_task_id": "2096409063138230273",
+    "quoted_cost": 8,
+    "charge": {
+      "task_id": "268ccade-9492-44f6-8114-2ed666db670a",
+      "charge_id": "268ccade-9492-44f6-8114-2ed666db670a",
+      "operation_id": "chg_268ccade-9492-44f6-8114-2ed666db670a",
+      "user_id": "__p95b1live_mtp4o9cl_main",
+      "amount": 8,
+      "status": "charged",
+      "ledger_tx_id": "idem_eb4104fca5d959de554c3f1a1a3019a79fb7fe1069a68cf73c4eaa93e5204f67",
+      "error_code": "",
+      "created_at": 1788657829073,
+      "updated_at": 1788657829429,
+      "charged_at": 1788657829429,
+      "refunded_at": 0
+    },
+    "rhRegion": "cn",
+    "path": "/run/ai-app/2034955204851933186",
+    "billingModelId": "ltx-2-3-i2v-720-10s",
+    "image": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/p93d-i2v-test/1788607602254_b2eac80c.jpg",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/comfyui_00001_p84-audio_dsepd_1788657957.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "error_code": ""
+  },
+  "finished_at": "2026-09-06T01:52:25.112Z",
+  "external_blocker": "rhart-video-x PROVIDER_NO_TASK_ID (likely RH.ai 605)"
+}

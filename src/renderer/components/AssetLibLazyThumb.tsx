@@ -8,6 +8,8 @@ type Props = {
   alt?: string;
   /** 列表小图边长；有值时优先走磁盘缩略图，避免原图解码撑爆堆 */
   maxEdge?: number;
+  /** 同 URL 重新生成后用来拆缓存（如 asset_version） */
+  cacheNonce?: string | number;
   placeholderClassName?: string;
 };
 
@@ -22,12 +24,12 @@ function isLocalMediaUrl(raw: string): boolean {
   );
 }
 
-function memoKey(raw: string, edge: number): string {
-  return `${raw}::${edge}`;
+function memoKey(raw: string, edge: number, nonce = ''): string {
+  return nonce ? `${raw}::${edge}::${nonce}` : `${raw}::${edge}`;
 }
 
-function peekCachedThumb(raw: string, edge: number): string {
-  const key = memoKey(raw, edge);
+function peekCachedThumb(raw: string, edge: number, nonce = ''): string {
+  const key = memoKey(raw, edge, nonce);
   const hit = thumbMemo.get(key);
   if (hit) return hit;
   const api = window.electronAPI;
@@ -75,13 +77,15 @@ const AssetLibLazyThumb: React.FC<Props> = ({
   imgStyle,
   alt = '',
   maxEdge,
+  cacheNonce,
   placeholderClassName = 'bg-black/20',
 }) => {
   const raw = String(src || '').trim();
   const edge = Math.max(0, Math.round(Number(maxEdge) || 0));
+  const nonce = String(cacheNonce ?? '').trim();
   const useThumb = !!raw && edge >= 32 && isLocalMediaUrl(raw);
   const [displaySrc, setDisplaySrc] = useState(() =>
-    useThumb ? peekCachedThumb(raw, edge) : raw,
+    useThumb ? peekCachedThumb(raw, edge, nonce) : raw,
   );
 
   useEffect(() => {
@@ -95,7 +99,7 @@ const AssetLibLazyThumb: React.FC<Props> = ({
       return;
     }
 
-    const cached = peekCachedThumb(raw, edge);
+    const cached = peekCachedThumb(raw, edge, nonce);
     if (cached) {
       setDisplaySrc(cached);
       return;
@@ -114,7 +118,7 @@ const AssetLibLazyThumb: React.FC<Props> = ({
         const thumb = String(r?.thumbUrl || '').trim();
         if (cancelled) return;
         if (r?.success && thumb) {
-          thumbMemo.set(memoKey(raw, edge), thumb);
+          thumbMemo.set(memoKey(raw, edge, nonce), thumb);
           setDisplaySrc(thumb);
           return;
         }
@@ -127,7 +131,7 @@ const AssetLibLazyThumb: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [raw, edge, useThumb]);
+  }, [raw, edge, useThumb, nonce]);
 
   if (!raw) {
     return (

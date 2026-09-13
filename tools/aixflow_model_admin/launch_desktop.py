@@ -3,14 +3,12 @@
 """
 一键启动模型管理后台：本机起 Streamlit，再用桌面窗口或系统浏览器打开。
 
-- 已安装 pywebview 时：内嵌窗口（更像「客户端」）
-- 未安装时：自动打开默认浏览器，本进程占用终端直至 Ctrl+C
-
-首次使用内嵌窗口请执行：
+默认用系统浏览器（更稳）。若要内嵌窗口：
+  set NEXFLOW_ADMIN_WEBVIEW=1
   pip install -r requirements-desktop.txt
+  （需本机已装 Microsoft Edge WebView2 Runtime）
 
-默认端口 9510（避开本机 Hyper-V / 系统「排除端口范围」常占用的 84xx–91xx）。
-可通过环境变量覆盖：
+默认端口 9510。可用环境变量覆盖：
   set NEXFLOW_ADMIN_PORT=9510
 """
 
@@ -26,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 APP_PY = ROOT / "app.py"
+LOG_DIR = ROOT / ".local"
+STREAMLIT_LOG = LOG_DIR / "streamlit-launch.log"
 
 
 def _running_without_console() -> bool:
@@ -61,6 +61,19 @@ def _port() -> int:
     return 9510
 
 
+def _want_webview() -> bool:
+    raw = os.environ.get("NEXFLOW_ADMIN_WEBVIEW", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _http_ok(url: str, timeout: float = 1.0) -> bool:
+    try:
+        urllib.request.urlopen(url, timeout=timeout)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def _start_streamlit(port: int) -> subprocess.Popen:
     cmd = [
         sys.executable,
@@ -79,12 +92,17 @@ def _start_streamlit(port: int) -> subprocess.Popen:
     ]
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_f = open(STREAMLIT_LOG, "w", encoding="utf-8", errors="replace")
+    log_f.write(f"# streamlit launch {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    log_f.write("cmd: " + " ".join(cmd) + "\n\n")
+    log_f.flush()
     return subprocess.Popen(
         cmd,
         cwd=str(ROOT),
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
@@ -92,16 +110,14 @@ def _start_streamlit(port: int) -> subprocess.Popen:
 def _wait_http_ok(url: str, timeout_sec: float = 45.0) -> bool:
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        try:
-            urllib.request.urlopen(url, timeout=1.0)
+        if _http_ok(url):
             return True
-        except (urllib.error.URLError, OSError):
-            time.sleep(0.35)
+        time.sleep(0.35)
     return False
 
 
-def _kill_tree(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
+def _kill_tree(proc: subprocess.Popen | None) -> None:
+    if proc is None or proc.poll() is not None:
         return
     if sys.platform == "win32":
         subprocess.run(
@@ -117,28 +133,34 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
-def _run_with_webview(url: str, proc: subprocess.Popen) -> None:
+def _run_with_webview(url: str) -> None:
     import webview
 
     webview.create_window(
-        "Aixflow",
+        "Aixflow 模型管理后台",
         url,
         width=1280,
         height=840,
         resizable=True,
     )
-    try:
-        webview.start(debug=False)
-    finally:
-        _kill_tree(proc)
+    webview.start(debug=False)
 
 
-def _run_with_browser(url: str, proc: subprocess.Popen) -> int:
+def _run_with_browser(url: str, proc: subprocess.Popen | None) -> int:
     import webbrowser
 
     webbrowser.open(url)
     print(f"已打开浏览器：{url}")
+    print(f"Streamlit 日志：{STREAMLIT_LOG}")
     print("关闭服务：在本窗口按 Ctrl+C 或关闭终端。")
+    if proc is None:
+        print("（检测到端口上已有可用服务，未再启动新进程）")
+        try:
+            while _http_ok(url, timeout=2.0):
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            return 0
+        return 0
     try:
         return proc.wait()
     except KeyboardInterrupt:
@@ -159,54 +181,79 @@ def main() -> int:
 
     port = _port()
     url = f"http://127.0.0.1:{port}/"
+    proc: subprocess.Popen | None = None
+    reused = False
 
-    proc = _start_streamlit(port)
     try:
-        if not _wait_http_ok(url):
-            # 子进程 stdout/stderr 被吞掉时，主动探测端口是否可绑定，给出更准的原因
-            bind_hint = ""
-            try:
-                import socket
+        # 端口上已有健康服务时直接打开，避免二次启动失败却“像打不开”
+        if _http_ok(url):
+            print(f"检测到 {url} 已在运行，直接打开。")
+            reused = True
+        else:
+            proc = _start_streamlit(port)
+            if not _wait_http_ok(url):
+                bind_hint = ""
+                try:
+                    import socket
 
-                s = socket.socket()
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind(("127.0.0.1", port))
-                s.close()
-            except OSError as e:
-                bind_hint = (
-                    f"\n\n本机无法绑定端口 {port}：{e}\n"
-                    "常见原因：Windows「排除端口范围」（Hyper-V/WSL 等）占用了该端口。\n"
-                    "可改用：set NEXFLOW_ADMIN_PORT=18510 后再启动，"
-                    "或管理员执行 netsh interface ipv4 show excludedportrange protocol=tcp 查看排除段。"
+                    s = socket.socket()
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind(("127.0.0.1", port))
+                    s.close()
+                except OSError as e:
+                    bind_hint = (
+                        f"\n\n本机无法绑定端口 {port}：{e}\n"
+                        "常见原因：Windows「排除端口范围」（Hyper-V/WSL 等）占用了该端口。\n"
+                        "可改用：set NEXFLOW_ADMIN_PORT=18510 后再启动，"
+                        "或管理员执行 netsh interface ipv4 show excludedportrange protocol=tcp 查看排除段。"
+                    )
+
+                log_tail = ""
+                try:
+                    if STREAMLIT_LOG.is_file():
+                        log_tail = "\n\n--- streamlit-launch.log ---\n" + STREAMLIT_LOG.read_text(
+                            encoding="utf-8",
+                            errors="replace",
+                        )[-2000:]
+                except Exception:
+                    pass
+
+                msg = (
+                    f"Streamlit 在约 45 秒内未就绪（端口 {port}）。\n"
+                    "常见原因：端口被占用、依赖损坏、或首次启动过慢。"
+                    f"{bind_hint}\n\n"
+                    f"日志：{STREAMLIT_LOG}\n"
+                    "或在本目录命令行运行：\n"
+                    f"  python -m streamlit run app.py --server.port {port}\n"
+                    f"{log_tail}"
                 )
+                print(msg, file=sys.stderr)
+                _kill_tree(proc)
+                if _running_without_console():
+                    _gui_alert("Aixflow", msg[:800])
+                return 1
 
-            msg = (
-                f"Streamlit 在约 45 秒内未就绪（端口 {port}）。\n"
-                "常见原因：端口被系统保留/占用、依赖损坏、或首次启动过慢。"
-                f"{bind_hint}\n\n"
-                "请在本目录命令行运行：\n"
-                f"  python -m streamlit run app.py --server.port {port}\n"
-                "以查看完整报错。"
-            )
-            print(msg, file=sys.stderr)
-            if _running_without_console():
-                _gui_alert("Aixflow", msg)
-            return 1
+        if _want_webview():
+            try:
+                import webview  # noqa: F401
 
-        try:
-            import webview  # noqa: F401
+                print(f"内嵌窗口打开：{url}")
+                try:
+                    _run_with_webview(url)
+                    return 0
+                except Exception as e:
+                    print(f"内嵌窗口失败（将改用浏览器）：{e}", file=sys.stderr)
+            except ImportError:
+                print("未安装 pywebview，改用浏览器。可执行：pip install -r requirements-desktop.txt")
 
-            _run_with_webview(url, proc)
-            return 0
-        except ImportError:
-            return _run_with_browser(url, proc)
+        return _run_with_browser(url, None if reused else proc)
     except Exception as e:
         print(f"启动失败：{e}", file=sys.stderr)
         _kill_tree(proc)
         if _running_without_console():
             _gui_alert(
                 "Aixflow",
-                f"启动失败：{e}\n\n请双击 START-with-console.bat 用命令行启动以查看完整错误。",
+                f"启动失败：{e}\n\n请在本目录命令行运行启动脚本以查看完整错误。\n日志：{STREAMLIT_LOG}",
             )
         return 1
 

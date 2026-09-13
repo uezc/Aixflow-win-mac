@@ -13,6 +13,24 @@ export function dramaCostumeImageUrl(costume: DramaCharacterCostume | undefined 
   return String(costume?.images?.[0] || '').trim();
 }
 
+/**
+ * 本镜/主卡取人物图：指定了造型就只用这一套，绝不回退到其它套旧图。
+ * 未指定造型时用当前 active，再才是主卡 imageUrl。
+ */
+export function resolveDramaCharacterLookUrl(
+  character: DramaCharacter | undefined | null,
+  costumeId?: string,
+): string {
+  if (!character) return '';
+  const id = String(costumeId || '').trim();
+  if (id) {
+    const cos = (character.costumes || []).find((c) => c.costume_id === id);
+    return dramaCostumeImageUrl(cos);
+  }
+  const active = activeDramaCostume(character);
+  return dramaCostumeImageUrl(active) || String(character.imageUrl || '').trim();
+}
+
 export function findDramaCostumeOwner(
   session: DramaDirectorSession,
   costumeId: string,
@@ -128,12 +146,12 @@ export function setActiveDramaCharacterCostume(
   const cid = String(characterId || '').trim();
   const cosId = String(costumeId || '').trim();
   if (!cid || !cosId) return session;
-  const ch = session.bible.characters.find((c) => c.character_id === cid);
+  const ch = (session.bible?.characters || []).find((c) => c.character_id === cid);
   if (!ch) return session;
   const hit = (ch.costumes || []).find((c) => c.costume_id === cosId);
   if (!hit) return session;
   const url = dramaCostumeImageUrl(hit);
-  const characters = session.bible.characters.map((c) => {
+  const characters = (session.bible?.characters || []).map((c) => {
     if (c.character_id !== cid) return c;
     const nextRefs = (() => {
       const list = Array.isArray(c.reference_images)
@@ -179,7 +197,7 @@ export function saveDramaCharacterLookAsNewCostume(
   const cid = String(characterId || '').trim();
   if (!cid) return session;
   let base = ensureCharacterCostumes(session);
-  const ch = base.bible.characters.find((c) => c.character_id === cid);
+  const ch = (base.bible?.characters || []).find((c) => c.character_id === cid);
   if (!ch) return session;
   const active = activeDramaCostume(ch);
   const url =
@@ -201,7 +219,7 @@ export function saveDramaCharacterLookAsNewCostume(
     ...base,
     bible: {
       ...base.bible,
-      characters: base.bible.characters.map((c) => {
+      characters: (base.bible?.characters || []).map((c) => {
         if (c.character_id !== cid) return c;
         return {
           ...c,
@@ -225,7 +243,7 @@ export function addBlankDramaCharacterCostume(
   const cid = String(characterId || '').trim();
   if (!cid) return session;
   let base = ensureCharacterCostumes(session);
-  const ch = base.bible.characters.find((c) => c.character_id === cid);
+  const ch = (base.bible?.characters || []).find((c) => c.character_id === cid);
   if (!ch) return session;
   const n = (ch.costumes || []).length + 1;
   const created = createEmptyDramaCharacterCostume({
@@ -239,7 +257,7 @@ export function addBlankDramaCharacterCostume(
     ...base,
     bible: {
       ...base.bible,
-      characters: base.bible.characters.map((c) => {
+      characters: (base.bible?.characters || []).map((c) => {
         if (c.character_id !== cid) return c;
         return {
           ...c,
@@ -264,7 +282,7 @@ export function removeDramaCharacterCostume(
   const cosId = String(costumeId || '').trim();
   if (!cid || !cosId) return session;
   let base = ensureCharacterCostumes(session);
-  const ch = base.bible.characters.find((c) => c.character_id === cid);
+  const ch = (base.bible?.characters || []).find((c) => c.character_id === cid);
   if (!ch) return session;
   const list = ch.costumes || [];
   if (list.length <= 1) return base;
@@ -279,7 +297,7 @@ export function removeDramaCharacterCostume(
     ...base,
     bible: {
       ...base.bible,
-      characters: base.bible.characters.map((c) => {
+      characters: (base.bible?.characters || []).map((c) => {
         if (c.character_id !== cid) return c;
         return {
           ...c,

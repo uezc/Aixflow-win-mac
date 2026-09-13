@@ -13,7 +13,6 @@ import {
   darkModalBtnCancelClass,
   darkModalBtnOkClass,
   darkModalFooterClass,
-  darkModalPanelMdClass,
 } from '../darkModalShell';
 import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation';
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
@@ -28,6 +27,7 @@ import { PromptRichInput, type PromptRichInputHandle } from './PromptRichInput';
 import { usePromptAtMention } from '../../hooks/usePromptAtMention';
 import { resolveRefPillToOrderedIndex } from '../../utils/promptRefPill';
 import { isModelNotPricedError } from '../../utils/priceCalc';
+import { isVideoQueueOnlyModel } from '../../../shared/videoQueueGoldenPath';
 import { getVideoDisplayPrice, LLM_CHAT_DISPLAY_MODEL_ID, LLM_CHAT_MODEL_IDS, LLM_CHAT_MODEL_LABELS } from '../../utils/cloudModelPricing';
 import { PanelOptionDropdown } from './PanelOptionDropdown';
 import { coerceAssistantText } from '../../../shared/directorPipeline/normalize';
@@ -164,11 +164,11 @@ interface VideoInputPanelProps {
   resolutionLtx23T2v?: '720' | '1280' | '1920';
   onDurationLtx23T2vChange?: (value: '5' | '10' | '15') => void;
   onResolutionLtx23T2vChange?: (value: '720' | '1280' | '1920') => void;
-  /** MiniMax-H3 文生/图生/多参：时长 6|10|15|20；分辨率仅 720P → megapixels 0.9 */
+  /** MiniMax-H3 文生/图生/多参：时长 6|10|15|20；分辨率 480P→0.4 / 720P→0.9 */
   durationMinimaxH3?: '6' | '10' | '15' | '20';
-  resolutionMinimaxH3?: '720p';
+  resolutionMinimaxH3?: '480p' | '720p';
   onDurationMinimaxH3Change?: (value: '6' | '10' | '15' | '20') => void;
-  onResolutionMinimaxH3Change?: (value: '720p') => void;
+  onResolutionMinimaxH3Change?: (value: '480p' | '720p') => void;
   durationLtx23HdrMulti?: '5' | '10' | '15';
   resolutionLtx23HdrMulti?: '720' | '1280';
   ltx23HdrBackgroundImage?: string;
@@ -1157,7 +1157,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         <DarkModalFrame
           open={showOriginalPromptModal}
           onBackdropClick={() => setShowOriginalPromptModal(false)}
-          panelClassName={`${darkModalPanelMdClass} max-w-lg`}
+          panelClassName="nexflow-glass-panel rounded-2xl border border-white/[0.12] shadow-2xl w-full max-w-3xl mx-4 overflow-hidden min-w-[min(100%,320px)]"
           brandLabel={vt.optimizePromptOriginalTitle}
           footer={
             <div className={`${darkModalFooterClass} gap-2 !justify-end border-t border-white/10 pt-3`}>
@@ -1179,7 +1179,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
             </div>
           }
         >
-          <div className="px-5 py-4 max-h-[min(50vh,360px)] overflow-y-auto">
+          <div className="px-5 py-4 max-h-[min(75vh,720px)] overflow-y-auto custom-scrollbar-dark">
             {hasSavedOriginalPrompt ? (
               <pre className="whitespace-pre-wrap break-words text-sm text-white/90 font-sans leading-relaxed m-0">
                 {savedOriginalPrompt}
@@ -1896,16 +1896,16 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
     'ltx-2.3-t2v': { label: 'LTX2.3 文生视频' },
     'minimax-h3-t2v': {
       label: 'MiniMax-H3 文生视频',
-      title: 'MiniMax-H3 文生视频；720P；时长 6/10/15/20 秒',
+      title: 'MiniMax-H3 文生视频；480P/720P；时长 6/10/15/20 秒',
     },
     'minimax-h3-i2v': {
       label: 'MiniMax-H3 图生视频',
-      title: '1 张参考图；720P；时长 6/10/15/20 秒',
+      title: '1 张参考图；480P/720P；时长 6/10/15/20 秒',
     },
     'minimax-h3-multi': {
       label: 'MiniMax H3 全能参考',
       title:
-        '无参考可文生；最多 9 张参考图 + 最多 3 路参考音；720P；时长 6/10/15/20 秒',
+        '无参考可文生；最多 9 张参考图 + 最多 3 路参考音；480P/720P；时长 6/10/15/20 秒',
     },
     'minimax-h3-audio': {
       label: vt.modelMinimaxH3Audio,
@@ -2525,7 +2525,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
           !isHeyGemModel &&
           (payload as { balanceInsufficient?: boolean }).balanceInsufficient === true
         ) {
-          showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+          showAlert('元宝不足，请充值');
         }
         console.error('[VideoInputPanel] 视频生成错误:', errorMessage);
         
@@ -2764,10 +2764,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       // 检测余额不足错误（HeyGem 由 VideoNode 统一弹窗）
       const isQuotaError = errorMessage.includes('quota is not enough') || 
                           errorMessage.includes('remain quota') ||
-                          errorMessage.includes('余额不足');
+                          errorMessage.includes('余额不足') ||
+                          errorMessage.includes('元宝不足') ||
+                          /BALANCE_INSUFFICIENT/i.test(errorMessage);
       
       if (isQuotaError && !isHeyGemModel) {
-        showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+        showAlert('元宝不足，请充值');
       }
       
       // 停止进度条
@@ -3025,7 +3027,7 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
         payload.durationLtx23T2v = durationLtx23T2v;
         payload.resolutionLtx23T2v = resolutionLtx23T2v;
       }
-      // MiniMax-H3 文生/图生/多参/口型同步：分辨率(仅 720P→megapixels 0.9)、比例；多参可选参考音；口型同步必填参考音
+      // MiniMax-H3 文生/图生/多参/口型同步：分辨率(480P→0.4 / 720P→0.9)、比例；多参可选参考音；口型同步必填参考音
       // 口型同步 durationMinimaxH3 为按参考音映射的计费档（RH 不再传时长节点）
       if (isMinimaxH3Model) {
         payload.resolutionMinimaxH3 = resolutionMinimaxH3;
@@ -3112,6 +3114,11 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
       // 传递 projectId 以便保存到项目文件夹
       if (projectId) {
         payload.projectId = projectId;
+      }
+
+      // P0：已 Adapter 型号一律打标强制 Queue（主进程也会强制；此处保证 UI→主进程一致）
+      if (isVideoQueueOnlyModel(model)) {
+        payload.nxCloudQueueGoldenPath = true;
       }
 
       // 调试日志：发送最终请求前，打印所有图片路径（可能包含本地路径）
@@ -4320,9 +4327,12 @@ const VideoInputPanel: React.FC<VideoInputPanelProps> = ({
               )}
               <span className={`text-xs ${isDarkMode ? 'text-white/70' : 'text-gray-700'}`}>{vt.resolutionLabel}</span>
               <PanelOptionDropdown
-                value="720p"
-                options={[{ value: '720p', label: '720P' }]}
-                onChange={(v) => onResolutionMinimaxH3Change?.(v as '720p')}
+                value={resolutionMinimaxH3 === '480p' ? '480p' : '720p'}
+                options={[
+                  { value: '480p', label: '480P' },
+                  { value: '720p', label: '720P' },
+                ]}
+                onChange={(v) => onResolutionMinimaxH3Change?.(v as '480p' | '720p')}
                 isDarkMode={isDarkMode}
                 title={vt.titleMinimaxH3Resolution}
                 minWidthPx={72}

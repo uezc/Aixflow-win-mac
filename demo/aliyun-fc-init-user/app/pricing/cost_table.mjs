@@ -42,6 +42,12 @@ export const IMAGE_MODEL_CNY = {
     '2k': 0.08,
     '4k': 0.08,
   },
+  /** 全能图片 G-2.5 文生/图生（OpenAPI /rhart-image-g-2.5/flare|sunburst，海外站） */
+  'rhart-image-g-2.5': {
+    default: 0.05,
+    '2k': 0.08,
+    '4k': 0.08,
+  },
   /** 全能图片 X 文生图（OpenAPI /rhart-image-g/text-to-image，海外站；型号 g-3/g-4/g-4.1/g-4.2） */
   'rhart-image-g': 0.05,
   'nano-banana': {
@@ -58,6 +64,11 @@ export const IMAGE_MODEL_CNY = {
   'youchuan-text-to-image-v7': 0.54,
   /** 悠船文生图 v8.1（OpenAPI /youchuan/text-to-image-v81，海外站）；hd=原生2K 约 1.5× */
   'youchuan-text-to-image-v81': {
+    default: 0.54,
+    hd: 0.81,
+  },
+  /** 悠船文生图 v8.2（OpenAPI /youchuan/text-to-image-v82，海外站）；hd=原生2K 约 1.5× */
+  'youchuan-text-to-image-v82': {
     default: 0.54,
     hd: 0.81,
   },
@@ -152,26 +163,36 @@ export const VIDEO_HAILUO_SEC_CNY = {
 
 /**
  * MiniMax-H3 文生/图生（RH ai-app：t2v=2085682347676102657，i2v=2085687129061019649）
- * 仅 720P（megapixels 0.9）；占位：6s/10s 对齐海螺 VIDEO_HAILUO_SEC_CNY；
- * 15s/20s 按相对 10s 线性外推（×1.5 / ×2）（官方 RH 单价未单独登记，后续可改）。
- * modelIds: minimax-h3-t2v / minimax-h3-i2v；resolutionMinimaxH3=720p；durationMinimaxH3=6|10|15|20
+ * 480P（megapixels 0.4）/ 720P（megapixels 0.9）；720P 占位：6s/10s 对齐海螺 VIDEO_HAILUO_SEC_CNY；
+ * 15s/20s 按相对 10s 线性外推（×1.5 / ×2）；480P ≈ 720P × (0.4/0.9)（官方 RH 单价未单独登记，后续可改）。
+ * modelIds: minimax-h3-t2v / minimax-h3-i2v；resolutionMinimaxH3=480p|720p；durationMinimaxH3=6|10|15|20
  *
  * 全能参考（RH ai-app 2086289185186603010；旧 2085677798773051394）：时长节点 28/value；
- * 计费对齐 H3 720P × 6/10/15/20（SKU: minimax-h3-multi-720p-{6|10|15|20}s）；OTS 需写入这 4 个 SKU。
+ * 计费对齐 H3 480P|720P × 6/10/15/20（SKU: minimax-h3-multi-{480p|720p}-{6|10|15|20}s）；OTS 需写入这 8 个 SKU。
  * modelId: minimax-h3-multi；durationMinimaxH3=6|10|15|20
  *
  * 口型同步（RH ai-app 2086260808442531842）：工作流按参考音自动读时长（无时长节点）；
- * 计费对齐 H3 720P × 6/10/15/20（SKU: minimax-h3-audio-720p-{6|10|15|20}s）；OTS 写 4 个 SKU，并删除旧 5s 行。
+ * 计费对齐 H3 480P|720P × 6/10/15/20（SKU: minimax-h3-audio-{480p|720p}-{6|10|15|20}s）；OTS 写 8 个 SKU，并删除旧 5s 行。
  * modelId: minimax-h3-audio；durationMinimaxH3=6|10|15|20（由参考音时长向上取整映射）。
  */
 export const VIDEO_MINIMAX_H3_CNY = {
+  '480p': { 6: 0.7, 10: 1.3, 15: 2.0, 20: 2.7 },
   '720p': { 6: 1.5, 10: 3, 15: 4.5, 20: 6 },
 };
 
 /** MiniMax-H3 文生/图生/全能参考可选时长（秒） */
 export const MINIMAX_H3_DURATION_SEC = [6, 10, 15, 20];
-/** MiniMax-H3 口型同步计费档（秒）；SKU 名仍为 minimax-h3-audio-720p-* */
+/** MiniMax-H3 口型同步计费档（秒）；SKU 名仍为 minimax-h3-audio-{480p|720p}-* */
 export const MINIMAX_H3_AUDIO_DURATION_SEC = [6, 10, 15, 20];
+
+/** @param {unknown} raw @returns {'480p'|'720p'} */
+export function normalizeMinimaxH3Resolution(raw) {
+  const s = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (s === '480p' || s === '480' || s === '0.4') return '480p';
+  return '720p';
+}
 
 /** @param {unknown} raw @param {number} [fallback] */
 export function normalizeMinimaxH3DurationSec(raw, fallback = 10) {
@@ -488,7 +509,7 @@ export const VIDEO_FLAT_CNY = {
 
 /**
  * 视频超分放大（RH OpenAPI /rhart-video/video-upscaler）：
- * 元/秒（RH 官方 0.14/0.21/0.35/0.56 × 1.5）；计费秒数 = max(floor(输入时长), 5)；
+ * 元/秒（RH 官方 0.14/0.21/0.35/0.56 × 1.5）；计费秒数 = floor(输入时长)，缺时长禁止计价；
  * OTS: rhart-video-upscaler-{720p|1080p|2k|4k}。
  * Quantity = 计费秒数；Cost = base_price × multiplier × yuanbao_rate × Quantity。
  */
@@ -704,11 +725,13 @@ export function tryComputeRawVideoCny(merged) {
   else if (model === 'ltx-2.3-msr-av') base = VIDEO_FLAT_CNY['ltx-2.3-msr-av'];
   else if (model === 'minimax-h3-t2v' || model === 'minimax-h3-i2v' || model === 'minimax-h3-multi') {
     const sec = normalizeMinimaxH3DurationSec(durationMinimaxH3, 10);
-    const row = VIDEO_MINIMAX_H3_CNY['720p'];
+    const resKey = normalizeMinimaxH3Resolution(resolutionMinimaxH3);
+    const row = VIDEO_MINIMAX_H3_CNY[resKey] || VIDEO_MINIMAX_H3_CNY['720p'];
     base = row[sec] ?? row[10];
   } else if (model === 'minimax-h3-audio') {
     const sec = normalizeMinimaxH3AudioDurationSec(durationMinimaxH3, 20);
-    const row = VIDEO_MINIMAX_H3_CNY['720p'];
+    const resKey = normalizeMinimaxH3Resolution(resolutionMinimaxH3);
+    const row = VIDEO_MINIMAX_H3_CNY[resKey] || VIDEO_MINIMAX_H3_CNY['720p'];
     base = row[sec] ?? row[20];
   } else if (model === 'rhart-video-upscaler') {
     const r = String(targetResolution || '').trim().toLowerCase();
@@ -919,7 +942,7 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
       continue;
     }
     if (model === 'minimax-h3-t2v' || model === 'minimax-h3-i2v' || model === 'minimax-h3-multi') {
-      for (const resolutionMinimaxH3 of ['720p']) {
+      for (const resolutionMinimaxH3 of ['480p', '720p']) {
         for (const durationMinimaxH3 of ['6', '10', '15', '20']) {
           out.push({ model, input: { resolutionMinimaxH3, durationMinimaxH3 } });
         }
@@ -927,7 +950,7 @@ export function enumerateRepresentativeVideoSkuInputs(baseModels) {
       continue;
     }
     if (model === 'minimax-h3-audio') {
-      for (const resolutionMinimaxH3 of ['720p']) {
+      for (const resolutionMinimaxH3 of ['480p', '720p']) {
         for (const durationMinimaxH3 of ['6', '10', '15', '20']) {
           out.push({ model, input: { resolutionMinimaxH3, durationMinimaxH3 } });
         }

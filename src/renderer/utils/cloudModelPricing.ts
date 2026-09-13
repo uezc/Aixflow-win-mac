@@ -15,7 +15,7 @@ export { TRELLIS2_IMAGE_TO_3D_APP_ID } from '../../shared/imageTo3dModels';
  * Cost(元宝) = Base_Price × Multiplier × Yuanbao_Rate × Quantity
  * - Base_Price / Multiplier / Yuanbao_Rate：表列 base_price、multiplier、yuanbao_rate
  * - Quantity：图片/音频/反推多为 1；视频为「秒数」或与具体 SKU 行约定（见 getVideoQuantityForCloudKey）
- * yuanbao_rate 缺省或非正时回退 10（1 元 = 10 元宝）
+ * yuanbao_rate / multiplier / base_price 缺列或非法 → 返回 null（fail-closed，禁止默认 10/1/0→扣 1）
  *
  * **计价规则（强制）：只认 OTS `nx_model_config`。取不到云端价则返回 null，禁止回退本地 cost_table。**
  */
@@ -55,9 +55,12 @@ const VIDEO_FLAT_PACK_PRICE_MODEL_IDS = new Set([
 /**
  * 视频：若命中的 cloud key 以 -{N}s 结尾（整条 SKU），认为 base_price 已是该档打包价 → Quantity=1；
  * 若为 VIDEO_FLAT 裸 model_id，同样 Quantity=1；
- * 否则（按秒基价的裸 id）Quantity=UI 秒数。
+ * 否则（按秒基价）Quantity=UI 秒数；uiSeconds 无效 → null（fail-closed）。
  */
-export function getVideoQuantityForCloudKey(cloudKey: string, uiSeconds: number): number {
+export function getVideoQuantityForCloudKey(
+  cloudKey: string,
+  uiSeconds: number | null | undefined,
+): number | null {
   const key = String(cloudKey || '').trim();
   const m = key.match(/-(\d+)s(?:-(?:audio|noaudio))?$/i);
   if (m) {
@@ -65,24 +68,20 @@ export function getVideoQuantityForCloudKey(cloudKey: string, uiSeconds: number)
     if (Number.isFinite(n) && n > 0) return 1;
   }
   if (VIDEO_FLAT_PACK_PRICE_MODEL_IDS.has(key)) return 1;
-  return Math.max(1, uiSeconds);
+  const sec = Number(uiSeconds);
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  return Math.max(1, sec);
 }
 
 /** 表行 + Quantity → 元宝：base_price × multiplier × yuanbao_rate × Quantity（与 yuanbaoCostFromTableDimensions 一致） */
 export function yuanbaoCostFromCloudRow(
   row: NxModelConfigRow | undefined,
-  quantity: number,
+  quantity: number | null | undefined,
 ): number | null {
   if (!row || row.is_active === false) return null;
-  const bpRaw = Number(row.base_price);
-  const mulRaw = Number(row.multiplier);
-  const yrRaw = Number(row.yuanbao_rate);
-  const qRaw = Number(quantity);
-  const bp = Number.isFinite(bpRaw) && bpRaw >= 0 ? bpRaw : 0;
-  const mul = Number.isFinite(mulRaw) && mulRaw >= 0 ? mulRaw : 1;
-  const rate = Number.isFinite(yrRaw) && yrRaw > 0 ? yrRaw : DEFAULT_YUANBAO_RATE_FALLBACK;
-  const q = Number.isFinite(qRaw) && qRaw > 0 ? qRaw : 1;
-  return yuanbaoCostFromTableDimensions(bp, mul, rate, q);
+  if (row.base_price == null || row.multiplier == null || row.yuanbao_rate == null) return null;
+  if (quantity == null || !(Number(quantity) > 0)) return null;
+  return yuanbaoCostFromTableDimensions(row.base_price, row.multiplier, row.yuanbao_rate, quantity);
 }
 
 function pickRow(map: Record<string, NxModelConfigRow> | null | undefined, id: string): NxModelConfigRow | undefined {
@@ -146,10 +145,12 @@ export function getVideoDisplayPrice(
     const data = params as unknown as Record<string, unknown>;
     const sku = buildVideoBillingModelId(model, data);
     const uiSeconds = getVideoBillingQuantity(model, data);
+    if (uiSeconds == null) return null;
     if (!assertCloudMap(cloudMap)) return null;
     const order = [sku, model].filter(Boolean);
     for (const k of order) {
       const q = getVideoQuantityForCloudKey(k, uiSeconds);
+      if (q == null) return null;
       const y = yuanbaoCostFromCloudRow(pickRow(cloudMap, k), q);
       if (y != null) return y;
     }
@@ -213,6 +214,31 @@ export const LLM_CHAT_MODEL_IDS = [
   'gpt-4o',
   LLM_CHAT_MODEL_GPT56_TERRA,
 ] as const;
+
+/** 短剧提示词优化默认模型 */
+export const DRAMA_PROMPT_OPTIMIZE_MODEL_ID = 'gpt-4o';
+
+/** 短剧提示词优化：3.5 / 4o = 2 元宝；5.6 = 3 元宝 */
+export const DRAMA_PROMPT_OPTIMIZE_YUANBAO_BY_MODEL: Record<string, number> = {
+  [LLM_CHAT_DISPLAY_MODEL_ID]: 2,
+  'gpt-4o': 2,
+  [LLM_CHAT_MODEL_GPT56_TERRA]: 3,
+};
+
+/** @deprecated 请用 getDramaPromptOptimizeYuanbao；默认按 4o=2 */
+export const DRAMA_PROMPT_OPTIMIZE_YUANBAO = 2;
+
+export function resolveDramaChatModel(raw?: string | null): string {
+  const m = String(raw || '').trim();
+  if ((LLM_CHAT_MODEL_IDS as readonly string[]).includes(m)) return m;
+  return DRAMA_PROMPT_OPTIMIZE_MODEL_ID;
+}
+
+export function getDramaPromptOptimizeYuanbao(modelId?: string | null): number {
+  const id = resolveDramaChatModel(modelId);
+  const n = Number(DRAMA_PROMPT_OPTIMIZE_YUANBAO_BY_MODEL[id]);
+  return Number.isFinite(n) && n > 0 ? n : 2;
+}
 
 /** RunningHub 视频分析应用 ID（与 VideoAnalysisProvider、sync_to_tablestore 一致） */
 const VIDEO_ANALYSIS_APP_ID = '2033537159944212482';

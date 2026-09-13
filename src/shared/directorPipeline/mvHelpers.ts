@@ -118,7 +118,7 @@ export function buildDirectorMvImagePreviewClips(
  * 仅包含有成片 URL 的镜头；时长优先用音频绑定段 / 镜头表；
  * 强制 trimStart=0、trimEnd=规划时长、lockTrim，startTime 优先 audioStartSec。
  */
-function normalizeDirectorShotNoKey(raw: string): string {
+export function normalizeDirectorShotNoKey(raw: string): string {
   const s = String(raw || '').trim();
   if (!s) return '';
   // 「01」「1」「镜1」统一到可比对 key

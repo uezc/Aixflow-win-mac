@@ -120,6 +120,61 @@ export async function resolveCloudAuthErrorWithBalance(
   return { action: 'insufficient', balance: balance as number };
 }
 
-/** 余额不足时的通用充值提示（与画布其它节点一致） */
-export const CLOUD_BALANCE_INSUFFICIENT_ALERT =
-  '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。';
+/** 元宝不足弹窗文案（生成任务统一） */
+export const CLOUD_BALANCE_INSUFFICIENT_ALERT = '元宝不足，请充值';
+export const CLOUD_BALANCE_INSUFFICIENT_ALERT_EN = 'Insufficient credits. Please recharge.';
+
+export const NX_CLOUD_BALANCE_INSUFFICIENT_EVENT = 'nx-cloud-balance-insufficient';
+
+export function cloudBalanceInsufficientAlert(locale?: string): string {
+  return locale === 'en'
+    ? CLOUD_BALANCE_INSUFFICIENT_ALERT_EN
+    : CLOUD_BALANCE_INSUFFICIENT_ALERT;
+}
+
+/** 识别云端/本地各类「元宝/余额不足」错误 */
+export function isCloudBalanceInsufficientError(
+  error: unknown,
+  balanceInsufficient?: boolean,
+): boolean {
+  if (balanceInsufficient === true) return true;
+  const msg = (() => {
+    if (error == null) return '';
+    if (typeof error === 'string') return error;
+    if (error instanceof Error) return error.message || String(error);
+    if (typeof error === 'object') {
+      const o = error as { error?: unknown; message?: unknown };
+      const parts = [o.error, o.message, error].map((x) => String(x ?? '').trim()).filter(Boolean);
+      return parts.join(' ');
+    }
+    return String(error);
+  })().trim();
+  if (!msg) return false;
+  if (/BALANCE_INSUFFICIENT/i.test(msg)) return true;
+  if (msg.includes('元宝不足') || msg.includes('余额不足')) return true;
+  if (/quota is not enough|remain quota/i.test(msg)) return true;
+  if (/insufficient (?:balance|credits|quota)/i.test(msg)) return true;
+  if (/low balance|please (?:top up|recharge)/i.test(msg) && /balance|credit|元宝|余额/i.test(msg)) {
+    return true;
+  }
+  return false;
+}
+
+let lastBalancePromptAt = 0;
+
+/**
+ * 任意生成任务元宝不足时触发统一弹窗（去重，避免同一次失败多处重复弹）。
+ * 由 CloudBalanceInsufficientAlertBridge 监听并 showAlert。
+ */
+export function promptCloudBalanceInsufficientIfNeeded(
+  error: unknown,
+  opts?: { balanceInsufficient?: boolean },
+): boolean {
+  if (!isCloudBalanceInsufficientError(error, opts?.balanceInsufficient)) return false;
+  const now = Date.now();
+  if (now - lastBalancePromptAt < 1600) return true;
+  lastBalancePromptAt = now;
+  if (typeof window === 'undefined') return true;
+  window.dispatchEvent(new CustomEvent(NX_CLOUD_BALANCE_INSUFFICIENT_EVENT));
+  return true;
+}

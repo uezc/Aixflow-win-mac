@@ -1,6 +1,6 @@
 {
   "name": "nexflow",
-  "version": "1.9.1",
+  "version": "1.9.4",
   "description": "Aixflow-Bate - AI Workflow Platform",
   "main": "dist-electron/main/index.js",
   "type": "module",
@@ -19,7 +19,7 @@
     "alipay:verify": "backend\\.venv\\Scripts\\python.exe backend\\verify_alipay_env.py",
     "alipay:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-alipay-test.ps1",
     "alipay:update-public-key": "backend\\.venv\\Scripts\\python.exe backend\\update_alipay_public_key.py",
-    "electron:dev": "chcp 65001 >nul 2>&1 && npm run build:main && concurrently \"npm run dev\" \"wait-on http://localhost:5274 && cross-env NODE_ENV=development NODE_OPTIONS=--max-old-space-size=8192 electron .\"",
+    "electron:dev": "chcp 65001 >nul 2>&1 && npm run build:main && concurrently \"npm run dev\" \"wait-on http://127.0.0.1:5274 && cross-env NODE_ENV=development NODE_OPTIONS=--max-old-space-size=8192 electron .\"",
     "sync:asset-library": "node scripts/sync-asset-library-to-resources.mjs",
     "sync:digital-human-library": "node scripts/sync-digital-human-library-to-resources.mjs",
     "convert-icon": "node scripts/convert-icon-to-ico.js",

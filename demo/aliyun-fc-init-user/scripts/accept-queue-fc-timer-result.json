@@ -1,0 +1,220 @@
+{
+  "task_id": "5f2b638a-771b-4e86-a750-0af3fb66d23e",
+  "user_id": "nx_88948564-5e6f-4be3-be7f-7f53c150ad79",
+  "model_id": "minimax-h3-t2v-720p-6s",
+  "skip_queue_pipeline": true,
+  "called_tasks_status": false,
+  "called_run_queue_pipeline": false,
+  "relied_on_local_minute_loop": false,
+  "balance_before": 55657,
+  "balance_after": 55652,
+  "evidence": {
+    "queue_entered_at": 1788776200833,
+    "claimed_at": 1788776218651,
+    "charged_at": 1788776243903,
+    "execution_stage": "done",
+    "provider_task_id": "2096905706077913089",
+    "completed_at": 1788776459498,
+    "status": "success",
+    "result_oss_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p83-audio_yjjpg_1788776447.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "cost": 5,
+    "quoted_cost": 5
+  },
+  "platform": {
+    "video": {
+      "running": 0,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "snaps": [
+    {
+      "at": 1788776198463,
+      "status": "queued",
+      "stage": "",
+      "pid": "",
+      "claimed_at": 0,
+      "charged_at": 0,
+      "slots": {
+        "u": false,
+        "p": false
+      }
+    },
+    {
+      "at": 1788776218679,
+      "status": "queued",
+      "stage": "",
+      "pid": "",
+      "claimed_at": 0,
+      "charged_at": 0,
+      "url": "",
+      "slots": {
+        "u": false,
+        "p": false
+      }
+    },
+    {
+      "at": 1788776238904,
+      "status": "claimed",
+      "stage": "",
+      "pid": "",
+      "claimed_at": 1788776218651,
+      "charged_at": 0,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776259139,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776279336,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776299546,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776319758,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776340017,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776360212,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776380420,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776400609,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776420798,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776441053,
+      "status": "running",
+      "stage": "provider_submitted",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "",
+      "slots": {
+        "u": true,
+        "p": true
+      }
+    },
+    {
+      "at": 1788776461238,
+      "status": "success",
+      "stage": "done",
+      "pid": "2096905706077913089",
+      "claimed_at": 1788776218651,
+      "charged_at": 1788776243903,
+      "url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916",
+      "slots": {
+        "u": false,
+        "p": false
+      }
+    }
+  ],
+  "pass": true
+}

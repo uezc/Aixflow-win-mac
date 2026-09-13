@@ -14,7 +14,7 @@ export const YUANBAO_PER_CNY = 10;
 
 export const MODEL_YUANBAO_RATES: Record<string, ModelYuanbaoRate> = {
   'gpt-3.5-turbo': { yuanbao: 1, tier: 'low', label: 'GPT-3.5' },
-  'gpt-4o': { yuanbao: 1, tier: 'low', label: 'GPT-4o' },
+  'gpt-4o': { yuanbao: 3, tier: 'low', label: 'GPT-4o' },
   'gpt-4o-mini': { yuanbao: 1, tier: 'low' },
   'openai/gpt-5.6-terra': { yuanbao: 1, tier: 'low', label: '大语言模型-5.6' },
   'image-reverse': { yuanbao: 2, tier: 'low', label: '图像反推' },

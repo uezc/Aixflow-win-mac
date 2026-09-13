@@ -9,20 +9,8 @@ import {
   mergeDramaTimelineEventsAt,
   setDramaTimelineBoundarySec,
   splitDramaTimelineEventAt,
+  DRAMA_TIMELINE_SPLIT_DISABLED,
 } from '../../../shared/directorDomain';
-
-function mutedCls(isDark: boolean) {
-  return isDark ? 'text-white/50' : 'text-gray-500';
-}
-
-function ticksForDuration(durationSec: number): number[] {
-  const dur = Math.max(1, Number(durationSec) || 10);
-  const step = dur <= 8 ? 2 : 5;
-  const ticks: number[] = [];
-  for (let t = 0; t <= dur + 0.01; t += step) ticks.push(Math.round(t * 10) / 10);
-  if (ticks[ticks.length - 1] < dur) ticks.push(dur);
-  return ticks;
-}
 
 function clientXToSec(el: HTMLElement, clientX: number, dur: number): number {
   const r = el.getBoundingClientRect();
@@ -40,7 +28,7 @@ const SEG_FILL = [
 ];
 
 /** 彩条铺满可用高度；收起时由父级动画压到 0 */
-const TICK_H = '1.25rem';
+const TICK_H = '0px';
 
 function formatEventPrompt(ev: DramaTimelineEvent): string {
   const visual = String(ev.visual_action || '').trim();
@@ -135,6 +123,8 @@ export function DramaShotTimelineRuler({
   onPatchEvent,
   nameById,
   isDark,
+  /** 有值时彩条正文显示整镜编译稿，不再显示切段画面提示 */
+  promptOverride,
 }: {
   durationSec: number;
   events: DramaTimelineEvent[];
@@ -147,9 +137,9 @@ export function DramaShotTimelineRuler({
   onPatchEvent?: (eventId: string, patch: Partial<DramaTimelineEvent>) => void;
   nameById?: Map<string, string>;
   isDark: boolean;
+  promptOverride?: string;
 }) {
   const dur = Math.max(0.1, Number(durationSec) || 10);
-  const ticks = ticksForDuration(dur);
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ afterIndex: number; startX: number; moved: boolean } | null>(null);
   const liveRef = useRef(events);
@@ -183,9 +173,17 @@ export function DramaShotTimelineRuler({
 
   const onBoundaryDown = (afterIndex: number, e: React.PointerEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     dragRef.current = { afterIndex, startX: e.clientX, moved: false };
     liveRef.current = shown;
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    const track = trackRef.current;
+    if (track) {
+      try {
+        track.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+    }
   };
 
   const onBoundaryMove = (e: React.PointerEvent) => {
@@ -212,7 +210,7 @@ export function DramaShotTimelineRuler({
     dragRef.current = null;
     setDragging(false);
     try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      trackRef.current?.releasePointerCapture(e.pointerId);
     } catch {
       /* already released */
     }
@@ -224,12 +222,14 @@ export function DramaShotTimelineRuler({
   };
 
   const splitAtClientX = (clientX: number) => {
+    if (DRAMA_TIMELINE_SPLIT_DISABLED) return;
     const el = trackRef.current;
     if (!el) return;
     commit(splitDramaTimelineEventAt(shown, clientXToSec(el, clientX, dur), dur));
   };
 
   const mergeAtClientX = (clientX: number): boolean => {
+    if (DRAMA_TIMELINE_SPLIT_DISABLED) return false;
     const el = trackRef.current;
     if (!el || shown.length < 2) return false;
     const t = clientXToSec(el, clientX, dur);
@@ -255,6 +255,10 @@ export function DramaShotTimelineRuler({
       <div
         ref={trackRef}
         className={`relative min-h-0 flex-1 select-none ${dragging ? 'cursor-col-resize' : ''}`}
+        style={{ touchAction: 'none' }}
+        onPointerMove={onBoundaryMove}
+        onPointerUp={onBoundaryUp}
+        onPointerCancel={onBoundaryUp}
         onPointerLeave={() => {
           if (!dragging) onHover?.(null);
         }}
@@ -289,8 +293,9 @@ export function DramaShotTimelineRuler({
           const visual = String(ev.visual_action || '').trim();
           const env = (ev.environment_audio || []).filter(Boolean).join('、');
           const dlg = String(ev.dialogue || '').trim();
+          const overrideBody = String(promptOverride || '').trim();
           const narrow = width < 9;
-          const editing = editingId === ev.event_id;
+          const editing = !overrideBody && editingId === ev.event_id;
           return (
             <div
               key={ev.event_id || `ev-${idx}`}
@@ -306,7 +311,13 @@ export function DramaShotTimelineRuler({
                     : 'hover:brightness-110'
               }`}
               style={{ left: `${left}%`, width: `${width}%`, bottom: TICK_H }}
-              title={`双击编辑 · Ctrl+双击切开 · 拖分界改时长 · ${start}–${end}s`}
+              title={
+                overrideBody
+                  ? `整镜编译稿 · ${start}–${end}s`
+                  : DRAMA_TIMELINE_SPLIT_DISABLED
+                    ? `整镜单段（测试关切分）· ${start}–${end}s · 双击编辑`
+                    : `双击编辑 · Ctrl+双击切开 · 拖分界改时长 · ${start}–${end}s`
+              }
               onPointerEnter={() => onHover?.(ev.event_id)}
               onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
@@ -316,6 +327,7 @@ export function DramaShotTimelineRuler({
               onDoubleClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                if (overrideBody) return;
                 if (e.ctrlKey || e.metaKey) {
                   if (mergeAtClientX(e.clientX)) return;
                   splitAtClientX(e.clientX);
@@ -336,12 +348,7 @@ export function DramaShotTimelineRuler({
                 <span className="tabular-nums drop-shadow-sm">
                   {formatTimelineRange(ev.start_sec, ev.end_sec)}
                 </span>
-                {!narrow && String(ev.camera_action || '').trim() ? (
-                  <span className="max-w-full truncate text-[10px] font-medium text-white/90">
-                    {String(ev.camera_action).split('｜').slice(0, 3).join(' · ')}
-                  </span>
-                ) : null}
-                {!narrow ? (
+                {!narrow && !overrideBody ? (
                   <button
                     type="button"
                     className={`nodrag rounded px-0.5 text-[10px] ${
@@ -356,8 +363,11 @@ export function DramaShotTimelineRuler({
                     {ev.lip_sync ? '口型开' : '口型关'}
                   </button>
                 ) : null}
+                {overrideBody && !narrow ? (
+                  <span className="rounded bg-black/25 px-1 text-[10px] text-amber-100">整镜编译稿</span>
+                ) : null}
               </div>
-              {!narrow && who ? (
+              {!narrow && who && !overrideBody ? (
                 <div className="truncate text-[10px] leading-tight text-white/90">{who}</div>
               ) : null}
               {editing ? (
@@ -371,15 +381,21 @@ export function DramaShotTimelineRuler({
                 />
               ) : (
                 <div className="mt-0.5 min-h-0 w-full overflow-hidden">
-                  <p className="line-clamp-6 text-[12px] font-medium leading-snug drop-shadow-sm">
-                    {visual || (narrow ? '' : '双击编辑本段')}
+                  <p
+                    className={`text-[12px] font-medium leading-snug drop-shadow-sm ${
+                      overrideBody
+                        ? 'max-h-full overflow-auto whitespace-pre-wrap break-words text-left custom-scrollbar-dark'
+                        : 'line-clamp-6'
+                    }`}
+                  >
+                    {overrideBody || visual || (narrow ? '' : '双击编辑本段')}
                   </p>
-                  {!narrow && dlg ? (
+                  {!overrideBody && !narrow && dlg ? (
                     <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-white/90">
                       「{dlg}」
                     </p>
                   ) : null}
-                  {!narrow && env ? (
+                  {!overrideBody && !narrow && env ? (
                     <p className="mt-0.5 line-clamp-1 text-[10px] text-white/75">{env}</p>
                   ) : null}
                 </div>
@@ -388,40 +404,30 @@ export function DramaShotTimelineRuler({
             </div>
           );
         })}
-        {shown.slice(0, -1).map((ev, idx) => {
+        {!DRAMA_TIMELINE_SPLIT_DISABLED
+          ? shown.slice(0, -1).map((ev, idx) => {
           const end = Math.max(0, Number(ev.end_sec) || 0);
           const left = (end / dur) * 100;
           return (
             <div
               key={`b-${ev.event_id || idx}`}
-              className="nodrag absolute top-0 z-[2] w-5 -translate-x-1/2 cursor-col-resize"
-              style={{ left: `${left}%`, bottom: TICK_H }}
+              className="nodrag absolute top-0 z-[3] w-8 -translate-x-1/2 cursor-col-resize"
+              style={{ left: `${left}%`, bottom: TICK_H, touchAction: 'none' }}
               onPointerDown={(e) => onBoundaryDown(idx, e)}
-              onPointerMove={onBoundaryMove}
-              onPointerUp={onBoundaryUp}
-              onPointerCancel={onBoundaryUp}
               onDoubleClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 commit(mergeDramaTimelineEventsAt(shown, idx, dur));
               }}
-              title="拖动改时长 · 双击合并"
+              title="拖动分界：左右拉，总时长不变 · 双击合并"
             >
               <div
                 className={`mx-auto h-full w-1 rounded-full ${isDark ? 'bg-white/95' : 'bg-gray-900'}`}
               />
             </div>
           );
-        })}
-        {ticks.map((t) => (
-          <div
-            key={`tick-${t}`}
-            className="pointer-events-none absolute bottom-0 -translate-x-1/2"
-            style={{ left: `${(t / dur) * 100}%` }}
-          >
-            <div className={`text-[11px] tabular-nums ${mutedCls(isDark)}`}>{`${t}s`}</div>
-          </div>
-        ))}
+        })
+          : null}
       </div>
     </div>
   );

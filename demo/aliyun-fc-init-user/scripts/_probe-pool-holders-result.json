@@ -1,0 +1,32 @@
+{
+  "snap": {
+    "cn_video": {
+      "running": 0,
+      "max": 100
+    },
+    "cn_image": {
+      "running": 0,
+      "max": 100
+    },
+    "overseas_video": {
+      "running": 0,
+      "max": 100
+    },
+    "overseas_image": {
+      "running": 0,
+      "max": 100
+    },
+    "audio": {
+      "running": 0,
+      "max": 100
+    },
+    "total_running": 0
+  },
+  "work": {
+    "count": 0,
+    "has_any": false,
+    "scanned": 0,
+    "table": "nx_task_work"
+  },
+  "sample": []
+}

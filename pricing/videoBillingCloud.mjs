@@ -12,6 +12,7 @@ import {
   normalizeLtx23DurationSec,
   normalizeMinimaxH3DurationSec,
   normalizeMinimaxH3AudioDurationSec,
+  normalizeMinimaxH3Resolution,
 } from './cost_table.mjs';
 
 /** VIDEO_FLAT 裸 model_id：按次打包价，查表 Quantity=1（与客户端 cloudModelPricing 一致） */
@@ -227,24 +228,24 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
   }
 
   if (m === 'minimax-h3-t2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(inp.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 't2v', res, `${durSec}s`);
   }
   if (m === 'minimax-h3-i2v') {
-    const res = '720p'; // 仅 720P（megapixels 0.9）
+    const res = normalizeMinimaxH3Resolution(inp.resolutionMinimaxH3); // 480P=0.4 / 720P=0.9
     const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 'i2v', res, `${durSec}s`);
   }
-  // 全能参考：720p × 时长 6|10|15|20（OTS: minimax-h3-multi-720p-{6|10|15|20}s）
+  // 全能参考：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-multi-{480p|720p}-{6|10|15|20}s）
   if (m === 'minimax-h3-multi') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(inp.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3DurationSec(inp.durationMinimaxH3, 10);
     return joinKey('minimax', 'h3', 'multi', res, `${durSec}s`);
   }
-  // 口型同步：720p × 时长 6|10|15|20（OTS: minimax-h3-audio-720p-{6|10|15|20}s；已删 5s）
+  // 口型同步：480p|720p × 时长 6|10|15|20（OTS: minimax-h3-audio-{480p|720p}-{6|10|15|20}s；已删 5s）
   if (m === 'minimax-h3-audio') {
-    const res = '720p';
+    const res = normalizeMinimaxH3Resolution(inp.resolutionMinimaxH3);
     const durSec = normalizeMinimaxH3AudioDurationSec(inp.durationMinimaxH3, 20);
     return joinKey('minimax', 'h3', 'audio', res, `${durSec}s`);
   }
@@ -299,22 +300,28 @@ export function buildVideoBillingModelIdCore(baseModel, input) {
 
 /**
  * 与 getVideoDisplayPrice 中 getVideoBillingQuantity 一致：从复合 SKU 中取最后一段 `-{N}s` 作为「UI 秒数」基准。
+ * 按秒模型（超分 / wan-animate-2）：缺时长返回 null（fail-closed，禁止秒数兜底）。
+ * @returns {number|null}
  */
 export function getVideoBillingQuantity(baseModel, input) {
-  const m = String(baseModel || '').trim();
+  const m = String(baseModel || '')
+    .trim()
+    .toLowerCase();
   const inp = input && typeof input === 'object' ? input : {};
-  // 视频超分：按秒基价；Quantity = max(floor(时长), 5)，与播放器时钟对齐
+  // 视频超分：按秒基价；Quantity = floor(时长)；缺时长 / <1s → null（禁止秒数保底）
   if (m === 'rhart-video-upscaler') {
     const raw = inp.mediaDurationSec ?? inp.durationRhartVideoUpscaler ?? inp.duration ?? 0;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return 5;
-    return Math.max(5, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const aligned = Math.max(0, Math.floor(Math.min(n, 10 * 60) + 1e-6));
+    if (aligned < 1) return null;
+    return aligned;
   }
-  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))，最长 10 分钟
+  // Wan animate2：按原视频秒数；Quantity = max(1, ceil(时长))；缺时长 → null
   if (m === 'wan-animate-2') {
     const raw = inp.mediaDurationSec ?? inp.duration ?? 0;
     const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0) return 1;
+    if (!Number.isFinite(n) || n <= 0) return null;
     return Math.max(1, Math.ceil(Math.min(n, 10 * 60) - 1e-9));
   }
   const sku = buildVideoBillingModelIdCore(baseModel, input);
@@ -328,7 +335,9 @@ export function getVideoBillingQuantity(baseModel, input) {
 
 /**
  * 与 src/renderer/utils/cloudModelPricing.getVideoQuantityForCloudKey 一致。
- * SKU 以 -{N}s 结尾或 VIDEO_FLAT 裸 id → Quantity=1；否则按 uiSeconds（按秒基价）。
+ * SKU 以 -{N}s 结尾或 VIDEO_FLAT 裸 id → Quantity=1；
+ * 否则按 uiSeconds（按秒基价）；uiSeconds 无效 → null（fail-closed）。
+ * @returns {number|null}
  */
 export function getVideoQuantityForCloudKey(cloudKey, uiSeconds) {
   const key = String(cloudKey || '').trim();
@@ -338,7 +347,9 @@ export function getVideoQuantityForCloudKey(cloudKey, uiSeconds) {
     if (Number.isFinite(n) && n > 0) return 1;
   }
   if (VIDEO_FLAT_PACK_PRICE_MODEL_IDS.has(key)) return 1;
-  return Math.max(1, uiSeconds);
+  const sec = Number(uiSeconds);
+  if (!Number.isFinite(sec) || sec <= 0) return null;
+  return Math.max(1, sec);
 }
 
 /** 无 body.model 时，仅从计费 id 字符串推断 UI 秒数（与 getVideoBillingQuantity 在仅有 SKU 时的语义一致） */
@@ -349,4 +360,26 @@ export function inferUiSecondsFromBillingSkuOnly(sku) {
   const sec = parseInt(last[1], 10);
   if (Number.isFinite(sec) && sec > 0) return sec;
   return 1;
+}
+
+/** 按秒计费、缺时长必须拒价的模型（含复合 SKU 前缀） */
+export function isPerSecondDurationRequiredModel(modelOrSku) {
+  const s = String(modelOrSku || '')
+    .trim()
+    .toLowerCase();
+  if (!s) return false;
+  if (s === 'rhart-video-upscaler' || s === 'wan-animate-2') return true;
+  if (/^rhart-video-upscaler-(720p|1080p|2k|4k)$/.test(s)) return true;
+  if (s === 'wan-animate-2' || /^wan-animate-2-/.test(s)) return true;
+  return false;
+}
+
+/** 从 SKU 还原用于 getVideoBillingQuantity 的 base model */
+export function perSecondBaseModelFromSku(modelOrSku) {
+  const s = String(modelOrSku || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'rhart-video-upscaler' || /^rhart-video-upscaler-/.test(s)) return 'rhart-video-upscaler';
+  if (s === 'wan-animate-2' || /^wan-animate-2-/.test(s)) return 'wan-animate-2';
+  return '';
 }

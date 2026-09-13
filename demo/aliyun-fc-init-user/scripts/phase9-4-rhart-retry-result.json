@@ -1,0 +1,55 @@
+{
+  "started_at": "2026-09-05T14:12:54.776Z",
+  "h3_i2v_prior": {
+    "task_id": "adb81f9d-d8a1-4e3f-bb0f-2ceb2ae93f90",
+    "status": "success",
+    "pid": "2096224156394934274",
+    "region": "cn",
+    "path": "/run/ai-app/2085687129061019649",
+    "billing": "minimax-h3-i2v-720p-10s",
+    "instanceType": "plus",
+    "image": {
+      "nodeId": "13",
+      "fieldName": "image",
+      "fieldValue": "openapi/86c58c2d31cca00b3bc8052ad8a16cd787682fac3959568544355b9582aee1df.jpg",
+      "description": "参考图"
+    },
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/MiniMaxH3/stable_4v4a_00001_p82-audio_njzov_1788614066.mp4",
+    "charge_status": "charged",
+    "charge_amount": 9,
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "user_occupied": null
+  },
+  "rhart_t2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID",
+    "task_id": "3efbc594-b9c6-4fe2-94bb-5ebbbfe5da38",
+    "attempt": 3
+  },
+  "rhart_i2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID",
+    "task_id": "2aa4490f-3da6-4d3c-9af3-bc66758223b1",
+    "attempt": 3
+  },
+  "invalid_forward": "PASS",
+  "invalid_forward_detail": {
+    "good": true,
+    "empty": true,
+    "noPath": true
+  },
+  "duplicate_charge": "PASS",
+  "duplicate_refund": "PASS",
+  "prior_h3_i2v_ok": true,
+  "h3_t2v_from_prev_reg": true,
+  "ltx_from_prev_reg": true,
+  "conclusion": "FAIL",
+  "finished_at": "2026-09-05T14:24:05.362Z"
+}

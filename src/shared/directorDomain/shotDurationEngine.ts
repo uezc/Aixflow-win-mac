@@ -82,7 +82,7 @@ export function normalizeShotDurationPaceStyle(raw: unknown): ShotDurationPaceSt
   const s = String(raw || '').trim().toLowerCase();
   if (s === 'fast' || s === '\u5feb' || s === '\u5feb\u8282\u594f' || s === '\u52a8\u4f5c') return 'fast';
   if (s === 'slow' || s === '\u6162' || s === '\u6162\u8282\u594f' || s === '\u60ac\u7591') return 'slow';
-  return 'standard';
+  return 'fast';
 }
 
 export function round1(n: number): number {

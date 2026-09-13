@@ -1,0 +1,35 @@
+{
+  "conclusion": "BLOCKED_EXTERNAL_BALANCE",
+  "ok": true,
+  "provider_task_id": "",
+  "region": "ai",
+  "reason": "",
+  "rh_code": "605",
+  "rh_msg": "Your balance is insufficient. Please top up your account.",
+  "data_keys": [
+    "taskId",
+    "status",
+    "errorCode",
+    "errorMessage",
+    "results",
+    "clientId",
+    "promptTips",
+    "failedReason",
+    "usage",
+    "parentTaskId",
+    "taskUsageList"
+  ],
+  "data_preview": {
+    "taskId": "",
+    "status": "",
+    "errorCode": "605",
+    "errorMessage": "Your balance is insufficient. Please top up your account.",
+    "results": null,
+    "clientId": "",
+    "promptTips": "",
+    "failedReason": {},
+    "usage": null,
+    "parentTaskId": null,
+    "taskUsageList": null
+  }
+}

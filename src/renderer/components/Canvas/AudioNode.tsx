@@ -28,6 +28,7 @@ import { micLevelCssVars } from '../../utils/micInputLevel';
 import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
 import { isAudioSongModel, buildMusicDownloadSuggestedName } from '../../utils/audioSongModels';
 import { isAudioCoverModel } from '../../utils/audioCoverModel';
+import { fillCanvasAudioDragTransfer, endCanvasAudioDrag } from '../characterListShared';
 import { setAudioNodePlaying } from '../../utils/audioNodePlaybackStore';
 import { dispatchCanvasPickNode, isCanvasPickVoiceTarget } from '../../utils/canvasPickStore';
 import { AudioWaveformVisualizer } from './AudioWaveformVisualizer';
@@ -1276,8 +1277,15 @@ const AudioPlayerComponent: React.FC<{
               if (!sourceLoadFailed) void togglePlay();
             }}
             onPointerDown={(e) => e.stopPropagation()}
+            draggable={!sourceLoadFailed && !!outputAudio}
+            onDragStart={(e) => {
+              if (sourceLoadFailed || !outputAudio) return;
+              e.stopPropagation();
+              fillCanvasAudioDragTransfer(e.dataTransfer, outputAudio);
+            }}
+            onDragEnd={() => endCanvasAudioDrag()}
             className={`nodrag nopan absolute inset-0 z-[1] outline-none ${
-              sourceLoadFailed ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+              sourceLoadFailed ? 'cursor-not-allowed opacity-60' : 'cursor-grab'
             }`}
             title={
               sourceLoadFailed

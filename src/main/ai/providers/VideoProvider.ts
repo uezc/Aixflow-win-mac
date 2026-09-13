@@ -90,28 +90,94 @@ import {
 import {
   MINIMAX_H3_MULTI_APP_ID,
   MINIMAX_H3_MULTI_MAX_IMAGES,
-  MINIMAX_H3_MULTI_MEGAPIXELS,
   MINIMAX_H3_MULTI_MODEL_ID,
+  minimaxH3MegapixelsForResolution,
   normalizeMinimaxH3MultiAudios,
   normalizeMinimaxH3MultiImages,
+  normalizeMinimaxH3Resolution,
+  type MinimaxH3Resolution,
 } from '../../../common/minimaxH3Multi.js';
 import {
   MINIMAX_H3_AUDIO_APP_ID,
   MINIMAX_H3_AUDIO_MAX_IMAGES,
-  MINIMAX_H3_AUDIO_MEGAPIXELS,
   MINIMAX_H3_AUDIO_MODEL_ID,
   normalizeMinimaxH3AudioImages,
   isMinimaxH3AudioModel as isMinimaxH3AudioModelId,
 } from '../../../common/minimaxH3Audio.js';
 import {
-  RHART_VIDEO_UPSCALER_API_PATH,
   RHART_VIDEO_UPSCALER_MAX_DURATION_SEC,
-  RHART_VIDEO_UPSCALER_MODEL_ID,
   isRhartVideoUpscalerModelId,
+  normalizeRhartVideoUpscalerBillingSec,
   normalizeRhartVideoUpscalerResolution,
 } from '../../../common/rhartVideoUpscaler.js';
 import { getMediaDuration } from '../../services/localResourceManager.js';
 import { adaptDirectorPromptForLtxI2v } from '../../../shared/directorPipeline/composeFinalPrompt.js';
+import {
+  buildGeminiOmniFlashRhForward,
+  buildLtx23I2vRhForward,
+  buildLtx23LipsyncRhForward,
+  buildLtx23T2vRhForward,
+  buildMinimaxH3AudioRhForward,
+  buildMinimaxH3I2vRhForward,
+  buildMinimaxH3MultiRhForward,
+  buildMinimaxH3T2vRhForward,
+  buildRhArtV31ProSeRhForward,
+  buildRhVideoStartEndRhForward,
+  buildRhartVideoXI2vRhForward,
+  buildRhartVideoXT2vRhForward,
+  buildSeedance20FastRhForward,
+  buildSeedance20MiniRhForward,
+  buildWanAnimate2RhForward,
+  buildWanAnimateRhForward,
+  buildRhartVideoUpscalerRhForward,
+  buildHeyGemRhForward,
+  buildGrok3StableRhForward,
+  isCanvasGeminiOmniFlashQueueGoldenPathInput,
+  isCanvasLtx23I2vQueueGoldenPathInput,
+  isCanvasLtx23LipsyncQueueGoldenPathInput,
+  isCanvasLtx23T2vQueueGoldenPathInput,
+  isCanvasMinimaxH3AudioQueueGoldenPathInput,
+  isCanvasMinimaxH3I2vQueueGoldenPathInput,
+  isCanvasMinimaxH3MultiQueueGoldenPathInput,
+  isCanvasMinimaxH3T2vQueueGoldenPathInput,
+  isCanvasRhArtV31ProSeQueueGoldenPathInput,
+  isCanvasRhVideoStartEndQueueGoldenPathInput,
+  isCanvasRhartVideoXI2vQueueGoldenPathInput,
+  isCanvasRhartVideoXT2vQueueGoldenPathInput,
+  isCanvasSeedance20FastQueueGoldenPathInput,
+  isCanvasSeedance20MiniQueueGoldenPathInput,
+  isCanvasWanAnimate2QueueGoldenPathInput,
+  isCanvasWanAnimateQueueGoldenPathInput,
+  isCanvasRhartVideoUpscalerQueueGoldenPathInput,
+  isCanvasHeyGemQueueGoldenPathInput,
+  isCanvasGrok3StableQueueGoldenPathInput,
+  isVideoQueueGoldenPathEnabled,
+  isVideoQueueOnlyModel,
+  MINIMAX_H3_I2V_APP_ID,
+  VIDEO_QUEUE_GEMINI_OMNI_FLASH_MODEL,
+  VIDEO_QUEUE_GOLDEN_MODEL,
+  VIDEO_QUEUE_H3_AUDIO_MODEL,
+  VIDEO_QUEUE_H3_I2V_MODEL,
+  VIDEO_QUEUE_H3_MULTI_MODEL,
+  VIDEO_QUEUE_H3_T2V_MODEL,
+  VIDEO_QUEUE_LTX23_I2V_MODEL,
+  VIDEO_QUEUE_LTX23_LIPSYNC_MODEL,
+  VIDEO_QUEUE_LTX23_T2V_MODEL,
+  VIDEO_QUEUE_RHART_V31_PRO_SE_MODEL,
+  VIDEO_QUEUE_RH_VIDEO_START_END_MODEL,
+  VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL,
+  VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL,
+  VIDEO_QUEUE_WAN_ANIMATE_2_MODEL,
+  VIDEO_QUEUE_WAN_ANIMATE_MODEL,
+  VIDEO_QUEUE_RHART_VIDEO_UPSCALER_MODEL,
+  VIDEO_QUEUE_HEY_GEM_MODEL,
+  VIDEO_QUEUE_GROK_3_STABLE_MODEL,
+  type VideoQueueProviderForward,
+} from '../../../shared/videoQueueGoldenPath.js';
+import {
+  mapCloudTaskToUserQueueUx,
+  USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+} from '../../../shared/userQueueTaskUx.js';
 import {
   LTX23_MSR_AV_APP_ID,
   LTX23_MSR_AV_MODEL_ID,
@@ -191,9 +257,9 @@ interface VideoInput {
   ltx23HdrBackgroundImage?: string;
   durationLtx23HdrMulti?: '5' | '10' | '15';
   resolutionLtx23HdrMulti?: '720' | '1280' | '1920';
-  /** MiniMax-H3 文生/图生/全能参考/口型同步（RH ai-app）：时长；口型同步按参考音向上取整计费；仅 720P → megapixels 0.9 */
+  /** MiniMax-H3 文生/图生/全能参考/口型同步（RH ai-app）：时长；口型同步按参考音向上取整计费；480P→0.4 / 720P→0.9 */
   durationMinimaxH3?: '6' | '10' | '15' | '20';
-  resolutionMinimaxH3?: '720p';
+  resolutionMinimaxH3?: MinimaxH3Resolution;
   /** Sora2 算力渠道：plugin=插件算力(RunningHub)，core=核心算力(BLTCY) */
   sora2Channel?: 'plugin' | 'core';
   /** WanAnimate（角色替换）：分辨率档位 720P / 1080P（RH node 259） */
@@ -208,6 +274,15 @@ interface VideoInput {
   durationGeminiOmni?: '6' | '8' | '10';
   /** 视频超分放大：目标分辨率 720p|1080p|2k|4k */
   targetResolution?: '720p' | '1080p' | '2k' | '4k';
+  /** 画布工程 ID（资源落盘 / 元数据） */
+  projectId?: string;
+  /** Unified Queue golden path 开关（渲染进程 Gate 写入） */
+  nxCloudQueueGoldenPath?: boolean;
+  /** 导演/短剧旁路标记（Queue Gate 排除） */
+  directorSpawned?: boolean;
+  drama?: boolean;
+  nodeTitle?: string;
+  mediaDurationSec?: number;
 }
 
 export class VideoProvider extends BaseProvider {
@@ -1123,6 +1198,2838 @@ export class VideoProvider extends BaseProvider {
     }
   }
 
+  /**
+   * Unified Video Queue golden path：仅 create + 云端 /tasks/status 轮询，不直连 RH、不走 billing=charge。
+   * Phase 8.1 rhart-video-x T2V / Phase 9.2 minimax-h3-t2v / Phase 9.3-B ltx-2.3-t2v / Phase 9.3-D rhart I2V / Phase 9.4 H3 I2V 共用。
+   */
+  private async executeVideoCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    model: string;
+    billingModelId: string;
+    rhForward: VideoQueueProviderForward;
+    prompt: string;
+    nodeData: Record<string, unknown>;
+    logTag?: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      model,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData,
+      logTag = 'queue-golden',
+    } = opts;
+
+    onStatus({ nodeId, status: 'START', payload: { progress: 1, text: '任务已提交云端队列…' } });
+
+    const {
+      isNxSaasMode,
+      isNxOfflineCloudSession,
+      getNxAccessToken,
+      nxCloudTasksCreate,
+      nxCloudTaskStatus,
+    } = await import('../../services/aliyunService.js');
+
+    if (!isVideoQueueGoldenPathEnabled()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'VIDEO_QUEUE_ENABLED 未开启，无法使用 queue golden path' },
+      });
+      return;
+    }
+    if (!getAliyunFcInitUserUrl().trim() || !isNxSaasMode() || isNxOfflineCloudSession() || !getNxAccessToken()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '请先登录云端账号后再使用 queue 视频生成' },
+      });
+      return;
+    }
+
+    let taskId: string;
+    try {
+      const created = await nxCloudTasksCreate({
+        model_id: billingModelId,
+        type: 'video',
+        execution_mode: 'queue',
+        provider_forward_json: rhForward,
+        params: {
+          nodeId,
+          taskKind: 'video',
+          model,
+          prompt: prompt.slice(0, 4000),
+          nxCloudQueueGoldenPath: true,
+        },
+        nodeData: {
+          ...nodeData,
+          model,
+          prompt,
+          ...(videoInput.projectId ? { projectId: videoInput.projectId } : {}),
+        },
+      });
+      taskId = created.task_id;
+      const { notifyNxCloudTaskTrack } = await import('../../nxCloudTaskTrackNotifier.js');
+      notifyNxCloudTaskTrack({ taskId, nodeId, taskType: 'video', balance: created.balance });
+      console.log(
+        `[VideoProvider][${logTag}] created task=${taskId} model=${billingModelId} rhRegion=${rhForward.rhRegion ?? '?'} quoted=${created.quoted_cost_coins ?? '?'}`,
+      );
+    } catch (e) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: buildFcErrorPayload(e, '创建云端队列任务失败'),
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: {
+        progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+        text: '准备排队…',
+        cloudTaskId: taskId,
+      },
+    });
+
+    const deadline = Date.now() + 30 * 60_000;
+    let pollN = 0;
+    while (Date.now() < deadline) {
+      pollN += 1;
+      const sleepMs = pollN <= 3 ? 3000 : pollN <= 12 ? 8000 : 15_000;
+      await new Promise((r) => setTimeout(r, sleepMs));
+      let row: Awaited<ReturnType<typeof nxCloudTaskStatus>>;
+      try {
+        row = await nxCloudTaskStatus(taskId);
+      } catch (e) {
+        console.warn(`[VideoProvider][${logTag}] status poll error`, e);
+        continue;
+      }
+      const st = String(row.status || '').toLowerCase();
+      const ux = mapCloudTaskToUserQueueUx({
+        status: row.status,
+        execution_stage: row.execution_stage,
+        ahead_count: row.ahead_count,
+        queue_position: row.queue_position,
+        queue_position_available: row.queue_position_available,
+        queue_position_complete: row.queue_position_complete,
+        error_msg: row.error_msg,
+        error_code: row.error_code,
+        refunded: row.refunded,
+      });
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: {
+          // 无真实 Provider 百分比：固定进度仅驱动遮罩，不伪造 37%/62%
+          progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+          text: ux.progressMessage,
+          cloudTaskId: taskId,
+          execution_stage: String(row.execution_stage || ''),
+          ahead_count: row.ahead_count ?? null,
+          queue_position: row.queue_position ?? null,
+        },
+      });
+
+      if (st === 'success') {
+        const { splitNxTaskResultOssUrls } = await import('../../services/aliyunService.js');
+        const url = splitNxTaskResultOssUrls(row.result_oss_url)[0] || '';
+        if (!url) {
+          continue;
+        }
+        onStatus({
+          nodeId,
+          status: 'SUCCESS',
+          payload: {
+            videoUrl: url,
+            cloudTaskId: taskId,
+            progress: 100,
+            text: '生成完成',
+          },
+        });
+        return;
+      }
+      if (st === 'failed' || st === 'cancelled' || st === 'timeout') {
+        const errMsg =
+          ux.failureDetail?.replace(/^失败原因：/, '') ||
+          String(row.error_msg || row.error_code || '视频生成失败');
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error: row.refunded ? `${ux.progressMessage}${errMsg ? `：${errMsg}` : ''}` : errMsg,
+            cloudTaskId: taskId,
+            ...(String(row.error_code || '') === 'BALANCE_INSUFFICIENT'
+              ? { balanceInsufficient: true }
+              : {}),
+          },
+        });
+        return;
+      }
+    }
+
+    onStatus({
+      nodeId,
+      status: 'ERROR',
+      payload: { error: '云端任务超时，请稍后在任务列表查看', cloudTaskId: taskId },
+    });
+  }
+
+  /** Phase 8.1：rhart-video-x 文生视频 queue golden path — 仅 create + 云端 /tasks/status，不调 RH */
+  private async executeRhartVideoXT2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationGrok3: string | number | undefined;
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, aspect_ratio, durationGrok3 } = opts;
+    const allowedAr = new Set(['2:3', '3:2', '1:1', '16:9', '9:16']);
+    const arRaw = String(aspect_ratio || '16:9').trim();
+    const validAspectRatio = allowedAr.has(arRaw) ? arRaw : '16:9';
+    const durationSec = normalizeRhartVideoXDurationSec(durationGrok3, 10);
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_GOLDEN_MODEL,
+      durationGrok3: String(durationSec),
+      aspect_ratio: validAspectRatio,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_GOLDEN_MODEL, billingInput);
+    const rhForward = buildRhartVideoXT2vRhForward({
+      prompt,
+      duration: durationSec,
+      aspectRatio: validAspectRatio,
+      resolution: '720p',
+      billingModelId,
+    });
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_GOLDEN_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: validAspectRatio,
+        durationGrok3: String(durationSec),
+        duration: String(durationSec),
+      },
+      logTag: 'queue-golden-rhart-x',
+    });
+  }
+
+  /**
+   * Phase 9.3-D：rhart-video-x I2V 图片 → 公网 HTTPS（Create 前；复用 pad + OSS，禁止把 local/data 写入 forward）
+   * 已是我方 OSS/CDN 且无需 letterbox 时复用原 URL，避免无条件重复上传。
+   */
+  private async prepareRhartVideoXI2vHttpsImageUrls(
+    images: string[],
+    aspectRatio: string,
+  ): Promise<string[]> {
+    const toProcess = (images || []).filter((u) => String(u || '').trim()).slice(0, 7);
+    if (toProcess.length < 1) {
+      throw new Error('图生视频需要至少一张有效图片');
+    }
+    const imageUrls: string[] = [];
+    for (const imageUrl of toProcess) {
+      let imageBuffer: Buffer;
+      let mimeType = 'image/png';
+      try {
+        if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+          const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+          imageBuffer = Buffer.from(response.data);
+          mimeType = (response.headers['content-type'] as string) || 'image/png';
+        } else if (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://')) {
+          let filePath = imageUrl.startsWith('local-resource://')
+            ? imageUrl.replace(/^local-resource:\/\//, '')
+            : imageUrl.replace(/^file:\/\//, '');
+          if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') filePath = filePath.slice(1);
+          filePath = decodeURIComponent(filePath);
+          if (filePath.match(/^[a-zA-Z]\//)) filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+          const userDataPath = app.getPath('userData');
+          const normalizedFilePath = path.normalize(filePath);
+          const projectsBase = getProjectsBasePath();
+          if (
+            !normalizedFilePath.startsWith(path.normalize(userDataPath)) &&
+            !normalizedFilePath.startsWith(path.normalize(projectsBase))
+          ) {
+            throw new Error(`访问路径超出允许范围: ${filePath}`);
+          }
+          if (!fs.existsSync(normalizedFilePath)) throw new Error(`文件不存在: ${normalizedFilePath}`);
+          imageBuffer = fs.readFileSync(normalizedFilePath);
+          const ext = path.extname(normalizedFilePath).toLowerCase();
+          mimeType =
+            ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+        } else if (imageUrl.startsWith('data:image/')) {
+          const base64Data = imageUrl.split(',')[1];
+          if (!base64Data) throw new Error('Base64 Data URL 格式无效');
+          imageBuffer = Buffer.from(base64Data, 'base64');
+          const mimeMatch = imageUrl.match(/^data:image\/(\w+);base64,/);
+          mimeType = mimeMatch ? `image/${mimeMatch[1]}` : 'image/png';
+        } else {
+          throw new Error(`不支持的图片 URL 格式: ${imageUrl.substring(0, 50)}`);
+        }
+        const padded = await this.padImageBufferToAspectRatio(imageBuffer, aspectRatio);
+        // 比例已匹配且已是我方公网 OSS/CDN：直接复用，不重复上传
+        if (
+          padded.buffer === imageBuffer &&
+          (imageUrl.startsWith('https://') || imageUrl.startsWith('http://')) &&
+          isOurOssOrCdnObjectUrl(imageUrl)
+        ) {
+          const reused = preferDirectOssUrlForThirdPartyImageRef(imageUrl);
+          if (!reused.startsWith('https://')) {
+            throw new Error('复用 OSS URL 必须为 https://');
+          }
+          imageUrls.push(reused);
+          continue;
+        }
+        const processed = await this.uploadImageToOSS(padded.buffer, padded.mimeType || mimeType);
+        if (!processed || !(processed.startsWith('http://') || processed.startsWith('https://'))) {
+          throw new Error('OSS 上传未返回公网 URL');
+        }
+        const finalUrl = preferDirectOssUrlForThirdPartyImageRef(processed);
+        if (!finalUrl.startsWith('https://') && !finalUrl.startsWith('http://')) {
+          throw new Error('图片处理后无有效公网 URL');
+        }
+        // RunningHub I2V 要求可拉取的公网地址；优先 https
+        if (!finalUrl.startsWith('https://')) {
+          throw new Error('imageUrls 必须为 https:// 公网 URL');
+        }
+        imageUrls.push(finalUrl);
+      } catch (err: any) {
+        throw new Error(`全能视频X 图生视频图片处理失败: ${err.message || err}`);
+      }
+    }
+    if (imageUrls.length === 0) throw new Error('图生视频需要至少一张有效图片');
+    return imageUrls;
+  }
+
+  /**
+   * Phase 9.3-D：rhart-video-x 图生视频 → Unified Queue（.ai）
+   * Create 前完成图片 OSS；成功后 return，禁止再走 rhPostChargeVideo。
+   */
+  private async executeRhartVideoXI2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationGrok3: string | number | undefined;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, aspect_ratio, durationGrok3, images } = opts;
+    const allowedAr = new Set(['2:3', '3:2', '1:1', '16:9', '9:16']);
+    const arRaw = String(aspect_ratio || '16:9').trim();
+    const validAspectRatio = allowedAr.has(arRaw) ? arRaw : '16:9';
+    const durationSec = normalizeRhartVideoXDurationSec(durationGrok3, 10);
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+
+    let imageUrls: string[];
+    try {
+      imageUrls = await this.prepareRhartVideoXI2vHttpsImageUrls(images, validAspectRatio);
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考图处理失败') },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_GOLDEN_MODEL,
+      durationGrok3: String(durationSec),
+      aspect_ratio: validAspectRatio,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_GOLDEN_MODEL, billingInput);
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildRhartVideoXI2vRhForward({
+        prompt,
+        duration: durationSec,
+        aspectRatio: validAspectRatio,
+        imageUrls,
+        resolution: '720p',
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'I2V forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_GOLDEN_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: validAspectRatio,
+        durationGrok3: String(durationSec),
+        duration: String(durationSec),
+        imageCount: imageUrls.length,
+      },
+      logTag: 'queue-golden-rhart-x-i2v',
+    });
+  }
+
+  /** Phase 9.2：minimax-h3-t2v → Unified Queue（.cn）；禁止 rhPostChargeVideo 双扣费 */
+  private async executeMinimaxH3T2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationMinimaxH3: string | number | undefined;
+    resolutionMinimaxH3?: string;
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, aspect_ratio, durationMinimaxH3, resolutionMinimaxH3 } =
+      opts;
+    const durationNum = normalizeMinimaxH3DurationSec(durationMinimaxH3, 10);
+    const durationSec = String(durationNum);
+    const resolution = normalizeMinimaxH3Resolution(resolutionMinimaxH3);
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_H3_T2V_MODEL,
+      durationMinimaxH3: durationSec,
+      resolutionMinimaxH3: resolution,
+      aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_H3_T2V_MODEL, billingInput);
+    const rhForward = buildMinimaxH3T2vRhForward({
+      prompt,
+      durationSec,
+      aspectRatio: String(aspect_ratio || '16:9'),
+      resolution,
+      billingModelId,
+    });
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_H3_T2V_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+        durationMinimaxH3: durationSec,
+        resolutionMinimaxH3: resolution,
+        duration: durationSec,
+      },
+      logTag: 'queue-golden-h3-t2v',
+    });
+  }
+
+  /**
+   * Phase 9.4：minimax-h3-i2v → Unified Queue（.cn）
+   * Create 前：OSS → RH media fileName → buildMinimaxH3I2vNodeInfoList；固定 plus；禁止 Direct 双扣。
+   */
+  private async executeMinimaxH3I2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationMinimaxH3: string | number | undefined;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, aspect_ratio, durationMinimaxH3, images } = opts;
+    const imageUrl = images && images[0] ? String(images[0]).trim() : '';
+    if (!imageUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'MiniMax-H3 图生视频需要 1 张参考图' },
+      });
+      return;
+    }
+
+    const durationNum = normalizeMinimaxH3DurationSec(durationMinimaxH3, 10);
+    const durationSec = String(durationNum);
+    const resolution = normalizeMinimaxH3Resolution(
+      (videoInput as VideoInput).resolutionMinimaxH3,
+    );
+    const megapixels = minimaxH3MegapixelsForResolution(resolution);
+    const aspectRh = (() => {
+      const map: Record<string, string> = {
+        '1:1': '1:1 (Square)',
+        '2:3': '2:3 (Portrait Photo)',
+        '3:2': '3:2 (Photo)',
+        '3:4': '3:4 (Portrait Standard)',
+        '4:3': '4:3 (Standard)',
+        '9:16': '9:16 (Portrait Widescreen)',
+        '16:9': '16:9 (Widescreen)',
+        '21:9': '21:9 (Ultrawide)',
+      };
+      return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+    })();
+    const promptText = String(prompt || '').trim() || '视频动画';
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+
+    let rhImageField: string;
+    try {
+      const imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+      if (!imageUrlRemote || !(imageUrlRemote.startsWith('http://') || imageUrlRemote.startsWith('https://'))) {
+        throw new Error('OSS 上传未返回公网 URL');
+      }
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 8, text: '正在上传参考图到 RunningHub…' },
+      });
+      const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+        imageUrlRemote,
+        'minimax-h3-ref.jpg',
+        'image/jpeg',
+      );
+      rhImageField = rhComfyMediaFieldValue(uploaded);
+      if (!rhImageField || !/^(openapi|api)\//i.test(rhImageField)) {
+        throw new Error(
+          `参考图上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhImageField || '空'}）`,
+        );
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考图处理失败') },
+      });
+      return;
+    }
+
+    let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+    try {
+      liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_I2V_APP_ID, { rhRegion: 'cn' });
+    } catch (probeErr) {
+      console.warn(
+        '[MiniMax-H3 i2v queue] apiCallDemo 探测失败，使用官方文档节点映射',
+        probeErr instanceof Error ? probeErr.message : probeErr,
+      );
+    }
+
+    const rhSeal = await getRhSealMediaBundle();
+    const nodeInfoList = buildMinimaxH3I2vNodeInfoList(
+      rhImageField,
+      promptText,
+      megapixels,
+      aspectRh,
+      durationSec,
+      rhSeal,
+      liveNodes,
+    );
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_H3_I2V_MODEL,
+      durationMinimaxH3: durationSec,
+      resolutionMinimaxH3: resolution,
+      aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_H3_I2V_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildMinimaxH3I2vRhForward({
+        nodeInfoList: nodeInfoList as unknown as Array<Record<string, unknown>>,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'H3 I2V forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_H3_I2V_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+        durationMinimaxH3: durationSec,
+        resolutionMinimaxH3: resolution,
+        duration: durationSec,
+        imageCount: 1,
+      },
+      logTag: 'queue-golden-h3-i2v',
+    });
+  }
+
+  /**
+   * minimax-h3-multi → Unified Queue（.cn）
+   * Create 前：图/音 OSS → RH media fileName → buildMinimaxH3MultiNodeInfoList；固定 plus；禁止 Direct 双扣。
+   */
+  private async executeMinimaxH3MultiCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationMinimaxH3: string | number | undefined;
+    images: string[];
+    inputAudioUrl?: string;
+    inputAudioUrls?: string[];
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      durationMinimaxH3,
+      images,
+      inputAudioUrl,
+      inputAudioUrls,
+    } = opts;
+
+    const multiImages = normalizeMinimaxH3MultiImages(images || []);
+    if (multiImages.length > MINIMAX_H3_MULTI_MAX_IMAGES) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `MiniMax H3 全能参考最多 ${MINIMAX_H3_MULTI_MAX_IMAGES} 张参考图，当前提供了 ${multiImages.length} 张。`,
+        },
+      });
+      return;
+    }
+
+    const refAudioUrls = normalizeMinimaxH3MultiAudios([
+      ...(Array.isArray(inputAudioUrls) ? inputAudioUrls : []),
+      String(inputAudioUrl || '').trim(),
+    ]);
+
+    const durationNum = normalizeMinimaxH3DurationSec(durationMinimaxH3, 10);
+    const durationSec = String(durationNum);
+    const resolution = normalizeMinimaxH3Resolution(
+      (videoInput as VideoInput).resolutionMinimaxH3,
+    );
+    const megapixels = minimaxH3MegapixelsForResolution(resolution);
+    const aspectRh = (() => {
+      const map: Record<string, string> = {
+        '1:1': '1:1 (Square)',
+        '2:3': '2:3 (Portrait Photo)',
+        '3:2': '3:2 (Photo)',
+        '3:4': '3:4 (Portrait Standard)',
+        '4:3': '4:3 (Standard)',
+        '9:16': '9:16 (Portrait Widescreen)',
+        '16:9': '16:9 (Widescreen)',
+        '21:9': '21:9 (Ultrawide)',
+        '1:1 (Square)': '1:1 (Square)',
+        '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
+        '3:2 (Photo)': '3:2 (Photo)',
+        '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
+        '4:3 (Standard)': '4:3 (Standard)',
+        '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
+        '16:9 (Widescreen)': '16:9 (Widescreen)',
+        '21:9 (Ultrawide)': '21:9 (Ultrawide)',
+      };
+      return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+    })();
+    const promptText = String(prompt || '').trim() || '视频动画';
+
+    const ensureAudioRemoteH3Multi = async (url: string): Promise<string> => {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(url)) {
+          return preferDirectOssUrlForThirdPartyImageRef(url);
+        }
+        const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+        const ct = res.headers['content-type'] || '';
+        const mimeType = ct.includes('wav')
+          ? 'audio/wav'
+          : ct.includes('ogg')
+            ? 'audio/ogg'
+            : ct.includes('m4a')
+              ? 'audio/mp4'
+              : 'audio/mpeg';
+        return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+      }
+      if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+        return this.uploadLocalAudioToOSS(url);
+      }
+      if (url.startsWith('data:audio/')) {
+        const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+        const buf = Buffer.from(m ? m[2] : '', 'base64');
+        const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+        return this.uploadAudioToOSS(buf, mime);
+      }
+      return url;
+    };
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: {
+        progress: 2,
+        text:
+          multiImages.length || refAudioUrls.length
+            ? '正在上传参考图 / 参考音…'
+            : '纯文生模式，准备提交…',
+      },
+    });
+
+    let rhImageFields: string[] = [];
+    let rhAudioFields: string[] = [];
+    try {
+      for (let i = 0; i < multiImages.length; i++) {
+        const remote = await this.processImageToOssUrl(multiImages[i]);
+        const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+          remote,
+          `minimax-h3-multi-img${i + 1}.jpg`,
+          'image/jpeg',
+        );
+        const field = rhComfyMediaFieldValue(uploaded);
+        if (!field || !/^(openapi|api)\//i.test(field)) {
+          throw new Error(
+            `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
+          );
+        }
+        rhImageFields.push(field);
+      }
+
+      for (let ai = 0; ai < refAudioUrls.length; ai++) {
+        const refAudioUrl = refAudioUrls[ai];
+        let audioRemote = await ensureAudioRemoteH3Multi(refAudioUrl);
+        audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
+        onStatus({
+          nodeId,
+          status: 'PROCESSING',
+          payload: {
+            progress: 8,
+            text: `参考音 ${ai + 1}/${refAudioUrls.length} 转码为干净 MP3…`,
+          },
+        });
+        audioRemote = preferDirectOssUrlForThirdPartyImageRef(
+          await this.transcodeRemoteAudioToMp3Oss(audioRemote),
+        );
+        const meta = rhAudioUploadMetaFromUrl(audioRemote);
+        const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
+          audioRemote,
+          meta.filename || `minimax-h3-multi-audio${ai + 1}.mp3`,
+          meta.contentType || 'audio/mpeg',
+        );
+        const rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
+        const sizeNum = Number(uploadedAudio.size);
+        if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
+          throw new Error(
+            `参考音 ${ai + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
+          );
+        }
+        if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
+          throw new Error(
+            `参考音 ${ai + 1} 上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
+          );
+        }
+        if (Number.isFinite(sizeNum) && sizeNum <= 0) {
+          throw new Error(`参考音 ${ai + 1} 上传后大小为 0，请检查音频文件`);
+        }
+        rhAudioFields.push(rhAudioField);
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考媒体处理失败') },
+      });
+      return;
+    }
+
+    onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
+    let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+    try {
+      liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_MULTI_APP_ID, { rhRegion: 'cn' });
+    } catch (probeErr) {
+      console.warn(
+        '[MiniMax H3 全能参考 queue] apiCallDemo 探测失败，使用官方文档节点映射',
+        probeErr instanceof Error ? probeErr.message : probeErr,
+      );
+    }
+
+    const rhSeal = await getRhSealMediaBundle();
+    const nodeInfoList = buildMinimaxH3MultiNodeInfoList(
+      promptText,
+      megapixels,
+      aspectRh,
+      durationSec,
+      rhImageFields,
+      rhSeal,
+      rhAudioFields,
+      liveNodes,
+    );
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_H3_MULTI_MODEL,
+      durationMinimaxH3: durationSec,
+      resolutionMinimaxH3: resolution,
+      aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_H3_MULTI_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildMinimaxH3MultiRhForward({
+        nodeInfoList: nodeInfoList as unknown as Array<Record<string, unknown>>,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'H3 Multi forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_H3_MULTI_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+        durationMinimaxH3: durationSec,
+        resolutionMinimaxH3: resolution,
+        duration: durationSec,
+        imageCount: rhImageFields.length,
+        audioCount: rhAudioFields.length,
+      },
+      logTag: 'queue-golden-h3-multi',
+    });
+  }
+
+  /**
+   * minimax-h3-audio → Unified Queue（.cn）
+   * Create 前：图 OSS→RH fileName + 音转码 MP3→RH fileName；探测时长仅用于计费 SKU（RH 无时长节点）。
+   */
+  private async executeMinimaxH3AudioCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    images: string[];
+    inputAudioUrl: string;
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, aspect_ratio, images, inputAudioUrl } = opts;
+
+    const audioImages = normalizeMinimaxH3AudioImages(images || []);
+    if (audioImages.length < 1 || audioImages.length > MINIMAX_H3_AUDIO_MAX_IMAGES) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `MiniMax-H3 口型同步支持 1–${MINIMAX_H3_AUDIO_MAX_IMAGES} 张参考图，当前提供了 ${audioImages.length} 张。`,
+        },
+      });
+      return;
+    }
+    const refAudioUrl = String(inputAudioUrl || '').trim();
+    if (!refAudioUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'MiniMax-H3 口型同步需要连接参考音（必填）' },
+      });
+      return;
+    }
+
+    const resolution = normalizeMinimaxH3Resolution(
+      (videoInput as VideoInput).resolutionMinimaxH3,
+    );
+    const megapixels = minimaxH3MegapixelsForResolution(resolution);
+    const aspectRh = (() => {
+      const map: Record<string, string> = {
+        '1:1': '1:1 (Square)',
+        '2:3': '2:3 (Portrait Photo)',
+        '3:2': '3:2 (Photo)',
+        '3:4': '3:4 (Portrait Standard)',
+        '4:3': '4:3 (Standard)',
+        '9:16': '9:16 (Portrait Widescreen)',
+        '16:9': '16:9 (Widescreen)',
+        '21:9': '21:9 (Ultrawide)',
+        '1:1 (Square)': '1:1 (Square)',
+        '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
+        '3:2 (Photo)': '3:2 (Photo)',
+        '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
+        '4:3 (Standard)': '4:3 (Standard)',
+        '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
+        '16:9 (Widescreen)': '16:9 (Widescreen)',
+        '21:9 (Ultrawide)': '21:9 (Ultrawide)',
+      };
+      return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
+    })();
+    const promptText = String(prompt || '').trim() || '视频动画';
+
+    const ensureAudioRemoteH3Audio = async (url: string): Promise<string> => {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(url)) {
+          return preferDirectOssUrlForThirdPartyImageRef(url);
+        }
+        const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
+        const ct = res.headers['content-type'] || '';
+        const mimeType = ct.includes('wav')
+          ? 'audio/wav'
+          : ct.includes('ogg')
+            ? 'audio/ogg'
+            : ct.includes('m4a')
+              ? 'audio/mp4'
+              : 'audio/mpeg';
+        return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+      }
+      if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+        return this.uploadLocalAudioToOSS(url);
+      }
+      if (url.startsWith('data:audio/')) {
+        const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+        const buf = Buffer.from(m ? m[2] : '', 'base64');
+        const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+        return this.uploadAudioToOSS(buf, mime);
+      }
+      return url;
+    };
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在上传参考图与参考音…' },
+    });
+
+    let rhImageFields: string[] = [];
+    let rhAudioField = '';
+    let billingDurSec = 20;
+    try {
+      for (let i = 0; i < audioImages.length; i++) {
+        const remote = await this.processImageToOssUrl(audioImages[i]);
+        const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
+          remote,
+          `minimax-h3-audio-img${i + 1}.jpg`,
+          'image/jpeg',
+        );
+        const field = rhComfyMediaFieldValue(uploaded);
+        if (!field || !/^(openapi|api)\//i.test(field)) {
+          throw new Error(
+            `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
+          );
+        }
+        rhImageFields.push(field);
+      }
+
+      let audioRemote = await ensureAudioRemoteH3Audio(refAudioUrl);
+      audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 8, text: '参考音强制转码为干净 MP3…' },
+      });
+      audioRemote = preferDirectOssUrlForThirdPartyImageRef(
+        await this.transcodeRemoteAudioToMp3Oss(audioRemote),
+      );
+
+      const h3AudioProjectId =
+        typeof (videoInput as { projectId?: unknown }).projectId === 'string'
+          ? String((videoInput as { projectId?: string }).projectId)
+          : undefined;
+      let probedAudioSec = 0;
+      try {
+        probedAudioSec = Number(await getMediaDuration(audioRemote, h3AudioProjectId)) || 0;
+        if (!(probedAudioSec > 0)) {
+          probedAudioSec = Number(await getMediaDuration(refAudioUrl, h3AudioProjectId)) || 0;
+        }
+      } catch {
+        probedAudioSec = 0;
+      }
+      billingDurSec = mapMinimaxH3AudioBillingDurationSec(
+        probedAudioSec > 0 ? probedAudioSec : undefined,
+      );
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: {
+          progress: 10,
+          text:
+            !(probedAudioSec > 0)
+              ? `未能读取参考音时长，按 ${billingDurSec}s 档计费`
+              : probedAudioSec > 20
+                ? `参考音约 ${probedAudioSec.toFixed(1)}s，超过 20s 按 20s 档计费`
+                : `参考音约 ${probedAudioSec.toFixed(1)}s → 计费 ${billingDurSec}s`,
+        },
+      });
+
+      const meta = rhAudioUploadMetaFromUrl(audioRemote);
+      const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
+        audioRemote,
+        meta.filename || 'minimax-h3-audio-ref.mp3',
+        meta.contentType || 'audio/mpeg',
+      );
+      rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
+      const sizeNum = Number(uploadedAudio.size);
+      if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
+        throw new Error(
+          `参考音上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
+        );
+      }
+      if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
+        throw new Error(
+          `参考音上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
+        );
+      }
+      if (Number.isFinite(sizeNum) && sizeNum <= 0) {
+        throw new Error('参考音上传后大小为 0，请检查音频文件');
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考媒体处理失败') },
+      });
+      return;
+    }
+
+    onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
+    let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
+    try {
+      liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_AUDIO_APP_ID, { rhRegion: 'cn' });
+    } catch (probeErr) {
+      console.warn(
+        '[MiniMax-H3 audio queue] apiCallDemo 探测失败，使用官方文档节点映射',
+        probeErr instanceof Error ? probeErr.message : probeErr,
+      );
+    }
+
+    const rhSeal = await getRhSealMediaBundle();
+    const nodeInfoList = buildMinimaxH3AudioNodeInfoList(
+      promptText,
+      megapixels,
+      aspectRh,
+      rhImageFields,
+      rhAudioField,
+      rhSeal,
+      liveNodes,
+    );
+
+    const durationSec = String(billingDurSec);
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_H3_AUDIO_MODEL,
+      durationMinimaxH3: durationSec,
+      resolutionMinimaxH3: resolution,
+      aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_H3_AUDIO_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildMinimaxH3AudioRhForward({
+        nodeInfoList: nodeInfoList as unknown as Array<Record<string, unknown>>,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'H3 Audio forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_H3_AUDIO_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        aspect_ratio: String(aspect_ratio || '16:9').trim() || '16:9',
+        durationMinimaxH3: durationSec,
+        resolutionMinimaxH3: resolution,
+        duration: durationSec,
+        imageCount: rhImageFields.length,
+        audioCount: 1,
+      },
+      logTag: 'queue-golden-h3-audio',
+    });
+  }
+
+  /** Phase 9.3-B：ltx-2.3-t2v → Unified Queue（.ai via forward.rhRegion）；禁止 rhPostChargeVideo 双扣费 */
+  private async executeLtx23T2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationLtx23T2v: string | number | undefined;
+    resolutionLtx23T2v: string | undefined;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      durationLtx23T2v,
+      resolutionLtx23T2v,
+    } = opts;
+    const durationNum = normalizeLtx23DurationSec(durationLtx23T2v, 10);
+    const durationSec = String(durationNum);
+    const ratio =
+      aspect_ratio === '9:16' || aspect_ratio === '16:9' ? aspect_ratio : '16:9';
+    const resRaw = String(resolutionLtx23T2v || '720').trim() || '720';
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_LTX23_T2V_MODEL,
+      durationLtx23T2v: durationSec,
+      resolutionLtx23T2v: resRaw === '1080' ? '1920' : resRaw,
+      aspect_ratio: ratio,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_LTX23_T2V_MODEL, billingInput);
+    const rhForward = buildLtx23T2vRhForward({
+      prompt,
+      durationSec,
+      aspectRatio: ratio,
+      resolution: resRaw,
+      billingModelId,
+    });
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_LTX23_T2V_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: ratio,
+        durationLtx23T2v: durationSec,
+        resolutionLtx23T2v: resRaw === '1080' ? '1920' : resRaw,
+        duration: durationSec,
+      },
+      logTag: 'queue-golden-ltx23-t2v',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-1：ltx-2.3-i2v → Unified Queue（.cn）
+   * Create 前：OSS HTTPS（非 RH fileName）；与 Direct nodeInfoList 对齐；禁止 Direct 双扣。
+   */
+  private async executeLtx23I2vCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    durationLtx23I2v: string | number | undefined;
+    resolutionLtx23I2v: string | undefined;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, durationLtx23I2v, resolutionLtx23I2v, images } = opts;
+    const imageUrl = images && images[0] ? String(images[0]).trim() : '';
+    if (!imageUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'LTX2.3 图生视频需要 1 张参考图' },
+      });
+      return;
+    }
+
+    const durationNum = normalizeLtx23DurationSec(durationLtx23I2v, 10);
+    const durationSec = String(durationNum);
+    const resRaw = String(resolutionLtx23I2v || '720').trim() || '720';
+    const resTier = resRaw === '1080' ? '1920' : resRaw;
+    const promptText = adaptDirectorPromptForLtxI2v(String(prompt || '').trim()) || '视频动画';
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+
+    let imageUrlRemote: string;
+    try {
+      imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+      if (!imageUrlRemote || !(imageUrlRemote.startsWith('http://') || imageUrlRemote.startsWith('https://'))) {
+        throw new Error('OSS 上传未返回公网 URL');
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考图处理失败') },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_LTX23_I2V_MODEL,
+      durationLtx23I2v: durationSec,
+      resolutionLtx23I2v: resTier,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_LTX23_I2V_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildLtx23I2vRhForward({
+        imageUrl: imageUrlRemote,
+        prompt: promptText,
+        durationSec,
+        resolution: resTier,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'LTX I2V forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_LTX23_I2V_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        durationLtx23I2v: durationSec,
+        resolutionLtx23I2v: resTier,
+        duration: durationSec,
+        imageCount: 1,
+      },
+      logTag: 'queue-golden-ltx23-i2v',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-2-B：gemini-omni-flash → Unified Queue（.ai）
+   * Create 前：resolveOriginalImageUrls → processImageToOssUrl ×1/3；duration 为 string；禁止 Direct 双扣。
+   */
+  private async executeGeminiOmniFlashCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    durationGeminiOmni: string | number | undefined;
+    resolutionGeminiOmni: string | undefined;
+    images: string[];
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      durationGeminiOmni,
+      resolutionGeminiOmni,
+      images,
+    } = opts;
+
+    const flashImages = (images || []).map((img) => String(img || '').trim()).filter(Boolean);
+    if (flashImages.length !== 1 && flashImages.length !== 3) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `全能视频 Omni Flash 仅支持 1 或 3 张参考图，当前 ${flashImages.length} 张`,
+        },
+      });
+      return;
+    }
+
+    const promptText = String(prompt || '').trim();
+    if (!promptText) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '全能视频 Omni Flash 需要填写视频描述（prompt）' },
+      });
+      return;
+    }
+    if (promptText.length > 2048) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'prompt 长度不能超过 2048 字符' },
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+
+    let imageUrlsRemote: string[];
+    try {
+      imageUrlsRemote = await Promise.all(flashImages.map((img) => this.processImageToOssUrl(img)));
+      for (const u of imageUrlsRemote) {
+        if (!u || !(u.startsWith('http://') || u.startsWith('https://'))) {
+          throw new Error('OSS 上传未返回公网 URL');
+        }
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考图处理失败') },
+      });
+      return;
+    }
+
+    const durationVal = String(normalizeGeminiOmniFlashDurationSec(durationGeminiOmni, 6));
+    const resRaw = String(resolutionGeminiOmni || '720p').trim().toLowerCase();
+    const resolutionVal = resRaw === '1080p' || resRaw === '4k' ? resRaw : '720p';
+    const aspectVal = aspect_ratio === '9:16' ? '9:16' : '16:9';
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_GEMINI_OMNI_FLASH_MODEL,
+      durationGeminiOmni: durationVal,
+      resolutionGeminiOmni: resolutionVal,
+      aspect_ratio: aspectVal,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_GEMINI_OMNI_FLASH_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildGeminiOmniFlashRhForward({
+        prompt: promptText,
+        imageUrls: imageUrlsRemote,
+        duration: durationVal,
+        resolution: resolutionVal,
+        aspectRatio: aspectVal,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'Gemini Omni Flash forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_GEMINI_OMNI_FLASH_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        durationGeminiOmni: durationVal,
+        resolutionGeminiOmni: resolutionVal,
+        aspect_ratio: aspectVal,
+        duration: durationVal,
+        imageCount: imageUrlsRemote.length,
+      },
+      logTag: 'queue-golden-gemini-omni-flash',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-3-B：rh-video-start-end → Unified Queue（.cn）
+   * Create 前：OSS HTTPS ×2（首/尾）；禁止 Direct 双扣。
+   */
+  private async executeRhVideoStartEndCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    duration: string | number | undefined;
+    resolutionRhartV31: string | undefined;
+    images: string[];
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      duration,
+      resolutionRhartV31,
+      images,
+    } = opts;
+
+    const pair = (images || []).map((img) => String(img || '').trim()).filter(Boolean);
+    if (pair.length !== 2) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `LTX2.3（首位帧）需要恰好 2 张参考图（首帧+尾帧），当前 ${pair.length} 张`,
+        },
+      });
+      return;
+    }
+
+    const promptText = String(prompt || '').trim();
+    if (!promptText) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'LTX2.3（首位帧）需要填写视频描述（prompt）' },
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理首尾帧…' },
+    });
+
+    let startRemote = '';
+    let endRemote = '';
+    try {
+      startRemote = await this.processImageToOssUrl(pair[0]);
+      if (!startRemote || !startRemote.startsWith('https://')) {
+        throw new Error('首帧 OSS 上传未返回 HTTPS URL');
+      }
+      endRemote = await this.processImageToOssUrl(pair[1]);
+      if (!endRemote || !endRemote.startsWith('https://')) {
+        throw new Error('尾帧 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '处理首尾帧图片失败') },
+      });
+      return;
+    }
+
+    const durationVal =
+      duration === '15' || duration === 15
+        ? '15'
+        : duration === '10' || duration === 10
+          ? '10'
+          : '5';
+    const resRaw = String(resolutionRhartV31 || '').trim().toLowerCase();
+    const resolutionVal =
+      resRaw === '720' || resRaw === '720p'
+        ? '720p'
+        : resRaw === '1920' || resRaw === '1920p' || resRaw === '4k' || resRaw === '2160p'
+          ? '1920p'
+          : '1080p';
+    const aspectVal = aspect_ratio === '9:16' ? '9:16' : '16:9';
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_RH_VIDEO_START_END_MODEL,
+      duration: durationVal,
+      resolutionRhartV31: resolutionVal,
+      aspect_ratio: aspectVal,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_RH_VIDEO_START_END_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildRhVideoStartEndRhForward({
+        startImageUrl: startRemote,
+        endImageUrl: endRemote,
+        prompt: promptText,
+        duration: durationVal,
+        resolution: resolutionVal,
+        aspectRatio: aspectVal,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '首位帧 forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_RH_VIDEO_START_END_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        duration: durationVal,
+        resolutionRhartV31: resolutionVal,
+        aspect_ratio: aspectVal,
+        imageCount: 2,
+      },
+      logTag: 'queue-golden-rh-video-start-end',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-4-B：rhart-v3.1-pro-se → Unified Queue（.ai）
+   * Create 前：OSS HTTPS ×1/2（首帧必填、尾帧可选）；duration 固定 "8"；禁止 Direct 双扣。
+   */
+  private async executeRhArtV31ProSeCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    resolutionRhartV31: string | undefined;
+    images: string[];
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      resolutionRhartV31,
+      images,
+    } = opts;
+
+    const pair = (images || []).map((img) => String(img || '').trim()).filter(Boolean);
+    if (pair.length < 1 || pair.length > 2) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `全能视频V3.1-pro-首尾帧生视频需要 1–2 张图片（首帧必填、尾帧可选），当前 ${pair.length} 张`,
+        },
+      });
+      return;
+    }
+
+    const promptText = String(prompt || '').trim();
+    if (!promptText) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '全能视频V3.1-pro-首尾帧生视频需要填写视频描述（prompt）' },
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理首尾帧…' },
+    });
+
+    let firstRemote = '';
+    let lastRemote = '';
+    try {
+      firstRemote = await this.processImageToOssUrl(pair[0]);
+      if (!firstRemote || !firstRemote.startsWith('https://')) {
+        throw new Error('首帧 OSS 上传未返回 HTTPS URL');
+      }
+      if (pair.length >= 2) {
+        lastRemote = await this.processImageToOssUrl(pair[1]);
+        if (!lastRemote || !lastRemote.startsWith('https://')) {
+          throw new Error('尾帧 OSS 上传未返回 HTTPS URL');
+        }
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '处理首尾帧图片失败') },
+      });
+      return;
+    }
+
+    const resRaw = String(resolutionRhartV31 || '').trim().toLowerCase();
+    const resolutionVal =
+      resRaw === '720' || resRaw === '720p'
+        ? '720p'
+        : resRaw === '4k' || resRaw === '2160p'
+          ? '4k'
+          : '1080p';
+    const aspectVal = aspect_ratio === '9:16' ? '9:16' : '16:9';
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_RHART_V31_PRO_SE_MODEL,
+      resolutionRhartV31: resolutionVal,
+      aspect_ratio: aspectVal,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_RHART_V31_PRO_SE_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildRhArtV31ProSeRhForward({
+        firstFrameUrl: firstRemote,
+        ...(lastRemote ? { lastFrameUrl: lastRemote } : {}),
+        prompt: promptText,
+        resolution: resolutionVal,
+        aspectRatio: aspectVal,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'V3.1-pro 首尾帧 forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_RHART_V31_PRO_SE_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        duration: '8',
+        resolutionRhartV31: resolutionVal,
+        aspect_ratio: aspectVal,
+        imageCount: pair.length,
+      },
+      logTag: 'queue-golden-rhart-v31-pro-se',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-5-B：ltx-2.3-lipsync → Unified Queue（.cn）
+   * Create 前：图 OSS + 音 OSS → HTTPS；与 Direct nodeInfoList 对齐；禁止 Direct 双扣。
+   */
+  private async executeLtx23LipsyncCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    actionPrompt: string | undefined;
+    resolutionLtx23Lipsync: string | undefined;
+    images: string[];
+    inputAudioUrl: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      actionPrompt,
+      resolutionLtx23Lipsync,
+      images,
+      inputAudioUrl,
+    } = opts;
+
+    const imageUrl = images && images[0] ? String(images[0]).trim() : '';
+    if (!imageUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'LTX2.3 对口型需接入 1 张参考图。' },
+      });
+      return;
+    }
+    if (images.filter((u) => String(u || '').trim()).length > 1) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'LTX2.3 对口型仅支持 1 张参考图。' },
+      });
+      return;
+    }
+    const audioRaw = String(inputAudioUrl || '').trim();
+    if (!audioRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'LTX2.3 对口型需连接音频节点。' },
+      });
+      return;
+    }
+
+    const resRaw = String(resolutionLtx23Lipsync || '720').trim() || '720';
+    const resTier =
+      resRaw === '720' || resRaw === '1280' || resRaw === '1920' ? resRaw : '720';
+    const promptText =
+      adaptDirectorPromptForLtxI2v(
+        String(actionPrompt || prompt || '').trim(),
+      ) || '正在讲解，有一些手势动作';
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在上传图片和音频到 OSS…' },
+    });
+
+    const ensureAudioRemote = async (url: string): Promise<string> => {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(url)) {
+          return preferDirectOssUrlForThirdPartyImageRef(url);
+        }
+        const res = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 60000,
+          proxy: false,
+        });
+        const ct = res.headers['content-type'] || '';
+        const mimeType = ct.includes('wav')
+          ? 'audio/wav'
+          : ct.includes('ogg')
+            ? 'audio/ogg'
+            : ct.includes('m4a')
+              ? 'audio/mp4'
+              : 'audio/mpeg';
+        return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+      }
+      if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+        return this.uploadLocalAudioToOSS(url);
+      }
+      if (url.startsWith('data:audio/')) {
+        const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+        const buf = Buffer.from(m ? m[2] : '', 'base64');
+        const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+        return this.uploadAudioToOSS(buf, mime);
+      }
+      return url;
+    };
+
+    let imageUrlRemote = '';
+    let audioUrlRemote = '';
+    try {
+      imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+      if (!imageUrlRemote || !imageUrlRemote.startsWith('https://')) {
+        throw new Error('参考图 OSS 上传未返回 HTTPS URL');
+      }
+      audioUrlRemote = await ensureAudioRemote(audioRaw);
+      if (!audioUrlRemote || !audioUrlRemote.startsWith('https://')) {
+        throw new Error('音频 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '图片/音频处理失败') },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_LTX23_LIPSYNC_MODEL,
+      resolutionLtx23Lipsync: resTier,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_LTX23_LIPSYNC_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildLtx23LipsyncRhForward({
+        imageUrl: imageUrlRemote,
+        audioUrl: audioUrlRemote,
+        prompt: promptText,
+        resolution: resTier,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'LTX 对口型 forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_LTX23_LIPSYNC_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        resolutionLtx23Lipsync: resTier,
+        imageCount: 1,
+        hasAudio: true,
+      },
+      logTag: 'queue-golden-ltx23-lipsync',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-6-B：seedance-2.0-fast → Unified Queue（.cn）
+   * Create 前：0–9 张图 OSS HTTPS；禁止 audio / referenceVideo；禁止 Direct 双扣。
+   */
+  private async executeSeedance20FastCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    resolutionSeedance: string | undefined;
+    durationSeedance: string | number | undefined;
+    images: string[];
+    inputAudioUrl: string;
+    referenceVideoUrl: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      resolutionSeedance,
+      durationSeedance,
+      images,
+      inputAudioUrl,
+      referenceVideoUrl,
+    } = opts;
+
+    if (String(inputAudioUrl || '').trim()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: 'Seedance 2.0 Fast Queue 不支持音频，请改用 Seedance 2.0 Mini 或其他模型。',
+        },
+      });
+      return;
+    }
+    if (String(referenceVideoUrl || '').trim()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: 'Seedance 2.0 Fast 不支持参考视频，请断开视频连线或改用其他模型。',
+        },
+      });
+      return;
+    }
+
+    const promptText = String(prompt || '').trim();
+    if (!promptText) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Seedance 2.0 Fast 需要填写视频描述（prompt）' },
+      });
+      return;
+    }
+
+    const rawImages = (images || []).map((img) => String(img || '').trim()).filter(Boolean);
+    if (rawImages.length > 9) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: `Seedance 最多支持 9 张参考图，当前提供了 ${rawImages.length} 张。` },
+      });
+      return;
+    }
+
+    const resVal = coerceSeedanceResolution(resolutionSeedance, VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL);
+    const durVal = String(normalizeSeedanceDurationSec(durationSeedance, 10));
+    const ratioVal = coerceSeedanceRatio(aspect_ratio);
+
+    let imageUrlsRemote: string[] = [];
+    if (rawImages.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        imageUrlsRemote = await Promise.all(rawImages.map((img) => this.processImageToOssUrl(img)));
+        for (const u of imageUrlsRemote) {
+          if (!u || !u.startsWith('https://')) {
+            throw new Error('OSS 上传未返回 HTTPS URL');
+          }
+        }
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL,
+      resolutionSeedance: resVal,
+      durationSeedance: durVal,
+      aspect_ratio: ratioVal,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildSeedance20FastRhForward({
+        prompt: promptText,
+        imageUrls: imageUrlsRemote,
+        resolution: resVal,
+        duration: durVal,
+        ratio: ratioVal,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'Seedance Fast forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        resolutionSeedance: resVal,
+        durationSeedance: durVal,
+        aspect_ratio: ratioVal,
+        duration: durVal,
+        imageCount: imageUrlsRemote.length,
+      },
+      logTag: 'queue-golden-seedance-20-fast',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-7-B：seedance-2.0-mini → Unified Queue（.cn）
+   * Create 前：0–9 图 + 可选视频/音频 OSS HTTPS；conversionSlots；禁止 Direct 双扣。
+   */
+  private async executeSeedance20MiniCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    aspect_ratio: string;
+    resolutionSeedance: string | undefined;
+    durationSeedance: string | number | undefined;
+    images: string[];
+    inputAudioUrl: string;
+    referenceVideoUrl: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      aspect_ratio,
+      resolutionSeedance,
+      durationSeedance,
+      images,
+      inputAudioUrl,
+      referenceVideoUrl,
+    } = opts;
+
+    const promptText = String(prompt || '').trim();
+    if (!promptText) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Seedance 2.0 Mini 需要填写视频描述（prompt）' },
+      });
+      return;
+    }
+
+    const rawImages = (images || []).map((img) => String(img || '').trim()).filter(Boolean);
+    if (rawImages.length > 9) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: `Seedance 最多支持 9 张参考图，当前提供了 ${rawImages.length} 张。` },
+      });
+      return;
+    }
+
+    const resVal = coerceSeedanceResolution(resolutionSeedance, VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL);
+    const durVal = String(normalizeSeedanceDurationSec(durationSeedance, 10));
+    const ratioVal = coerceSeedanceRatio(aspect_ratio);
+    const refVideoRaw = String(referenceVideoUrl || '').trim();
+    const refAudioRaw = String(inputAudioUrl || '').trim();
+
+    const ensureAudioRemoteMini = async (url: string): Promise<string> => {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(url)) {
+          return preferDirectOssUrlForThirdPartyImageRef(url);
+        }
+        const res = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 60000,
+          proxy: false,
+        });
+        const ct = res.headers['content-type'] || '';
+        const mimeType = ct.includes('wav')
+          ? 'audio/wav'
+          : ct.includes('ogg')
+            ? 'audio/ogg'
+            : ct.includes('m4a')
+              ? 'audio/mp4'
+              : 'audio/mpeg';
+        return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+      }
+      if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+        return this.uploadLocalAudioToOSS(url);
+      }
+      if (url.startsWith('data:audio/')) {
+        const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+        const buf = Buffer.from(m ? m[2] : '', 'base64');
+        const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+        return this.uploadAudioToOSS(buf, mime);
+      }
+      return url;
+    };
+
+    let imageUrlsRemote: string[] = [];
+    let videoUrlsRemote: string[] = [];
+    let audioUrlsRemote: string[] = [];
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理 Seedance Mini 媒体…' },
+    });
+
+    try {
+      if (rawImages.length > 0) {
+        imageUrlsRemote = await Promise.all(rawImages.map((img) => this.processImageToOssUrl(img)));
+        for (const u of imageUrlsRemote) {
+          if (!u || !u.startsWith('https://')) {
+            throw new Error('参考图 OSS 上传未返回 HTTPS URL');
+          }
+        }
+      }
+      if (refVideoRaw) {
+        const v = await this.prepareWanAnimateVideoRemoteUrl(refVideoRaw);
+        if (!v || !v.startsWith('https://')) {
+          throw new Error('参考视频 OSS 上传未返回 HTTPS URL');
+        }
+        videoUrlsRemote = [v];
+      }
+      if (refAudioRaw) {
+        const a = await ensureAudioRemoteMini(refAudioRaw);
+        if (!a || !a.startsWith('https://')) {
+          throw new Error('参考音频 OSS 上传未返回 HTTPS URL');
+        }
+        audioUrlsRemote = [preferDirectOssUrlForThirdPartyImageRef(a)];
+      }
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'Seedance Mini 媒体处理失败') },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL,
+      resolutionSeedance: resVal,
+      durationSeedance: durVal,
+      aspect_ratio: ratioVal,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildSeedance20MiniRhForward({
+        prompt: promptText,
+        imageUrls: imageUrlsRemote,
+        videoUrls: videoUrlsRemote,
+        audioUrls: audioUrlsRemote,
+        resolution: resVal,
+        duration: durVal,
+        ratio: ratioVal,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'Seedance Mini forward 构建失败') },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        resolutionSeedance: resVal,
+        durationSeedance: durVal,
+        aspect_ratio: ratioVal,
+        duration: durVal,
+        imageCount: imageUrlsRemote.length,
+        hasVideo: videoUrlsRemote.length > 0,
+        hasAudio: audioUrlsRemote.length > 0,
+      },
+      logTag: 'queue-golden-seedance-20-mini',
+    });
+  }
+
+  /**
+   * Phase 9.5-B-8-B：wan-animate → Unified Queue（.cn）
+   * Create 前：1 图 OSS + 1 视频 ffmpeg→OSS；禁止 Direct 双扣；不含 wan-animate-2。
+   */
+  private async executeWanAnimateCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    resolutionWanAnimate: string | undefined;
+    wanAnimateClipSec: string | number | undefined;
+    images: string[];
+    referenceVideoUrl: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      resolutionWanAnimate,
+      wanAnimateClipSec,
+      images,
+      referenceVideoUrl,
+    } = opts;
+
+    const imageUrl = images && images[0] ? String(images[0]).trim() : '';
+    if (!imageUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'WanAnimate（角色替换）需接入 1 张角色参考图。' },
+      });
+      return;
+    }
+    if (images.filter((u) => String(u || '').trim()).length !== 1) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'WanAnimate（角色替换）仅支持 1 张角色参考图。' },
+      });
+      return;
+    }
+    const refVideoRaw = String(referenceVideoUrl || '').trim();
+    if (!refVideoRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'WanAnimate（角色替换）需连接参考视频节点。' },
+      });
+      return;
+    }
+
+    const presetRaw = String(resolutionWanAnimate || '720p').trim().toLowerCase();
+    const resKey =
+      presetRaw === '1080p' || presetRaw === '1080' || presetRaw === '1920x1080' || presetRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    const clipRaw = String(wanAnimateClipSec || '8').trim();
+    const clipVal = clipRaw === '5' || clipRaw === '10' || clipRaw === '15' ? clipRaw : '8';
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理 WanAnimate 媒体…' },
+    });
+
+    let imageUrlRemote = '';
+    let videoUrlRemote = '';
+    try {
+      imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+      if (!imageUrlRemote || !imageUrlRemote.startsWith('https://')) {
+        throw new Error('参考图 OSS 上传未返回 HTTPS URL');
+      }
+      videoUrlRemote = await this.prepareWanAnimateVideoRemoteUrl(refVideoRaw);
+      if (!videoUrlRemote || !videoUrlRemote.startsWith('https://')) {
+        throw new Error('参考视频 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `WanAnimate 处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
+        },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_WAN_ANIMATE_MODEL,
+      resolutionWanAnimate: resKey,
+      wanAnimateClipSec: clipVal,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_WAN_ANIMATE_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildWanAnimateRhForward({
+        imageUrl: imageUrlRemote,
+        videoUrl: videoUrlRemote,
+        resolution: resKey,
+        clipSec: clipVal,
+        billingModelId,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String(
+            (e as Error)?.message || e || 'WanAnimate forward 构建失败',
+          ),
+        },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_WAN_ANIMATE_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: '',
+      nodeData: {
+        resolutionWanAnimate: resKey,
+        wanAnimateClipSec: clipVal,
+        imageCount: 1,
+        hasVideo: true,
+      },
+      logTag: 'queue-golden-wan-animate',
+    });
+  }
+
+  /**
+   * wan-animate-2 → Unified Queue（.cn）
+   * Create 前：1 图 OSS + 1 视频 ffmpeg→OSS；探测 mediaDurationSec 仅计费；禁止 Direct 双扣。
+   */
+  private async executeWanAnimate2CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    resolutionWanAnimate: string | undefined;
+    images: string[];
+    referenceVideoUrl: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      videoInput,
+      onStatus,
+      prompt,
+      resolutionWanAnimate,
+      images,
+      referenceVideoUrl,
+    } = opts;
+
+    const imageUrl = images && images[0] ? String(images[0]).trim() : '';
+    if (!imageUrl) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Wan animate2 视频换人需接入 1 张角色参考图。' },
+      });
+      return;
+    }
+    if (images.filter((u) => String(u || '').trim()).length !== 1) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Wan animate2 视频换人仅支持 1 张角色参考图。' },
+      });
+      return;
+    }
+    const refVideoRaw = String(referenceVideoUrl || '').trim();
+    if (!refVideoRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'Wan animate2 视频换人需连接参考视频节点。' },
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理 Wan animate2 媒体…' },
+    });
+
+    let imageUrlRemote = '';
+    let videoUrlRemote = '';
+    try {
+      imageUrlRemote = await this.processImageToOssUrl(imageUrl);
+      if (!imageUrlRemote || !imageUrlRemote.startsWith('https://')) {
+        throw new Error('参考图 OSS 上传未返回 HTTPS URL');
+      }
+      videoUrlRemote = await this.prepareWanAnimateVideoRemoteUrl(refVideoRaw);
+      if (!videoUrlRemote || !videoUrlRemote.startsWith('https://')) {
+        throw new Error('参考视频 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `Wan animate2 处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
+        },
+      });
+      return;
+    }
+
+    let probedDurationSec = Number((videoInput as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
+    try {
+      const durSec = await getMediaDuration(videoUrlRemote);
+      if (Number.isFinite(durSec) && durSec > 0) probedDurationSec = durSec;
+    } catch (durErr) {
+      console.warn('[Wan animate2 queue] 原视频时长探测失败', durErr);
+    }
+    if (!(probedDurationSec > 0)) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: '无法识别参考视频时长，暂不能提交 Wan Animate 2。请待时长读取完成后再试。',
+        },
+      });
+      return;
+    }
+    const mediaDurationSec = probedDurationSec;
+
+    const presetRaw = String(resolutionWanAnimate || '720p').trim().toLowerCase();
+    const resKey =
+      presetRaw === '1080p' ||
+      presetRaw === '1080' ||
+      presetRaw === '1920x1080' ||
+      presetRaw === '1080x1920'
+        ? '1080p'
+        : '720p';
+    const promptText = String(prompt || '').trim();
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_WAN_ANIMATE_2_MODEL,
+      resolutionWanAnimate: resKey,
+      mediaDurationSec,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_WAN_ANIMATE_2_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildWanAnimate2RhForward({
+        imageUrl: imageUrlRemote,
+        videoUrl: videoUrlRemote,
+        prompt: promptText,
+        resolution: resKey,
+        billingModelId,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String((e as Error)?.message || e || 'Wan animate2 forward 构建失败'),
+        },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_WAN_ANIMATE_2_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: promptText,
+      nodeData: {
+        resolutionWanAnimate: resKey,
+        mediaDurationSec,
+        imageCount: 1,
+        hasVideo: true,
+      },
+      logTag: 'queue-golden-wan-animate-2',
+    });
+  }
+
+  /**
+   * rhart-video-upscaler → Unified Queue（.cn OpenAPI）
+   * 视频处理/超分：Create 前视频 OSS；targetResolution 进 RH body；时长仅计费。
+   */
+  private async executeRhartVideoUpscalerCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    targetResolution: string | undefined;
+    referenceVideoUrl: string;
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, targetResolution, referenceVideoUrl } = opts;
+
+    const refVideoRaw = String(referenceVideoUrl || '').trim();
+    if (!refVideoRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '视频超分放大需要连接参考视频' },
+      });
+      return;
+    }
+
+    const targetRes = normalizeRhartVideoUpscalerResolution(targetResolution, '1080p');
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在准备超分输入视频…' },
+    });
+
+    let videoUrlRemote = '';
+    try {
+      videoUrlRemote = await this.prepareWanAnimateVideoRemoteUrl(refVideoRaw);
+      if (!videoUrlRemote || !videoUrlRemote.startsWith('https://')) {
+        throw new Error('超分输入视频 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `视频超分处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
+        },
+      });
+      return;
+    }
+
+    let probedDurationSec = Number((videoInput as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
+    try {
+      const durSec = await getMediaDuration(videoUrlRemote);
+      if (Number.isFinite(durSec) && durSec > 0) probedDurationSec = durSec;
+      if (Number.isFinite(durSec) && durSec > RHART_VIDEO_UPSCALER_MAX_DURATION_SEC) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error: `视频超分放大支持最长 ${RHART_VIDEO_UPSCALER_MAX_DURATION_SEC / 60} 分钟，当前约 ${Math.ceil(durSec / 60)} 分钟`,
+          },
+        });
+        return;
+      }
+    } catch (durErr) {
+      console.warn('[视频超分 Queue] 时长探测失败', durErr);
+    }
+
+    const mediaDurationSec = normalizeRhartVideoUpscalerBillingSec(probedDurationSec);
+    if (mediaDurationSec == null) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: '无法识别视频时长，暂不能超分放大。请待时长读取完成后再试。',
+        },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_RHART_VIDEO_UPSCALER_MODEL,
+      targetResolution: targetRes,
+      mediaDurationSec,
+    };
+    const billingModelId = buildVideoBillingModelId(
+      VIDEO_QUEUE_RHART_VIDEO_UPSCALER_MODEL,
+      billingInput,
+    );
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildRhartVideoUpscalerRhForward({
+        videoUrl: videoUrlRemote,
+        targetResolution: targetRes,
+        billingModelId,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String((e as Error)?.message || e || '视频超分 forward 构建失败'),
+        },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_RHART_VIDEO_UPSCALER_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: '',
+      nodeData: {
+        targetResolution: targetRes,
+        mediaDurationSec,
+        hasVideo: true,
+      },
+      logTag: 'queue-golden-rhart-video-upscaler',
+    });
+  }
+
+  /**
+   * hey-gem 数字人 → Unified Queue（.cn ai-app）
+   * Create 前：参考视频 OSS + 驱动音频 OSS（TTS 须由 UI 在 Create 前完成）。
+   */
+  private async executeHeyGemCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    referenceVideoUrl: string;
+    inputAudioUrl: string;
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, referenceVideoUrl, inputAudioUrl } = opts;
+
+    const refVideoRaw = String(referenceVideoUrl || '').trim();
+    const audioRaw = String(inputAudioUrl || '').trim();
+    if (!refVideoRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'HeyGem 数字人需设置参考视频。' },
+      });
+      return;
+    }
+    if (!audioRaw) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'HeyGem 数字人需设置驱动音频（可一键配音）。' },
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在上传参考视频与音频…' },
+    });
+
+    const ensureAudioRemoteHg = async (url: string): Promise<string> => {
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(url)) {
+          return preferDirectOssUrlForThirdPartyImageRef(url);
+        }
+        const res = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 60000,
+          proxy: false,
+        });
+        const ct = res.headers['content-type'] || '';
+        const mimeType = ct.includes('wav')
+          ? 'audio/wav'
+          : ct.includes('ogg')
+            ? 'audio/ogg'
+            : ct.includes('m4a')
+              ? 'audio/mp4'
+              : 'audio/mpeg';
+        return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
+      }
+      if (url.startsWith('local-resource://') || url.startsWith('file://')) {
+        return this.uploadLocalAudioToOSS(url);
+      }
+      if (url.startsWith('data:audio/')) {
+        const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
+        const buf = Buffer.from(m ? m[2] : '', 'base64');
+        const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
+        return this.uploadAudioToOSS(buf, mime);
+      }
+      return url;
+    };
+
+    let videoUrlRemote = '';
+    let audioUrlRemote = '';
+    try {
+      videoUrlRemote = await this.prepareWanAnimateVideoRemoteUrl(refVideoRaw);
+      if (!videoUrlRemote || !videoUrlRemote.startsWith('https://')) {
+        throw new Error('参考视频 OSS 上传未返回 HTTPS URL');
+      }
+      audioUrlRemote = await ensureAudioRemoteHg(audioRaw);
+      if (!audioUrlRemote || !audioUrlRemote.startsWith('https://')) {
+        throw new Error('驱动音频 OSS 上传未返回 HTTPS URL');
+      }
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: `HeyGem 处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
+        },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_HEY_GEM_MODEL,
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_HEY_GEM_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildHeyGemRhForward({
+        videoUrl: videoUrlRemote,
+        audioUrl: audioUrlRemote,
+        billingModelId,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String((e as Error)?.message || e || 'HeyGem forward 构建失败'),
+        },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_HEY_GEM_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: '',
+      nodeData: {
+        hasVideo: true,
+        hasAudio: true,
+      },
+      logTag: 'queue-golden-hey-gem',
+    });
+  }
+
+  /**
+   * grok-3-stable（Grok video3 plus）参考图生 → Unified Queue（.ai OpenAPI）
+   * Create 前完成图片 OSS（与 Direct 一致：不 letterbox）；duration 为 string。
+   */
+  private async executeGrok3StableCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    videoInput: VideoInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    durationGrok3: string | number | undefined;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, videoInput, onStatus, prompt, durationGrok3, images } = opts;
+    const durationSec = normalizeGrok3StableDurationSec(durationGrok3, 10);
+    const durationStr = String(durationSec) as '6' | '10';
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+
+    let imageUrls: string[];
+    try {
+      imageUrls = await this.prepareGrok3StableHttpsImageUrls(images);
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String((e as Error)?.message || e || '参考图处理失败'),
+        },
+      });
+      return;
+    }
+
+    const billingInput = {
+      ...(videoInput as unknown as Record<string, unknown>),
+      model: VIDEO_QUEUE_GROK_3_STABLE_MODEL,
+      durationGrok3: durationStr,
+      resolutionGrok3: '720p',
+    };
+    const billingModelId = buildVideoBillingModelId(VIDEO_QUEUE_GROK_3_STABLE_MODEL, billingInput);
+
+    let rhForward: VideoQueueProviderForward;
+    try {
+      rhForward = buildGrok3StableRhForward({
+        prompt: String(prompt || '').trim(),
+        imageUrls,
+        duration: durationStr,
+        billingModelId,
+      });
+    } catch (e: unknown) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: {
+          error: String((e as Error)?.message || e || 'grok-3-stable forward 构建失败'),
+        },
+      });
+      return;
+    }
+
+    await this.executeVideoCloudQueueGoldenPath({
+      nodeId,
+      videoInput,
+      onStatus,
+      model: VIDEO_QUEUE_GROK_3_STABLE_MODEL,
+      billingModelId,
+      rhForward,
+      prompt: String(prompt || '').trim(),
+      nodeData: {
+        durationGrok3: durationStr,
+        duration: durationStr,
+        resolutionGrok3: '720p',
+        imageCount: imageUrls.length,
+      },
+      logTag: 'queue-golden-grok-3-stable',
+    });
+  }
+
+  /**
+   * grok-3-stable 参考图 → 公网 HTTPS（Create 前；与 Direct 一致：无 letterbox，禁止 local/data 进 forward）
+   */
+  private async prepareGrok3StableHttpsImageUrls(images: string[]): Promise<string[]> {
+    const toProcess = (images || []).filter((u) => String(u || '').trim()).slice(0, 7);
+    if (toProcess.length < 1) {
+      throw new Error('参考图生视频需要至少一张有效图片');
+    }
+    const imageUrls: string[] = [];
+    for (const imageUrl of toProcess) {
+      let processed = imageUrl;
+      let imageBuffer: Buffer;
+      let mimeType = 'image/png';
+      try {
+        if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+          if (!isOurOssOrCdnObjectUrl(imageUrl)) {
+            const response = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+            imageBuffer = Buffer.from(response.data);
+            mimeType = (response.headers['content-type'] as string) || 'image/png';
+            processed = await this.uploadImageToOSS(imageBuffer, mimeType);
+          }
+        } else if (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://')) {
+          let filePath = imageUrl.startsWith('local-resource://')
+            ? imageUrl.replace(/^local-resource:\/\//, '')
+            : imageUrl.replace(/^file:\/\//, '');
+          if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') {
+            filePath = filePath.slice(1);
+          }
+          filePath = decodeURIComponent(filePath);
+          if (filePath.match(/^[a-zA-Z]\//)) {
+            filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+          }
+          const userDataPath = app.getPath('userData');
+          const normalizedFilePath = path.normalize(filePath);
+          const projectsBase = getProjectsBasePath();
+          if (
+            !normalizedFilePath.startsWith(path.normalize(userDataPath)) &&
+            !normalizedFilePath.startsWith(path.normalize(projectsBase))
+          ) {
+            throw new Error(`访问路径超出允许范围: ${filePath}`);
+          }
+          if (!fs.existsSync(normalizedFilePath)) throw new Error(`文件不存在: ${normalizedFilePath}`);
+          imageBuffer = fs.readFileSync(normalizedFilePath);
+          const ext = path.extname(normalizedFilePath).toLowerCase();
+          mimeType =
+            ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'image/png';
+          processed = await this.uploadImageToOSS(imageBuffer, mimeType);
+        } else if (imageUrl.startsWith('data:image/')) {
+          const base64Data = imageUrl.split(',')[1];
+          if (!base64Data) throw new Error('Base64 Data URL 格式无效');
+          imageBuffer = Buffer.from(base64Data, 'base64');
+          const mimeMatch = imageUrl.match(/^data:image\/(\w+);base64,/);
+          mimeType = mimeMatch ? `image/${mimeMatch[1]}` : 'image/png';
+          processed = await this.uploadImageToOSS(imageBuffer, mimeType);
+        } else {
+          throw new Error(`不支持的图片 URL 格式: ${imageUrl.substring(0, 50)}`);
+        }
+      } catch (err: unknown) {
+        throw new Error(
+          `Grok video3 plus 参考图处理失败: ${(err as Error)?.message || err}`,
+        );
+      }
+      if (processed && (processed.startsWith('http://') || processed.startsWith('https://'))) {
+        const finalUrl = preferDirectOssUrlForThirdPartyImageRef(processed);
+        if (!finalUrl.startsWith('https://')) {
+          throw new Error('grok-3-stable imageUrls 必须为 https:// 公网 URL');
+        }
+        imageUrls.push(finalUrl);
+      }
+    }
+    if (imageUrls.length === 0) throw new Error('参考图生视频需要至少一张有效图片');
+    return imageUrls;
+  }
+
   async execute(params: AIExecuteParams): Promise<void> {
     const { nodeId, input, onStatus } = params;
 
@@ -1217,6 +4124,7 @@ export class VideoProvider extends BaseProvider {
       const isKlingModel = model === 'kling-v2.6-pro';
       const isSora2Model = model === 'sora-2';
       const isSora2ProModel = model === 'sora-2-pro';
+
       const isWan26Model = model === 'wan-2.6';
       const isWan26FlashModel = model === 'wan-2.6-flash';
       const isRhartV31FastModel = model === 'rhart-v3.1-fast';
@@ -1228,6 +4136,380 @@ export class VideoProvider extends BaseProvider {
       /** 全能视频X：文生/图生，海外站 rhart-video-g */
       const isRhartVideoXModel = model === 'rhart-video-x';
       const isGrok3StableModel = model === 'grok-3-stable';
+
+      // P0：已 Adapter 型号强制 Queue —— 忽略客户端是否漏打 nxCloudQueueGoldenPath，禁止回落 Direct
+      const queueForcedInput = {
+        ...(videoInput as unknown as Record<string, unknown>),
+        nxCloudQueueGoldenPath: true,
+      };
+
+      // Phase 8.1 Golden Path：画布 rhart-video-x 文生视频 → queue（不调 /run-task）
+      if (
+        isRhartVideoXModel &&
+        !isImageToVideo &&
+        isCanvasRhartVideoXT2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhartVideoXT2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationGrok3: inputDurationGrok3,
+        });
+        return;
+      }
+
+      // Phase 9.3-D：画布 rhart-video-x 图生视频 → Unified Queue（.ai；Create 前 OSS；禁止 rhPostChargeVideo 双扣）
+      if (
+        isRhartVideoXModel &&
+        isImageToVideo &&
+        isCanvasRhartVideoXI2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhartVideoXI2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationGrok3: inputDurationGrok3,
+          images: images || [],
+        });
+        return;
+      }
+
+      // Phase 9.2：画布 minimax-h3-t2v 文生视频 → Unified Queue（.cn；禁止旧 billing=charge）
+      if (
+        model === VIDEO_QUEUE_H3_T2V_MODEL &&
+        !isImageToVideo &&
+        isCanvasMinimaxH3T2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeMinimaxH3T2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationMinimaxH3: inputDurationMinimaxH3,
+          resolutionMinimaxH3: inputResolutionMinimaxH3,
+        });
+        return;
+      }
+
+      // Phase 9.4：画布 minimax-h3-i2v 图生视频 → Unified Queue（.cn；Create 前 RH fileName；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_H3_I2V_MODEL &&
+        isImageToVideo &&
+        isCanvasMinimaxH3I2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeMinimaxH3I2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationMinimaxH3: inputDurationMinimaxH3,
+          images: images || [],
+        });
+        return;
+      }
+
+      // minimax-h3-multi 全能参考 → Unified Queue（.cn；Create 前 RH fileName；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_H3_MULTI_MODEL &&
+        isCanvasMinimaxH3MultiQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeMinimaxH3MultiCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationMinimaxH3: inputDurationMinimaxH3,
+          images: images || [],
+          inputAudioUrl,
+          inputAudioUrls,
+        });
+        return;
+      }
+
+      // minimax-h3-audio 口型同步 → Unified Queue（.cn；Create 前图+音 RH fileName；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_H3_AUDIO_MODEL &&
+        isCanvasMinimaxH3AudioQueueGoldenPathInput({
+          ...queueForcedInput,
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+        })
+      ) {
+        await this.executeMinimaxH3AudioCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          images: images || [],
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+        });
+        return;
+      }
+
+      // Phase 9.3-B：画布 ltx-2.3-t2v 文生视频 → Unified Queue（.ai；禁止旧 billing=charge）
+      if (
+        model === VIDEO_QUEUE_LTX23_T2V_MODEL &&
+        !isImageToVideo &&
+        isCanvasLtx23T2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeLtx23T2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationLtx23T2v: inputDurationLtx23T2v,
+          resolutionLtx23T2v: inputResolutionLtx23T2v,
+        });
+        return;
+      }
+
+      // Phase 9.5-B-1：画布 ltx-2.3-i2v 图生视频 → Unified Queue（.cn；Create 前 OSS HTTPS；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_LTX23_I2V_MODEL &&
+        isImageToVideo &&
+        isCanvasLtx23I2vQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeLtx23I2vCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          durationLtx23I2v: inputDurationLtx23I2v,
+          resolutionLtx23I2v: inputResolutionLtx23I2v,
+          images: images || [],
+        });
+        return;
+      }
+
+      // Phase 9.5-B-2-B：画布 gemini-omni-flash 图生视频 → Unified Queue（.ai；Create 前 OSS ×1/3；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_GEMINI_OMNI_FLASH_MODEL &&
+        isImageToVideo &&
+        isCanvasGeminiOmniFlashQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeGeminiOmniFlashCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          durationGeminiOmni: inputDurationGeminiOmni,
+          resolutionGeminiOmni: inputResolutionGeminiOmni,
+          images: images || [],
+        });
+        return;
+      }
+
+      // Phase 9.5-B-3-B：画布 rh-video-start-end 首位帧 → Unified Queue（.cn；Create 前 OSS ×2；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_RH_VIDEO_START_END_MODEL &&
+        isImageToVideo &&
+        isCanvasRhVideoStartEndQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhVideoStartEndCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          duration,
+          resolutionRhartV31: inputResolutionRhartV31,
+          images: images || [],
+        });
+        return;
+      }
+
+      // Phase 9.5-B-4-B：画布 rhart-v3.1-pro-se 首尾帧 → Unified Queue（.ai；Create 前 OSS ×1/2；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_RHART_V31_PRO_SE_MODEL &&
+        isImageToVideo &&
+        isCanvasRhArtV31ProSeQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhArtV31ProSeCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          resolutionRhartV31: inputResolutionRhartV31,
+          images: images || [],
+        });
+        return;
+      }
+
+      // Phase 9.5-B-5-B：画布 ltx-2.3-lipsync 对口型 → Unified Queue（.cn；Create 前 图+音 OSS；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_LTX23_LIPSYNC_MODEL &&
+        isImageToVideo &&
+        isCanvasLtx23LipsyncQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeLtx23LipsyncCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          actionPrompt: inputActionPrompt,
+          resolutionLtx23Lipsync: inputResolutionLtx23Lipsync,
+          images: images || [],
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+        });
+        return;
+      }
+
+      // Phase 9.5-B-6-B：画布 seedance-2.0-fast → Unified Queue（.cn；0–9 图；禁音/视频；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_SEEDANCE_20_FAST_MODEL &&
+        isCanvasSeedance20FastQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeSeedance20FastCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          resolutionSeedance: inputResolutionSeedance,
+          durationSeedance: inputDurationSeedance,
+          images: images || [],
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        });
+        return;
+      }
+
+      // Phase 9.5-B-7-B：画布 seedance-2.0-mini → Unified Queue（.cn；多媒体；conversionSlots；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_SEEDANCE_20_MINI_MODEL &&
+        isCanvasSeedance20MiniQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeSeedance20MiniCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          aspect_ratio: String(aspect_ratio),
+          resolutionSeedance: inputResolutionSeedance,
+          durationSeedance: inputDurationSeedance,
+          images: images || [],
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        });
+        return;
+      }
+
+      // Phase 9.5-B-8-B：画布 wan-animate → Unified Queue（.cn；Create 前 图+视频 OSS；禁止 Direct 双扣）
+      if (
+        model === VIDEO_QUEUE_WAN_ANIMATE_MODEL &&
+        isCanvasWanAnimateQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeWanAnimateCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          resolutionWanAnimate: inputResolutionWanAnimate,
+          wanAnimateClipSec: inputWanAnimateClipSec,
+          images: images || [],
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        });
+        return;
+      }
+
+      // wan-animate-2 视频换人 → Unified Queue（.cn；独立 appId/节点/按秒计费）
+      if (
+        model === VIDEO_QUEUE_WAN_ANIMATE_2_MODEL &&
+        isCanvasWanAnimate2QueueGoldenPathInput({
+          ...queueForcedInput,
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+          inputAudioUrls,
+        })
+      ) {
+        await this.executeWanAnimate2CloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          resolutionWanAnimate: inputResolutionWanAnimate,
+          images: images || [],
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        });
+        return;
+      }
+
+      // rhart-video-upscaler 视频超分 → Unified Queue（.cn OpenAPI；仅视频；非生成）
+      if (
+        model === VIDEO_QUEUE_RHART_VIDEO_UPSCALER_MODEL &&
+        isCanvasRhartVideoUpscalerQueueGoldenPathInput({
+          ...queueForcedInput,
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        })
+      ) {
+        await this.executeRhartVideoUpscalerCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          targetResolution: inputTargetResolution,
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+        });
+        return;
+      }
+
+      // hey-gem 数字人 → Unified Queue（.cn；参考视频 + 驱动音频）
+      if (
+        model === VIDEO_QUEUE_HEY_GEM_MODEL &&
+        isCanvasHeyGemQueueGoldenPathInput({
+          ...queueForcedInput,
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+        })
+      ) {
+        await this.executeHeyGemCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          referenceVideoUrl: String(inputReferenceVideoUrl || '').trim(),
+          inputAudioUrl: String(inputAudioUrl || '').trim(),
+        });
+        return;
+      }
+
+      // grok-3-stable（Grok video3 plus）参考图生 → Unified Queue（.ai；Create 前 OSS）
+      if (
+        model === VIDEO_QUEUE_GROK_3_STABLE_MODEL &&
+        isCanvasGrok3StableQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeGrok3StableCloudQueueGoldenPath({
+          nodeId,
+          videoInput,
+          onStatus,
+          prompt: String(prompt || '').trim(),
+          durationGrok3: inputDurationGrok3,
+          images: images || [],
+        });
+        return;
+      }
+
+      // P0：已 Adapter 型号若未命中上方 Queue 分支（输入形态不符等），禁止落入 Direct
+      if (isVideoQueueOnlyModel(model)) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              `模型 ${String(model)} 已强制走云端排队，无法使用 Direct。` +
+              '请检查：已登录云端、VIDEO_QUEUE_ENABLED 未关闭、输入形态与该模型匹配（文生/图生/首尾帧等）。',
+          },
+        });
+        return;
+      }
+
       // 存量工程可能仍带 rhart-video-g（已从类型中移除）
       if (String(videoInput.model ?? '') === 'rhart-video-g') {
         onStatus({
@@ -2330,7 +5612,7 @@ export class VideoProvider extends BaseProvider {
       }
 
       // MiniMax-H3 文生视频：RunningHub ai-app 2085682347676102657（国内 .cn）
-      // 官方 API 示例：149/text、16/megapixels|aspect_ratio、14/value；仅 720P→megapixels 0.9
+      // 官方 API 示例：149/text、16/megapixels|aspect_ratio、14/value；480P→0.4 / 720P→0.9
       // instanceType：文档示例为 default，产品要求默认 plus；803 时再试 default
       // 若仍 NODE_INFO_MISMATCH：RH 线上工作流可能与「API调用」示例不一致（非 FC 改写）
       const isMinimaxH3T2vModel = model === 'minimax-h3-t2v';
@@ -2356,7 +5638,7 @@ export class VideoProvider extends BaseProvider {
         const POLL_INTERVAL_MS = 5 * 1000;
         const POLL_DEADLINE_MS = 60 * 60 * 1000;
 
-        const megapixels = '0.9'; // 仅 720P；旧节点若存 1080p 亦强制 0.9
+        const megapixels = minimaxH3MegapixelsForResolution(inputResolutionMinimaxH3);
         const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
         const aspectRh = (() => {
           const map: Record<string, string> = {
@@ -2515,7 +5797,7 @@ export class VideoProvider extends BaseProvider {
 
 
       // MiniMax-H3 图生视频：RunningHub ai-app 2085687129061019649（国内 .cn）
-      // 官方：13/image、57/aspect_ratio|megapixels、56/value、149/text；仅 720P→0.9；instanceType 默认 plus，803 再试 default
+      // 官方：13/image、57/aspect_ratio|megapixels、56/value、149/text；480P→0.4 / 720P→0.9；instanceType 默认 plus，803 再试 default
       const isMinimaxH3I2vModel = model === 'minimax-h3-i2v';
       if (isMinimaxH3I2vModel) {
         if (!getAliyunFcInitUserUrl().trim()) {
@@ -2540,7 +5822,7 @@ export class VideoProvider extends BaseProvider {
         const POLL_INTERVAL_MS = 5 * 1000;
         const POLL_DEADLINE_MS = 60 * 60 * 1000;
 
-        const megapixels = '0.9'; // 仅 720P；旧节点若存 1080p 亦强制 0.9
+        const megapixels = minimaxH3MegapixelsForResolution(inputResolutionMinimaxH3); // 480P→0.4 / 720P→0.9
         const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
         const aspectRh = (() => {
           const map: Record<string, string> = {
@@ -2702,626 +5984,29 @@ export class VideoProvider extends BaseProvider {
         return;
       }
 
-      // MiniMax H3 全能参考：RunningHub ai-app 2086289185186603010（国内 .cn）
-      // 官方：25/value 提示词、26/aspect_ratio|megapixels、28/value 时间、38/67/68 参考音、18/23/22/24/32–35/76 最多 9 图
-      // 仅 720P→megapixels 0.9；时长 6|10|15|20；无参考视频槽；instanceType 默认 plus，803 再试 default
+      // MiniMax H3 全能参考：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
       if (isMinimaxH3MultiModel) {
-        if (!getAliyunFcInitUserUrl().trim()) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
-          });
-          return;
-        }
-        const multiImages = normalizeMinimaxH3MultiImages(images || []);
-        const refAudioUrls = normalizeMinimaxH3MultiAudios([
-          ...(Array.isArray(inputAudioUrls) ? inputAudioUrls : []),
-          String(inputAudioUrl || '').trim(),
-        ]);
-        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
-        const POLL_INTERVAL_MS = 5 * 1000;
-        const POLL_DEADLINE_MS = 60 * 60 * 1000;
-
-        const megapixels = MINIMAX_H3_MULTI_MEGAPIXELS; // 仅 720P；勿传 1080
-        const durationSec = String(normalizeMinimaxH3DurationSec(inputDurationMinimaxH3, 10));
-        const aspectRh = (() => {
-          const map: Record<string, string> = {
-            '1:1': '1:1 (Square)',
-            '2:3': '2:3 (Portrait Photo)',
-            '3:2': '3:2 (Photo)',
-            '3:4': '3:4 (Portrait Standard)',
-            '4:3': '4:3 (Standard)',
-            '9:16': '9:16 (Portrait Widescreen)',
-            '16:9': '16:9 (Widescreen)',
-            '21:9': '21:9 (Ultrawide)',
-            '1:1 (Square)': '1:1 (Square)',
-            '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
-            '3:2 (Photo)': '3:2 (Photo)',
-            '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
-            '4:3 (Standard)': '4:3 (Standard)',
-            '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
-            '16:9 (Widescreen)': '16:9 (Widescreen)',
-            '21:9 (Ultrawide)': '21:9 (Ultrawide)',
-          };
-          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
-        })();
-        const promptText = (prompt || '').trim() || '视频动画';
-
-        const ensureAudioRemoteH3Multi = async (url: string): Promise<string> => {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            if (isOurOssOrCdnObjectUrl(url)) {
-              return preferDirectOssUrlForThirdPartyImageRef(url);
-            }
-            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
-            const ct = res.headers['content-type'] || '';
-            const mimeType = ct.includes('wav')
-              ? 'audio/wav'
-              : ct.includes('ogg')
-                ? 'audio/ogg'
-                : ct.includes('m4a')
-                  ? 'audio/mp4'
-                  : 'audio/mpeg';
-            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
-          }
-          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
-            return this.uploadLocalAudioToOSS(url);
-          }
-          if (url.startsWith('data:audio/')) {
-            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
-            const buf = Buffer.from(m ? m[2] : '', 'base64');
-            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
-            return this.uploadAudioToOSS(buf, mime);
-          }
-          return url;
-        };
-
-        let h3MultiFcChargedId: string | undefined;
-        try {
-          onStatus({ nodeId, status: 'START', payload: {} });
-          const uploadHint =
-            multiImages.length || refAudioUrls.length
-              ? '正在上传参考图 / 参考音…'
-              : '纯文生模式，准备提交…';
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 5, text: uploadHint },
-          });
-
-          const rhImageFields: string[] = [];
-          for (let i = 0; i < multiImages.length; i++) {
-            const remote = await this.processImageToOssUrl(multiImages[i]);
-            const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
-              remote,
-              `minimax-h3-multi-img${i + 1}.jpg`,
-              'image/jpeg',
-            );
-            const field = rhComfyMediaFieldValue(uploaded);
-            if (!field || !/^(openapi|api)\//i.test(field)) {
-              throw new Error(
-                `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
-              );
-            }
-            rhImageFields.push(field);
-          }
-
-          const rhAudioFields: string[] = [];
-          for (let ai = 0; ai < refAudioUrls.length; ai++) {
-            const refAudioUrl = refAudioUrls[ai];
-            let audioRemote = await ensureAudioRemoteH3Multi(refAudioUrl);
-            audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: {
-                progress: 8,
-                text: `参考音 ${ai + 1}/${refAudioUrls.length} 转码为干净 MP3…`,
-              },
-            });
-            audioRemote = preferDirectOssUrlForThirdPartyImageRef(
-              await this.transcodeRemoteAudioToMp3Oss(audioRemote),
-            );
-            const meta = rhAudioUploadMetaFromUrl(audioRemote);
-            const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
-              audioRemote,
-              meta.filename || `minimax-h3-multi-audio${ai + 1}.mp3`,
-              meta.contentType || 'audio/mpeg',
-            );
-            const rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
-            const sizeNum = Number(uploadedAudio.size);
-            if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
-              throw new Error(
-                `参考音 ${ai + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
-              );
-            }
-            if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
-              throw new Error(
-                `参考音 ${ai + 1} 上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
-              );
-            }
-            if (Number.isFinite(sizeNum) && sizeNum <= 0) {
-              throw new Error(`参考音 ${ai + 1} 上传后大小为 0，请检查音频文件`);
-            }
-            rhAudioFields.push(rhAudioField);
-          }
-
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
-          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
-          try {
-            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_MULTI_APP_ID, { rhRegion: 'cn' });
-          } catch (probeErr) {
-            console.warn(
-              '[MiniMax H3 全能参考] apiCallDemo 探测失败，使用官方文档节点映射',
-              probeErr instanceof Error ? probeErr.message : probeErr,
-            );
-          }
-
-          const rhSeal = await getRhSealMediaBundle();
-          const nodeInfoList = buildMinimaxH3MultiNodeInfoList(
-            promptText,
-            megapixels,
-            aspectRh,
-            durationSec,
-            rhImageFields,
-            rhSeal,
-            rhAudioFields,
-            liveNodes,
-          );
-          console.log(
-            '[MiniMax H3 全能参考] 提交 nodeInfoList=',
-            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
-            'liveNodes=',
-            liveNodes.length,
-            'duration=',
-            durationSec,
-            'images=',
-            rhImageFields.length,
-            'audios=',
-            rhAudioFields.length,
-          );
-
-          const billingModelId = buildVideoBillingModelId(
-            MINIMAX_H3_MULTI_MODEL_ID,
-            input as Record<string, unknown>,
-          );
-          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_MULTI_APP_ID}`;
-          const trySubmit = async (instanceType: 'plus' | 'default') => {
-            const h3FcId = randomUUID();
-            const runRes = await rhPostChargeVideo(
-              submitUrl,
-              {
-                nodeInfoList,
-                instanceType,
-                randomSeed: true,
-                retainSeconds: 0,
-                usePersonalQueue: false,
-              } as Record<string, unknown>,
-              h3FcId,
-              { billingModelId },
-            );
-            return { h3FcId, runRes: runRes ?? {} };
-          };
-
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中...' } });
-          let submitted = await trySubmit('plus');
-          h3MultiFcChargedId = submitted.h3FcId;
-          let body = submitted.runRes;
-          let taskId = body.taskId ?? body.task_id;
-
-          if (!taskId && isRhNodeInfoMismatch803(body)) {
-            console.warn('[MiniMax H3 全能参考] plus 提交 803，改试 instanceType=default');
-            await tryRefundFcForwardCharge(h3MultiFcChargedId, 'video', 'minimax_h3_multi_retry_default');
-            h3MultiFcChargedId = undefined;
-            submitted = await trySubmit('default');
-            h3MultiFcChargedId = submitted.h3FcId;
-            body = submitted.runRes;
-            taskId = body.taskId ?? body.task_id;
-          }
-
-          if (!taskId) {
-            const raw = formatRunningHubTaskError(body, '未返回 taskId');
-            throw new Error(
-              `提交失败：${
-                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
-              }`,
-            );
-          }
-
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 20, text: '任务已提交，生成中…', taskId: String(taskId) },
-          });
-
-          const deadline = Date.now() + POLL_DEADLINE_MS;
-          let lastProgress = 20;
-          let h3PollRound = 0;
-          const h3MultiPollFcBase = h3MultiFcChargedId || randomUUID();
-
-          while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            lastProgress = Math.min(95, lastProgress + 5);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
-            });
-
-            h3PollRound += 1;
-            const queryRes = await rhQueryPollVideo(String(taskId), `${h3MultiPollFcBase}:poll:${h3PollRound}`);
-
-            const status = queryRes.status;
-            if (status === 'SUCCESS') {
-              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
-              if (results && Array.isArray(results) && results.length > 0) {
-                const first = results[0];
-                const url =
-                  typeof first?.url === 'string'
-                    ? first.url
-                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
-                if (url) {
-                  onStatus({
-                    nodeId,
-                    status: 'SUCCESS',
-                    payload: { url, videoUrl: url, originalVideoUrl: url },
-                  });
-                  return;
-                }
-              }
-              throw new Error('生成成功但未返回视频 URL');
-            }
-            if (status === 'FAILED' || status === 'FAILURE') {
-              throw rhPollFailureError('MiniMax H3 全能参考', queryRes, String(taskId));
-            }
-          }
-          throw new Error('生成超时');
-        } catch (err: unknown) {
-          void tryRefundFcForwardCharge(h3MultiFcChargedId, 'video', 'minimax_h3_multi_failed');
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax H3 全能参考生成失败'),
-          });
-        }
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'minimax-h3-multi 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启且走 Queue Gate。',
+          },
+        });
         return;
       }
 
-      // MiniMax-H3 口型同步：RunningHub ai-app 2086260808442531842（国内 .cn）
-      // 官方：138/value 提示词、171/audio 必填、115/aspect_ratio|megapixels、137/182/199/200/202 最多 5 图
-      // 工作流按参考音自动读时长（无时长节点）；计费档 6|10|15|20（向上取整，>20 封顶 20）
-      // 仅 720P→megapixels 0.9；instanceType 默认 plus，803 再试 default
+      // MiniMax-H3 口型同步：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
       if (isMinimaxH3AudioModel) {
-        if (!getAliyunFcInitUserUrl().trim()) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
-          });
-          return;
-        }
-        const audioImages = normalizeMinimaxH3AudioImages(images || []);
-        if (audioImages.length < 1) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: 'MiniMax-H3 口型同步需要至少 1 张参考图' },
-          });
-          return;
-        }
-        const refAudioUrl = String(inputAudioUrl || '').trim();
-        if (!refAudioUrl) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: 'MiniMax-H3 口型同步需要连接参考音（必填）' },
-          });
-          return;
-        }
-        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
-        const POLL_INTERVAL_MS = 5 * 1000;
-        const POLL_DEADLINE_MS = 60 * 60 * 1000;
-
-        const megapixels = MINIMAX_H3_AUDIO_MEGAPIXELS; // 仅 720P；勿传 1080
-        const aspectRh = (() => {
-          const map: Record<string, string> = {
-            '1:1': '1:1 (Square)',
-            '2:3': '2:3 (Portrait Photo)',
-            '3:2': '3:2 (Photo)',
-            '3:4': '3:4 (Portrait Standard)',
-            '4:3': '4:3 (Standard)',
-            '9:16': '9:16 (Portrait Widescreen)',
-            '16:9': '16:9 (Widescreen)',
-            '21:9': '21:9 (Ultrawide)',
-            '1:1 (Square)': '1:1 (Square)',
-            '2:3 (Portrait Photo)': '2:3 (Portrait Photo)',
-            '3:2 (Photo)': '3:2 (Photo)',
-            '3:4 (Portrait Standard)': '3:4 (Portrait Standard)',
-            '4:3 (Standard)': '4:3 (Standard)',
-            '9:16 (Portrait Widescreen)': '9:16 (Portrait Widescreen)',
-            '16:9 (Widescreen)': '16:9 (Widescreen)',
-            '21:9 (Ultrawide)': '21:9 (Ultrawide)',
-          };
-          return map[String(aspect_ratio || '').trim()] || '16:9 (Widescreen)';
-        })();
-        const promptText = (prompt || '').trim() || '视频动画';
-
-        const ensureAudioRemoteH3Audio = async (url: string): Promise<string> => {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            if (isOurOssOrCdnObjectUrl(url)) {
-              return preferDirectOssUrlForThirdPartyImageRef(url);
-            }
-            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
-            const ct = res.headers['content-type'] || '';
-            const mimeType = ct.includes('wav')
-              ? 'audio/wav'
-              : ct.includes('ogg')
-                ? 'audio/ogg'
-                : ct.includes('m4a')
-                  ? 'audio/mp4'
-                  : 'audio/mpeg';
-            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
-          }
-          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
-            return this.uploadLocalAudioToOSS(url);
-          }
-          if (url.startsWith('data:audio/')) {
-            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
-            const buf = Buffer.from(m ? m[2] : '', 'base64');
-            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
-            return this.uploadAudioToOSS(buf, mime);
-          }
-          return url;
-        };
-
-        let h3AudioFcChargedId: string | undefined;
-        try {
-          onStatus({ nodeId, status: 'START', payload: {} });
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 5, text: '正在上传参考图与参考音…' },
-          });
-
-          const rhImageFields: string[] = [];
-          for (let i = 0; i < audioImages.length; i++) {
-            const remote = await this.processImageToOssUrl(audioImages[i]);
-            const uploaded = await uploadRunningHubMediaFromRemoteUrlViaFc(
-              remote,
-              `minimax-h3-audio-img${i + 1}.jpg`,
-              'image/jpeg',
-            );
-            const field = rhComfyMediaFieldValue(uploaded);
-            if (!field || !/^(openapi|api)\//i.test(field)) {
-              throw new Error(
-                `参考图 ${i + 1} 上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${field || '空'}）`,
-              );
-            }
-            rhImageFields.push(field);
-          }
-
-          // 始终强制 ffmpeg→干净 MP3 再上 RH（与 H3 multi 同链路）
-          let audioRemote = await ensureAudioRemoteH3Audio(refAudioUrl);
-          audioRemote = preferDirectOssUrlForThirdPartyImageRef(audioRemote);
-          console.log('[MiniMax-H3 audio] 参考音源', {
-            src: refAudioUrl.length > 120 ? `${refAudioUrl.slice(0, 120)}…` : refAudioUrl,
-            oss: audioRemote.length > 120 ? `${audioRemote.slice(0, 120)}…` : audioRemote,
-          });
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 8, text: '参考音强制转码为干净 MP3…' },
-          });
-          audioRemote = preferDirectOssUrlForThirdPartyImageRef(
-            await this.transcodeRemoteAudioToMp3Oss(audioRemote),
-          );
-
-          // 计费：读参考音时长 → 向上取整到 6|10|15|20；读不到保守 20s；>20 封顶 20 并提示
-          const h3AudioProjectId =
-            typeof (input as { projectId?: unknown }).projectId === 'string'
-              ? String((input as { projectId?: string }).projectId)
-              : undefined;
-          let probedAudioSec = 0;
-          try {
-            probedAudioSec = Number(await getMediaDuration(audioRemote, h3AudioProjectId)) || 0;
-            if (!(probedAudioSec > 0)) {
-              probedAudioSec = Number(await getMediaDuration(refAudioUrl, h3AudioProjectId)) || 0;
-            }
-          } catch {
-            probedAudioSec = 0;
-          }
-          const billingDurSec = mapMinimaxH3AudioBillingDurationSec(
-            probedAudioSec > 0 ? probedAudioSec : undefined,
-          );
-          (input as { durationMinimaxH3?: string }).durationMinimaxH3 = String(billingDurSec) as
-            | '6'
-            | '10'
-            | '15'
-            | '20';
-          const billingHint =
-            !(probedAudioSec > 0)
-              ? `未能读取参考音时长，按 ${billingDurSec}s 档计费`
-              : probedAudioSec > 20
-                ? `参考音约 ${probedAudioSec.toFixed(1)}s，超过 20s 按 20s 档计费`
-                : `参考音约 ${probedAudioSec.toFixed(1)}s → 计费 ${billingDurSec}s`;
-          console.log('[MiniMax-H3 audio] 计费时长映射', {
-            probedAudioSec,
-            billingDurSec,
-            inputFallback: inputDurationMinimaxH3,
-          });
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 10, text: billingHint },
-          });
-
-          const meta = rhAudioUploadMetaFromUrl(audioRemote);
-          const uploadedAudio = await uploadRunningHubMediaFromRemoteUrlViaFc(
-            audioRemote,
-            meta.filename || 'minimax-h3-audio-ref.mp3',
-            meta.contentType || 'audio/mpeg',
-          );
-          const rhAudioField = rhComfyMediaFieldValue(uploadedAudio);
-          const sizeNum = Number(uploadedAudio.size);
-          if (!rhAudioField || !/^(openapi|api)\//i.test(rhAudioField)) {
-            throw new Error(
-              `参考音上传 RunningHub 后未返回可用 fileName（需 openapi/… 或 api/…，实际: ${rhAudioField || '空'}）`,
-            );
-          }
-          if (uploadedAudio.mediaType && !/audio/i.test(uploadedAudio.mediaType)) {
-            throw new Error(
-              `参考音上传后 RunningHub 识别为 ${uploadedAudio.mediaType}（非 audio），请换 MP3/WAV/FLAC 后重试`,
-            );
-          }
-          if (Number.isFinite(sizeNum) && sizeNum <= 0) {
-            throw new Error('参考音上传后大小为 0，请检查音频文件');
-          }
-          console.log('[MiniMax-H3 audio] 参考音 RH field=', rhAudioField.slice(0, 96), {
-            mediaType: uploadedAudio.mediaType,
-            size: uploadedAudio.size,
-            uploadName: meta.filename,
-            ossAfterTranscode: audioRemote.length > 96 ? `${audioRemote.slice(0, 96)}…` : audioRemote,
-          });
-
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '核对应用节点…' } });
-          let liveNodes: Awaited<ReturnType<typeof fetchRhAiAppCallDemoNodes>> = [];
-          try {
-            liveNodes = await fetchRhAiAppCallDemoNodes(MINIMAX_H3_AUDIO_APP_ID, { rhRegion: 'cn' });
-          } catch (probeErr) {
-            console.warn(
-              '[MiniMax-H3 audio] apiCallDemo 探测失败，使用官方文档节点映射',
-              probeErr instanceof Error ? probeErr.message : probeErr,
-            );
-          }
-
-          const rhSeal = await getRhSealMediaBundle();
-          const nodeInfoList = buildMinimaxH3AudioNodeInfoList(
-            promptText,
-            megapixels,
-            aspectRh,
-            rhImageFields,
-            rhAudioField,
-            rhSeal,
-            liveNodes,
-          );
-          console.log(
-            '[MiniMax-H3 audio] 提交 nodeInfoList=',
-            JSON.stringify(summarizeRhNodeInfoForLog(nodeInfoList)),
-            'liveNodes=',
-            liveNodes.length,
-            'billingDuration=',
-            billingDurSec,
-            'images=',
-            rhImageFields.length,
-          );
-
-          const billingModelId = buildVideoBillingModelId(
-            MINIMAX_H3_AUDIO_MODEL_ID,
-            {
-              ...(input as Record<string, unknown>),
-              durationMinimaxH3: String(billingDurSec),
-              resolutionMinimaxH3: '720p',
-            },
-          );
-          const submitUrl = `${RUN_BASE}/run/ai-app/${MINIMAX_H3_AUDIO_APP_ID}`;
-          const trySubmit = async (instanceType: 'plus' | 'default') => {
-            const h3FcId = randomUUID();
-            const runRes = await rhPostChargeVideo(
-              submitUrl,
-              {
-                nodeInfoList,
-                instanceType,
-                randomSeed: true,
-                retainSeconds: 0,
-                usePersonalQueue: false,
-              } as Record<string, unknown>,
-              h3FcId,
-              { billingModelId },
-            );
-            return { h3FcId, runRes: runRes ?? {} };
-          };
-
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交任务中...' } });
-          let submitted = await trySubmit('plus');
-          h3AudioFcChargedId = submitted.h3FcId;
-          let body = submitted.runRes;
-          let taskId = body.taskId ?? body.task_id;
-
-          if (!taskId && isRhNodeInfoMismatch803(body)) {
-            console.warn('[MiniMax-H3 audio] plus 提交 803，改试 instanceType=default');
-            await tryRefundFcForwardCharge(h3AudioFcChargedId, 'video', 'minimax_h3_audio_retry_default');
-            h3AudioFcChargedId = undefined;
-            submitted = await trySubmit('default');
-            h3AudioFcChargedId = submitted.h3FcId;
-            body = submitted.runRes;
-            taskId = body.taskId ?? body.task_id;
-          }
-
-          if (!taskId) {
-            const raw = formatRunningHubTaskError(body, '未返回 taskId');
-            throw new Error(
-              `提交失败：${
-                isRhNodeInfoMismatch803(body) ? enhanceMinimaxH3NodeMismatchError(raw) : raw
-              }`,
-            );
-          }
-
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 20, text: '任务已提交，生成中…', taskId: String(taskId) },
-          });
-
-          const deadline = Date.now() + POLL_DEADLINE_MS;
-          let lastProgress = 20;
-          let h3PollRound = 0;
-          const h3AudioPollFcBase = h3AudioFcChargedId || randomUUID();
-
-          while (Date.now() < deadline) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            lastProgress = Math.min(95, lastProgress + 5);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: { progress: lastProgress, text: '生成中...', taskId: String(taskId) },
-            });
-
-            h3PollRound += 1;
-            const queryRes = await rhQueryPollVideo(String(taskId), `${h3AudioPollFcBase}:poll:${h3PollRound}`);
-
-            const status = queryRes.status;
-            if (status === 'SUCCESS') {
-              const results = queryRes.results as Array<{ url?: unknown }> | undefined;
-              if (results && Array.isArray(results) && results.length > 0) {
-                const first = results[0];
-                const url =
-                  typeof first?.url === 'string'
-                    ? first.url
-                    : (first?.url as { url?: string })?.url ?? (first?.url as { href?: string })?.href;
-                if (url) {
-                  onStatus({
-                    nodeId,
-                    status: 'SUCCESS',
-                    payload: { url, videoUrl: url, originalVideoUrl: url },
-                  });
-                  return;
-                }
-              }
-              throw new Error('生成成功但未返回视频 URL');
-            }
-            if (status === 'FAILED' || status === 'FAILURE') {
-              throw rhPollFailureError('MiniMax-H3 口型同步', queryRes, String(taskId));
-            }
-          }
-          throw new Error('生成超时');
-        } catch (err: unknown) {
-          void tryRefundFcForwardCharge(h3AudioFcChargedId, 'video', 'minimax_h3_audio_failed');
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'MiniMax-H3 口型同步生成失败'),
-          });
-        }
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'minimax-h3-audio 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启且走 Queue Gate。',
+          },
+        });
         return;
       }
 
@@ -3822,145 +6507,17 @@ export class VideoProvider extends BaseProvider {
         }
       }
 
-      // 视频超分放大：RunningHub OpenAPI /rhart-video/video-upscaler（国内站；仅需参考视频）
+      // 视频超分放大：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
       if (isRhartVideoUpscaler) {
-        if (!getAliyunFcInitUserUrl().trim()) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
-          });
-          return;
-        }
-        const refVideo = String(inputReferenceVideoUrl || '').trim();
-        if (!refVideo) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '视频超分放大需要连接参考视频' },
-          });
-          return;
-        }
-        const targetRes = normalizeRhartVideoUpscalerResolution(inputTargetResolution, '1080p');
-        const POLL_INTERVAL_MS = 5 * 1000;
-        const POLL_DEADLINE_MS = 60 * 60 * 1000;
-        let upscalerChargedTaskId: string | undefined;
-        try {
-          onStatus({ nodeId, status: 'START', payload: {} });
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 5, text: '正在准备输入视频…' },
-          });
-          const videoUrl = await this.prepareWanAnimateVideoRemoteUrl(refVideo);
-          let probedDurationSec = Number((input as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
-          try {
-            const durSec = await getMediaDuration(videoUrl);
-            if (Number.isFinite(durSec) && durSec > 0) probedDurationSec = durSec;
-            if (Number.isFinite(durSec) && durSec > RHART_VIDEO_UPSCALER_MAX_DURATION_SEC) {
-              throw new Error(
-                `视频超分放大支持最长 ${RHART_VIDEO_UPSCALER_MAX_DURATION_SEC / 60} 分钟，当前约 ${Math.ceil(durSec / 60)} 分钟`,
-              );
-            }
-          } catch (durErr) {
-            if (durErr instanceof Error && /最长|支持最长/.test(durErr.message)) throw durErr;
-            console.warn('[视频超分放大] 时长探测失败，继续提交', durErr);
-          }
-
-          const billingInput = {
-            ...(input as Record<string, unknown>),
-            targetResolution: targetRes,
-            mediaDurationSec: probedDurationSec > 0 ? probedDurationSec : 5,
-          };
-          const apiEndpoint = `${RUNNINGHUB_OPENAPI_V2_BASE}${RHART_VIDEO_UPSCALER_API_PATH}`;
-          const payloadUpscale = {
-            videoUrl,
-            targetResolution: targetRes,
-          };
-
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 12, text: '提交超分任务…' } });
-          const fcBaseIdUp = randomUUID();
-          const runResUp = await rhPostChargeVideo(
-            apiEndpoint,
-            payloadUpscale as Record<string, unknown>,
-            fcBaseIdUp,
-            {
-              billingModelId: buildVideoBillingModelId(RHART_VIDEO_UPSCALER_MODEL_ID, billingInput),
-            },
-          );
-          upscalerChargedTaskId = fcBaseIdUp;
-          const taskIdUp = runResUp?.taskId ?? runResUp?.task_id;
-          if (!taskIdUp) {
-            throw new Error(`提交失败：${formatRunningHubTaskError(runResUp ?? {}, '未返回 taskId')}`);
-          }
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 18, text: '任务已提交，超分中…', taskId: String(taskIdUp) },
-          });
-
-          const deadlineUp = Date.now() + POLL_DEADLINE_MS;
-          let lastProgressUp = 18;
-          let pollRoundUp = 0;
-          while (Date.now() < deadlineUp) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            lastProgressUp = Math.min(95, lastProgressUp + 4);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: { progress: lastProgressUp, text: '超分处理中…', taskId: String(taskIdUp) },
-            });
-            pollRoundUp += 1;
-            const queryResUp = await rhQueryPollVideo(
-              String(taskIdUp),
-              `${fcBaseIdUp}:poll:${pollRoundUp}`,
-            );
-            const st = queryResUp.status;
-            if (st === 'SUCCESS') {
-              const resultsUp = queryResUp.results as
-                | Array<{ url?: unknown; outputType?: unknown }>
-                | undefined;
-              if (resultsUp && Array.isArray(resultsUp) && resultsUp.length > 0) {
-                const pickUrl = (it: { url?: unknown } | undefined): string => {
-                  if (!it) return '';
-                  if (typeof it.url === 'string') return it.url;
-                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
-                };
-                const mp4Item = resultsUp.find((it) => {
-                  const out = String(it?.outputType ?? '').trim().toLowerCase();
-                  const u = pickUrl(it).toLowerCase();
-                  return out === 'mp4' || u.endsWith('.mp4');
-                });
-                const bestItem = mp4Item || resultsUp[0];
-                const urlUp = pickUrl(bestItem);
-                if (urlUp) {
-                  onStatus({
-                    nodeId,
-                    status: 'SUCCESS',
-                    payload: { url: urlUp, videoUrl: urlUp, originalVideoUrl: urlUp },
-                  });
-                  return;
-                }
-              }
-              throw new Error('超分成功但未返回视频 URL');
-            }
-            if (st === 'FAILED' || st === 'FAILURE') {
-              throw rhPollFailureError('视频超分放大', queryResUp, String(taskIdUp));
-            }
-          }
-          throw new Error('视频超分超时');
-        } catch (err: unknown) {
-          void tryRefundFcForwardCharge(upscalerChargedTaskId, 'video', 'rhart_video_upscaler_failed');
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: buildFcErrorPayload(
-              err,
-              err instanceof Error ? err.message : '视频超分放大失败',
-            ),
-          });
-          return;
-        }
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'rhart-video-upscaler 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启且走 Queue Gate。',
+          },
+        });
+        return;
       }
 
       // WanAnimate（角色替换）：RunningHub ai-app 2048978834447409154（角色图 + 参考视频）
@@ -4092,284 +6649,43 @@ export class VideoProvider extends BaseProvider {
         }
       }
 
-      // Wan animate2 视频换人：RunningHub ai-app 2086818758475210753（角色图 + 参考视频，提示词选填）
+      // Wan animate2：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
       if (isWanAnimate2Model) {
-        if (!getAliyunFcInitUserUrl().trim()) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
-          });
-          return;
-        }
-        const RH_WAN_ANIMATE_2_APP_ID = '2086818758475210753';
-        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
-        const POLL_INTERVAL_MS = 5 * 1000;
-        const POLL_DEADLINE_MS = 60 * 60 * 1000;
-
-        let imageUrlWa2 = '';
-        let videoUrlWa2 = '';
-        try {
-          imageUrlWa2 = await this.processImageToOssUrl(images![0]);
-          videoUrlWa2 = await this.prepareWanAnimateVideoRemoteUrl(String(inputReferenceVideoUrl || '').trim());
-        } catch (e: unknown) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: {
-              error: `Wan animate2 处理输入失败: ${e instanceof Error ? e.message : String(e)}`,
-            },
-          });
-          return;
-        }
-
-        let probedDurationSecWa2 = Number((input as { mediaDurationSec?: unknown }).mediaDurationSec) || 0;
-        try {
-          const durSecWa2 = await getMediaDuration(videoUrlWa2);
-          if (Number.isFinite(durSecWa2) && durSecWa2 > 0) probedDurationSecWa2 = durSecWa2;
-        } catch (durErrWa2) {
-          console.warn('[Wan animate2] 原视频时长探测失败，按 1 秒计费兜底', durErrWa2);
-        }
-        const billingInputWa2 = {
-          ...(input as Record<string, unknown>),
-          model: 'wan-animate-2',
-          resolutionWanAnimate: inputResolutionWanAnimate,
-          mediaDurationSec: probedDurationSecWa2 > 0 ? probedDurationSecWa2 : 1,
-        };
-
-        const presetRaw2 = String(inputResolutionWanAnimate || '720p').trim().toLowerCase();
-        // RH 工作流分辨率档：文档示例 832；1080 档映射为 1280
-        const resKeyWa2 =
-          presetRaw2 === '1080p' || presetRaw2 === '1080' || presetRaw2 === '1920x1080' || presetRaw2 === '1080x1920'
-            ? '1080p'
-            : '720p';
-        const resVal2 = resKeyWa2 === '1080p' ? '1280' : '832';
-        const promptWa2 = String(prompt || '').trim();
-        const mediaDurationSecWa2 = probedDurationSecWa2 > 0 ? probedDurationSecWa2 : 1;
-        billingInputWa2.resolutionWanAnimate = resKeyWa2;
-        billingInputWa2.mediaDurationSec = mediaDurationSecWa2;
-
-        const runPayloadWa2 = {
-          nodeInfoList: [
-            { nodeId: '637', fieldName: 'value', fieldValue: resVal2, description: '分辨率' },
-            { nodeId: '642', fieldName: 'value', fieldValue: promptWa2, description: '提示词' },
-            { nodeId: '651', fieldName: 'value', fieldValue: '', description: '原视频描述' },
-            { nodeId: '647', fieldName: 'video', fieldValue: videoUrlWa2, description: '原视频' },
-            { nodeId: '655', fieldName: 'image', fieldValue: imageUrlWa2, description: '替换参考图' },
-          ],
-          instanceType: 'plus',
-          usePersonalQueue: 'false',
-          // FC 扣费读 forward.body 作 nodeData：写入计费槽位（RH 忽略未知字段）
-          model: 'wan-animate-2',
-          resolutionWanAnimate: resKeyWa2,
-          mediaDurationSec: mediaDurationSecWa2,
-        };
-
-        let wanAnimate2ChargedTaskId: string | undefined;
-        try {
-          onStatus({ nodeId, status: 'START', payload: {} });
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 10, text: '提交任务中...' } });
-          const fcBaseIdWa2 = randomUUID();
-          const runResWa2 = await rhPostChargeVideo(
-            `${RUN_BASE}/run/ai-app/${RH_WAN_ANIMATE_2_APP_ID}`,
-            runPayloadWa2 as Record<string, unknown>,
-            fcBaseIdWa2,
-            { billingModelId: buildVideoBillingModelId('wan-animate-2', billingInputWa2) },
-          );
-          wanAnimate2ChargedTaskId = fcBaseIdWa2;
-          const taskIdWa2 = runResWa2?.taskId ?? runResWa2?.task_id;
-          if (!taskIdWa2) {
-            throw new Error(`提交失败：${formatRunningHubTaskError(runResWa2 ?? {}, '未返回 taskId')}`);
-          }
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskIdWa2) },
-          });
-
-          const deadlineWa2 = Date.now() + POLL_DEADLINE_MS;
-          let lastProgressWa2 = 15;
-          let pollRoundWa2 = 0;
-          while (Date.now() < deadlineWa2) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            lastProgressWa2 = Math.min(95, lastProgressWa2 + 5);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: { progress: lastProgressWa2, text: '生成中...', taskId: String(taskIdWa2) },
-            });
-            pollRoundWa2 += 1;
-            const queryResWa2 = await rhQueryPollVideo(String(taskIdWa2), `${fcBaseIdWa2}:poll:${pollRoundWa2}`);
-            const st2 = queryResWa2.status;
-            if (st2 === 'SUCCESS') {
-              const resultsWa2 = queryResWa2.results as Array<{ url?: unknown; outputType?: unknown }> | undefined;
-              if (resultsWa2 && Array.isArray(resultsWa2) && resultsWa2.length > 0) {
-                const pickUrl2 = (it: { url?: unknown } | undefined): string => {
-                  if (!it) return '';
-                  if (typeof it.url === 'string') return it.url;
-                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
-                };
-                const mp4Item2 = resultsWa2.find((it) => {
-                  const out = String(it?.outputType ?? '').trim().toLowerCase();
-                  const u = pickUrl2(it).toLowerCase();
-                  return out === 'mp4' || u.endsWith('.mp4');
-                });
-                const bestItem2 = mp4Item2 || resultsWa2[0];
-                const urlWa2 = pickUrl2(bestItem2);
-                if (urlWa2) {
-                  onStatus({
-                    nodeId,
-                    status: 'SUCCESS',
-                    payload: { url: urlWa2, videoUrl: urlWa2, originalVideoUrl: urlWa2 },
-                  });
-                  return;
-                }
-              }
-              throw new Error('生成成功但未返回视频 URL');
-            }
-            if (st2 === 'FAILED' || st2 === 'FAILURE') {
-              throw rhPollFailureError('Wan animate2', queryResWa2, String(taskIdWa2));
-            }
-          }
-          throw new Error('生成超时');
-        } catch (err: unknown) {
-          void tryRefundFcForwardCharge(wanAnimate2ChargedTaskId, 'video', 'wan_animate_2_failed');
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: buildFcErrorPayload(
-              err,
-              err instanceof Error ? err.message : 'Wan animate2 视频换人生成失败',
-            ),
-          });
-          return;
-        }
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'wan-animate-2 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启且走 Queue Gate。',
+          },
+        });
+        return;
       }
 
-      // HeyGem 数字人：RunningHub ai-app 2071200225913565185（参考视频 + 音频，plus 48G）
+      // HeyGem 数字人：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
       if (isHeyGemModel) {
-        if (!getAliyunFcInitUserUrl().trim()) {
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: { error: '未配置云端转发（ALIYUN_FC_INIT_USER_URL），无法使用插件算力视频生成' },
-          });
-          return;
-        }
-        const RH_HEYGEM_APP_ID = '2071200225913565185';
-        const RUN_BASE = RUNNINGHUB_OPENAPI_V2_BASE;
-        const POLL_INTERVAL_MS = 5 * 1000;
-        const POLL_DEADLINE_MS = 60 * 60 * 1000;
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'hey-gem 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启且走 Queue Gate。',
+          },
+        });
+        return;
+      }
 
-        const ensureAudioRemoteHg = async (url: string): Promise<string> => {
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            if (isOurOssOrCdnObjectUrl(url)) {
-              return preferDirectOssUrlForThirdPartyImageRef(url);
-            }
-            const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 60000, proxy: false });
-            const ct = res.headers['content-type'] || '';
-            const mimeType = ct.includes('wav') ? 'audio/wav' : ct.includes('ogg') ? 'audio/ogg' : ct.includes('m4a') ? 'audio/mp4' : 'audio/mpeg';
-            return this.uploadAudioToOSS(Buffer.from(res.data), mimeType);
-          }
-          if (url.startsWith('local-resource://') || url.startsWith('file://')) {
-            return this.uploadLocalAudioToOSS(url);
-          }
-          if (url.startsWith('data:audio/')) {
-            const m = url.match(/^data:audio\/(\w+);base64,(.+)$/);
-            const buf = Buffer.from(m ? m[2] : '', 'base64');
-            const mime = m ? `audio/${m[1]}` : 'audio/mpeg';
-            return this.uploadAudioToOSS(buf, mime);
-          }
-          return url;
-        };
-
-        let videoUrlHg = '';
-        let audioUrlHg = '';
-        let heyGemChargedTaskId: string | undefined;
-        try {
-          onStatus({ nodeId, status: 'START', payload: {} });
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 5, text: '正在上传参考视频与音频…' } });
-          videoUrlHg = await this.prepareWanAnimateVideoRemoteUrl(String(inputReferenceVideoUrl || '').trim());
-          audioUrlHg = await ensureAudioRemoteHg(inputAudioUrl!.trim());
-          onStatus({ nodeId, status: 'PROCESSING', payload: { progress: 15, text: '提交 HeyGem 任务…' } });
-
-          const runPayloadHg = {
-            nodeInfoList: [
-              { nodeId: '1', fieldName: 'file', fieldValue: videoUrlHg, description: 'file' },
-              { nodeId: '4', fieldName: 'audio', fieldValue: audioUrlHg, description: 'audio' },
-            ],
-            instanceType: 'plus',
-            usePersonalQueue: 'false',
-          };
-
-          const fcBaseIdHg = randomUUID();
-          const runResHg = await rhPostChargeVideo(
-            `${RUN_BASE}/run/ai-app/${RH_HEYGEM_APP_ID}`,
-            runPayloadHg as Record<string, unknown>,
-            fcBaseIdHg,
-            { billingModelId: buildVideoBillingModelId('hey-gem', input as Record<string, unknown>) },
-          );
-          heyGemChargedTaskId = fcBaseIdHg;
-          const taskIdHg = runResHg?.taskId ?? runResHg?.task_id;
-          if (!taskIdHg) {
-            throw new Error(`提交失败：${formatRunningHubTaskError(runResHg ?? {}, '未返回 taskId')}`);
-          }
-          onStatus({
-            nodeId,
-            status: 'PROCESSING',
-            payload: { progress: 15, text: '任务已提交，生成中…', taskId: String(taskIdHg) },
-          });
-
-          const deadlineHg = Date.now() + POLL_DEADLINE_MS;
-          let lastProgressHg = 15;
-          let pollRoundHg = 0;
-          while (Date.now() < deadlineHg) {
-            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-            lastProgressHg = Math.min(95, lastProgressHg + 5);
-            onStatus({
-              nodeId,
-              status: 'PROCESSING',
-              payload: { progress: lastProgressHg, text: 'HeyGem 生成中…', taskId: String(taskIdHg) },
-            });
-            pollRoundHg += 1;
-            const queryResHg = await rhQueryPollVideo(String(taskIdHg), `${fcBaseIdHg}:poll:${pollRoundHg}`);
-            const stHg = queryResHg.status;
-            if (stHg === 'SUCCESS') {
-              const resultsHg = queryResHg.results as Array<{ url?: unknown; outputType?: unknown }> | undefined;
-              if (resultsHg && Array.isArray(resultsHg) && resultsHg.length > 0) {
-                const pickUrl = (it: { url?: unknown } | undefined): string => {
-                  if (!it) return '';
-                  if (typeof it.url === 'string') return it.url;
-                  return (it.url as { url?: string })?.url ?? (it.url as { href?: string })?.href ?? '';
-                };
-                const mp4Item = resultsHg.find((it) => {
-                  const out = String(it?.outputType ?? '').trim().toLowerCase();
-                  const u = pickUrl(it).toLowerCase();
-                  return out === 'mp4' || u.endsWith('.mp4');
-                });
-                const bestItem = mp4Item || resultsHg[0];
-                const urlHg = pickUrl(bestItem);
-                if (urlHg) {
-                  onStatus({ nodeId, status: 'SUCCESS', payload: { url: urlHg, videoUrl: urlHg, originalVideoUrl: urlHg } });
-                  return;
-                }
-              }
-              throw new Error('生成成功但未返回视频 URL');
-            }
-            if (stHg === 'FAILED' || stHg === 'FAILURE') {
-              throw rhPollFailureError('HeyGem', queryResHg, String(taskIdHg));
-            }
-          }
-          throw new Error('生成超时');
-        } catch (err: unknown) {
-          void tryRefundFcForwardCharge(heyGemChargedTaskId, 'video', 'hey_gem_failed');
-          onStatus({
-            nodeId,
-            status: 'ERROR',
-            payload: buildFcErrorPayload(err, err instanceof Error ? err.message : 'HeyGem 数字人生成失败'),
-          });
-          return;
-        }
+      // Grok video3 plus：已迁移 Unified Queue；此处仅兜底（Queue-only 禁止 Direct）
+      if (isGrok3StableModel) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              'grok-3-stable 已强制云端排队，禁止 Direct。请确认 VIDEO_QUEUE_ENABLED 开启、已连接 1–7 张参考图，且走 Queue Gate。',
+          },
+        });
+        return;
       }
 
       // Gemini Omni 图生视频：RunningHub ai-app 2067153261005721602（1–3 张参考图 + prompt）

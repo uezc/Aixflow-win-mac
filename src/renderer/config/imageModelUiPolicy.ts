@@ -2,9 +2,9 @@
  * 前端图片模型：活跃目录、模式过滤、下架归一。
  *
  * 活跃模型（与 ImageProvider / 定价对齐）：
- * - 文+图：rhart-image-g-2 / banana-2.0（海外）/ seedream-v5（国内 .cn）
+ * - 文+图：rhart-image-g-2.5 / rhart-image-g-2 / banana-2.0（海外）/ seedream-v5（国内 .cn）
+ * - 仅文：z-image / lens / youchuan-text-to-image-v81|v82（海外）
  * - 仅图：flux2-klein
- * - 仅文：z-image / lens / youchuan-text-to-image-v81（海外）
  *
  * 悠船 v7、MJ V7、GPT image 2、全能图片 X（rhart-image-g）等已下架。
  */
@@ -22,8 +22,10 @@ export type ActiveImageModelDef = {
 
 /** 权威活跃清单（下拉 / 导演 / 场景工具同源；文生图顺序按下表） */
 export const ACTIVE_IMAGE_MODELS: readonly ActiveImageModelDef[] = [
+  { value: 'rhart-image-g-2.5', label: '全能图片 G-2.5', maxRefs: 10, modes: ['t2i', 'i2i'] },
   { value: 'rhart-image-g-2', label: '全能图片 G-2.0', maxRefs: 10, modes: ['t2i', 'i2i'] },
   { value: 'banana-2.0', label: '全能图片 V2', maxRefs: 10, modes: ['t2i', 'i2i'] },
+  { value: 'youchuan-text-to-image-v82', label: '悠船文生图 v8.2', maxRefs: 0, modes: ['t2i'] },
   { value: 'youchuan-text-to-image-v81', label: '悠船文生图 v8.1', maxRefs: 0, modes: ['t2i'] },
   { value: 'seedream-v5', label: 'Seedream v5', maxRefs: 10, modes: ['t2i', 'i2i'] },
   { value: 'z-image', label: 'Z-image', maxRefs: 0, modes: ['t2i'] },

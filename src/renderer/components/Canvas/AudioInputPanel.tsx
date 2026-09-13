@@ -24,6 +24,7 @@ import {
   isRetiredAudioModel,
   normalizeAudioModelIfRetired,
 } from '../../config/audioModelUiPolicy';
+import { isAudioQueueOnlyModel } from '../../../shared/audioQueueGoldenPath';
 import {
   DOUBAO_SEED_AUDIO_MODEL_ID,
   DOUBAO_SEED_AUDIO_LABEL,
@@ -600,7 +601,7 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         // 错误处理
         const errorMessage = packet.payload?.error || '音频生成失败';
         if ((packet.payload as { balanceInsufficient?: boolean } | undefined)?.balanceInsufficient === true) {
-          showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+          showAlert('元宝不足，请充值');
         }
         if (onErrorTask) {
           onErrorTask(errorMessage);
@@ -646,10 +647,12 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
       const errorMessage = typeof error === 'string' ? error : (error?.message || String(error));
       const isQuotaError = errorMessage.includes('quota is not enough') || 
                           errorMessage.includes('remain quota') ||
-                          errorMessage.includes('余额不足');
+                          errorMessage.includes('余额不足') ||
+                          errorMessage.includes('元宝不足') ||
+                          /BALANCE_INSUFFICIENT/i.test(errorMessage);
       
       if (isQuotaError) {
-        showAlert('余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。');
+        showAlert('元宝不足，请充值');
       }
       
       if (onErrorTask) {
@@ -784,6 +787,10 @@ const AudioInputPanel: React.FC<AudioInputPanelProps> = ({
         if (emotion) requestParams.emotion = emotion;
       }
       if (projectId) requestParams.projectId = projectId;
+      // Queue-only 音频模型强制云端排队（ai-voice-cover 不在 AUDIO_QUEUE_ONLY 内）
+      if (isAudioQueueOnlyModel(requestParams.model)) {
+        requestParams.nxCloudQueueGoldenPath = true;
+      }
       await executeAI(requestParams);
     } catch (error) {
       console.error('音频生成失败:', error);

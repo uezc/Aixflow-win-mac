@@ -1,0 +1,92 @@
+{
+  "started_at": "2026-09-06T09:49:10.064Z",
+  "results": {
+    "invalid_forward": "PASS",
+    "ltx_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096536346171076609",
+      "region": "ai",
+      "task_id": "ed546852-6443-49e4-8cbc-32c0456fd32b"
+    },
+    "ltx_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096537292142501890",
+      "region": "cn",
+      "task_id": "abab3c0a-ddc4-41e5-8885-6f0df6ae4baa"
+    },
+    "h3_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096538248607387649",
+      "region": "cn",
+      "task_id": "bcda82a7-ee43-4d9a-bd6d-e386b8bdec6e"
+    },
+    "h3_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096539940874842114",
+      "region": "cn",
+      "task_id": "3febb8c5-ef47-43a7-a1af-3bac77e28289"
+    },
+    "ltx_start_end": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096541662972182530",
+      "region": "cn",
+      "task_id": "afec2c61-441d-4b15-8cc4-08be4689bee1"
+    },
+    "rhart_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096542586939539457",
+      "region": "ai",
+      "task_id": "ca9dba35-e6cd-42f4-bee4-c484021c0de0"
+    },
+    "rhart_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096543228995207170",
+      "region": "ai",
+      "task_id": "764bdf9e-bfe2-43a9-b7bd-8fbcdc411d87"
+    },
+    "rhart_v31_pro_se": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096543744834252802",
+      "region": "ai",
+      "task_id": "96f75199-0341-469e-b0d4-e1213640b902"
+    },
+    "ltx_lipsync": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096544538842845185",
+      "region": "cn",
+      "task_id": "5b177e80-ecb9-495f-86b5-0f368c92dc60"
+    },
+    "seedance_fast": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096545282073710593",
+      "region": "cn",
+      "task_id": "2e9e5242-a0f4-48d9-a986-3513d895e9cf"
+    },
+    "seedance_mini": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096546009554751489",
+      "region": "cn",
+      "task_id": "5ef742bb-fbee-486a-8f27-0b295c1b3b22"
+    },
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS"
+  },
+  "from_live": {
+    "conclusion": "PASS",
+    "live_fail_refund": true
+  },
+  "finished_at": "2026-09-06T10:31:15.881Z",
+  "conclusion": "PASS"
+}

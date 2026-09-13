@@ -1,0 +1,556 @@
+{
+  "title": "Phase 1 Online Acceptance",
+  "started_at": "2026-09-09T15:20:47.101Z",
+  "prefix": "__p1pool_mtu8wq9p_",
+  "deployment": {
+    "hongkong": {
+      "functionName": "nexflow-api",
+      "region": "cn-hongkong",
+      "lastModified": "2026-09-09T14:47:01Z",
+      "codeSize": 15059579,
+      "env_pool": {
+        "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_AUDIO_CONCURRENCY": "100",
+        "GLOBAL_VIDEO_CONCURRENCY": null,
+        "GLOBAL_IMAGE_CONCURRENCY": null
+      }
+    },
+    "beijing": {
+      "functionName": "aixflow-api",
+      "region": "cn-beijing",
+      "lastModified": "2026-09-09T14:47:03Z",
+      "codeSize": 15059579,
+      "env_pool": {
+        "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_AUDIO_CONCURRENCY": "100",
+        "GLOBAL_VIDEO_CONCURRENCY": null,
+        "GLOBAL_IMAGE_CONCURRENCY": null
+      }
+    }
+  },
+  "pools_config": {
+    "snapshot": {
+      "cn_video": {
+        "running": 0,
+        "max": 100
+      },
+      "cn_image": {
+        "running": 0,
+        "max": 100
+      },
+      "overseas_video": {
+        "running": 0,
+        "max": 100
+      },
+      "overseas_image": {
+        "running": 0,
+        "max": 100
+      },
+      "audio": {
+        "running": 0,
+        "max": 100
+      },
+      "total_running": 0
+    },
+    "note": "snapshot.max 来自当前进程 env（验收脚本）；FC 运行时以 GetFunction.env 为准"
+  },
+  "legacy_counters": {
+    "video": {
+      "exists": true,
+      "running": 0
+    },
+    "image": {
+      "exists": true,
+      "running": 0
+    },
+    "cn_video": {
+      "exists": true,
+      "running": 0
+    },
+    "cn_image": {
+      "exists": true,
+      "running": 0
+    },
+    "overseas_video": {
+      "exists": true,
+      "running": 0
+    },
+    "overseas_image": {
+      "exists": true,
+      "running": 0
+    },
+    "audio": {
+      "exists": true,
+      "running": 0
+    },
+    "cn_pools_present": true,
+    "legacy_still_acquiring": false,
+    "note": "生产代码 normalizePlatformPoolKind(video|image)→cn_*；acquire/release 走新 PK。旧 video/image 行若仍存在仅为历史残留。"
+  },
+  "path_resolve": {
+    "cases": [
+      {
+        "taskType": "video",
+        "path": "/rhart-video-v3/cn-local",
+        "expect": "cn_video",
+        "label": "cn video generic",
+        "got": "cn_video",
+        "ok": true
+      },
+      {
+        "taskType": "image",
+        "path": "/rhart-image-n/cn-local",
+        "expect": "cn_image",
+        "label": "cn image generic",
+        "got": "cn_image",
+        "ok": true
+      },
+      {
+        "taskType": "video",
+        "path": "/rhart-video-g/foo",
+        "expect": "overseas_video",
+        "label": "overseas video path",
+        "got": "overseas_video",
+        "ok": true
+      },
+      {
+        "taskType": "image",
+        "path": "/rhart-image-g/x",
+        "expect": "overseas_image",
+        "label": "overseas image path",
+        "got": "overseas_image",
+        "ok": true
+      },
+      {
+        "taskType": "video",
+        "path": "/any",
+        "rhRegion": "ai",
+        "expect": "overseas_video",
+        "label": "rhRegion ai override",
+        "got": "overseas_video",
+        "ok": true
+      },
+      {
+        "taskType": "video",
+        "path": "/rhart-video-g/foo",
+        "rhRegion": "cn",
+        "expect": "cn_video",
+        "label": "rhRegion cn override overseas path",
+        "got": "cn_video",
+        "ok": true
+      }
+    ]
+  },
+  "tests": {
+    "path_resolve": {
+      "cases": [
+        {
+          "taskType": "video",
+          "path": "/rhart-video-v3/cn-local",
+          "expect": "cn_video",
+          "label": "cn video generic",
+          "got": "cn_video",
+          "ok": true
+        },
+        {
+          "taskType": "image",
+          "path": "/rhart-image-n/cn-local",
+          "expect": "cn_image",
+          "label": "cn image generic",
+          "got": "cn_image",
+          "ok": true
+        },
+        {
+          "taskType": "video",
+          "path": "/rhart-video-g/foo",
+          "expect": "overseas_video",
+          "label": "overseas video path",
+          "got": "overseas_video",
+          "ok": true
+        },
+        {
+          "taskType": "image",
+          "path": "/rhart-image-g/x",
+          "expect": "overseas_image",
+          "label": "overseas image path",
+          "got": "overseas_image",
+          "ok": true
+        },
+        {
+          "taskType": "video",
+          "path": "/any",
+          "rhRegion": "ai",
+          "expect": "overseas_video",
+          "label": "rhRegion ai override",
+          "got": "overseas_video",
+          "ok": true
+        },
+        {
+          "taskType": "video",
+          "path": "/rhart-video-g/foo",
+          "rhRegion": "cn",
+          "expect": "cn_video",
+          "label": "rhRegion cn override overseas path",
+          "got": "cn_video",
+          "ok": true
+        }
+      ]
+    },
+    "concurrency_101": {
+      "claimed_ok": 100,
+      "status": {
+        "queued": 1,
+        "claimed": 100,
+        "running": 0,
+        "success": 0,
+        "failed": 0,
+        "other": 0
+      },
+      "cn_video": {
+        "capacity": 100,
+        "used": 100,
+        "queued": 1,
+        "claimed": 100,
+        "running": 0
+      }
+    },
+    "pool_isolation_cn": {
+      "image_claimed_ok": 100,
+      "cn_video_used": 100,
+      "cn_image_used": 100,
+      "image_status": {
+        "queued": 0,
+        "claimed": 100,
+        "running": 0,
+        "success": 0,
+        "failed": 0,
+        "other": 0
+      }
+    },
+    "pool_isolation_overseas": {
+      "overseas_claimed_ok": 99,
+      "cn_video_used": 97,
+      "overseas_video_used": 97
+    },
+    "release1_refill1": {
+      "before": 98,
+      "after_release": 96,
+      "release": {
+        "ok": true,
+        "pool_id": "cn_video",
+        "running": 94,
+        "max": 100
+      },
+      "refill_claimed": 0,
+      "after_refill": 91
+    },
+    "multi_worker_anti_oversell": {
+      "before": 89,
+      "after": 84,
+      "refillSum": 0,
+      "concurrent": [
+        {
+          "rel": {
+            "ok": true,
+            "pool_id": "cn_video",
+            "running": 84,
+            "max": 100
+          },
+          "refill_claimed": 0
+        },
+        {
+          "rel": {
+            "ok": true,
+            "pool_id": "cn_video",
+            "running": 84,
+            "max": 100
+          },
+          "refill_claimed": 0
+        },
+        {
+          "rel": {
+            "ok": true,
+            "pool_id": "cn_video",
+            "running": 84,
+            "max": 100
+          },
+          "refill_claimed": 0
+        },
+        {
+          "rel": {
+            "ok": true,
+            "pool_id": "cn_video",
+            "running": 84,
+            "max": 100
+          },
+          "refill_claimed": 0
+        },
+        {
+          "rel": {
+            "ok": true,
+            "pool_id": "cn_video",
+            "running": 84,
+            "max": 100
+          },
+          "refill_claimed": 0
+        }
+      ]
+    },
+    "duplicate_claim": {
+      "ok": 0,
+      "results": [
+        {
+          "ok": false,
+          "reason": "CLAIM_RACE"
+        },
+        {
+          "ok": false,
+          "reason": "CLAIM_RACE"
+        },
+        {
+          "ok": false,
+          "reason": "CLAIM_RACE"
+        }
+      ]
+    },
+    "idempotent_charge": {
+      "first": {
+        "ok": true
+      },
+      "second": {
+        "ok": true,
+        "idempotent": true
+      },
+      "charge_row_status": "charged",
+      "balance": 5009
+    },
+    "immediate_refill_settle": {
+      "settle": {
+        "ok": true,
+        "status": "success"
+      },
+      "before": 65,
+      "after": 64,
+      "wait_task_status": "claimed"
+    },
+    "idle_behavior": {
+      "snap": {
+        "total_running": 0
+      },
+      "work": {
+        "count": 0,
+        "has_any": false,
+        "scanned": 0,
+        "table": "nx_task_work"
+      },
+      "invoke": {
+        "ok": false,
+        "elapsed_ms": 1
+      }
+    },
+    "resource_pool_consistency": {
+      "samples": [
+        {
+          "task_id": "d36ba033-e338-41fa-a1f1-edfa01ad912d",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "b5487334-99d4-4d84-ad01-b657674ff4dc",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "bf88c157-6e7e-4309-9417-674bb6f21662",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "a7652713-e75e-4678-85f4-0aee55d7e661",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "10efecf8-6b70-44e7-92d1-c299d962ef10",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "479cbc2c-22d4-4ed5-b92f-fbbf4c931667",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        },
+        {
+          "task_id": "92bc571d-a926-4c5e-ae30-3688dcc0db08",
+          "task_resource_pool": null,
+          "work_resource_pool": null,
+          "consistent": true
+        }
+      ]
+    },
+    "legacy_counter_migration": {
+      "video": {
+        "exists": true,
+        "running": 0
+      },
+      "image": {
+        "exists": true,
+        "running": 0
+      },
+      "cn_video": {
+        "exists": true,
+        "running": 0
+      },
+      "cn_image": {
+        "exists": true,
+        "running": 0
+      },
+      "overseas_video": {
+        "exists": true,
+        "running": 0
+      },
+      "overseas_image": {
+        "exists": true,
+        "running": 0
+      },
+      "audio": {
+        "exists": true,
+        "running": 0
+      },
+      "cn_pools_present": true,
+      "legacy_still_acquiring": false,
+      "note": "生产代码 normalizePlatformPoolKind(video|image)→cn_*；acquire/release 走新 PK。旧 video/image 行若仍存在仅为历史残留。"
+    },
+    "cost_observation": {
+      "reason": "idle not passed; bill center check still required"
+    },
+    "deployment": {
+      "hongkong": {
+        "functionName": "nexflow-api",
+        "region": "cn-hongkong",
+        "lastModified": "2026-09-09T14:47:01Z",
+        "codeSize": 15059579,
+        "env_pool": {
+          "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+          "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+          "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+          "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+          "GLOBAL_AUDIO_CONCURRENCY": "100",
+          "GLOBAL_VIDEO_CONCURRENCY": null,
+          "GLOBAL_IMAGE_CONCURRENCY": null
+        }
+      },
+      "beijing": {
+        "functionName": "aixflow-api",
+        "region": "cn-beijing",
+        "lastModified": "2026-09-09T14:47:03Z",
+        "codeSize": 15059579,
+        "env_pool": {
+          "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+          "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+          "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+          "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+          "GLOBAL_AUDIO_CONCURRENCY": "100",
+          "GLOBAL_VIDEO_CONCURRENCY": null,
+          "GLOBAL_IMAGE_CONCURRENCY": null
+        }
+      }
+    }
+  },
+  "verdicts": {
+    "path_resolve": "PASS",
+    "concurrency_101": "PASS",
+    "pool_isolation_cn": "PASS",
+    "pool_isolation_overseas": "FAIL",
+    "release1_refill1": "FAIL",
+    "multi_worker_anti_oversell": "PASS",
+    "duplicate_claim": "FAIL",
+    "idempotent_charge": "PASS",
+    "immediate_refill_settle": "PASS",
+    "idle_behavior": "FAIL",
+    "resource_pool_consistency": "FAIL",
+    "legacy_counter_migration": "PASS",
+    "cost_observation": "NOT VERIFIED",
+    "deployment": "PASS"
+  },
+  "errors": [
+    {
+      "key": "pool_isolation_overseas",
+      "msg": "{\"overseas_claimed_ok\":99,\"cn_video_used\":97,\"overseas_video_used\":97}"
+    },
+    {
+      "key": "release1_refill1",
+      "msg": "{\"before\":98,\"after_release\":96,\"release\":{\"ok\":true,\"pool_id\":\"cn_video\",\"running\":94,\"max\":100},\"refill_claimed\":0,\"after_refill\":91}"
+    },
+    {
+      "key": "duplicate_claim",
+      "msg": "{\"ok\":0,\"results\":[{\"ok\":false,\"reason\":\"CLAIM_RACE\"},{\"ok\":false,\"reason\":\"CLAIM_RACE\"},{\"ok\":false,\"reason\":\"CLAIM_RACE\"}]}"
+    },
+    {
+      "key": "idle_behavior",
+      "msg": "{\"snap\":{\"total_running\":0},\"work\":{\"count\":0,\"has_any\":false,\"scanned\":0,\"table\":\"nx_task_work\"},\"invoke\":{\"ok\":false,\"elapsed_ms\":1}}"
+    },
+    {
+      "key": "resource_pool_consistency",
+      "msg": "[{\"task_id\":\"d36ba033-e338-41fa-a1f1-edfa01ad912d\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"b5487334-99d4-4d84-ad01-b657674ff4dc\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"bf88c157-6e7e-4309-9417-674bb6f21662\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"a7652713-e75e-4678-85f4-0aee55d7e661\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"10efecf8-6b70-44e7-92d1-c299d962ef10\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"479cbc2c-22d4-4ed5-b92f-fbbf4c931667\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true},{\"task_id\":\"92bc571d-a926-4c5e-ae30-3688dcc0db08\",\"task_resource_pool\":null,\"work_resource_pool\":null,\"consistent\":true}]"
+    }
+  ],
+  "notes": [],
+  "cleanup_snap": {
+    "cn_video": 0,
+    "cn_image": 0,
+    "overseas_video": 0,
+    "overseas_image": 0,
+    "total_running": 0
+  },
+  "verdicts_summary": {
+    "1_Deployment": "PASS",
+    "2_Pool_Isolation": "FAIL",
+    "3_100_Concurrency_Limit": "PASS",
+    "4_Release1_Refill1": "FAIL",
+    "5_Multi_worker_Anti_Oversell": "PASS",
+    "6_Duplicate_Claim": "FAIL",
+    "7_Idempotent_Charge": "PASS",
+    "8_Idle_Behavior": "FAIL",
+    "9_Immediate_Refill": "PASS",
+    "10_Legacy_Counter": "PASS",
+    "11_resource_pool_Consistency": "FAIL",
+    "12_Cost_Observation": "NOT VERIFIED",
+    "path_resolve": "PASS"
+  },
+  "finished_at": "2026-09-09T15:32:51.126Z",
+  "summary": {
+    "passed": [
+      "1_Deployment",
+      "3_100_Concurrency_Limit",
+      "5_Multi_worker_Anti_Oversell",
+      "7_Idempotent_Charge",
+      "9_Immediate_Refill",
+      "10_Legacy_Counter",
+      "path_resolve"
+    ],
+    "failed": [
+      "2_Pool_Isolation",
+      "4_Release1_Refill1",
+      "6_Duplicate_Claim",
+      "8_Idle_Behavior",
+      "11_resource_pool_Consistency"
+    ],
+    "not_verified": [
+      "12_Cost_Observation"
+    ],
+    "can_enter_phase2": false
+  }
+}

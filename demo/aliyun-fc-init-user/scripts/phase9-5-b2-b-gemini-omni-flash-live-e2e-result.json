@@ -1,0 +1,78 @@
+{
+  "started_at": "2026-09-06T02:06:32.288Z",
+  "conclusion": "NEEDS-REVIEW",
+  "errors": [
+    "liveA fail: failed PROVIDER_NO_TASK_ID",
+    "liveB fail: failed PROVIDER_NO_TASK_ID",
+    "Live A/B PROVIDER_NO_TASK_ID caused by RH.ai 605 insufficient balance (BLOCKED_EXTERNAL)"
+  ],
+  "live_a_1img": {
+    "ok": false,
+    "aixflow_task_id": "eb4f1258-1c15-4893-8769-cfec70f0934d",
+    "runninghub_task_id": "",
+    "submit_region": "ai",
+    "poll_region": "ai",
+    "path": "/gemini-omni-flash/image-to-video",
+    "billing_sku": "gemini-omni-flash-720p-10s",
+    "quoted_cost": 44,
+    "actual_charge": 44,
+    "charge_status": "refunded",
+    "charge_count": 0,
+    "refund_count": 1,
+    "final_status": "failed",
+    "result_url": "",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "imageUrls_len": 1,
+    "duration_type": "string",
+    "duration_value": "10",
+    "balance_delta": 0,
+    "error_code": "PROVIDER_NO_TASK_ID",
+    "blocked_external": true
+  },
+  "live_b_3img": {
+    "ok": false,
+    "aixflow_task_id": "8cfe3e60-8fe0-4223-a56c-8eab54273d76",
+    "runninghub_task_id": "",
+    "submit_region": "ai",
+    "poll_region": "ai",
+    "path": "/gemini-omni-flash/image-to-video",
+    "billing_sku": "gemini-omni-flash-720p-10s",
+    "quoted_cost": 44,
+    "actual_charge": 44,
+    "charge_status": "refunded",
+    "charge_count": 0,
+    "refund_count": 1,
+    "final_status": "failed",
+    "result_url": "",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "imageUrls_len": 3,
+    "duration_type": "string",
+    "duration_value": "10",
+    "balance_delta": 0,
+    "error_code": "PROVIDER_NO_TASK_ID",
+    "blocked_external": true
+  },
+  "regressions": {
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS",
+    "invalid_forward": "PASS",
+    "h3_t2v": {
+      "ok": false,
+      "status": "failed",
+      "pid": "",
+      "region": "cn",
+      "err": "PROVIDER_NO_TASK_ID",
+      "task_id": "cd74bc4f-669b-4abe-8297-f1d397ff8547"
+    }
+  },
+  "ots_price_720p_10s": 44,
+  "finished_at": "2026-09-06T02:11:31.771Z",
+  "rh_diag": {
+    "conclusion": "BLOCKED_EXTERNAL_BALANCE",
+    "rh_code": "605",
+    "rh_msg": "Your balance is insufficient. Please top up your account."
+  }
+}

@@ -72,6 +72,7 @@ export type VideoSpliceStrings = {
   exportingProgress: (pct: number) => string;
   importMediaSkipped: (names: string) => string;
   aspectRatioLabel: string;
+  aspectAuto: string;
   pickAspectRatioTitle: string;
   /** 预览区：重置片段画面位置/尺寸 */
   resetClipLayout: string;
@@ -157,7 +158,8 @@ const zh: VideoSpliceStrings = {
   exportingProgress: (pct) => `导出中 ${Math.max(0, Math.min(100, Math.round(pct)))}%`,
   importMediaSkipped: (names) => `以下文件未能导入剪辑轨道（格式不支持或读取失败）：${names}`,
   aspectRatioLabel: '画面比例',
-  pickAspectRatioTitle: '选择预览与导出的画面比例',
+  aspectAuto: 'Auto',
+  pickAspectRatioTitle: '选择预览与导出的画面比例（Auto 跟随原片尺寸）',
   resetClipLayout: '重置位置',
   resetClipLayoutTitle: '将画面位置与尺寸恢复为铺满预览',
   transformModeLayout: '位置',
@@ -239,7 +241,8 @@ const en: VideoSpliceStrings = {
   exportingProgress: (pct) => `Exporting ${Math.max(0, Math.min(100, Math.round(pct)))}%`,
   importMediaSkipped: (names) => `Could not import to timeline (unsupported or failed): ${names}`,
   aspectRatioLabel: 'Aspect ratio',
-  pickAspectRatioTitle: 'Preview and export aspect ratio',
+  aspectAuto: 'Auto',
+  pickAspectRatioTitle: 'Preview and export aspect ratio (Auto follows source)',
   resetClipLayout: 'Reset layout',
   resetClipLayoutTitle: 'Reset clip position and size to fill the frame',
   transformModeLayout: 'Layout',

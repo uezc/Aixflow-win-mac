@@ -6,6 +6,7 @@ import { formatDramaDialogueLines } from './factories.js';
 import { dramaShotDirectingFingerprint } from './directingBreakdown.js';
 import { formatDramaTimelineEventDisplay } from './timelineEvent.js';
 import type { DramaDirectorSession, DramaShot } from './types.js';
+import { DRAMA_H3_TIMING_SOUND_BREAKDOWN_RULES } from './prompts/h3TimingSoundHandbook.js';
 
 export const DRAMA_DIRECTING_BREAKDOWN_SYSTEM = `你是影视导演，不是 Prompt 写手。
 只输出一个 JSON 对象，不要 markdown，不要六段式提示词，不要主体定义/详细描述长文。
@@ -37,7 +38,7 @@ schema:
       "action": "可执行动作，禁止只写很害怕",
       "dialogue": "有对白才填原文",
       "dialogueCharacterId": "说话人 character_id",
-      "environmentSound": "环境音",
+      "environmentSound": "底噪Loop｜同步Foley（禁止台词）",
       "continuityIn": "从上一拍什么状态进入",
       "continuityOut": "本拍结束状态"
     }
@@ -54,6 +55,8 @@ schema:
 - 不要输出最终视频 Prompt。
 - beats 数量：6 秒镜 2–4 拍；10 秒镜 3–6 拍；15 秒镜 4–8 拍。宁可多拍，不要一拍演完整段对白。
 
+${DRAMA_H3_TIMING_SOUND_BREAKDOWN_RULES}
+
 【拍摄执行表 QA · 强制】
 1. 人物/威胁源切换必须有转场拍：若上一拍是 A 逼近/敲门/喊话，下一拍切到 B 交谈，必须在 answers.nextHandoff 与 beats.continuityIn 写清「A 离开/被拒/淡出 → 时间跳切 N 秒 → B 入画或一直在场但此前未交代」。禁止无因果硬切。
 2. 极端天气（雨夜车内/窗外水花）：sfx 写清「雨声 Loop + 可选 ADR」；action 不要假设同期收音可用；备注级信息写入 environmentSound（如「雨声后期叠加，对白 ADR」）。
@@ -66,7 +69,7 @@ export function buildDramaDirectingBreakdownMessages(
   prev: DramaShot | null,
 ): { systemPrompt: string; userPrompt: string } {
   const names = (shot.character_ids || [])
-    .map((id) => session.bible.characters.find((c) => c.character_id === id))
+    .map((id) => (session.bible?.characters || []).find((c) => c.character_id === id))
     .filter(Boolean)
     .map((c) => `${c!.character_id} ${c!.name}`)
     .join('、');

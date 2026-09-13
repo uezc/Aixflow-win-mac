@@ -12,6 +12,8 @@ import {
   dramaVideoModelMaxRefImages,
   dramaVideoModelRequiresShotAudio,
   dramaShotHasSpokenDialogue,
+  dramaShotHasOnlySystemDialogue,
+  activeDramaCostume,
   findDramaCostumeOwner,
   listDramaShotRefAudioSlots,
   listDramaShotRefImageSlots,
@@ -22,10 +24,12 @@ import {
   resolveDramaShotVoiceIds,
   resolvePropMasterReferenceUrl,
   resolveSceneMasterReferenceUrl,
+  resolveDramaCharacterLookUrl,
   setActiveDramaCharacterCostume,
   dramaShotRequiresCast,
   collectDramaShotCastGateIssues,
   resolveEffectiveDramaShotCharacterIds,
+  isDramaSystemVoiceId,
   type DramaDirectorSession,
   type DramaShot,
   type DramaShotRefImageSlotView,
@@ -34,7 +38,7 @@ import { MusicPlayer } from '../Workspace/MusicPlayer';
 import { RefImageHoverThumb } from '../Canvas/RefImageHoverThumb';
 import { ModuleProgressBar } from '../Canvas/ModuleProgressBar';
 import { yuanbaoHoverTipAboveCls } from '../darkModalShell';
-import { AudioLines } from 'lucide-react';
+import { AudioLines, Coins } from 'lucide-react';
 import {
   DramaShotAddAssetCard,
   type DramaShotAddKind,
@@ -44,6 +48,18 @@ import {
 function mutedCls(isDark: boolean) {
   return isDark ? 'text-white/50' : 'text-gray-500';
 }
+
+/** 造型切换标签颜色组：按索引循环分配，每个造型一种颜色 */
+const COSTUME_TAG_COLORS = [
+  '#0ea5e9', // sky
+  '#8b5cf6', // violet
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#f43f5e', // rose
+  '#06b6d4', // cyan
+  '#f97316', // orange
+  '#6366f1', // indigo
+] as const;
 
 function LongPressThumb({
   children,
@@ -82,14 +98,34 @@ function LongPressThumb({
   );
 }
 
+function SlotIndexTag({
+  label,
+  isDark,
+}: {
+  label: string;
+  isDark: boolean;
+}) {
+  return (
+    <div
+      className={`mt-0.5 text-center text-[10px] font-semibold tabular-nums leading-none ${
+        isDark ? 'text-sky-300' : 'text-sky-700'
+      }`}
+    >
+      {label}
+    </div>
+  );
+}
+
 function CharRefAudio({
   url,
   isDark,
   mediaActive = true,
+  audioIndex,
 }: {
   url?: string;
   isDark: boolean;
   mediaActive?: boolean;
+  audioIndex?: number;
 }) {
   return (
     <div className="mt-0.5 min-h-[78px] min-w-0">
@@ -99,6 +135,9 @@ function CharRefAudio({
         cardWaveform
         mediaActive={mediaActive}
       />
+      {audioIndex && audioIndex > 0 ? (
+        <SlotIndexTag label={`声音${audioIndex}`} isDark={isDark} />
+      ) : null}
     </div>
   );
 }
@@ -116,6 +155,22 @@ function resolveBoardShotCharacters(session: DramaDirectorSession, shot: DramaSh
   return ids.map((id) => byId.get(id)).filter(Boolean) as NonNullable<
     ReturnType<typeof byId.get>
   >[];
+}
+
+/** 本镜人物卡取图：指定造型只用这一套，绝不回退到默认服装旧图。 */
+function resolveShotCharacterDisplay(
+  session: DramaDirectorSession,
+  shot: DramaShot,
+  characterId: string,
+): { url: string; costumeId: string } {
+  const ch = session.bible.characters.find((c) => c.character_id === characterId);
+  const castMember = (shot.cast || []).find((m) => m.character_id === characterId);
+  const costumeId =
+    String(castMember?.costume_id || '').trim() ||
+    String(activeDramaCostume(ch)?.costume_id || '').trim();
+  const lookUrl = resolveDramaCharacterLookUrl(ch, costumeId);
+  const url = lookUrl || (!costumeId ? String(ch?.imageUrl || '').trim() : '');
+  return { url, costumeId };
 }
 
 function descForSlot(
@@ -212,6 +267,10 @@ export function DramaShotRefZones({
       session.bible.voices.find((v) => v.voice_id === ch.voice_id) ||
       session.bible.voices.find((v) => v.character_id === ch.character_id);
     return String(voice?.identity?.reference_audio || voice?.sample_url || '').trim();
+  };
+  const audioIndexForId = (characterId: string) => {
+    const hit = refAudioSlots.find((a) => a.character_id === characterId);
+    return hit && hit.index > 0 ? hit.index : 0;
   };
 
   const patch = (partial: Partial<DramaShot>) => onPatchShot(shot.shot_id, partial);
@@ -314,6 +373,25 @@ export function DramaShotRefZones({
       const character_ids = [...(shot.character_ids || []), characterId].filter(
         (x, i, arr) => x && arr.indexOf(x) === i,
       );
+      const existingCast = (shot.cast || []).find((m) => m.character_id === characterId);
+      const nextCast = existingCast
+        ? (shot.cast || []).map((m) =>
+            m.character_id === characterId ? { ...m, costume_id: id } : m,
+          )
+        : [
+            ...(shot.cast || []),
+            {
+              character_id: characterId,
+              screen_position: '',
+              action: '',
+              expression: '',
+              emotion: { primary: '', intensity: 0.6 },
+              performance: '',
+              dialogue_ids: [] as string[],
+              voice_id: '',
+              costume_id: id,
+            },
+          ];
       const ch = nextSession.bible.characters.find((c) => c.character_id === characterId);
       const voice =
         (ch &&
@@ -329,12 +407,12 @@ export function DramaShotRefZones({
         ...nextSession,
         shots: nextSession.shots.map((s) =>
           s.shot_id === shot.shot_id
-            ? { ...s, character_ids, voice_ids: nextVoices }
+            ? { ...s, character_ids, voice_ids: nextVoices, cast: nextCast }
             : s,
         ),
       } as DramaDirectorSession;
       if (onSessionChange) onSessionChange(nextSession);
-      else patch({ character_ids, voice_ids: nextVoices });
+      else patch({ character_ids, voice_ids: nextVoices, cast: nextCast });
       return;
     }
     if (!canAddKind(kind as DramaShotAddKind)) {
@@ -354,6 +432,7 @@ export function DramaShotRefZones({
       const character_ids = [...(shot.character_ids || []), id].filter(
         (x, i, arr) => x && arr.indexOf(x) === i,
       );
+      const removed_character_ids = (shot.removed_character_ids || []).filter((rid) => rid !== id);
       const voice =
         (ch &&
           (session.bible.voices.find((v) => v.voice_id === ch.voice_id) ||
@@ -364,7 +443,7 @@ export function DramaShotRefZones({
         voice?.voice_id && !voice_ids.includes(voice.voice_id)
           ? [...voice_ids, voice.voice_id].slice(0, 3)
           : voice_ids;
-      patch({ character_ids, voice_ids: nextVoices });
+      patch({ character_ids, removed_character_ids, voice_ids: nextVoices });
       return;
     }
     if (kind === 'prop') {
@@ -393,6 +472,7 @@ export function DramaShotRefZones({
     }
     if (slot.role === 'character' && slot.asset_id) {
       const character_ids = (shot.character_ids || []).filter((id) => id !== slot.asset_id);
+      const removed_character_ids = [...new Set([...(shot.removed_character_ids || []), slot.asset_id])].filter(Boolean);
       const ch = session.bible.characters.find((c) => c.character_id === slot.asset_id);
       const dropVoice =
         (ch &&
@@ -402,7 +482,7 @@ export function DramaShotRefZones({
       const voice_ids = resolveDramaShotVoiceIds(session, shot).filter(
         (id) => id !== dropVoice?.voice_id,
       );
-      patch({ character_ids, voice_ids });
+      patch({ character_ids, removed_character_ids, voice_ids });
       return;
     }
     if (slot.role === 'prop' && slot.asset_id) {
@@ -430,7 +510,8 @@ export function DramaShotRefZones({
   const audioUrl = String(shot.audio_url || '').trim();
   const audioGenerating = String(shot.audio_status || '').trim() === 'generating';
   const canAudio = dramaShotNeedsAudioContent(shot);
-  const hasDlg = (shot.dialogue || []).some((d) => String(d.text || '').trim());
+  const hasDlg = dramaShotHasSpokenDialogue(shot);
+  const onlySystemDlg = dramaShotHasOnlySystemDialogue(session, shot);
 
   const sceneSlots = refImageSlots.filter((s) => s.role === 'scene');
   const storyboardSlots = refImageSlots.filter((s) => s.role === 'storyboard');
@@ -472,7 +553,7 @@ export function DramaShotRefZones({
       showAlert('请先为本镜填写对白或环境音效');
       return;
     }
-    if (hasDlg && refAudioSlots.length === 0) {
+    if (hasDlg && refAudioSlots.length === 0 && !onlySystemDlg) {
       showAlert('本镜有对白但尚无角色参考音，请先为出场人物准备试听音（素材准备）');
       return;
     }
@@ -504,7 +585,8 @@ export function DramaShotRefZones({
           className={`${yuanbaoHoverTipAboveCls} translate-y-0 opacity-100`}
           title={shotAudioPriceTip}
         >
-          {shotAudioPriceTip}
+          <Coins className="h-3 w-3 shrink-0 text-amber-300" aria-hidden strokeWidth={2.25} />
+          <span>{shotAudioPriceTip}</span>
         </span>
       ) : null}
       <button
@@ -550,6 +632,7 @@ export function DramaShotRefZones({
           </div>
         ) : null}
       </div>
+      <SlotIndexTag label="声音1" isDark={isDark} />
       <div className="mt-1 w-full min-w-0">{shotAudioGenButton}</div>
     </div>
   );
@@ -563,6 +646,16 @@ export function DramaShotRefZones({
     onRemove?: () => void;
     showShotAudio?: boolean;
     charAudioUrl?: string;
+    /** 出片 <Picture N>，与 nodeInfoList 图槽一致 */
+    pictureIndex?: number;
+    /** 出片 <Audio N>，与 nodeInfoList 参考音槽一致 */
+    audioIndex?: number;
+    /** 角色有多个造型时：本镜独立切换标签 */
+    costumeOptions?: {
+      characterId: string;
+      costumes: { costume_id: string; name: string }[];
+      currentCostumeId?: string;
+    };
   };
 
   const galleryCards: GalleryCard[] = [];
@@ -575,6 +668,8 @@ export function DramaShotRefZones({
       desc: descForSlot(session, shot, slot),
       onRemove: () => removeSlot(slot),
       showShotAudio: showShotAudioUi && i === 0,
+      pictureIndex: slot.index,
+      audioIndex: showShotAudioUi && i === 0 ? 1 : undefined,
     });
   });
   const shotAudioOnGallery = galleryCards.some((c) => c.showShotAudio);
@@ -586,45 +681,91 @@ export function DramaShotRefZones({
       url: slot.url,
       desc: descForSlot(session, shot, slot),
       onRemove: () => removeSlot(slot),
+      pictureIndex: slot.index,
     });
   });
   let charSerial = 0;
   charRowSlots.forEach((slot) => {
     charSerial += 1;
+    const ch = characters.find((c) => c.character_id === slot.asset_id);
+    const costumes = (ch?.costumes || []).filter((cos) => cos.costume_id);
+    const display = slot.asset_id
+      ? resolveShotCharacterDisplay(session, shot, slot.asset_id)
+      : { url: slot.url, costumeId: '' };
     galleryCards.push({
-      key: `char-${slot.asset_id || slot.url || charSerial}`,
+      key: `char-${slot.asset_id || display.url || charSerial}:${display.costumeId}:${display.url}`,
       kindLabel: `人物${charSerial}`,
       name: String(slot.name || '').trim(),
-      url: slot.url,
+      url: display.url,
       desc: descForSlot(session, shot, slot),
       onRemove: () => removeSlot(slot),
       charAudioUrl: slot.asset_id ? sampleUrlForCharacter(slot.asset_id) : '',
+      pictureIndex: slot.index,
+      audioIndex: slot.asset_id ? audioIndexForId(slot.asset_id) : 0,
+      costumeOptions:
+        costumes.length > 1 && slot.asset_id
+          ? {
+              characterId: slot.asset_id,
+              costumes: costumes.map((cos) => ({
+                costume_id: cos.costume_id,
+                name: cos.name || '造型',
+              })),
+              currentCostumeId: display.costumeId,
+            }
+          : undefined,
     });
   });
   orphanChars.forEach((ch) => {
     charSerial += 1;
-    const url = resolveCharacterMasterReferenceUrl(ch) || String(ch.imageUrl || '').trim();
+    // 本镜造型覆盖：孤儿角色也支持按 shot.cast 切换参考图
+    const display = resolveShotCharacterDisplay(session, shot, ch.character_id);
+    const costumes = (ch.costumes || []).filter((cos) => cos.costume_id);
     galleryCards.push({
-      key: `orphan-ch-${ch.character_id}`,
-      kindLabel: url ? `人物${charSerial}·未送出` : `人物${charSerial}·无图`,
+      key: `orphan-ch-${ch.character_id}:${display.costumeId}:${display.url}`,
+      kindLabel: display.url ? `人物${charSerial}·未送出` : `人物${charSerial}·无图`,
       name: ch.name,
-      url,
-      desc: url
+      url: display.url,
+      costumeOptions:
+        costumes.length > 1
+          ? {
+              characterId: ch.character_id,
+              costumes: costumes.map((cos) => ({
+                costume_id: cos.costume_id,
+                name: cos.name || '造型',
+              })),
+              currentCostumeId: display.costumeId,
+            }
+          : undefined,
+      desc: display.url
         ? `参考图额度已满（${maxRefImages}），本人物有图但未进入出片槽；请减少场景/道具或换全能参考后再添加。`
         : String(ch.prompt || '').trim(),
       onRemove: () => {
         const character_ids = (shot.character_ids || []).filter((id) => id !== ch.character_id);
+        const removed_character_ids = [...new Set([...(shot.removed_character_ids || []), ch.character_id])].filter(Boolean);
         const dropVoice =
           session.bible.voices.find((v) => v.voice_id === ch.voice_id) ||
           session.bible.voices.find((v) => v.character_id === ch.character_id);
         const voice_ids = resolveDramaShotVoiceIds(session, shot).filter(
           (id) => id !== dropVoice?.voice_id,
         );
-        patch({ character_ids, voice_ids });
+        patch({ character_ids, removed_character_ids, voice_ids });
       },
       charAudioUrl: sampleUrlForCharacter(ch.character_id),
+      audioIndex: audioIndexForId(ch.character_id),
     });
   });
+  const sysAudio = refAudioSlots.find((a) => isDramaSystemVoiceId(a.character_id));
+  if (sysAudio?.sample_url) {
+    galleryCards.push({
+      key: 'system-voice',
+      kindLabel: '系统音',
+      name: '系统',
+      url: '',
+      desc: '非人物语音，不进画面 Subject',
+      charAudioUrl: String(sysAudio.sample_url).trim(),
+      audioIndex: sysAudio.index,
+    });
+  }
   propSlots.forEach((slot, i) => {
     galleryCards.push({
       key: `prop-${slot.asset_id || slot.url || i}`,
@@ -633,6 +774,7 @@ export function DramaShotRefZones({
       url: slot.url,
       desc: descForSlot(session, shot, slot),
       onRemove: () => removeSlot(slot),
+      pictureIndex: slot.index,
     });
   });
   orphanProps.forEach((p) => {
@@ -657,6 +799,7 @@ export function DramaShotRefZones({
       url: slot.url,
       desc: descForSlot(session, shot, slot),
       onRemove: () => removeSlot(slot),
+      pictureIndex: slot.index,
     });
   });
   orphanCreatures.forEach((c) => {
@@ -675,14 +818,52 @@ export function DramaShotRefZones({
 
   const overflow = galleryCards.length + 1 > 5;
 
+  /** 本镜独立切换角色造型：只改当前 shot 的 cast.costume_id，不影响其他镜头 */
+  const switchShotCostume = (characterId: string, costumeId: string) => {
+    const existing = (shot.cast || []).find((m) => m.character_id === characterId);
+    let nextCast;
+    if (existing) {
+      nextCast = shot.cast.map((m) =>
+        m.character_id === characterId ? { ...m, costume_id: costumeId } : m,
+      );
+    } else {
+      // cast 里没有该角色：补一条最小记录，仅记 costume_id
+      nextCast = [
+        ...(shot.cast || []),
+        {
+          character_id: characterId,
+          screen_position: '',
+          action: '',
+          expression: '',
+          emotion: { primary: '', intensity: 0.6 },
+          performance: '',
+          dialogue_ids: [] as string[],
+          voice_id: '',
+          costume_id: costumeId,
+        },
+      ];
+    }
+    patch({ cast: nextCast });
+  };
+
   const renderGalleryCard = (card: GalleryCard) => (
     <div key={card.key} className="min-w-0">
       <div
         className="mb-0.5 flex min-w-0 items-center gap-0.5"
-        title={`${card.kindLabel} ${card.name || ''}`.trim()}
+        title={`${card.kindLabel}${
+          card.pictureIndex && card.pictureIndex > 0 ? ` 图${card.pictureIndex}` : ''
+        }${card.audioIndex && card.audioIndex > 0 ? ` 声音${card.audioIndex}` : ''} ${
+          card.name || ''
+        }`.trim()}
       >
         <div className="min-w-0 flex-1 truncate text-[11px] leading-tight">
           <span className="font-medium text-violet-300">{card.kindLabel}</span>
+          {card.pictureIndex && card.pictureIndex > 0 ? (
+            <span className={isDark ? 'text-sky-300' : 'text-sky-700'}> 图{card.pictureIndex}</span>
+          ) : null}
+          {card.audioIndex && card.audioIndex > 0 && !card.pictureIndex ? (
+            <span className={isDark ? 'text-sky-300' : 'text-sky-700'}> 声音{card.audioIndex}</span>
+          ) : null}
           {card.name ? (
             <span className={isDark ? 'text-white/85' : 'text-gray-800'}> {card.name}</span>
           ) : null}
@@ -692,6 +873,7 @@ export function DramaShotRefZones({
         <div className={thumbBox('aspect-[3/4] w-full')}>
           {card.url ? (
             <RefImageHoverThumb
+              key={card.url}
               url={card.url}
               alt=""
               title={card.name || card.kindLabel}
@@ -699,6 +881,7 @@ export function DramaShotRefZones({
               previewBorderless
               preferListThumb
               listThumbMaxEdge={128}
+              cacheNonce={card.url}
               className="absolute inset-0 h-full w-full rounded-[inherit]"
             />
           ) : (
@@ -710,9 +893,49 @@ export function DramaShotRefZones({
           )}
         </div>
       </LongPressThumb>
+      {card.pictureIndex && card.pictureIndex > 0 ? (
+        <SlotIndexTag label={`图${card.pictureIndex}`} isDark={isDark} />
+      ) : null}
+      {card.costumeOptions ? (
+        <div className="mt-0.5 flex flex-row flex-nowrap gap-0.5 overflow-x-auto">
+          {card.costumeOptions.costumes.map((cos, idx) => {
+            const active = cos.costume_id === card.costumeOptions!.currentCostumeId;
+            const color = COSTUME_TAG_COLORS[idx % COSTUME_TAG_COLORS.length];
+            return (
+              <button
+                key={cos.costume_id}
+                type="button"
+                disabled={busy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  switchShotCostume(card.costumeOptions!.characterId, cos.costume_id);
+                }}
+                className="nodrag rounded px-1.5 py-0.5 text-[9px] font-medium leading-none transition-all"
+                style={
+                  active
+                    ? { backgroundColor: color, color: '#fff', boxShadow: `0 0 0 1px ${color}` }
+                    : {
+                        backgroundColor: color + '1f',
+                        color: isDark ? color : color,
+                        boxShadow: `0 0 0 1px ${color}40`,
+                      }
+                }
+                title={`切换为${cos.name}`}
+              >
+                {cos.name}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       {card.showShotAudio ? shotAudioBlock : null}
       {card.charAudioUrl !== undefined ? (
-        <CharRefAudio url={card.charAudioUrl} isDark={isDark} mediaActive={mediaActive} />
+        <CharRefAudio
+          url={card.charAudioUrl}
+          isDark={isDark}
+          mediaActive={mediaActive}
+          audioIndex={card.audioIndex}
+        />
       ) : null}
     </div>
   );

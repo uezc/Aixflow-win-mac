@@ -153,7 +153,7 @@ export async function callFCGenericTask(opts = {}) {
       h['x-task-id'] = taskId;
     }
     return {
-      timeout: forward ? 600000 : 180000,
+      timeout: forward ? 600000 : 300000,
       headers: h,
       proxy: false,
       httpsAgent,

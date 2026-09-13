@@ -5,6 +5,21 @@ import { settingsT } from '../i18n/settingsI18n';
 
 export const NEXFLOW_RECHARGE_SETTLED_EVENT = 'nexflow-recharge-settled';
 
+/** 请求打开账户页充值弹窗（画布顶栏「云端元宝」等入口） */
+export const NEXFLOW_OPEN_RECHARGE_EVENT = 'nexflow-open-recharge';
+export const NEXFLOW_OPEN_RECHARGE_FLAG = 'nexflow_open_recharge';
+
+export function requestOpenRechargeUi(): void {
+  try {
+    sessionStorage.setItem(NEXFLOW_OPEN_RECHARGE_FLAG, '1');
+  } catch {
+    /* ignore */
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(NEXFLOW_OPEN_RECHARGE_EVENT));
+  }
+}
+
 /** 全局监听充值到账（任意页面均弹出成功提示） */
 export const RechargeSettledNotifier: React.FC = () => {
   const { locale } = useAppLocale();

@@ -2,6 +2,7 @@
  * 导演镜头：时长估算 + 秒级时间轴（启发式 / LLM 结果归一化）
  */
 
+import { formatDirectorH3Timecode } from '../directorPipeline/minimaxH3DramaPrompt.js';
 import { createEmptyDramaShot, formatDramaDialogueLines, snapDramaPlanDurationSec } from './factories.js';
 import { applyDramaDirectingBreakdownToShot } from './directingBreakdown.js';
 import { ensureAppearingCharactersInBible } from './ensureAppearingCharacters.js';
@@ -9,7 +10,16 @@ import {
   replaceDramaAnonymousCastLabel,
   syncDramaShotCharacterIds,
 } from './shotCastGate.js';
-import { ensureDramaShotTimelineEvents, buildHeuristicTimelineEvents, isDramaTimelineEventsThin, normalizeDramaTimelineEvents, rescaleDramaTimelineEventsToDuration, createEmptyDramaTimelineEvent } from './timelineEvent.js';
+import {
+  ensureDramaShotTimelineEvents,
+  buildTimelineEventsFromVisualEvents,
+  isDramaTimelineEventsThin,
+  mergeDramaTimelineEventsFillEmpty,
+  rescaleDramaTimelineEventsByPercent,
+  rescaleDramaTimelineEventsToDuration,
+  createEmptyDramaTimelineEvent,
+} from './timelineEvent.js';
+import { applyDramaShotPromptBackfill } from './dramaShotPromptBackfill.js';
 import type {
   DramaCharacter,
   DramaDirectorSession,
@@ -29,6 +39,192 @@ export const DRAMA_SHOT_DURATION_TIERS = [6, 10, 15, 20] as const;
  */
 export function snapDramaShotDurationSec(sec: number): number {
   return snapDramaPlanDurationSec(sec, 10);
+}
+
+/**
+ * 出片档减一档：自动算出来的 20/15/10 偏慢，分别改 15/10/6；6 保持。
+ * 不写回 duration_sec，避免连续生成越减越短。
+ */
+export function downshiftDramaShotDurationTierSec(sec: number): number {
+  const snapped = snapDramaShotDurationSec(sec);
+  const tiers = DRAMA_SHOT_DURATION_TIERS;
+  const idx = (tiers as readonly number[]).indexOf(snapped);
+  if (idx <= 0) return tiers[0];
+  return tiers[idx - 1];
+}
+
+/** 镜卡「时长」档写入 model_params，只作出片秒数，不改时间轴。 */
+export const DRAMA_SHOT_VIDEO_DURATION_PARAM = 'video_duration';
+
+export function readDramaShotExplicitVideoDurationSec(
+  modelParams?: Record<string, string> | null,
+  tiers: readonly number[] = DRAMA_SHOT_DURATION_TIERS,
+): number | null {
+  const rounded = Math.round(Number(String(modelParams?.[DRAMA_SHOT_VIDEO_DURATION_PARAM] || '').trim()));
+  if (!Number.isFinite(rounded) || rounded <= 0) return null;
+  return (tiers as readonly number[]).includes(rounded) ? rounded : null;
+}
+
+/** 出片秒数：手选档优先，否则规划档减一档。 */
+export function resolveDramaGenerateDurationSec(
+  planSec: number,
+  modelParams?: Record<string, string> | null,
+  tiers: readonly number[] = DRAMA_SHOT_DURATION_TIERS,
+): number {
+  const explicit = readDramaShotExplicitVideoDurationSec(modelParams, tiers);
+  if (explicit != null) return explicit;
+  return downshiftDramaShotDurationTierSec(planSec);
+}
+
+/**
+ * 视频总时长变更 / Skill 优化前：
+ * 把彩条 `duration_sec` + `timeline_events` 按占比缩放到目标总秒数，
+ * 并同步 `video_duration`，使切段时间点 = 总时长 × 原占比。
+ * 已有提示词（Skill/编译稿）默认按同一比例重映射时间码；
+ * 若时长由提示词反推而来，传 remapPrompts:false 以免改写已分析时码。
+ */
+export function alignDramaShotTimelineToGenerateDuration(
+  shot: DramaShot,
+  generateSec: number,
+  opts?: { remapPrompts?: boolean },
+): { shot: DramaShot; changed: boolean; fromSec: number; toSec: number } {
+  const tiers = DRAMA_SHOT_DURATION_TIERS;
+  const rounded = Math.round(Number(generateSec) || 0);
+  const toSec = (tiers as readonly number[]).includes(rounded)
+    ? rounded
+    : snapDramaShotDurationSec(generateSec);
+  const fromSec = Math.max(
+    0.1,
+    Number(shot.duration_sec) || 0,
+    ...(shot.timeline_events || []).map((e) => Number(e.end_sec) || 0),
+  );
+  const durChanged = Math.abs(fromSec - toSec) > 0.15;
+  const explicit = String(shot.model_params?.[DRAMA_SHOT_VIDEO_DURATION_PARAM] || '').trim();
+  const paramsNeedSync = explicit !== String(toSec);
+  if (!durChanged && !paramsNeedSync) {
+    return { shot, changed: false, fromSec, toSec };
+  }
+  const timeline_events = durChanged
+    ? rescaleDramaTimelineEventsByPercent(shot.timeline_events, fromSec, toSec)
+    : shot.timeline_events || [];
+  const next: DramaShot = {
+    ...shot,
+    duration_sec: toSec,
+    timeline_events,
+    model_params: {
+      ...(shot.model_params || {}),
+      [DRAMA_SHOT_VIDEO_DURATION_PARAM]: String(toSec),
+    },
+  };
+  if (durChanged && opts?.remapPrompts !== false) {
+    const remap = (t?: string) => {
+      const s = String(t || '');
+      if (!s.trim()) return t;
+      return rescaleDramaPromptTimestampsByDuration(s, fromSec, toSec);
+    };
+    if (shot.h3_skill_prompt != null) next.h3_skill_prompt = remap(shot.h3_skill_prompt);
+    if (shot.h3_skill_prompt_from != null) {
+      next.h3_skill_prompt_from = remap(shot.h3_skill_prompt_from);
+    }
+    if (shot.last_compiled_prompt != null) {
+      next.last_compiled_prompt = remap(shot.last_compiled_prompt);
+    }
+    if (shot.final_prompt != null) next.final_prompt = remap(shot.final_prompt) || '';
+  }
+  return { shot: next, changed: true, fromSec, toSec };
+}
+
+/** 解析 H3 时码 00:03.600 / 00:03.6 / 00:03 → 秒 */
+export function parseDramaH3ClockToSec(raw: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(String(raw || '').trim());
+  if (!m) return null;
+  const mm = Number(m[1]);
+  const ss = Number(m[2]);
+  if (!Number.isFinite(mm) || !Number.isFinite(ss) || ss >= 60) return null;
+  const frac = m[3] || '';
+  let sub = 0;
+  if (frac.length === 1) sub = Number(frac) / 10;
+  else if (frac.length === 2) sub = Number(frac) / 100;
+  else if (frac.length >= 3) sub = Number(frac.slice(0, 3)) / 1000;
+  if (!Number.isFinite(sub)) return null;
+  return mm * 60 + ss + sub;
+}
+
+/**
+ * 从优化稿/Skill 提示词时码推断成片总时长，并向上取模型档（6/10/15/20）。
+ * 例：末段 At 00:09 → 10s；区间 …–00:14.5 → 15s。
+ */
+export function inferDramaDurationSecFromH3Prompt(
+  text: string,
+  tiers: readonly number[] = DRAMA_SHOT_DURATION_TIERS,
+): number | null {
+  const src = String(text || '');
+  if (!src.trim()) return null;
+  const marks: number[] = [];
+  const rangeRe =
+    /(\d{1,2}:\d{2}(?:\.\d{1,3})?)\s*(?:[–\-—~至到]|至)\s*(\d{1,2}:\d{2}(?:\.\d{1,3})?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = rangeRe.exec(src))) {
+    const a = parseDramaH3ClockToSec(m[1]);
+    const b = parseDramaH3ClockToSec(m[2]);
+    if (a != null) marks.push(a);
+    if (b != null) marks.push(b);
+  }
+  const clockRe = /\b(\d{1,2}:\d{2}(?:\.\d{1,3})?)\b/g;
+  while ((m = clockRe.exec(src))) {
+    const s = parseDramaH3ClockToSec(m[1]);
+    if (s != null) marks.push(s);
+  }
+  if (!marks.length) return null;
+  const maxSec = Math.max(...marks);
+  if (!(maxSec > 0) || maxSec > 90) return null;
+  const list = [...tiers].filter((t) => Number.isFinite(t) && t > 0).sort((a, b) => a - b);
+  if (!list.length) return snapDramaShotDurationSec(maxSec);
+  for (const t of list) {
+    if (t + 0.08 >= maxSec) return t;
+  }
+  return list[list.length - 1];
+}
+
+/**
+ * 按总时长比例重映射提示词中的时间码（At 00:03.600、00:00–00:04.0 等）。
+ * 段落正文保留，只改时间节点，避免切时长时丢掉 Skill 优化稿。
+ */
+export function rescaleDramaPromptTimestampsByDuration(
+  text: string,
+  fromSec: number,
+  toSec: number,
+): string {
+  const src = String(text || '');
+  if (!src) return src;
+  const from = Math.max(0.1, Number(fromSec) || 0.1);
+  const to = Math.max(0.1, Number(toSec) || 0.1);
+  if (Math.abs(from - to) < 1e-6) return src;
+  const scale = to / from;
+  const clockRe = /\b(\d{1,2}:\d{2}(?:\.\d{1,3})?)\b/g;
+  return src.replace(clockRe, (full) => {
+    const sec = parseDramaH3ClockToSec(full);
+    if (sec == null) return full;
+    // 明显超出原片长的时码（如误伤其它数字）不改
+    if (sec > from + 0.75) return full;
+    const next = Math.min(to, Math.max(0, round1(sec * scale)));
+    const hadMs = /\.\d{3}$/.test(full);
+    const hadFrac = /\.\d+$/.test(full);
+    if (hadMs) return formatDirectorH3Timecode(next);
+    if (hadFrac) {
+      // 保留一位小数风格：00:03.6
+      const tenths = Math.round(next * 10) / 10;
+      const mm = Math.floor(tenths / 60);
+      const rem = tenths - mm * 60;
+      const ss = Math.floor(rem);
+      const t = Math.round((rem - ss) * 10);
+      const base = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+      return t > 0 ? `${base}.${t}` : base;
+    }
+    const mm = Math.floor(next / 60);
+    const ss = Math.floor(next % 60);
+    return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+  });
 }
 
 export function clampDramaShotDuration(sec: number): number {
@@ -387,9 +583,9 @@ export function resolveCharacterIdsForShot(
   session: DramaDirectorSession,
   shot: DramaShot,
 ): string[] {
-  const byId = new Map(session.bible.characters.map((c) => [c.character_id, c]));
+  const byId = new Map((session.bible?.characters || []).map((c) => [c.character_id, c]));
   const byName = new Map(
-    session.bible.characters.map((c) => [String(c.name || '').trim().toLowerCase(), c]),
+    (session.bible?.characters || []).map((c) => [String(c.name || '').trim().toLowerCase(), c]),
   );
   const seen = new Set<string>();
   const out: string[] = [];
@@ -437,7 +633,7 @@ export function enrichDramaShotLocally(
   shot: DramaShot,
 ): DramaShot {
   shot = syncDramaShotCharacterIds(session, shot);
-  const byId = new Map(session.bible.characters.map((c) => [c.character_id, c]));
+  const byId = new Map((session.bible?.characters || []).map((c) => [c.character_id, c]));
   // 参考图出场以 shot.character_ids 为准；sync 已合并时间轴/文案点名
   const character_ids = (shot.character_ids || [])
     .map((id) => String(id || '').trim())
@@ -462,23 +658,6 @@ export function enrichDramaShotLocally(
     Number.isFinite(storedDur) && storedDur > 0
       ? snapDramaShotDurationSec(storedDur)
       : estimateDramaShotDurationSec(shot);
-  const scene = session.bible.scenes.find((sc) => sc.scene_id === shot.scene_asset_id) || null;
-  const beatCtx = {
-    characterNames: (
-      voiceChars.length ? voiceChars : characters
-    )
-      .map((c) => c.name)
-      .filter(Boolean),
-    sceneName: scene?.name,
-    sceneLocation: scene?.location || '',
-    sceneAnchors: [
-      scene?.spatial_structure,
-      Array.isArray(scene?.fixed_elements) ? scene.fixed_elements.slice(0, 6).join('、') : '',
-    ]
-      .filter(Boolean)
-      .join('，')
-      .slice(0, 160),
-  };
   const hasEvents =
     Array.isArray(shot.timeline_events) &&
     shot.timeline_events.length > 0 &&
@@ -487,43 +666,49 @@ export function enrichDramaShotLocally(
     ? Math.max(0, ...shot.timeline_events.map((e) => Number(e.end_sec) || 0))
     : 0;
   const castNames = characters.map((c) => String(c.name || '').trim()).filter(Boolean);
+  const fromVe = !hasEvents
+    ? buildTimelineEventsFromVisualEvents(session, {
+        ...shot,
+        character_ids,
+        duration_sec,
+      })
+    : [];
   const timeline_events = (hasEvents
     ? rescaleDramaTimelineEventsToDuration(
         shot.timeline_events,
         eventEnd > 0.1 ? eventEnd : duration_sec,
         duration_sec,
       )
-    : buildHeuristicTimelineEvents(
-        { ...shot, character_ids, duration_sec },
-        duration_sec,
-        {
-          characterNames: beatCtx.characterNames,
-          characterIds: character_ids.length ? character_ids : dialogueCharIds,
-          sceneName: beatCtx.sceneName,
-          sceneLocation: beatCtx.sceneLocation,
-          sceneAnchors: beatCtx.sceneAnchors,
-        },
-      )
-  ).map((ev) => {
-    const evIds = (ev.character_ids || []).map(String).filter(Boolean);
-    const nextIds = evIds.length ? evIds : character_ids;
-    return {
-      ...ev,
-      character_ids: nextIds,
-      visual_action: replaceDramaAnonymousCastLabel(String(ev.visual_action || ''), castNames),
-      character_state: replaceDramaAnonymousCastLabel(String(ev.character_state || ''), castNames),
-    };
-  });
+    : fromVe.length
+      ? fromVe
+      : [
+          createEmptyDramaTimelineEvent({
+            start_sec: 0,
+            end_sec: duration_sec,
+            visual_action: '',
+            camera_action: '',
+          }),
+        ]
+  ).map((ev) => ({
+    ...ev,
+    visual_action: replaceDramaAnonymousCastLabel(String(ev.visual_action || ''), castNames),
+    character_state: replaceDramaAnonymousCastLabel(String(ev.character_state || ''), castNames),
+  }));
+  const lastEnd = Math.max(
+    0,
+    ...timeline_events.map((e) => Number(e.end_sec) || 0),
+  );
+  const durationSec = Math.max(duration_sec, lastEnd || 0.1);
   const base = createEmptyDramaShot({
     ...shot,
     character_ids,
     action: replaceDramaAnonymousCastLabel(String(shot.action || ''), castNames),
     voice_ids: voice_ids.length ? voice_ids : shot.voice_ids,
-    duration_sec,
+    duration_sec: durationSec,
     timeline_events,
     timeline_beats: [],
   });
-  return ensureDramaShotTimelineEvents(base);
+  return applyDramaShotPromptBackfill(ensureDramaShotTimelineEvents(base, session));
 }
 
 export function enrichAllDramaShotsLocally(session: DramaDirectorSession): DramaDirectorSession {
@@ -545,20 +730,20 @@ export function buildDramaBoardEnrichMessages(
   userPrompt: string;
 } {
   const style =
-    session.bible.projectVisualBible?.stylePrompt ||
-    session.bible.visualDNA?.generatedPrompt ||
-    session.bible.visual?.style ||
+    session.bible?.projectVisualBible?.stylePrompt ||
+    session.bible?.visualDNA?.generatedPrompt ||
+    session.bible?.visual?.style ||
     '';
   const styleName =
-    session.bible.projectVisualBible?.presetId ||
-    session.bible.visualDNA?.presetId ||
+    session.bible?.projectVisualBible?.presetId ||
+    session.bible?.visualDNA?.presetId ||
     'unset';
-  const chars = session.bible.characters.map((c) => ({
+  const chars = (session.bible?.characters || []).map((c) => ({
     id: c.character_id,
     name: c.name,
     identity: c.identity || c.role,
   }));
-  const scenes = session.bible.scenes.map((s) => ({
+  const scenes = (session.bible?.scenes || []).map((s) => ({
     id: s.scene_id,
     name: s.name,
     location: s.location,
@@ -702,37 +887,54 @@ export function applyDramaBoardEnrichResult(
   const shots = (session.shots || []).map((s) => {
     const patch = byId.get(s.shot_id) || byNo.get(String(s.shot_no || '').trim());
     if (!patch) return enrichDramaShotLocally(session, s);
-    const duration_sec = clampDramaShotDuration(
-      Number(patch.duration_sec) || estimateDramaShotDurationSec({
-        ...s,
-        action: String(patch.action ?? s.action ?? ''),
-        move: String(patch.move ?? s.move ?? ''),
-        size: String(patch.size ?? s.size ?? ''),
-      }),
-    );
+    const existingValid =
+      Array.isArray(s.timeline_events) &&
+      s.timeline_events.length > 0 &&
+      !isDramaTimelineEventsThin(s.timeline_events);
+    const duration_sec = existingValid
+      ? Number(s.duration_sec) > 0
+        ? Number(s.duration_sec)
+        : estimateDramaShotDurationSec(s)
+      : clampDramaShotDuration(
+          Number(patch.duration_sec) ||
+            estimateDramaShotDurationSec({
+              ...s,
+              action: String(s.action || '').trim() || String(patch.action ?? ''),
+              move: String(s.move || '').trim() || String(patch.move ?? ''),
+              size: String(s.size || '').trim() || String(patch.size ?? ''),
+            }),
+        );
     const rawEvents = Array.isArray(patch.timeline_events)
       ? patch.timeline_events.map((e) => createEmptyDramaTimelineEvent(e))
       : [];
-    const timeline_events =
-      rawEvents.length && !isDramaTimelineEventsThin(rawEvents)
-        ? normalizeDramaTimelineEvents(rawEvents, duration_sec)
-        : [];
+    // 有效 Timeline 禁止被 LLM 整表替换；只允许填空导演字段。
+    const timeline_events = existingValid
+      ? mergeDramaTimelineEventsFillEmpty(s.timeline_events, rawEvents)
+      : s.timeline_events || [];
+    const pickEmpty = (cur: string, next: string) => String(cur || '').trim() || String(next || '').trim();
     const merged = createEmptyDramaShot({
       ...s,
       duration_sec,
       timeline_events,
-      timeline_beats: Array.isArray(patch.timeline_beats) ? patch.timeline_beats : [],
-      blocking: String(patch.blocking ?? s.blocking ?? '').trim(),
-      expression: String(patch.expression ?? s.expression ?? '').trim(),
-      eyeline: String(patch.eyeline ?? s.eyeline ?? '').trim(),
-      sfx: String(patch.sfx ?? s.sfx ?? '').trim(),
-      action: String(patch.action ?? s.action ?? '').trim(),
-      size: String(patch.size ?? s.size ?? '').trim(),
-      angle: String(patch.angle ?? s.angle ?? '').trim(),
-      move: String(patch.move ?? s.move ?? '').trim(),
-      character_ids: Array.isArray(patch.character_ids)
-        ? patch.character_ids.map(String)
-        : s.character_ids,
+      timeline_beats: existingValid
+        ? s.timeline_beats || []
+        : Array.isArray(patch.timeline_beats)
+          ? patch.timeline_beats
+          : [],
+      blocking: pickEmpty(s.blocking, String(patch.blocking ?? '')),
+      expression: pickEmpty(s.expression, String(patch.expression ?? '')),
+      eyeline: pickEmpty(s.eyeline, String(patch.eyeline ?? '')),
+      sfx: pickEmpty(s.sfx, String(patch.sfx ?? '')),
+      action: pickEmpty(s.action, String(patch.action ?? '')),
+      size: pickEmpty(s.size, String(patch.size ?? '')),
+      angle: pickEmpty(s.angle, String(patch.angle ?? '')),
+      move: pickEmpty(s.move, String(patch.move ?? '')),
+      character_ids:
+        Array.isArray(s.character_ids) && s.character_ids.length
+          ? s.character_ids
+          : Array.isArray(patch.character_ids)
+            ? patch.character_ids.map(String)
+            : s.character_ids,
     });
     return enrichDramaShotLocally(session, merged);
   });

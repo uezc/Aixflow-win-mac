@@ -1,0 +1,247 @@
+{
+  "ok": true,
+  "after": {
+    "video_running": 0,
+    "image_running": 0
+  },
+  "zombie_after": {
+    "status": "failed",
+    "provider_task_id": ""
+  },
+  "verify": [
+    {
+      "task_id": "5ab09eb3-ca0c-4c87-8132-80b27a3d6f77",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "66fa0126-48cd-46ef-baee-64c5df215fa3",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "6a7295a2-1ce1-4f39-8f17-fd2d28e10b0d",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "708217d5-1bd3-4b49-9560-9de57d9f75f0",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "7f3eea30-e856-46fc-b211-98ab8217e6c4",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "9519ff5c-8c76-46aa-bf30-726c3583e2ac",
+      "status": "failed",
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "e5e4fd68-a976-4141-9265-547628906fb8",
+      "status": "failed",
+      "platform_slot_held": false
+    }
+  ],
+  "drain": [],
+  "actions": [
+    {
+      "task_id": "5ab09eb3-ca0c-4c87-8132-80b27a3d6f77",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "pool_id": "video",
+            "running": 2,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "already_empty": true,
+            "counter_key": "__uxsmoke2_mtram6sj_u#video",
+            "occupied": 0
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "66fa0126-48cd-46ef-baee-64c5df215fa3",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "pool_id": "video",
+            "running": 1,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "counter_key": "__uxpos_mtrcjetc#video",
+            "occupied": 0
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "6a7295a2-1ce1-4f39-8f17-fd2d28e10b0d",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "pool_id": "video",
+            "running": 0,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "counter_key": "__uxsmoke_mtrakta0_u#video",
+            "occupied": 1
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "708217d5-1bd3-4b49-9560-9de57d9f75f0",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "already_empty": true,
+            "pool_id": "video",
+            "running": 0,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "counter_key": "__uxpos_mtrant7m#video",
+            "occupied": 1
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "7f3eea30-e856-46fc-b211-98ab8217e6c4",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "already_empty": true,
+            "pool_id": "video",
+            "running": 0,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "counter_key": "__uxsmoke_mtrakta0_u#video",
+            "occupied": 0
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "9519ff5c-8c76-46aa-bf30-726c3583e2ac",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "already_empty": true,
+            "pool_id": "video",
+            "running": 0,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "already_empty": true,
+            "counter_key": "__uxsmoke2_mtram6sj_u#video",
+            "occupied": 0
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "e5e4fd68-a976-4141-9265-547628906fb8",
+      "steps": [
+        {
+          "release_platform": {
+            "ok": true,
+            "already_empty": true,
+            "pool_id": "video",
+            "running": 0,
+            "max": 100
+          }
+        },
+        {
+          "release_user": {
+            "ok": true,
+            "counter_key": "__uxpos_mtrant7m#video",
+            "occupied": 0
+          }
+        },
+        {
+          "clear_flags": "phase7"
+        },
+        {
+          "reservation": "released"
+        }
+      ]
+    },
+    {
+      "task_id": "eee77543-9df5-4c82-9556-3bb654c5c4bb",
+      "steps": [
+        {
+          "mark_failed": "ok"
+        }
+      ]
+    }
+  ]
+}

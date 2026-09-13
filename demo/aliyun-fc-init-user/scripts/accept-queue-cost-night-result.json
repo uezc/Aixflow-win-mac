@@ -1,0 +1,79 @@
+{
+  "at": "2026-09-09T13:37:27.528Z",
+  "target": "≤¥10/day",
+  "checks": {
+    "slots_zero": true,
+    "work_idle": true,
+    "fc_env": {
+      "NX_QUEUE_IDLE_PROBE_MS": "900000",
+      "NX_QUEUE_IDLE_FULL_SWEEP_MS": "10800000",
+      "NX_QUEUE_TIMER_TICK_MS": "300000",
+      "NX_TASK_WORK_FALLBACK_ON_EMPTY": "0"
+    },
+    "env_ok": true,
+    "timer_cron": "@every 5m",
+    "timer_cron_ok": true,
+    "invoke1": {
+      "http_status": 200,
+      "elapsed_ms": 497,
+      "idle_no_patrol": true,
+      "idle_short_circuit": true,
+      "queue_mode": "idle",
+      "pipeline_elapsed_ms": 209,
+      "detail": {
+        "active_slots": 0,
+        "work_active": false,
+        "safety_window": false,
+        "idle_full_sweep_ms": 10800000,
+        "idle_probe_ms": 900000,
+        "reason": "idle_zero_patrol"
+      },
+      "body_head": "{\"ok\":true,\"started_at\":1788961050149,\"promote\":null,\"charge\":null,\"dispatch\":null,\"poll\":null,\"idle_short_circuit\":true,\"idle_no_patrol\":true,\"queue_mode\":\"idle\",\"idle_short_circuit_detail\":{\"active_slots\":0,\"work_active\":false,\"safety_window\":false,\"idle_full_sweep_ms\":10800000,\"idle_probe_ms\":900000,\"reason\":\"idle_zero_patrol\"},\"elapsed_ms\":209,\"summary\":{\"lease_recovered\":0,\"claimed\":0,\"charge"
+    },
+    "invoke2": {
+      "http_status": 200,
+      "elapsed_ms": 117,
+      "idle_no_patrol": true,
+      "idle_short_circuit": true,
+      "queue_mode": "idle",
+      "pipeline_elapsed_ms": 0,
+      "detail": {
+        "active_slots": null,
+        "work_active": null,
+        "safety_window": false,
+        "idle_full_sweep_ms": 10800000,
+        "idle_probe_ms": 900000,
+        "since_last_probe_ms": 335,
+        "reason": "idle_probe_deferred"
+      },
+      "body_head": "{\"ok\":true,\"started_at\":1788961050484,\"promote\":null,\"charge\":null,\"dispatch\":null,\"poll\":null,\"idle_short_circuit\":true,\"idle_no_patrol\":true,\"queue_mode\":\"idle\",\"idle_short_circuit_detail\":{\"active_slots\":null,\"work_active\":null,\"safety_window\":false,\"idle_full_sweep_ms\":10800000,\"idle_probe_ms\":900000,\"since_last_probe_ms\":335,\"reason\":\"idle_probe_deferred\"},\"elapsed_ms\":0,\"summary\":{\"lease_rec"
+    },
+    "pipeline_idle_ok": true
+  },
+  "overnight_checklist": [
+    "费用中心：空闲夜余额缓降接近 ¥2～5，或至少 ≤¥10/天",
+    "费用中心：OTS 小时应付 < ¥1；下行 ≪ 100MB/h",
+    "SLS：timer 日志大量 idle_no_patrol=1 / queue_mode=idle，ms 亚秒～数百 ms",
+    "counters：video.running / image.running 保持 0（无真实任务）",
+    "若再次出现计数漂移：APPLY=1 node scripts/repair-platform-slot-counter-drift.mjs"
+  ],
+  "errors": [],
+  "platform": {
+    "video": {
+      "running": 0,
+      "max": 100
+    },
+    "image": {
+      "running": 0,
+      "max": 100
+    },
+    "table": "nx_queue_counters"
+  },
+  "work_active": {
+    "count": 0,
+    "has_any": false,
+    "scanned": 0,
+    "table": "nx_task_work"
+  },
+  "ok": true
+}

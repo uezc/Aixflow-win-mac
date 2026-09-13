@@ -1,7 +1,7 @@
 /**
  * AI 短剧导演台 V2 — 用户 4 阶段工作台（挂在 directorDrama 节点壳内）。
- * 剧本（含分集/视觉/分析）→ 素材准备 → 导演分镜 → 成片
- * Domain 仍保留内部 8 phase，由 userPhase 映射。
+ * 剧本(分集) → 画风色调 → 剧本分析(分场/时长) → 素材（匹配）→ 导演分镜 → 成片
+ * Domain 仍保留内部 phase，由 userPhase 映射。
  */
 
 import React, {
@@ -13,7 +13,7 @@ import React, {
   useState,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronUp, Download, Loader2, Pause, Play, Plus, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, Coins, Download, Loader2, Pause, Play, Plus, Trash2, X, ZoomIn } from 'lucide-react';
 import { useAppLocale } from '../../contexts/AppLocaleContext';
 import VoiceMicGlyph from '../Canvas/VoiceMicGlyph';
 import { AudioWaveformVisualizer } from '../Canvas/AudioWaveformVisualizer';
@@ -21,23 +21,35 @@ import { useCloudRealtimeDictation } from '../../hooks/useCloudRealtimeDictation
 import { useDictationPushToTalk } from '../../hooks/useDictationPushToTalk';
 import { micLevelCssVars } from '../../utils/micInputLevel';
 import { acquireVoiceModalLock, releaseVoiceModalLock } from '../../utils/voiceModalGate';
-import { LLM_CHAT_DISPLAY_MODEL_ID } from '../../utils/cloudModelPricing';
+import { resolveDramaChatModel } from '../../utils/cloudModelPricing';
 import {
   formatCloudLlmUserError,
   isCloudFcTimeoutError,
 } from '../../../shared/cloudLlmUserError';
 import type { DirectorPipelineState } from '../../../shared/directorPipeline';
-import { getDirectorShotStoryboard, migrateBareDirectorStoryboardsToEpisode, remapDramaStoryboardsAfterShotListEdit } from '../../../shared/directorPipeline';
+import {
+  directorMediaUrlKey,
+  getDirectorShotStoryboard,
+  isDirectorShotVideoSelection,
+  listDirectorShotVideos,
+  migrateBareDirectorStoryboardsToEpisode,
+  remapDramaStoryboardsAfterShotListEdit,
+  updateDirectorShotStoryboard,
+} from '../../../shared/directorPipeline';
 import {
   pickNearestDirectorVideoBatchDuration,
   listDirectorVideoDurationTiersSec,
   directorShotNeedsVideoGeneration,
+  getDirectorVideoBatchResolutionOptions,
+  normalizeDirectorVideoBatchResolution,
 } from '../../utils/directorVideoBatch';
 import {
   buildDramaDomainAnalyzeMessages,
   buildDramaDomainAnalyzeCompactMessages,
   buildDramaDomainShotPlanMessages,
-  normalizeDramaShotPlanPaceGear,
+  buildMergedNarrativeAndShotPlanMessages,
+  buildDramaNarrativePlanning,
+  normalizeDramaNarrativePlanningResult,
   buildDramaCharacterDossierMessages,
   parseDramaCharacterDossier,
   applyDramaCharacterDossiersToSession,
@@ -54,9 +66,7 @@ import {
   activateDramaEpisode,
   removeDramaEpisode,
   ensureDramaActiveEpisodeWorkingSet,
-  confirmDramaBoard,
   confirmDramaAssets,
-  unlockDramaBoard,
   unlockDramaAssets,
   invalidateDramaConfirmationsAfter,
   applyDramaLegacyUserFlowNotice,
@@ -74,6 +84,30 @@ import {
   createEmptyDramaSceneAsset,
   createEmptyDramaSession,
   createEmptyDramaVoice,
+  syncDramaSystemVoice,
+  resolveDramaSystemVoice,
+  stripDramaSystemSpeakerCharacters,
+  dramaSessionNeedsSystemVoice,
+  suppressDramaSystemVoice,
+  ensureVoiceSampleTexts,
+  isDramaSystemSpeakerCharacter,
+  DRAMA_SYSTEM_SPEAKER_ID,
+  applyDramaShotZhPlainOfficialSeal,
+  applyDramaShotH3SkillOptimizeResult,
+  buildDramaShotH3SkillOptimizeMessages,
+  composeDramaShotLensTaggedPrompt,
+  resolveDramaProductionH3Prompt,
+  sealDramaProductionCloudPrompt,
+  resolveDramaShotStoryboardImageUrl,
+  resolveDramaShotStoryboardPictureIndex,
+  resolveDramaShotVisualStylePrompt,
+  isDramaShotH3SkillSealed,
+  dramaShotSkillMatchesLocale,
+  isDramaAssetMatchDone,
+  isDramaDurationSplitDone,
+  isDramaSceneSplitDone,
+  isDramaVisualStyleLocked,
+  dramaManualPipelineBlockReason,
   dedupeDramaPropsByKind,
   listUnusedDramaPropIds,
   listUnusedDramaSceneIds,
@@ -83,11 +117,14 @@ import {
   getDramaVideoAdapter,
   migrateDramaV1ToDomainV2,
   normalizeDramaDomainAnalyzeResult,
+  applyLlmAnalyzeOntoProgramSession,
+  resolveSkipLlmAnalyze,
   normalizeDramaShotPlanResult,
   attachDramaShotSuggestions,
-  estimateDramaAnalyzeShotBudget,
   refineDramaShotBudgetFromAnalyze,
-  validateDramaVisualEventCount,
+  shouldBatchDramaShotPlan,
+  splitDramaShotPlanEventBatches,
+  scaleDramaShotBudgetForBatch,
   validateDramaShotPlan,
   dramaShotPlanIsAcceptable,
   formatDramaShotPlanValidationError,
@@ -97,11 +134,7 @@ import {
   setDramaSessionPhase,
   splitNovelIntoEpisodes,
   createEmptyDramaEpisode,
-  enrichAllDramaShotsLocally,
   enrichDramaShotLocally,
-  buildDramaBoardEnrichMessages,
-  applyDramaBoardEnrichResult,
-  DRAMA_BOARD_ENRICH_BATCH,
   resolveCharacterIdsForShot,
   resolveVoicesForShot,
   listCharactersMissingDesign,
@@ -110,11 +143,16 @@ import {
   resolvePropMasterReferenceUrl,
   pickPipelineAssetImage,
   applyDramaSessionAssetImage,
+  applyDramaSessionVoiceSample,
   listDramaSupportedVideoModels,
   normalizeDramaSupportedVideoModel,
   resolveDramaShotVideoModel,
   dramaVideoModelRequiresShotAudio,
   ensureAppearingCharactersInBible,
+  sortDramaCharactersByAppearanceOrder,
+  sortDramaScenesByAppearanceOrder,
+  collectSeriesCharacterAppearanceOrder,
+  collectOriginalSceneLocationsInOrder,
   isDramaManualCharacterCardName,
   suppressDramaCharacter,
   unsuppressDramaCharacterName,
@@ -127,18 +165,10 @@ import {
   activeDramaCostume,
   addBlankDramaCharacterCostume,
   removeDramaCharacterCostume,
-  buildDramaShotH3OptimizeMessages,
-  applyDramaDirectingEnhancePatch,
-  parseDramaDirectingEnhancePatch,
-  revertDramaDirectingEnhance,
-  compileDramaShotVideoRequest,
   deriveDramaAudioTimelineFromShotEvents,
   dramaShotHasSpokenDialogue,
   applyDramaDirectingBreakdownSession,
-  listDirtyDirectingShotIds,
   dramaShotDirectingFingerprint,
-  parseDramaDirectingBreakdownLlm,
-  buildDramaDirectingBreakdownMessages,
   domainPhaseToUserPhase,
   preferredDomainPhaseForUserPhase,
   canEnterDramaUserPhase,
@@ -149,14 +179,18 @@ import {
   formatDramaShotCastGateError,
   syncDramaShotCharacterIds,
   DRAMA_SHOT_DURATION_TIERS,
+  DRAMA_SHOT_VIDEO_DURATION_PARAM,
   snapDramaShotDurationSec,
+  resolveDramaGenerateDurationSec,
+  alignDramaShotTimelineToGenerateDuration,
+  inferDramaDurationSecFromH3Prompt,
   ensureDramaShotTimelineEvents,
-  rescaleDramaTimelineEventsToDuration,
   type DramaDirectorSession,
   type DramaDomainPhase,
   type DramaEpisode,
   type DramaShot,
   type DramaShotSuggestion,
+  type DramaTimelineEvent,
   type DramaCharacter,
   type DramaCharacterCostume,
   type DramaSceneAsset,
@@ -164,11 +198,25 @@ import {
   removeDramaShotAt,
   insertDramaShotAt,
   planMergeDramaShots,
+  convertShotSuggestionsToDramaShots,
+  createEmptyDramaEpisodeBible,
+  analyzeDramaEpisodeOriginal,
+  shotSuggestionsFromDurationSplit,
+  applyDramaScriptDesign,
+  formatDramaOriginalAnalyzeAlert,
 } from '../../../shared/directorDomain';
+import {
+  NEXFLOW_CANVAS_AUDIO_DRAG_MIME,
+  NEXFLOW_CANVAS_IMAGE_DRAG_MIME,
+  peekCanvasAudioDragUrl,
+  peekCanvasImageDragUrl,
+  endCanvasAudioDrag,
+  endCanvasImageDrag,
+} from '../characterListShared';
 import { useDarkAlert } from '../../contexts/DarkAlertContext';
 import { AnalyzeDirectorWorkspace } from './AnalyzeDirectorWorkspace';
 import { DramaShotRefZones } from './DramaShotRefZones'; // 素材区含添加额度卡
-import { DramaExecuteTablePanel, DramaShotPromptCardSurface, runDramaMultiShotH3SkillMerge, runDramaShotH3SkillOptimize } from './DramaExecuteTablePanel';
+import { DramaShotPromptCardSurface, runDramaMultiShotH3SkillMerge } from './DramaExecuteTablePanel';
 import { VisualStyleLibrary } from './VisualDNAEditor';
 import { ModuleProgressBar } from '../Canvas/ModuleProgressBar';
 import { RefImageHoverThumb } from '../Canvas/RefImageHoverThumb';
@@ -178,6 +226,7 @@ import {
 } from '../darkModalShell';
 import { toElectronVideoElementSrc } from '../../utils/normalizeVideoUrl';
 import { attachAudioPreviewGain, resumeAudioPreviewContext } from '../../utils/audioPreviewGain';
+import { resolveMinimaxH3OptimizeStructure } from '../../../shared/minimaxH3OptimizePrompt';
 import {
   DramaCharacterLibraryPickModal,
   fillEmptyDramaAssetsFromLibraryPicks,
@@ -222,6 +271,8 @@ export type DramaStudioHostProps = {
     videoModel?: string;
     /** 短剧：按镜号覆盖模型 */
     shotModels?: Record<string, string>;
+    /** 短剧：按镜号覆盖上云终稿（与「查看优化稿」一致，避免 setNodes 未刷新） */
+    shotPromptOverrides?: Record<string, string>;
   }) => void;
   showAlert: (msg: string) => void;
   /** 按镜头规划时长估算元宝价文案（成片按钮展示） */
@@ -229,18 +280,22 @@ export type DramaStudioHostProps = {
     durationSec: number,
     opts?: { model?: string; preferLipsync?: boolean },
   ) => string | null;
-  /** 「分析本集」旁的大语言模型选择器 */
+  /** 「剧本拆分」旁的大语言模型选择器 */
   chatModelSelectSlot?: React.ReactNode;
   /** 资产生成：模型 / 清晰度选择（复用导演台现有生图模型） */
   imageGenToolbarSlot?: React.ReactNode;
+  /** 分镜图生图：模型 / 清晰度（不含 4K） */
+  storyboardImageGenSlot?: React.ReactNode;
   /** 单张 AI 生图价格文案（如「全能图片 V2 · 1K · 3元宝」） */
   unitImagePriceLabel?: string | null;
-  /** 提示词优化（LLM 单次）悬停价 */
+  /** 切段 AI 改写 / 合并镜头等 LLM 单次悬停价 */
   unitChatPriceLabel?: string | null;
   /** 一键生成总价文案（按缺失张数） */
   batchImagePriceLabel?: string | null;
   /** AI 生图（按 Domain 资产 id） */
   onGenerateAssetImage?: (kind: DramaAssetVisualKind, assetId: string) => void;
+  /** 本镜分镜图（图生图）：force=true 时强制重跑 */
+  onGenerateShotStoryboard?: (shotNo: string, opts?: { force?: boolean }) => void;
   /** 本地上传文件 → dataURL / local-resource */
   onUploadAssetImage?: (kind: DramaAssetVisualKind, assetId: string, file: File) => void;
   /** 从画布点选图片 */
@@ -274,6 +329,8 @@ export type DramaStudioHostProps = {
   onAbandonShotAudio?: (shotId: string) => void;
   /** 成片：按镜头顺序写入画布剪辑模块 */
   onVideosToSplice?: () => void;
+  /** 分镜卡切换历史成片后，同步替换已入轨片段 */
+  onApplyShotVideoToSplice?: (shotNo: string, videoUrl: string) => void;
 };
 
 function shellCls(isDark: boolean) {
@@ -316,10 +373,12 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
   getShotVideoPriceLabel,
   chatModelSelectSlot,
   imageGenToolbarSlot,
+  storyboardImageGenSlot,
   unitImagePriceLabel,
   unitChatPriceLabel,
   batchImagePriceLabel,
   onGenerateAssetImage,
+  onGenerateShotStoryboard,
   onUploadAssetImage,
   onPickAssetFromCanvas,
   canPickFromCanvas,
@@ -338,6 +397,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
   onGenerateShotAudio,
   onAbandonShotAudio,
   onVideosToSplice,
+  onApplyShotVideoToSplice,
 }) => {
   const { showConfirm } = useDarkAlert();
   const session = useMemo(() => {
@@ -476,7 +536,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       const ownUrl = String(s.video_url || '').trim();
       const ownStatus = String(s.video_status || '').trim();
       const ownNode = String(s.video_node_id || '').trim();
-      const shotNo = String(s.shot_no || '').trim();
 
       if (!url && !status && !nodeId) return s;
 
@@ -489,14 +548,28 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
 
       const writeUrl = url || ownUrl;
       const writeNode = nodeId || ownNode;
-      const writeStatus =
-        url && (status === 'ready' || (!status && !!url))
-          ? 'ready'
-          : (ownStatus === 'generating' || ownStatus === 'queued') &&
-              (status === 'ready' || !status) &&
-              videoGeneratingIds?.[shotNo]
-            ? ownStatus
-            : status || (url ? 'ready' : ownStatus);
+      const shotNoKey = String(s.shot_no || '').trim();
+      const marked = !!(shotNoKey && videoGeneratingIds?.[shotNoKey]);
+      const ownBusy = ownStatus === 'generating' || ownStatus === 'queued';
+      // 画布表仍 generating/queued：本镜还在跑，保留进度。
+      // 绿条仍在 / Domain 仍 generating：禁止被「旧成片 + ready」抢先收条。
+      // 绿条已清且画布表 ready：收成 ready（SUCCESS 真出片）。
+      const boardBusy = status === 'generating' || status === 'queued';
+      const boardReadyDone =
+        !!url && !boardBusy && (status === 'ready' || (!status && !!url));
+      const writeStatus = boardBusy
+        ? status === 'queued'
+          ? 'queued'
+          : 'generating'
+        : marked
+          ? 'generating'
+          : ownBusy && !boardReadyDone
+            ? ownStatus === 'queued'
+              ? 'queued'
+              : 'generating'
+            : boardReadyDone
+              ? 'ready'
+              : status || (url ? 'ready' : ownStatus);
 
       if (writeUrl === ownUrl && writeStatus === ownStatus && writeNode === ownNode) {
         return s;
@@ -586,6 +659,26 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
           opts?.storyboardsByShotNo != null
             ? opts.storyboardsByShotNo
             : pipeline.storyboardsByShotNo;
+        // Domain 已标 generating 时，禁止用旧 ready 画布表盖掉绿条（重生成闪一下就灭）
+        let boardsNext = boardsSrc;
+        {
+          let boardState = { ...pipeline, storyboardsByShotNo: boardsSrc };
+          for (const s of withChat.shots || []) {
+            const no = String(s.shot_no || '').trim();
+            const vst = String(s.video_status || '').trim();
+            if (!no || (vst !== 'generating' && vst !== 'queued')) continue;
+            const prevSb = getDirectorShotStoryboard(boardState, no);
+            boardState = updateDirectorShotStoryboard(boardState, no, {
+              videoStatus: vst === 'queued' ? 'queued' : 'generating',
+              videoError: '',
+              videoGeneratingStartedAt:
+                Number(prevSb.videoGeneratingStartedAt) > 0
+                  ? Number(prevSb.videoGeneratingStartedAt)
+                  : Date.now(),
+            });
+          }
+          boardsNext = boardState.storyboardsByShotNo;
+        }
         onPipelinePatch({
           ...pipeline,
           phase: pipePhase as DirectorPipelineState['phase'],
@@ -608,6 +701,27 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             : pipeline.mvAspectRatio || '9:16') as DirectorPipelineState['mvAspectRatio'],
           videoBatchAspectRatio:
             next.meta.aspect_ratio || pipeline.videoBatchAspectRatio || pipeline.mvAspectRatio,
+          videoBatchModel: (() => {
+            const raw = String(next.meta.videoBatchModel || pipeline.videoBatchModel || '').trim();
+            // Domain 可把「默认=对口型」记在 videoBatchModel；Pipeline 普通档需非口型 id
+            if (raw === 'minimax-h3-audio' || raw.includes('lipsync')) return 'minimax-h3-multi';
+            return raw || 'minimax-h3-multi';
+          })(),
+          videoBatchLipsyncModel:
+            next.meta.videoBatchLipsyncModel ||
+            pipeline.videoBatchLipsyncModel ||
+            'minimax-h3-audio',
+          videoBatchResolution: normalizeDirectorVideoBatchResolution(
+            'minimax-h3-multi',
+            next.meta.videoBatchResolution || pipeline.videoBatchResolution || '720p',
+          ),
+          videoBatchLipsyncResolution: normalizeDirectorVideoBatchResolution(
+            'minimax-h3-audio',
+            next.meta.videoBatchLipsyncResolution ||
+              next.meta.videoBatchResolution ||
+              pipeline.videoBatchLipsyncResolution ||
+              '720p',
+          ),
           isGenerating: next.meta.isGenerating,
           error: next.meta.error,
           activeDramaEpisodeId: withChat.active_episode_id || '',
@@ -615,7 +729,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             ? pipeline.assets
             : mergeDramaPipelineAssetsFromSession(withChat, pipeline.assets),
           storyboardsByShotNo: migrateBareDirectorStoryboardsToEpisode(
-            boardsSrc,
+            boardsNext,
             String(
               withChat.active_episode_id || withChat.episodes?.[0]?.episode_id || '',
             ).trim(),
@@ -729,8 +843,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     if (phase !== 'analyze') setScriptDrawerOpen(false);
   }, [phase]);
 
-  const goPhase = (p: DramaDomainPhase) => {
+  const goPhase = (p: DramaDomainPhase, opts?: { session?: DramaDirectorSession }) => {
     const __perfGoPhaseStart = performance.now();
+    const live = opts?.session || session;
     let target = p === 'videos' ? 'board' : p;
     const targetUser = domainPhaseToUserPhase(target);
 
@@ -742,80 +857,112 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       target === 'review'
     ) {
       if (targetUser !== 'script') {
-        const gate = canEnterDramaUserPhase(session, targetUser);
+        const gate = canEnterDramaUserPhase(live, targetUser);
         if (!gate.ok) {
           showAlert(gate.reason);
-          target = preferredDomainPhaseForUserPhase(gate.fallback, session);
+          target = preferredDomainPhaseForUserPhase(gate.fallback, live);
         }
       }
     }
 
-    // 剧本内部前置：分集 / 视觉 / 选集（不要求人物图）
+    // 剧本内部前置：分集 → 画风色调 → 剧本分析；素材/分镜前须锁风格
     if (
-      (target === 'visual' ||
-        target === 'analyze' ||
-        target === 'assets' ||
-        target === 'board') &&
-      !(session.episodes || []).length
+      (target === 'analyze' || target === 'assets' || target === 'board' || target === 'visual') &&
+      !(live.episodes || []).length
     ) {
       showAlert('请先接入或粘贴剧本并完成分集');
-      target = 'episodes';
+      target = 'ingest';
     } else if (
-      (target === 'analyze' || target === 'assets' || target === 'board') &&
-      !(session.bible.projectVisualBible?.selected_at)
-    ) {
-      showAlert('请先在剧本阶段完成「视觉美术」锁定整片风格');
-      target = 'visual';
-    } else if (
-      (target === 'analyze' || target === 'assets' || target === 'board') &&
-      !(session.active_episode_id || '').trim()
+      (target === 'analyze' || target === 'assets' || target === 'board' || target === 'visual') &&
+      !(live.active_episode_id || '').trim()
     ) {
       showAlert('请先选择要制作的一集');
       target = 'episodes';
+    } else if (
+      (target === 'analyze' || target === 'assets' || target === 'board') &&
+      !isDramaVisualStyleLocked(live)
+    ) {
+      showAlert('请先完成「画风 + 色调」锁定整片风格，再做剧本分析');
+      target = 'visual';
     }
 
-    // 进素材：必须已确认分析（先出参考图，再进导演分镜）
-    if (target === 'assets' && !isDramaAnalyzeConfirmed(session)) {
-      showAlert('请先完成并确认剧本分析，再进入素材准备');
-      target = 'analyze';
-    }
-
-    // 进成片：须已确认导演表
-    if (target === 'review') {
-      const gate = canEnterDramaUserPhase(session, 'final');
+    // 进画风色调：须已分集并选集
+    if (target === 'visual') {
+      const gate = canEnterDramaUserPhase(live, 'visual');
       if (!gate.ok) {
         showAlert(gate.reason);
-        target = preferredDomainPhaseForUserPhase(gate.fallback, session);
+        target = preferredDomainPhaseForUserPhase(gate.fallback, live);
       }
     }
 
-    let base = ensureDramaActiveEpisodeWorkingSet(session);
+    // 进素材：须已时长拆镜（拆镜完成即视为确认，不再单独点确认）
+    if (target === 'assets') {
+      const block = dramaManualPipelineBlockReason(live, 'assets');
+      if (block) {
+        showAlert(block);
+        target = 'analyze';
+      } else if (!isDramaAnalyzeConfirmed(live) && isDramaDurationSplitDone(live)) {
+        // 旧项目仅拆镜未点确认：进素材时自动确认
+      } else if (!isDramaAnalyzeConfirmed(live)) {
+        showAlert('请先完成「时长拆镜」，再进入素材准备');
+        target = 'analyze';
+      }
+    }
+
+    // 进分镜：须已素材匹配
+    if (target === 'board') {
+      const block = dramaManualPipelineBlockReason(live, 'board');
+      if (block) {
+        showAlert(block);
+        target =
+          isDramaAnalyzeConfirmed(live) || isDramaDurationSplitDone(live) ? 'assets' : 'analyze';
+      }
+    }
+
+    // 进成片：有分镜即可（不再要求确认导演表）
+    if (target === 'review') {
+      const gate = canEnterDramaUserPhase(live, 'final');
+      if (!gate.ok) {
+        showAlert(gate.reason);
+        target = preferredDomainPhaseForUserPhase(gate.fallback, live);
+      }
+    }
+
+    let base = ensureDramaActiveEpisodeWorkingSet(live);
+    if (target === 'assets' && !isDramaAnalyzeConfirmed(base) && isDramaDurationSplitDone(base)) {
+      base = confirmDramaAnalyze(base);
+    }
     // 返回剧本阶段修改：解除素材/导演表确认（分析确认保留，直到重新分析）
     if (
       (target === 'ingest' ||
         target === 'visual' ||
         target === 'episodes' ||
         target === 'analyze') &&
-      (isDramaBoardConfirmed(session) || isDramaAssetsConfirmed(session))
+      (isDramaBoardConfirmed(live) || isDramaAssetsConfirmed(live))
     ) {
       base = invalidateDramaConfirmationsAfter(
-        session,
+        live,
         target === 'visual' ? 'visual' : 'assets',
       );
-      showAlert('已返回剧本阶段：后续「素材 / 导演表」确认已解除，修改后请重新确认');
+      showAlert('已返回剧本阶段：后续「素材」确认已解除，修改后请重新确认');
     }
 
-    // 从分镜退回素材：只解除导演表确认（素材确认保留，可继续补图）
+    // 从分镜退回素材：清导演表确认标记（素材确认保留，可继续补图）
     if (
       target === 'assets' &&
       isDramaBoardConfirmed(base) &&
-      domainPhaseToUserPhase(session.meta.phase) !== 'assets'
+      domainPhaseToUserPhase(live.meta.phase) !== 'assets'
     ) {
       base = invalidateDramaConfirmationsAfter(base, 'board');
-      showAlert('已返回素材准备：导演表确认已解除；改完后请重新确认导演表');
     }
     let next = setDramaSessionPhase(base, target);
     if (target === 'board' && !isDramaAssetsConfirmed(next)) {
+      if (!isDramaAssetMatchDone(next)) {
+        showAlert('请先在素材准备完成「素材匹配」');
+        next = setDramaSessionPhase(base, 'assets');
+        patchSession(next, { skipAssetsProjection: true });
+        return;
+      }
       next = confirmDramaAssets(next);
     }
     if (target === 'board' || target === 'review') next = refreshDramaContinuity(next);
@@ -869,12 +1016,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
   const saveEpisodeEditorAndAnalyze = () => {
     const id = episodeEditorId;
     if (!id) return;
-    if (!session.bible.projectVisualBible?.selected_at) {
-      closeEpisodeEditor(true);
-      showAlert('请先完成「视觉美术」：整片风格锁定后，所有分集共用同一套美术效果');
-      goPhase('visual');
-      return;
-    }
     const text = episodeEditorDraft.trim();
     const title = episodeEditorTitle.trim();
     const nextEps = episodes.map((e) =>
@@ -932,14 +1073,8 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     setEpisodeDraft(nextActive?.text || '');
   };
 
-  /** 选集后进入本集剧本分析（视觉风格已在整片级锁定） */
-  const openEpisodeAnalyze = (ep: DramaEpisode) => {
-    if (!session.bible.projectVisualBible?.selected_at) {
-      showAlert('请先完成「视觉美术」：整片风格锁定后，所有分集共用同一套美术效果');
-      goPhase('visual');
-      return;
-    }
-    // 一次写回：先收当前集草稿，再激活目标集（禁止两次 patchSession 竞态把 active 打回上一集）
+  /** 选集后进入画风色调；剧本分析在风格锁定之后 */
+  const openEpisodeNextToVisual = (ep: DramaEpisode) => {
     let base = session;
     if (activeEpisode && episodeDraft !== activeEpisode.text) {
       base = {
@@ -951,18 +1086,21 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         ),
       };
     }
-    // 进入「当前集」分析时用正在编辑的草稿，避免用 render 时的旧 text 覆盖新输入
     const isCurrent = !!activeEpisode && activeEpisode.episode_id === ep.episode_id;
     const targetText = (isCurrent ? episodeDraft : String(ep.text || '')).trim();
+    if (!targetText) {
+      showAlert('这一集还没有正文');
+      return;
+    }
     const next = setDramaSessionPhase(
       activateDramaEpisode(
         {
           ...base,
-          meta: { ...base.meta, source_script: targetText, phase: 'analyze' },
+          meta: { ...base.meta, source_script: targetText, phase: 'visual' },
         },
         ep.episode_id,
       ),
-      'analyze',
+      'visual',
     );
     setEpisodeDraft(targetText);
     patchSession(next);
@@ -1070,16 +1208,17 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             source_novel: novel,
             source_script: eps[0].text,
             analyze_confirmed: false,
-            phase: 'visual',
+            phase: 'episodes',
           },
         });
         setEpisodeDraft(eps[0].text);
-        showAlert(`已分成 ${eps.length} 集，请先在「视觉美术」锁定整片风格（全部分集共用）`);
+        showAlert(`已分成 ${eps.length} 集，可去选集；点「下一步」先锁画风色调，再做剧本分析`);
+        goPhase('episodes');
       } finally {
         setSplitting(false);
       }
     },
-    [patchSession, session, showAlert],
+    [patchSession, session, showAlert, goPhase],
   );
 
   // 仅在「粘贴页」且确有新接入文本时自动分集；空台不捏造内容
@@ -1152,9 +1291,13 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     setEpisodeDraft(targetText);
   };
 
-  const runDramaJsonChat = async (sys: string, user: string) => {
+  const runDramaJsonChat = async (
+    sys: string,
+    user: string,
+    extra?: { max_tokens?: number },
+  ) => {
     const baseChatOpts = {
-      max_tokens: 16384,
+      max_tokens: extra?.max_tokens || 16384,
       temperature: 0.35,
     };
     try {
@@ -1181,7 +1324,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     const events = getActiveEpisodeBible(analyzedSession).visual_events || [];
     const beats = analyzedSession.scene_beats || [];
     if (!events.length) {
-      throw new Error('还没有 Visual Events，请先点「分析本集」');
+      throw new Error('还没有 Visual Events，请先点「剧本拆分」');
     }
     const shotBudget = refineDramaShotBudgetFromAnalyze(
       source,
@@ -1192,30 +1335,184 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     const characterDossier = formatDramaCharacterDossierForShotPlan(
       getActiveEpisodeBible(analyzedSession).directing_notes,
     );
-    const shotMsgs = (retryHint?: string) =>
-      buildDramaDomainShotPlanMessages({
+    const characterNamesLocal = formatDramaCharacterNamesForShotPlan(
+      (analyzedSession.bible.characters || []).map((c) => c.name),
+      getActiveEpisodeBible(analyzedSession).directing_notes,
+    );
+    const sceneNamesLocal = (analyzedSession.bible.scenes || []).map((s) => s.name || s.location);
+    const propNamesLocal = (analyzedSession.bible.props || []).map((pp) => pp.name);
+    const creatureNamesLocal = (analyzedSession.bible.creatures || []).map((cc) => cc.name);
+    const epBibleLocal = getActiveEpisodeBible(analyzedSession);
+    const wantBatch = shouldBatchDramaShotPlan({ events, sourceText: source });
+    let shotIntents = epBibleLocal.shot_intents || [];
+    let narrativeBeats = epBibleLocal.narrative_beats || [];
+    let mergedPlanned: ReturnType<typeof normalizeDramaShotPlanResult> | null = null;
+    let usedBatch = wantBatch;
+    if (!wantBatch && events.length > 0 && shotIntents.length === 0) {
+      try {
+        const mergedMsgs = buildMergedNarrativeAndShotPlanMessages({
+          title: analyzeTitle,
+          styleHint,
+          budget: shotBudget,
+          sourceText: source,
+          visualEvents: events,
+          sceneBeats: beats,
+          characterNames: characterNamesLocal,
+          sceneNames: sceneNamesLocal,
+          propNames: propNamesLocal,
+          creatureNames: creatureNamesLocal,
+          characterDossier,
+          retryHint: extraRetryHint,
+          paceGear: analyzedSession.meta.shotPlanPaceGear,
+        });
+        const mergedText = await runDramaJsonChat(mergedMsgs.systemPrompt, mergedMsgs.userPrompt);
+        const nbResult = normalizeDramaNarrativePlanningResult(mergedText);
+        const shotResult = normalizeDramaShotPlanResult(mergedText, beats);
+        if (nbResult.shot_intents.length > 0 && shotResult.ok) {
+          shotIntents = nbResult.shot_intents;
+          narrativeBeats = nbResult.narrative_beats;
+          epBibleLocal.shot_intents = shotIntents;
+          epBibleLocal.narrative_beats = narrativeBeats;
+          epBibleLocal.director_beats = nbResult.director_beats;
+          mergedPlanned = shotResult;
+        }
+      } catch (err) {
+        if (isCloudFcTimeoutError(err)) usedBatch = true;
+      }
+    }
+    if (!usedBatch && events.length > 0 && shotIntents.length === 0) {
+      try {
+        const nbMsgs = buildDramaNarrativePlanning({
+          sourceText: source,
+          visualEvents: events,
+          sceneBeats: beats,
+        });
+        const nbText = await runDramaJsonChat(nbMsgs.systemPrompt, nbMsgs.userPrompt);
+        const nbResult = normalizeDramaNarrativePlanningResult(nbText);
+        if (nbResult.shot_intents.length > 0) {
+          shotIntents = nbResult.shot_intents;
+          narrativeBeats = nbResult.narrative_beats;
+          epBibleLocal.shot_intents = shotIntents;
+          epBibleLocal.narrative_beats = narrativeBeats;
+          epBibleLocal.director_beats = nbResult.director_beats;
+        }
+      } catch (err) {
+        if (isCloudFcTimeoutError(err)) usedBatch = true;
+      }
+    }
+    const runShotPlanOnce = async (opts: {
+      visualEvents: typeof events;
+      sceneBeats: typeof beats;
+      sourceScript: string;
+      budget: typeof shotBudget;
+      retryHint?: string;
+      maxTokens?: number;
+    }) => {
+      const msgs = buildDramaDomainShotPlanMessages({
         title: analyzeTitle,
         styleHint,
-        budget: shotBudget,
+        budget: opts.budget,
+        visualEvents: opts.visualEvents,
+        sceneBeats: opts.sceneBeats,
+        characterNames: characterNamesLocal,
+        sceneNames: sceneNamesLocal,
+        propNames: propNamesLocal,
+        creatureNames: creatureNamesLocal,
+        characterDossier,
+        retryHint: opts.retryHint,
+        paceGear: analyzedSession.meta.shotPlanPaceGear,
+        shotIntents: shotIntents.length > 0 ? shotIntents : undefined,
+        sourceScript: opts.sourceScript,
+      });
+      const shotText = await runDramaJsonChat(msgs.systemPrompt, msgs.userPrompt, {
+        max_tokens: opts.maxTokens,
+      });
+      return normalizeDramaShotPlanResult(shotText, opts.sceneBeats);
+    };
+    const runShotPlan = async (retryHint?: string) =>
+      runShotPlanOnce({
         visualEvents: events,
         sceneBeats: beats,
-        characterNames: formatDramaCharacterNamesForShotPlan(
-          (analyzedSession.bible.characters || []).map((c) => c.name),
-          getActiveEpisodeBible(analyzedSession).directing_notes,
-        ),
-        sceneNames: (analyzedSession.bible.scenes || []).map((s) => s.name || s.location),
-        characterDossier,
+        sourceScript: source,
+        budget: shotBudget,
         retryHint,
-        paceGear: analyzedSession.meta.shotPlanPaceGear,
       });
-    const runShotPlan = async (retryHint?: string) => {
-      const msgs = shotMsgs(retryHint);
-      const shotText = await runDramaJsonChat(msgs.systemPrompt, msgs.userPrompt);
-      return normalizeDramaShotPlanResult(shotText, beats);
+    const runShotPlanBatched = async (retryHint?: string) => {
+      const batches = splitDramaShotPlanEventBatches({
+        events,
+        beats,
+        sourceText: source,
+        characterNames: (analyzedSession.bible.characters || []).map((c) => c.name),
+      });
+      const all: DramaShotSuggestion[] = [];
+      let lastError = '';
+      for (const batch of batches) {
+        setAnalyzingHint(
+          `正在生成分镜脚本（${batch.index + 1}/${batch.total}）…`,
+        );
+        const budget = scaleDramaShotBudgetForBatch(
+          shotBudget,
+          batch.events.length,
+          events.length,
+        );
+        const hint = [
+          retryHint,
+          `本批只覆盖这些 visual_events：${batch.events.map((e) => e.event_id).join('、')}。不要写其他场次。`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+        try {
+          let part = await runShotPlanOnce({
+            visualEvents: batch.events,
+            sceneBeats: batch.beats,
+            sourceScript: batch.sourceText,
+            budget,
+            retryHint: hint,
+            maxTokens: 8192,
+          });
+          if (!part.ok) {
+            part = await runShotPlanOnce({
+              visualEvents: batch.events,
+              sceneBeats: batch.beats,
+              sourceScript: batch.sourceText,
+              budget,
+              retryHint: `只输出含 shots 数组的完整 JSON，每镜必须带 event_ids。\n${hint}`,
+              maxTokens: 8192,
+            });
+          }
+          if (part.ok) all.push(...part.suggestions);
+          else lastError = part.error;
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err || '分批失败');
+          if (!isCloudFcTimeoutError(err)) throw err;
+        }
+      }
+      if (!all.length) {
+        throw new Error(
+          lastError || '脚本设计分批生成均失败（云端超时）。请再点「脚本设计」。',
+        );
+      }
+      all.forEach((s, i) => {
+        s.shot = String(i + 1);
+      });
+      return { ok: true as const, suggestions: all, rawJson: '' };
     };
-    let planned = await runShotPlan(extraRetryHint);
-    if (!planned.ok) {
-      planned = await runShotPlan('只输出含 shots 数组的完整 JSON，每镜必须带 event_ids。');
+    let planned: ReturnType<typeof normalizeDramaShotPlanResult>;
+    if (usedBatch) {
+      planned = await runShotPlanBatched(extraRetryHint);
+    } else {
+      try {
+        planned = mergedPlanned ? mergedPlanned : await runShotPlan(extraRetryHint);
+        if (!mergedPlanned && !planned.ok) {
+          planned = await runShotPlan('只输出含 shots 数组的完整 JSON，每镜必须带 event_ids。');
+        }
+        if (!planned.ok) throw new Error(planned.error);
+      } catch (err) {
+        if (!isCloudFcTimeoutError(err)) throw err;
+        usedBatch = true;
+        setAnalyzingHint('整集分镜超时，改为按场次分批生成…');
+        planned = await runShotPlanBatched(extraRetryHint);
+      }
     }
     if (!planned.ok) throw new Error(planned.error);
 
@@ -1225,8 +1522,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       sceneBeats: beats,
       budget: shotBudget,
       paceGear: analyzedSession.meta.shotPlanPaceGear,
+      sourceScript: source,
     });
-    if (!validation.ok) {
+    if (!usedBatch && !validation.ok) {
       planned = await runShotPlan(formatDramaShotPlanValidationError(validation));
       if (!planned.ok) throw new Error(planned.error);
       validation = validateDramaShotPlan({
@@ -1235,7 +1533,25 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         sceneBeats: beats,
         budget: shotBudget,
         paceGear: analyzedSession.meta.shotPlanPaceGear,
+        sourceScript: source,
       });
+    }
+    if (
+      !usedBatch &&
+      validation.dialogueCompleteness &&
+      validation.dialogueCompleteness.missingLines.length > 0
+    ) {
+      planned = await runShotPlan(formatDramaShotPlanValidationError(validation));
+      if (planned.ok) {
+        validation = validateDramaShotPlan({
+          suggestions: planned.suggestions,
+          visualEvents: events,
+          sceneBeats: beats,
+          budget: shotBudget,
+          paceGear: analyzedSession.meta.shotPlanPaceGear,
+          sourceScript: source,
+        });
+      }
     }
     if (!validation.ok && !dramaShotPlanIsAcceptable(validation, shotBudget, analyzedSession.meta.shotPlanPaceGear)) {
       if (!(planned.suggestions || []).length) {
@@ -1353,19 +1669,96 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       const analyzeTitle = `${stripDramaEpisodeTitleSuffix(session.bible.project.name || '短剧') || '短剧'} · ${epTitle}`;
       const styleHint = pipeline.globalStyle || session.bible.project.visual_style;
       const sourceChars = source.replace(/\s+/g, '').length;
-      // 云端 FC 常见 120s 硬超时：中长剧本直接走精简分析，避免完整人设先撞 502
+
+      // ===== 原文保真分析（本地切分 + 素材绑定，不调 LLM，不生成分镜） =====
+      setAnalyzingHint('正在切分原文场景与片段…');
+      let workingBible = session.bible;
+      try {
+        const castPicks = await loadDramaCastLibraryPicks(projectId);
+        if (castPicks.length) {
+          workingBible = fillEmptyDramaAssetsFromLibraryPicks(
+            { ...session, bible: workingBible },
+            castPicks,
+          ).session.bible;
+        }
+      } catch {
+        /* 本剧人物库回填失败不挡分析 */
+      }
+      setAnalyzingHint('正在绑定人物 / 声音 / 场景素材…');
+      const originalAnalyzed = analyzeDramaEpisodeOriginal({
+        source,
+        episodeId: epId,
+        characters: workingBible.characters || [],
+        scenes: workingBible.scenes || [],
+        voices: workingBible.voices || [],
+        visualBible: workingBible.projectVisualBible,
+      });
+      const prevBible = session.episode_bibles?.[epId] || createEmptyDramaEpisodeBible({ episode_id: epId });
+      let analyzedSession = {
+        ...session,
+        bible: workingBible,
+        active_episode_id: epId,
+        scene_beats: originalAnalyzed.scene_beats.length ? originalAnalyzed.scene_beats : session.scene_beats,
+        episodes: workingEpisodes.map((e) =>
+          e.episode_id === epId
+            ? { ...e, visual_events: originalAnalyzed.visual_events, official_scene_beats: originalAnalyzed.scene_beats, text: source, updated_at: Date.now() }
+            : e,
+        ),
+        episode_bibles: {
+          ...(session.episode_bibles || {}),
+          [epId]: createEmptyDramaEpisodeBible({
+            ...prevBible,
+            visual_events: originalAnalyzed.visual_events,
+            official_scene_beats: originalAnalyzed.scene_beats,
+            original_scenes: originalAnalyzed.original_scenes,
+            original_segments: originalAnalyzed.original_segments,
+            character_bindings: originalAnalyzed.character_bindings,
+            voice_bindings: originalAnalyzed.voice_bindings,
+            scene_bindings: originalAnalyzed.scene_bindings,
+            visual_bible_binding: originalAnalyzed.visual_bible_binding,
+            original_integrity: originalAnalyzed.integrity,
+            analysis_summary: originalAnalyzed.summary,
+            shot_suggestions: originalAnalyzed.shot_suggestions,
+            style_preset_id:
+              originalAnalyzed.visual_bible_binding.style_id || String(prevBible.style_preset_id || '').trim(),
+            scene_split_at: Date.now(),
+            duration_split_at: 0,
+            asset_match_at: 0,
+            updated_at: Date.now(),
+          }),
+        },
+        meta: {
+          ...session.meta,
+          source_script: source,
+          source_novel: session.meta.source_novel || draftNovel,
+          chatModel: String(pipeline.chatModel || chatModel || '').trim(),
+          globalStyle: pipeline.globalStyle,
+          styleReferenceImageUrl: pipeline.styleReferenceImageUrl,
+          stylePresetId: pipeline.stylePresetId,
+          videoBatchModel: pipeline.videoBatchModel,
+        },
+      };
+      // 原文分割 / 真实 LLM：开关保留。生产可设 VITE_SKIP_LLM_ANALYZE=true 恢复跳过。
+      // P1-A1 灰度验收临时默认 false（见 skipLlmAnalyze.ts）。
+      const SKIP_LLM_ANALYZE = resolveSkipLlmAnalyze(
+        (import.meta as { env?: { VITE_SKIP_LLM_ANALYZE?: string } }).env?.VITE_SKIP_LLM_ANALYZE,
+      );
+      if (!SKIP_LLM_ANALYZE) {
+      const originalSegments = getActiveEpisodeBible(analyzedSession).original_segments || [];
       const preferCompactFirst = sourceChars >= 1200;
       const fullMsgs = buildDramaDomainAnalyzeMessages({
         sourceText: source,
         title: analyzeTitle,
         styleHint,
-        existingCharacterNames: (session.bible.characters || []).map((c) => c.name),
-        existingSceneNames: (session.bible.scenes || []).map((s) => s.name || s.location),
+        existingCharacterNames: (analyzedSession.bible.characters || []).map((c) => c.name),
+        existingSceneNames: (analyzedSession.bible.scenes || []).map((s) => s.name || s.location),
+        originalSegments,
       });
       const compactMsgs = buildDramaDomainAnalyzeCompactMessages({
         sourceText: source,
         title: analyzeTitle,
         styleHint,
+        originalSegments,
       });
       const baseChatOpts = {
         max_tokens: preferCompactFirst ? 8192 : 16384,
@@ -1407,27 +1800,14 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         );
         text = await runAnalyzeChat(second.systemPrompt, second.userPrompt, true);
       }
-      const baseForNormalize = {
-        ...session,
-        active_episode_id: epId,
-        episodes: workingEpisodes,
-        meta: {
-          ...session.meta,
-          source_script: source,
-          source_novel: session.meta.source_novel || draftNovel,
-          chatModel: String(pipeline.chatModel || chatModel || '').trim(),
-          globalStyle: pipeline.globalStyle,
-          styleReferenceImageUrl: pipeline.styleReferenceImageUrl,
-          stylePresetId: pipeline.stylePresetId,
-          videoBatchModel: pipeline.videoBatchModel,
-        },
-      };
+      const baseForNormalize = analyzedSession;
       let normalized = normalizeDramaDomainAnalyzeResult(text, baseForNormalize);
       if (!normalized.ok) {
         const compact = buildDramaDomainAnalyzeCompactMessages({
           sourceText: source,
           title: analyzeTitle,
           styleHint,
+          originalSegments,
         });
         text = await runAnalyzeChat(compact.systemPrompt, compact.userPrompt, true);
         normalized = normalizeDramaDomainAnalyzeResult(text, baseForNormalize);
@@ -1437,6 +1817,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
           sourceText: source,
           title: analyzeTitle,
           styleHint,
+          originalSegments,
         });
         text = await runAnalyzeChat(
           compact.systemPrompt,
@@ -1446,50 +1827,9 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         normalized = normalizeDramaDomainAnalyzeResult(text, baseForNormalize);
       }
       if (!normalized.ok) throw new Error(normalized.error);
+      analyzedSession = applyLlmAnalyzeOntoProgramSession(analyzedSession, normalized.session);
+      } // end if (!SKIP_LLM_ANALYZE)
 
-      const eventBudget = estimateDramaAnalyzeShotBudget(source);
-      let analyzedSession = normalized.session;
-      let events = getActiveEpisodeBible(analyzedSession).visual_events || [];
-      let eventCheck = validateDramaVisualEventCount(events, eventBudget);
-      if (!eventCheck.ok) {
-        const compact = buildDramaDomainAnalyzeCompactMessages({
-          sourceText: source,
-          title: analyzeTitle,
-          styleHint,
-        });
-        text = await runAnalyzeChat(
-          compact.systemPrompt,
-          `${compact.userPrompt}\n\n【事件不足】${eventCheck.error}`,
-          true,
-        );
-        normalized = normalizeDramaDomainAnalyzeResult(text, baseForNormalize);
-        if (!normalized.ok) throw new Error(normalized.error);
-        analyzedSession = normalized.session;
-        events = getActiveEpisodeBible(analyzedSession).visual_events || [];
-        eventCheck = validateDramaVisualEventCount(events, eventBudget);
-      }
-      if (!eventCheck.ok) throw new Error(eventCheck.error);
-
-      setAnalyzingHint('正在生成分镜脚本…');
-      let planned: Awaited<ReturnType<typeof planShotsFromSession>>['planned'] | null = null;
-      let validation: Awaited<ReturnType<typeof planShotsFromSession>>['validation'] | null =
-        null;
-      let incomplete = false;
-      let shotPlanError = '';
-      try {
-        const shotResult = await planShotsFromSession(
-          analyzedSession,
-          source,
-          analyzeTitle,
-          styleHint,
-        );
-        planned = shotResult.planned;
-        validation = shotResult.validation;
-        incomplete = !!shotResult.incomplete;
-      } catch (shotErr) {
-        shotPlanError =
-          shotErr instanceof Error ? shotErr.message : String(shotErr || '分镜脚本生成失败');
-      }
       const nextEps = workingEpisodes.map((e) =>
         e.episode_id === epId
           ? { ...e, text: source, analyzed: true, updated_at: Date.now() }
@@ -1514,38 +1854,98 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
           confirmed_at: 0,
         },
       });
-      if (planned?.suggestions?.length) {
-        nextSession = attachDramaShotSuggestions(nextSession, planned.suggestions, epId);
-      }
+      const converted = convertShotSuggestionsToDramaShots(nextSession);
+      nextSession = {
+        ...nextSession,
+        shots: converted.shots,
+        scene_beats: converted.scene_beats.length ? converted.scene_beats : nextSession.scene_beats,
+      };
+      // 分场后立刻从原文说话人补建人物/声音卡（不依赖 LLM 是否返回 characters）
       nextSession = ensureAppearingCharactersInBible(nextSession);
-      try {
-        const castPicks = await loadDramaCastLibraryPicks(projectId);
-        if (castPicks.length) {
-          nextSession = fillEmptyDramaAssetsFromLibraryPicks(nextSession, castPicks).session;
-        }
-      } catch {
-        /* 本剧人物库回填失败不挡分析 */
-      }
+      const castN = (nextSession.bible.characters || []).filter(
+        (c) => !isDramaSystemSpeakerCharacter(c),
+      ).length;
       patchSession(nextSession);
-      if (shotPlanError) {
-        showAlert(
-          `「${epTitle}」人物/场景/事件已分析，但分镜脚本未生成成功：\n${shotPlanError}\n\n请点「重新生成分镜脚本」再试。`,
-        );
-      } else if (incomplete && validation) {
-        showAlert(
-          `「${epTitle}」已保存 ${validation.shotCount} 条分镜脚本草稿（未完全覆盖事件）。\n${formatDramaShotPlanValidationError(
-            validation,
-          )}\n\n请点「重新生成分镜脚本」补全后再进素材准备。`,
-        );
-      } else if (validation) {
-        showAlert(
-          `「${epTitle}」分析完成：${validation.shotCount} 条分镜脚本；硬事件 ${Math.round(
-            validation.hardCoverage * 100,
-          )}%（${validation.hardCoveredCount}/${validation.hardEventCount}），辅助事件 ${Math.round(
-            validation.auxCoverage * 100,
-          )}%。请确认后进入素材准备`,
-        );
-      }
+      showAlert(
+        `${formatDramaOriginalAnalyzeAlert(
+          epTitle,
+          originalAnalyzed.summary,
+          originalAnalyzed.integrity,
+          originalAnalyzed.shot_suggestions.length,
+        )}${castN ? `\n已识别人物 ${castN} 人（可在素材准备生成定妆图）。` : '\n未识别到可建卡人物，请检查正文是否有「姓名：/姓名道」等说话人格式。'}`,
+      );
+    } catch (e) {
+      showAlert(formatCloudLlmUserError(e));
+    } finally {
+      setAnalyzing(false);
+      setAnalyzingHint('正在策划本集…');
+    }
+  };
+
+  const handleDurationSplit = async () => {
+    const epId = String(activeEpisode?.episode_id || session.active_episode_id || '').trim();
+    if (!epId) {
+      showAlert(episodes.length ? '请先选择一集' : '请先上传/粘贴剧本并分集');
+      return;
+    }
+    const bible = getActiveEpisodeBible(session);
+    if (!(bible.original_scenes || []).length || !(bible.original_segments || []).length) {
+      showAlert('请先点「剧本拆分」，再按时长拆成 15 秒镜');
+      return;
+    }
+    if (analyzing || busy) return;
+    const existing = bible.shot_suggestions?.length || 0;
+    if (existing) {
+      const ok = await showConfirm(
+        '将按估时拆镜：6/10/15 档允许约 35% 误差；同场短镜自动凑档。完成后直接进入素材准备。确定？',
+      );
+      if (!ok) return;
+    }
+    setAnalyzing(true);
+    setAnalyzingHint('正在按时长拆镜…');
+    try {
+      const epFresh =
+        (session.episodes || []).find((e) => e.episode_id === epId) || activeEpisode || null;
+      const source = String(epFresh?.text || '').trim();
+      const suggestions = shotSuggestionsFromDurationSplit({
+        original_scenes: bible.original_scenes || [],
+        original_segments: bible.original_segments || [],
+        visual_events: bible.visual_events || [],
+        source,
+      });
+      let nextSession = {
+        ...session,
+        active_episode_id: epId,
+        episode_bibles: {
+          ...(session.episode_bibles || {}),
+          [epId]: createEmptyDramaEpisodeBible({
+            ...bible,
+            shot_suggestions: suggestions,
+            duration_split_at: Date.now(),
+            asset_match_at: 0,
+            updated_at: Date.now(),
+          }),
+        },
+        meta: {
+          ...session.meta,
+          analyze_confirmed: false,
+          board_confirmed_at: 0,
+          assets_confirmed_at: 0,
+        },
+      };
+      const converted = convertShotSuggestionsToDramaShots(nextSession);
+      nextSession = {
+        ...nextSession,
+        shots: converted.shots,
+        scene_beats: converted.scene_beats.length ? converted.scene_beats : nextSession.scene_beats,
+      };
+      const confirmed = confirmDramaAnalyze(nextSession);
+      patchSession(confirmed);
+      const tierCounts = [6, 10, 15, 20]
+        .map((t) => `${t}秒 ${suggestions.filter((s) => Number(s.duration_sec) === t).length}`)
+        .join(' / ');
+      showAlert(`时长拆镜完成：${suggestions.length} 段原文（${tierCounts}）。已进入素材准备，可继续「素材匹配」。`);
+      goPhase('assets', { session: confirmed });
     } catch (e) {
       showAlert(formatCloudLlmUserError(e));
     } finally {
@@ -1556,82 +1956,62 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
 
   const handleRegenerateShotPlan = async () => {
     const epId = String(activeEpisode?.episode_id || session.active_episode_id || '').trim();
-    const epFresh =
-      (session.episodes || []).find((e) => e.episode_id === epId) || activeEpisode || null;
-    if (!epId || !epFresh) {
+    if (!epId) {
       showAlert(episodes.length ? '请先选择一集' : '请先上传/粘贴剧本并分集');
       return;
     }
-    const draft = episodeDraft.trim();
-    const stored = String(epFresh.text || '').trim();
-    const draftIsOtherEpisode = (session.episodes || []).some(
-      (e) =>
-        e.episode_id !== epId &&
-        draft &&
-        draft === String(e.text || '').trim(),
-    );
-    const source = (draftIsOtherEpisode ? stored : draft || stored).trim();
-    if (!source) {
-      showAlert(episodes.length ? '当前集正文为空' : '请先上传/粘贴剧本并分集');
+    const block = dramaManualPipelineBlockReason(session, 'asset_match');
+    if (block && !isDramaDurationSplitDone(session)) {
+      showAlert(block);
       return;
     }
-    const events = getActiveEpisodeBible(session).visual_events || [];
-    if (!events.length) {
-      showAlert('还没有 Visual Events，请先点「分析本集」');
+    const bible = getActiveEpisodeBible(session);
+    if (!(bible.shot_suggestions || []).length) {
+      showAlert('请先完成「时长拆镜」，再做素材匹配');
       return;
     }
     if (analyzing || busy) return;
-    const existing = getActiveEpisodeBible(session).shot_suggestions?.length || 0;
-    if (existing) {
+    const hasDesign = (bible.shot_suggestions || []).some(
+      (s) => String(s.asset_match || '').trim() || String(s.visual_style || '').trim(),
+    );
+    if (hasDesign) {
       const ok = await showConfirm(
-        '将覆盖当前分镜脚本（角色、场次、Visual Events 不变）。确定重新生成？',
+        '将按当前角色/场景/声音素材与已选视觉风格重挂脚本（小说原文不改）。确定？',
       );
       if (!ok) return;
     }
     setAnalyzing(true);
-    setAnalyzingHint('正在重新生成分镜脚本…');
+    setAnalyzingHint('正在素材匹配…');
     try {
-      commitEpisodeText(source, epId);
-      const analyzeTitle = `${stripDramaEpisodeTitleSuffix(session.bible.project.name || '短剧') || '短剧'} · ${
-        epFresh.title || '本集'
-      }`;
-      const styleHint = pipeline.globalStyle || session.bible.project.visual_style;
-      const baseSession = {
-        ...session,
-        active_episode_id: epId,
-        episodes: (session.episodes || []).map((e) =>
-          e.episode_id === epId ? { ...e, text: source, updated_at: Date.now() } : e,
-        ),
-        meta: { ...session.meta, source_script: source },
+      const designed = applyDramaScriptDesign(session, bible.shot_suggestions || []);
+      let nextSession = attachDramaShotSuggestions(session, designed, epId);
+      const converted = convertShotSuggestionsToDramaShots(nextSession);
+      const epBible = getActiveEpisodeBible(nextSession);
+      nextSession = {
+        ...nextSession,
+        shots: converted.shots,
+        scene_beats: converted.scene_beats.length ? converted.scene_beats : nextSession.scene_beats,
+        episode_bibles: {
+          ...(nextSession.episode_bibles || {}),
+          [epId]: createEmptyDramaEpisodeBible({
+            ...epBible,
+            shot_suggestions: designed,
+            asset_match_at: Date.now(),
+            updated_at: Date.now(),
+          }),
+        },
       };
-      const { planned, validation, incomplete } = await planShotsFromSession(
-        baseSession,
-        source,
-        analyzeTitle,
-        styleHint,
-        '用户不满意上一版。必须换一套景别/运镜/时长组合，覆盖同样 Visual Events。禁止只改措辞或微调秒数，不要复述上一版 action 原文。',
-      );
-      let nextSession = attachDramaShotSuggestions(baseSession, planned.suggestions, epId);
       nextSession = ensureAppearingCharactersInBible(nextSession);
-      nextSession = invalidateDramaConfirmationsAfter(nextSession, 'analyze');
+      nextSession = invalidateDramaConfirmationsAfter(nextSession, 'asset_match');
       patchSession(nextSession);
-      if (incomplete) {
-        showAlert(
-          `已保存 ${validation.shotCount} 条分镜脚本草稿（未完全覆盖事件）。\n${formatDramaShotPlanValidationError(
-            validation,
-          )}\n\n可再点一次「重新生成分镜脚本」补全。`,
-        );
-      } else {
-        showAlert(
-          `已重新生成 ${validation.shotCount} 条分镜脚本；硬事件 ${Math.round(
-            validation.hardCoverage * 100,
-          )}%（${validation.hardCoveredCount}/${validation.hardEventCount}），辅助事件 ${Math.round(
-            validation.auxCoverage * 100,
-          )}%。可再改或再点一次重新生成。`,
-        );
-      }
+      const styleOk = designed.some((s) => String(s.visual_style || '').trim());
+      showAlert(
+        styleOk
+          ? `素材匹配完成：${designed.length} 段已挂人物/场景/声音与视觉风格。可确认进入导演分镜。`
+          : `素材匹配完成：${designed.length} 段已挂素材。可确认素材后进入导演分镜。`,
+      );
     } catch (e) {
-      showAlert(e instanceof Error ? e.message : String(e));
+      showAlert(formatCloudLlmUserError(e));
     } finally {
       setAnalyzing(false);
       setAnalyzingHint('正在策划本集…');
@@ -1660,7 +2040,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
       return;
     }
     if (!(session.bible.characters || []).length) {
-      showAlert('还没有角色名单，请先点「分析本集」');
+      showAlert('还没有角色名单，请先点「剧本拆分」');
       return;
     }
     if (analyzing || busy) return;
@@ -1731,7 +2111,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
     const bibleNow = getActiveEpisodeBible(session);
     const suggestions = bibleNow.shot_suggestions || [];
     if (!suggestions.length) {
-      showAlert('还没有分镜脚本，请先点「分析本集」或「重新生成分镜脚本」');
+      showAlert('还没有分镜脚本，请先点「剧本拆分」或「脚本设计」');
       return;
     }
     const dossierJson = formatDramaCharacterDossierForShotPlan(bibleNow.directing_notes);
@@ -1767,18 +2147,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
 
   const activeEpisodeBible = useMemo(() => getActiveEpisodeBible(session), [session]);
 
-  const handleConfirmAnalyze = () => {
-    const shotCount = session.episode_bibles?.[session.active_episode_id]?.shot_suggestions?.length || 0;
-    if (!shotCount) {
-      showAlert('请先完成本集分析并生成分镜脚本（事件→镜头校验通过后才会写入）');
-      return;
-    }
-    if (activeEpisode && episodeDraft !== activeEpisode.text) {
-      commitEpisodeText(episodeDraft);
-    }
-    patchSession(confirmDramaAnalyze(session));
-  };
-
   return (
     <div className={`flex flex-col flex-1 min-h-0 gap-3 ${shellCls(isDark)}`}>
       {session.meta.needs_stage_reconfirm ? (
@@ -1793,12 +2161,14 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             该项目来自旧版本流程（当前用户阶段：
             {userPhase === 'script'
               ? '剧本'
-              : userPhase === 'assets'
-                ? '素材准备'
-                : userPhase === 'board'
-                  ? '导演分镜'
-                  : '成片'}
-            ）。部分阶段状态需要重新确认（剧本分析 → 素材 → 导演表）。人物/场景卡片数据已保留；请先在「素材准备」生成参考图，再进导演分镜。
+              : userPhase === 'visual'
+                ? '画风色调'
+                : userPhase === 'assets'
+                  ? '素材准备'
+                  : userPhase === 'board'
+                    ? '导演分镜'
+                    : '成片'}
+            ）。部分阶段状态需要重新确认（分集 → 画风色调 → 剧本分析 → 素材 → 导演表）。人物/场景卡片数据已保留；请先在「素材准备」生成参考图，再进导演分镜。
           </div>
           <button
             type="button"
@@ -1996,7 +2366,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                   ingestNovelAndSplit(draftNovel || episodeDraft);
                 }}
               >
-                {splitting ? '分集中…' : '分集'}
+                {splitting ? '分集中…' : '① 分集'}
               </button>
               <button
                 type="button"
@@ -2012,10 +2382,10 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                   if (activeEpisode && episodeDraft !== activeEpisode.text) {
                     commitEpisodeText(episodeDraft, activeEpisode.episode_id);
                   }
-                  goPhase('visual');
+                  goPhase('episodes');
                 }}
               >
-                进入视觉美术
+                ② 进入选集
               </button>
               {activeEpisode ? (
                 <span className={`text-[13px] ${mutedCls(isDark)}`}>
@@ -2035,20 +2405,11 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                 </div>
                 <div className={`text-[12px] mt-0.5 ${mutedCls(isDark)}`}>
                   {episodes.length
-                    ? '整片视觉风格已锁定，所有分集共用同一套美术效果；点卡片改正文，点「分析」进入本集分析，点「+」录入下一集'
+                    ? '点卡片可改正文；点「下一步」先锁定画风色调，再做本集剧本分析（分场/时长拆）'
                     : '点「+」直接录入本集剧本；整本粘贴分集请用右上「粘贴/上传剧本」'}
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className={`nodrag rounded-lg px-3 py-1.5 text-[12px] ${
-                    isDark ? 'bg-white/10' : 'bg-gray-100'
-                  }`}
-                  onClick={() => goPhase('visual')}
-                >
-                  返回视觉美术
-                </button>
                 <button
                   type="button"
                   className={`nodrag rounded-lg px-3 py-1.5 text-[12px] ${
@@ -2060,22 +2421,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                 </button>
               </div>
             </div>
-            {episodes.length > 0 && !session.bible.projectVisualBible?.selected_at ? (
-              <div
-                className={`rounded-lg px-3 py-2 text-[13px] ${
-                  isDark ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-50 text-amber-800'
-                }`}
-              >
-                尚未锁定整片视觉风格。请先完成「视觉美术」，再选集分析。
-                <button
-                  type="button"
-                  className="nodrag ml-2 underline"
-                  onClick={() => goPhase('visual')}
-                >
-                  去视觉美术
-                </button>
-              </div>
-            ) : null}
             <div className="flex-1 min-h-0 overflow-auto custom-scrollbar-dark pr-1">
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 pb-2">
                 {episodes.map((ep) => {
@@ -2086,10 +2431,21 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                       String(o.text || '').trim() &&
                       String(o.text || '').trim() === String(ep.text || '').trim(),
                   );
+                  const bible = session.episode_bibles?.[ep.episode_id];
+                  const summaryRaw =
+                    String(bible?.logline || '').trim() ||
+                    String(ep.text || '')
+                      .replace(/\s+/g, ' ')
+                      .trim();
+                  const summaryLine = !summaryRaw
+                    ? '暂无正文摘要'
+                    : summaryRaw.length > 96
+                      ? `${summaryRaw.slice(0, 96)}…`
+                      : summaryRaw;
                   return (
                     <div
                       key={ep.episode_id}
-                      className={`nodrag group relative w-full min-h-[10.5rem] rounded-xl p-4 flex flex-col overflow-hidden text-left transition-all duration-200 hover:scale-[1.02] ${
+                      className={`nodrag group relative w-full min-h-[12rem] rounded-xl p-4 flex flex-col overflow-hidden text-left transition-all duration-200 hover:scale-[1.02] ${
                         isDark
                           ? 'bg-white/[0.06] ring-1 ring-white/10 hover:ring-sky-400/40 hover:bg-white/[0.09]'
                           : 'bg-white ring-1 ring-gray-200 shadow-sm hover:ring-sky-300 hover:shadow-md'
@@ -2126,18 +2482,25 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                       >
                         <div className="pr-7">
                           <div
-                            className={`text-[18px] font-bold leading-tight line-clamp-2 ${
+                            className={`text-[26px] font-bold leading-tight line-clamp-2 ${
                               isDark ? 'text-white' : 'text-gray-900'
                             }`}
                           >
                             {ep.title || `第${ep.episode_no}集`}
                           </div>
-                          <div className={`mt-2 text-[12px] ${mutedCls(isDark)}`}>
+                          <div className={`mt-1.5 text-[12px] ${mutedCls(isDark)}`}>
                             {ep.analyzed ? '已分析' : '未分析'} · {ep.text.length} 字
+                          </div>
+                          <div
+                            className={`mt-2.5 text-[13px] leading-relaxed line-clamp-3 ${
+                              isDark ? 'text-white/70' : 'text-gray-600'
+                            }`}
+                          >
+                            {summaryLine}
                           </div>
                           {sameTextAsOther ? (
                             <div
-                              className={`mt-1 text-[11px] ${
+                              className={`mt-1.5 text-[11px] ${
                                 isDark ? 'text-amber-200/90' : 'text-amber-700'
                               }`}
                             >
@@ -2146,40 +2509,26 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                           ) : null}
                         </div>
                       </button>
-                      <div className="relative z-[2] mt-auto flex items-center justify-between gap-2 pt-2">
+                      <div className="relative z-[2] mt-auto flex items-center justify-between gap-2 pt-3 flex-wrap">
                         <div className={`min-w-0 truncate text-[11px] ${mutedCls(isDark)}`}>
-                          {dateStr ? `修改：${dateStr}` : '点击查看/改正文'}
+                          {dateStr ? `修改：${dateStr}` : '点击卡片改正文'}
                         </div>
-                        <div className="flex shrink-0 items-center gap-1.5">
-                          <button
-                            type="button"
-                            className={`nodrag rounded-md px-2 py-1 text-[11px] font-medium ${
-                              isDark
-                                ? 'bg-white/10 text-white/85 hover:bg-white/16'
-                                : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
-                            }`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEpisodeEditor(ep);
-                            }}
-                          >
-                            改正文
-                          </button>
-                          <button
-                            type="button"
-                            className={`nodrag rounded-md px-2 py-1 text-[11px] font-medium ${
-                              isDark
-                                ? 'bg-sky-500/80 text-white hover:bg-sky-500'
-                                : 'bg-sky-600 text-white hover:bg-sky-700'
-                            }`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEpisodeAnalyze(ep);
-                            }}
-                          >
-                            分析
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          title="先锁定画风色调，再做剧本分析"
+                          disabled={!String(ep.text || '').trim()}
+                          className={`nodrag rounded-md px-3 py-1.5 text-[12px] font-medium ${
+                            isDark
+                              ? 'bg-sky-500/80 text-white hover:bg-sky-500 disabled:opacity-50'
+                              : 'bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50'
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEpisodeNextToVisual(ep);
+                          }}
+                        >
+                          下一步
+                        </button>
                       </div>
                     </div>
                   );
@@ -2378,43 +2727,27 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
         )}
 
         {phase === 'visual' && (
-          <div className="flex flex-col flex-1 min-h-0 gap-3 h-full">
-            {!episodes.length ? (
-              <div
-                className={`${cardCls(isDark)} flex flex-1 min-h-[12rem] flex-col items-center justify-center gap-3 p-6`}
-              >
-                <div className={`text-[14px] ${mutedCls(isDark)}`}>
-                  还没有分集。请先回到「剧本分集」上传总剧本并分集。
-                </div>
-                <button
-                  type="button"
-                  className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                    isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
-                  }`}
-                  onClick={() => goPhase('ingest')}
-                >
-                  去剧本分集
-                </button>
-              </div>
-            ) : (
-              <div className="relative flex flex-1 min-h-0 flex-col gap-3">
-                <div className="shrink-0 flex items-center justify-between gap-2">
+          <div className="flex h-full min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+              <div className="relative flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+                <div className="flex shrink-0 items-center justify-between gap-2">
                   <div className="min-w-0">
-                    <button
-                      type="button"
-                      className={`nodrag text-[12px] mb-1 ${mutedCls(isDark)} hover:underline`}
-                      onClick={() => goPhase('ingest')}
-                    >
-                      ← 返回剧本分集
-                    </button>
-                    <div className="text-[15px] font-semibold truncate">
-                      视觉美术 · 整片锁定
+                    <div className="truncate text-[14px] font-semibold">
+                      2 · 画风与色调（整片锁定）
                     </div>
-                    <div className={`text-[12px] mt-0.5 ${mutedCls(isDark)}`}>
-                      选定后写入 Project Visual Bible，后续所有分集共用同一套美术效果，避免风格漂移
+                    <div className={`mt-0.5 truncate text-[11px] ${mutedCls(isDark)}`}>
+                      锁定后全部分集共用；再进入剧本分析
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      className={`nodrag rounded-lg px-3 py-1.5 text-[12px] ${
+                        isDark ? 'bg-white/10' : 'bg-gray-100'
+                      }`}
+                      onClick={() => goPhase('episodes')}
+                    >
+                      ← 1 分集
+                    </button>
                     <button
                       type="button"
                       className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
@@ -2423,7 +2756,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                       disabled={!session.bible.projectVisualBible?.selected_at}
                       onClick={() => {
                         if (!session.bible.projectVisualBible?.selected_at) {
-                          showAlert('请先选择一张视觉风格卡片');
+                          showAlert('请先选择画风与色调');
                           return;
                         }
                         if (isDramaBoardConfirmed(session) || isDramaAssetsConfirmed(session)) {
@@ -2432,17 +2765,17 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                           );
                           patchSession(
                             invalidateDramaConfirmationsAfter(
-                              setDramaSessionPhase(session, 'episodes'),
+                              setDramaSessionPhase(session, 'analyze'),
                               'visual',
                             ),
                           );
                           return;
                         }
-                        showAlert('整片视觉风格已锁定，所有分集将保持该美术效果');
-                        goPhase('episodes');
+                        showAlert('整片风格已锁定，进入剧本分析');
+                        goPhase('analyze');
                       }}
                     >
-                      确认进入选择集数
+                      锁定风格，去剧本分析
                     </button>
                   </div>
                 </div>
@@ -2500,7 +2833,6 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                   />
                 </div>
               </div>
-            )}
           </div>
         )}
 
@@ -2572,7 +2904,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                       }`}
                       onClick={() => goPhase('visual')}
                     >
-                      返回美术
+                      画风色调
                     </button>
                   </div>
                 </div>
@@ -2583,122 +2915,50 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                       {chatModelSelectSlot}
                     </div>
                   ) : null}
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                      isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
-                    }`}
-                    disabled={analyzing || busy || !episodeDraft.trim()}
-                    onClick={() => void handleAnalyze()}
-                  >
-                    {analyzing ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        {analyzingHint.includes('加厚')
-                          ? '加厚中…'
-                          : analyzingHint.includes('人设')
-                            ? '人设中…'
-                            : analyzingHint.includes('分镜')
-                              ? '分镜中…'
-                              : '策划中…'}
-                      </span>
-                    ) : (
-                      '分析本集'
-                    )}
-                  </button>
-                  <div
-                    className={`nodrag inline-flex items-center rounded-lg p-0.5 text-[12px] ${
-                      isDark ? 'bg-white/10' : 'bg-gray-100'
-                    }`}
-                    title="15秒高密度=合镜段落+镜内时间子窗（默认）/ 短剧快切=6秒细切 / 正剧细致感；改挡后点「重新生成分镜脚本」或「分析本集」生效"
-                  >
-                    {(
-                      [
-                        { id: 'dense_15s' as const, label: '15秒高密度' },
-                        { id: 'short_drama' as const, label: '短剧快切' },
-                        { id: 'cinematic' as const, label: '正剧细致感' },
-                      ] as const
-                    ).map((opt) => {
-                      const active =
-                        normalizeDramaShotPlanPaceGear(session.meta.shotPlanPaceGear) === opt.id;
-                      return (
-                        <button
-                          key={opt.id}
-                          type="button"
-                          disabled={analyzing || busy}
-                          className={`rounded-md px-2.5 py-1.5 font-medium transition-colors ${
-                            active
-                              ? isDark
-                                ? 'bg-sky-500/90 text-white'
-                                : 'bg-gray-900 text-white'
-                              : isDark
-                                ? 'text-white/70 hover:text-white'
-                                : 'text-gray-600 hover:text-gray-900'
-                          }`}
-                          onClick={() => {
-                            if (active) return;
-                            patchSession({
-                              ...session,
-                              meta: {
-                                ...session.meta,
-                                shotPlanPaceGear: opt.id,
-                              },
-                            });
-                          }}
-                        >
-                          {opt.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                      isDark
-                        ? 'border border-white/20 bg-white/10 text-white hover:bg-white/15'
-                        : 'border border-gray-300 bg-white text-gray-800 hover:bg-gray-50'
-                    }`}
-                    disabled={analyzing || busy || !episodeDraft.trim()}
-                    onClick={() => void handleRegenerateShotPlan()}
-                  >
-                    重新生成分镜脚本
-                  </button>
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                      isDark
-                        ? 'border border-white/20 bg-white/10 text-white hover:bg-white/15'
-                        : 'border border-gray-300 bg-white text-gray-800 hover:bg-gray-50'
-                    }`}
-                    disabled={analyzing || busy || !episodeDraft.trim()}
-                    onClick={() => void handleRegenerateCharacterDossier()}
-                  >
-                    重新生成人设
-                  </button>
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                      isDark
-                        ? 'border border-white/20 bg-white/10 text-white hover:bg-white/15'
-                        : 'border border-gray-300 bg-white text-gray-800 hover:bg-gray-50'
-                    }`}
-                    disabled={analyzing || busy || !episodeDraft.trim()}
-                    onClick={() => void handleEnrichShotsFromDossier()}
-                  >
-                    按人设加厚分镜
-                  </button>
-                  <button
-                    type="button"
-                    className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                      isDark ? 'bg-emerald-500/80 text-white' : 'bg-emerald-700 text-white'
-                    }`}
-                    onClick={handleConfirmAnalyze}
-                  >
-                    确认进入素材准备
-                  </button>
+                  <DramaYuanbaoHoverWrap priceLabel={unitChatPriceLabel} tipBelow>
+                    <button
+                      type="button"
+                      className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
+                        isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
+                      }`}
+                      disabled={analyzing || busy || !episodeDraft.trim()}
+                      onClick={() => void handleAnalyze()}
+                    >
+                      {analyzing ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          {analyzingHint.includes('时长') ? '时长拆镜中…' : '分场中…'}
+                        </span>
+                      ) : (
+                        '② 分场'
+                      )}
+                    </button>
+                  </DramaYuanbaoHoverWrap>
+                  <DramaYuanbaoHoverWrap priceLabel={unitChatPriceLabel} tipBelow>
+                    <button
+                      type="button"
+                      className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
+                        isDark
+                          ? 'border border-emerald-400/40 bg-emerald-500/80 text-white hover:bg-emerald-500'
+                          : 'border border-emerald-600 bg-emerald-700 text-white hover:bg-emerald-800'
+                      }`}
+                      disabled={analyzing || busy || !isDramaSceneSplitDone(session)}
+                      onClick={() => void handleDurationSplit()}
+                    >
+                      {analyzing && analyzingHint.includes('时长') ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          时长拆镜中…
+                        </span>
+                      ) : (
+                        '③ 时长拆镜，去素材准备'
+                      )}
+                    </button>
+                  </DramaYuanbaoHoverWrap>
                   <span className={`text-[14px] ${mutedCls(isDark)}`}>
-                    {session.bible.characters.length} 人 · {session.bible.scenes.length} 景 ·{' '}
-                    {activeEpisodeBible.shot_suggestions.length} 镜脚本
+                    {activeEpisodeBible.shot_suggestions.length
+                      ? `${activeEpisodeBible.shot_suggestions.length} 镜脚本`
+                      : '尚未生成分镜'}
                   </span>
                 </div>
 
@@ -2778,8 +3038,8 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
                     <textarea
                       className={`nodrag nowheel flex-1 min-h-0 w-full resize-none border-0 outline-none px-3.5 py-3 text-[14px] leading-7 custom-scrollbar-dark ${
                         isDark
-                          ? 'bg-transparent text-white/90 placeholder-white/35'
-                          : 'bg-transparent text-gray-900 placeholder-gray-400'
+                          ? 'bg-transparent text-emerald-300 placeholder-white/35'
+                          : 'bg-transparent text-emerald-700 placeholder-gray-400'
                       }`}
                       value={episodeDraft}
                       placeholder="本集正文…"
@@ -2816,24 +3076,15 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             onSpawnVideos={onSpawnVideos}
             getShotVideoPriceLabel={getShotVideoPriceLabel}
             unitChatPriceLabel={unitChatPriceLabel}
+            unitImagePriceLabel={unitImagePriceLabel}
+            storyboardImageGenSlot={storyboardImageGenSlot}
+            onGenerateShotStoryboard={onGenerateShotStoryboard}
             videoGeneratingIds={videoGeneratingIds}
             onMarkVideoGenerating={onMarkVideoGenerating}
             onAbandonVideoWait={onAbandonVideoWait}
-            onConfirmBoard={() => {
-              if (!(session.shots || []).length) {
-                showAlert('导演表还没有镜头，请先确认剧本分析或补全导演脚本');
-                return;
-              }
-              patchSession(confirmDramaBoard(session));
-              showAlert('导演表已确认，可在本页生成视频，再进入成片');
-            }}
-            onUnlockBoard={() => {
-              patchSession(unlockDramaBoard(session));
-              showAlert('已解除导演表确认；修改后请重新确认再出片');
-            }}
             onNext={() => {
-              if (!isDramaBoardConfirmed(session)) {
-                showAlert('请先确认导演表，再进入成片');
+              if (!(session.shots || []).length) {
+                showAlert('导演分镜还没有镜头，请先完成剧本分析');
                 return;
               }
               goPhase('review');
@@ -2843,6 +3094,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             onGenerateShotAudio={onGenerateShotAudio}
             onAbandonShotAudio={onAbandonShotAudio}
             unitVoicePriceLabel={unitVoicePriceLabel}
+            onApplyShotVideoToSplice={onApplyShotVideoToSplice}
           />
         )}
 
@@ -2863,6 +3115,7 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             canPickFromCanvas={canPickFromCanvas}
             onClearAssetImage={onClearAssetImage}
             assetGeneratingIds={assetGeneratingIds}
+            unitChatPriceLabel={unitChatPriceLabel}
             unitVoicePriceLabel={unitVoicePriceLabel}
             batchVoicePriceLabel={batchVoicePriceLabel}
             canPickVoiceFromCanvas={canPickVoiceFromCanvas}
@@ -2874,18 +3127,26 @@ export const DramaStudioHost: React.FC<DramaStudioHostProps> = ({
             runChat={runChat}
             chatModel={chatModel}
             onEnterNext={() => {
-              if (!(session.shots || []).length) {
-                showAlert('请先完成剧本分析生成分镜脚本');
-                return;
-              }
-              goPhase('board');
+              void (async () => {
+                if (!(session.shots || []).length) {
+                  showAlert('请先完成剧本分析生成分镜脚本');
+                  return;
+                }
+                if (!isDramaAssetMatchDone(session)) {
+                  await handleRegenerateShotPlan();
+                }
+                goPhase('board');
+              })();
             }}
+            onMatchAssets={() => void handleRegenerateShotPlan()}
+            assetMatchDone={isDramaAssetMatchDone(session)}
           />
         )}
 
         {phase === 'review' && (
           <DramaFinalCutPanel
             session={session}
+            pipeline={pipeline}
             isDark={isDark}
             onChange={patchSession}
             onVideosToSplice={onVideosToSplice}
@@ -3040,6 +3301,19 @@ function clearDomainVoiceSample(
       ),
     },
   };
+}
+
+function setDomainVoiceSample(
+  session: DramaDirectorSession,
+  voiceId: string,
+  sampleUrl: string,
+): DramaDirectorSession {
+  return (
+    applyDramaSessionVoiceSample(session, voiceId, {
+      sampleUrl,
+      status: 'ready',
+    }) || session
+  );
 }
 
 function reorderDomainAssets(
@@ -3524,7 +3798,8 @@ function DramaAssetPromptFold({
   );
 }
 
-function DramaPromptHoverButton({
+function _DramaPromptHoverButtonRemoved() { return null; }
+function _DramaPromptHoverButtonRemoved_unused({
   isDark,
   items,
 }: {
@@ -3663,14 +3938,14 @@ function buildDramaAssetPromptReviseMessages(opts: {
   if (opts.mode === 'voice') {
     return {
       systemPrompt: [
-        '你是短剧配音提示词编辑。根据用户修改思路，在保留原文结构与可用信息的前提下改写声音提示词。',
+        '你是短剧配音提示词编辑。根据用户修改思路改写声音提示词。',
         '输出必须仍是纯文本，固定结构（每行一项，勿输出 Markdown/JSON/解释）：',
         '名字',
         '年龄：…',
         '性别：男/女/未注明',
         '音色描述：口语化、可念给人听的音色（勿堆英文标签）',
         '台词：',
-        '（2～3 句，每句一行，须像角色会说的话）',
+        '（只能保留或改用小说/剧本中该角色的原句；禁止新编台词）',
         '只改用户点名的部分；未提及的字段尽量沿用原文。只输出改写后的全文。',
       ].join('\n'),
       userPrompt: [
@@ -3686,8 +3961,9 @@ function buildDramaAssetPromptReviseMessages(opts: {
   }
   return {
     systemPrompt: [
-      '你是短剧美术提示词编辑。根据用户修改思路，在保留原文可用视觉信息的前提下改写图片提示词。',
-      '输出须为可直接用于生图的纯中文描述（可含必要英文材质词），不要 Markdown/JSON/解释。',
+      '你是短剧美术提示词编辑。根据用户修改思路改写图片提示词。',
+      '输出须为可直接用于生图的纯中文描述，不要 Markdown/JSON/解释。',
+      '必须符合小说设定：年龄外形、穿着、年代风格、发型发色、配饰细节与颜色都要写清楚；禁止擅自改龄或时代错配。',
       '只改用户点名的部分；未提及处尽量沿用原文。只输出改写后的全文。',
     ].join('\n'),
     userPrompt: [
@@ -3719,6 +3995,7 @@ function DramaPromptEditDialog({
   runChat,
   showAlert,
   chatModel,
+  unitChatPriceLabel,
   onSave,
   onClose,
 }: {
@@ -3734,6 +4011,7 @@ function DramaPromptEditDialog({
   ) => Promise<string>;
   showAlert?: (msg: string) => void;
   chatModel?: string;
+  unitChatPriceLabel?: string | null;
   onSave: (next: string) => void;
   onClose: () => void;
 }) {
@@ -3844,8 +4122,7 @@ function DramaPromptEditDialog({
         original,
         opinion: hint,
       });
-      const model =
-        String(chatModel || '').trim() || LLM_CHAT_DISPLAY_MODEL_ID;
+      const model = resolveDramaChatModel(chatModel);
       const raw = await runChat(systemPrompt, userPrompt, {
         max_tokens: mode === 'voice' ? 800 : 1200,
         temperature: 0.55,
@@ -3980,14 +4257,16 @@ function DramaPromptEditDialog({
             }}
           />
           {renderMicBtn(opinionMicPointerHandlers, dictationTarget === 'opinion')}
-          <button
-            type="button"
-            className="nodrag shrink-0 rounded-lg bg-violet-500 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-violet-400 disabled:opacity-50"
-            disabled={revising || !runChat || !String(opinion || '').trim()}
-            onClick={() => void handleAiRevise()}
-          >
-            {revising ? 'AI 改写中…' : 'AI 按原文改'}
-          </button>
+          <DramaYuanbaoHoverWrap priceLabel={unitChatPriceLabel}>
+            <button
+              type="button"
+              className="nodrag shrink-0 rounded-lg bg-violet-500 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-violet-400 disabled:opacity-50"
+              disabled={revising || !runChat || !String(opinion || '').trim()}
+              onClick={() => void handleAiRevise()}
+            >
+              {revising ? 'AI 改写中…' : 'AI 按原文改'}
+            </button>
+          </DramaYuanbaoHoverWrap>
         </div>
         <div className="flex justify-end gap-2 px-4 pb-4">
           <button
@@ -4054,11 +4333,89 @@ function DramaYuanbaoHoverWrap({
           className={`${tipBelow ? yuanbaoHoverTipBelowCls : yuanbaoHoverTipAboveCls} translate-y-0 opacity-100`}
           title={tip}
         >
-          {tip}
+          <Coins className="h-3 w-3 shrink-0 text-amber-300" aria-hidden strokeWidth={2.25} />
+          <span>{tip}</span>
         </span>
       ) : null}
       {children}
     </span>
+  );
+}
+
+function isDramaDroppableImageUrl(url: string): boolean {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (u.startsWith('drama-asset:') || u.startsWith('drama-shot:') || u === 'thumb') return false;
+  return /^(https?:|local-resource:|data:|file:|blob:)/i.test(u);
+}
+
+function isDramaDroppableAudioUrl(url: string): boolean {
+  const u = String(url || '').trim();
+  if (!u || !isDramaDroppableImageUrl(u)) return false;
+  return /\.(mp3|wav|m4a|ogg|flac|aac)(\?|#|$)/i.test(u) || /audio/i.test(u);
+}
+
+function readDramaDropImageUrl(dt: DataTransfer): string {
+  const typed = String(dt.getData(NEXFLOW_CANVAS_IMAGE_DRAG_MIME) || '').trim();
+  if (isDramaDroppableImageUrl(typed)) return typed;
+  const raw = String(dt.getData('text/uri-list') || dt.getData('text/plain') || '').trim();
+  const maybe = raw.split('\n').map((s) => s.trim()).find((s) => s && !s.startsWith('#')) || '';
+  return isDramaDroppableImageUrl(maybe) ? maybe : '';
+}
+
+function readDramaDropAudioUrl(dt: DataTransfer): string {
+  const typed = String(dt.getData(NEXFLOW_CANVAS_AUDIO_DRAG_MIME) || '').trim();
+  if (isDramaDroppableImageUrl(typed)) return typed;
+  const raw = String(dt.getData('text/plain') || '').trim();
+  return isDramaDroppableAudioUrl(raw) ? raw : '';
+}
+
+function DramaEmptyAssetImageSlot({
+  isDark,
+  generating,
+  aspect,
+  onUpload,
+  placeholder,
+}: {
+  isDark: boolean;
+  generating?: boolean;
+  aspect: string;
+  onUpload?: () => void;
+  placeholder?: string;
+}) {
+  return (
+    <div
+      className="flex w-full flex-col items-center justify-center gap-2 px-2"
+      style={{ aspectRatio: aspect }}
+      data-no-card-drag
+    >
+      {generating ? null : placeholder ? (
+        <span
+          className={`max-w-[5.5rem] text-center text-[12px] font-medium leading-snug ${
+            isDark ? 'text-white/45' : 'text-gray-400'
+          }`}
+        >
+          {placeholder}
+        </span>
+      ) : (
+        <button
+          type="button"
+          className={`nodrag flex h-11 w-11 items-center justify-center rounded-full transition-colors ${
+            isDark
+              ? 'bg-white/10 text-white/80 hover:bg-white/18 hover:text-white'
+              : 'bg-white text-gray-600 shadow-sm hover:bg-gray-50 hover:text-gray-900'
+          }`}
+          title="点击上传，或从画布拖入图片"
+          aria-label="上传图片"
+          onClick={(e) => {
+            e.stopPropagation();
+            onUpload?.();
+          }}
+        >
+          <Plus className="h-6 w-6" strokeWidth={2} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -4074,6 +4431,8 @@ function DramaAssetSourceMenu({
   onUpload,
   onPickCanvas,
   onPickLibrary,
+  promptLabel,
+  onEditPrompt,
 }: {
   isDark: boolean;
   generating?: boolean;
@@ -4086,25 +4445,47 @@ function DramaAssetSourceMenu({
   onUpload: () => void;
   onPickCanvas?: () => void;
   onPickLibrary?: () => void;
+  promptLabel?: string;
+  onEditPrompt?: () => void;
 }) {
   const [priceHover, setPriceHover] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
   const tip = String(priceLabel || '').trim();
   const itemCls = `nodrag flex h-7 w-full items-center justify-between gap-1 px-2 text-left text-[10px] leading-none transition-colors ${
     isDark
       ? 'text-white/90 hover:bg-sky-500 hover:text-white'
       : 'text-gray-800 hover:bg-sky-500 hover:text-white'
   }`;
+  const promptItemCls = `nodrag flex h-7 w-full items-center justify-between gap-1 px-2 text-left text-[10px] leading-none transition-colors ${
+    isDark
+      ? 'bg-orange-500/30 text-orange-100 hover:bg-orange-500/50 hover:text-white'
+      : 'bg-orange-100 text-orange-800 hover:bg-orange-200 hover:text-orange-900'
+  }`;
+  const openMenu = () => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ left: r.left, top: r.bottom + 2, width: r.width });
+    setMenuOpen(true);
+  };
+  const closeMenu = () => setMenuOpen(false);
   return (
-    <div className="relative min-w-0 flex-1 group/src">
+    <div
+      className="relative min-w-0 flex-1"
+      onMouseEnter={openMenu}
+      onMouseLeave={closeMenu}
+    >
       {priceHover && tip && !generating ? (
         <span
           className={`${yuanbaoHoverTipAboveCls} translate-y-0 opacity-100`}
           title={tip}
         >
-          {tip}
+          <Coins className="h-3 w-3 shrink-0 text-amber-300" aria-hidden strokeWidth={2.25} />
+          <span>{tip}</span>
         </span>
       ) : null}
       <button
+        ref={btnRef}
         type="button"
         className={`nodrag box-border flex h-6 w-full items-center justify-center rounded-md px-1 text-[9px] leading-none ${
           isDark ? 'bg-sky-500/70 text-white' : 'bg-gray-900 text-white'
@@ -4118,28 +4499,39 @@ function DramaAssetSourceMenu({
       >
         <span className="truncate">{generating ? generatingLabel : primaryLabel}</span>
       </button>
-      <div
-        className={`nodrag absolute left-0 right-0 top-[calc(100%+2px)] z-[90] origin-top overflow-hidden rounded-md border shadow-lg transition duration-150 ease-out ${
-          isDark ? 'border-white/15 bg-[#1c1c1e]' : 'border-gray-200 bg-white'
-        } pointer-events-none scale-y-90 opacity-0 group-hover/src:pointer-events-auto group-hover/src:scale-y-100 group-hover/src:opacity-100`}
-      >
-        <button type="button" className={itemCls} onClick={onUpload}>
-          本地上传
-        </button>
-        <button
-          type="button"
-          className={`${itemCls} disabled:opacity-40`}
-          disabled={!canPickFromCanvas || !onPickCanvas}
-          onClick={() => onPickCanvas?.()}
+      {menuOpen && menuPos ? createPortal(
+        <div
+          className={`nodrag fixed z-[100090] origin-top overflow-hidden rounded-md border shadow-lg ${
+            isDark ? 'border-white/15 bg-[#1c1c1e]' : 'border-gray-200 bg-white'
+          }`}
+          style={{ left: menuPos.left, top: menuPos.top, width: menuPos.width }}
+          onMouseEnter={openMenu}
+          onMouseLeave={closeMenu}
         >
-          从画布上传
-        </button>
-        {showLibrary && onPickLibrary ? (
-          <button type="button" className={itemCls} onClick={onPickLibrary}>
-            角色仓库
+          {promptLabel && onEditPrompt ? (
+            <button type="button" className={promptItemCls} onClick={() => { onEditPrompt(); closeMenu(); }}>
+              {promptLabel}
+            </button>
+          ) : null}
+          <button type="button" className={itemCls} onClick={() => { onUpload(); closeMenu(); }}>
+            本地上传
           </button>
-        ) : null}
-      </div>
+          <button
+            type="button"
+            className={`${itemCls} disabled:opacity-40`}
+            disabled={!canPickFromCanvas || !onPickCanvas}
+            onClick={() => { onPickCanvas?.(); closeMenu(); }}
+          >
+            从画布上传
+          </button>
+          {showLibrary && onPickLibrary ? (
+            <button type="button" className={itemCls} onClick={() => { onPickLibrary(); closeMenu(); }}>
+              角色仓库
+            </button>
+          ) : null}
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }
@@ -4164,17 +4556,34 @@ function DramaLiteVoiceBar({
   generating,
   downloadName,
   onClear,
+  onDropFile,
+  onDropUrl,
 }: {
   url: string;
   isDark: boolean;
   generating: boolean;
   downloadName?: string;
   onClear: () => void;
+  onDropFile?: (file: File) => void;
+  onDropUrl?: (sampleUrl: string) => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const previewCtxRef = useRef<AudioContext | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [dropOver, setDropOver] = useState(false);
   const hasMedia = !!String(url || '').trim();
+  const isAudioFile = (file: File) =>
+    String(file.type || '').startsWith('audio/') ||
+    /\.(mp3|wav|m4a|ogg|flac|aac)$/i.test(file.name);
+
+  const acceptAudioDrag = (e: React.DragEvent) => {
+    const types = Array.from(e.dataTransfer.types || []);
+    return (
+      !!peekCanvasAudioDragUrl() ||
+      types.includes(NEXFLOW_CANVAS_AUDIO_DRAG_MIME) ||
+      types.includes('Files')
+    );
+  };
 
   useEffect(() => {
     setPlaying(false);
@@ -4227,10 +4636,38 @@ function DramaLiteVoiceBar({
     <div
       className={`relative flex items-center gap-1 overflow-hidden rounded-md px-1 py-1 ${
         isDark ? 'bg-black/40' : 'bg-gray-100'
-      }`}
+      } ${dropOver ? 'ring-2 ring-sky-400/80' : ''}`}
       data-no-card-drag
+      data-drama-drop="audio"
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => e.stopPropagation()}
+      onDragOver={(e) => {
+        if (!acceptAudioDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'copy';
+        if (!dropOver) setDropOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setDropOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDropOver(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file && isAudioFile(file)) {
+          endCanvasAudioDrag();
+          onDropFile?.(file);
+          return;
+        }
+        const audioUrl = peekCanvasAudioDragUrl() || readDramaDropAudioUrl(e.dataTransfer);
+        if (audioUrl) {
+          endCanvasAudioDrag();
+          onDropUrl?.(audioUrl);
+        }
+      }}
     >
       {hasMedia ? (
         <button
@@ -4323,12 +4760,14 @@ function DramaCharacterVoiceSlot({
   isDark,
   generating,
   onChange,
+  onDropFile,
 }: {
   session: DramaDirectorSession;
   characterId: string;
   isDark: boolean;
   generating: boolean;
   onChange: (s: DramaDirectorSession) => void;
+  onDropFile?: (voiceId: string, file: File) => void;
 }) {
   const voice = findVoiceForCharacter(session, characterId);
   const voiceId = String(voice?.voice_id || '').trim();
@@ -4345,7 +4784,288 @@ function DramaCharacterVoiceSlot({
       generating={generating}
       downloadName={chName}
       onClear={() => onChange(clearDomainVoiceSample(session, voiceId))}
+      onDropFile={(file) => onDropFile?.(voiceId, file)}
+      onDropUrl={(sampleUrl) => onChange(setDomainVoiceSample(session, voiceId, sampleUrl))}
     />
+  );
+}
+
+function DramaSystemVoiceCard({
+  session,
+  pipeline,
+  isDark,
+  voiceGenerating,
+  imageGenerating,
+  unitVoicePriceLabel,
+  unitImagePriceLabel,
+  canPickVoiceFromCanvas,
+  canPickFromCanvas,
+  onChange,
+  onGenerateVoice,
+  onUploadVoice,
+  onPickVoiceFromCanvas,
+  onGenerateImage,
+  onUploadImage,
+  onUploadImageFile,
+  onPickImageFromCanvas,
+  onClearImage,
+  onEditVoicePrompt,
+  onEditImagePrompt,
+  onDropFile,
+}: {
+  session: DramaDirectorSession;
+  pipeline?: DirectorPipelineState;
+  isDark: boolean;
+  voiceGenerating: boolean;
+  imageGenerating: boolean;
+  unitVoicePriceLabel?: string;
+  unitImagePriceLabel?: string | null;
+  canPickVoiceFromCanvas?: boolean;
+  canPickFromCanvas?: boolean;
+  onChange: (s: DramaDirectorSession) => void;
+  onGenerateVoice?: (voiceId: string) => void;
+  onUploadVoice?: (voiceId: string) => void;
+  onPickVoiceFromCanvas?: (voiceId: string) => void;
+  onGenerateImage?: () => void;
+  onUploadImage?: () => void;
+  onUploadImageFile?: (file: File) => void;
+  onPickImageFromCanvas?: () => void;
+  onClearImage?: () => void;
+  onEditVoicePrompt: () => void;
+  onEditImagePrompt: () => void;
+  onDropFile?: (voiceId: string, file: File) => void;
+}) {
+  const voice = resolveDramaSystemVoice(session);
+  const voiceId = String(voice?.voice_id || '').trim();
+  const sampleUrl = String(voice?.sample_url || voice?.identity?.reference_audio || '').trim();
+  const voiceImageUrl = String(voice?.imageUrl || '').trim();
+  const pipeImageUrl = pickPipelineAssetImage(
+    pipeline?.assets?.characters,
+    DRAMA_SYSTEM_SPEAKER_ID,
+    '系统提示音',
+  );
+  // 任务成功常先写 pipeline：Domain 空/生成中/与 pipeline 不一致时，以 pipeline 成图为准
+  const imageUrl = toDisplayableDramaMediaUrl(
+    pipeImageUrl &&
+      (!voiceImageUrl ||
+        voice?.image_status === 'generating' ||
+        imageGenerating ||
+        pipeImageUrl !== voiceImageUrl)
+      ? pipeImageUrl
+      : voiceImageUrl || pipeImageUrl,
+  );
+  const mediaAspect = '9 / 16';
+  if (!dramaSessionNeedsSystemVoice(session)) return null;
+  if (!voiceId) return null;
+  return (
+    <div className="relative z-[1] w-full min-w-0 flex flex-col gap-1.5 hover:z-30">
+      <div className={`${cardCls(isDark)} relative z-[20] flex flex-col overflow-visible`}>
+        <div
+          className={`group/img relative w-full overflow-hidden rounded-t-xl ${
+            isDark ? 'bg-black/40' : 'bg-gray-100'
+          }`}
+          data-drama-drop="image"
+          onDragOver={(e) => {
+            if (
+              !peekCanvasImageDragUrl() &&
+              !Array.from(e.dataTransfer.types || []).some(
+                (t) =>
+                  t === NEXFLOW_CANVAS_IMAGE_DRAG_MIME ||
+                  t === 'text/uri-list' ||
+                  t === 'Files',
+              )
+            ) {
+              return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(e) => {
+            const file = e.dataTransfer.files?.[0];
+            if (file && String(file.type || '').startsWith('image/')) {
+              e.preventDefault();
+              e.stopPropagation();
+              if (onUploadImageFile) {
+                onUploadImageFile(file);
+                return;
+              }
+              onUploadImage?.();
+              return;
+            }
+            const canvasUrl = peekCanvasImageDragUrl() || readDramaDropImageUrl(e.dataTransfer);
+            if (!canvasUrl) return;
+            e.preventDefault();
+            e.stopPropagation();
+            endCanvasImageDrag();
+            onChange(
+              applyDramaSessionAssetImage(session, DRAMA_SYSTEM_SPEAKER_ID, {
+                imageUrl: canvasUrl,
+                status: 'ready',
+              }) || session,
+            );
+          }}
+        >
+          {imageUrl ? (
+            <RefImageHoverThumb
+              key={`${imageUrl}:${Number(voice?.asset_version) || 1}`}
+              url={imageUrl}
+              alt=""
+              title="悬停放大"
+              objectFit="cover"
+              previewBorderless
+              boxAspect={mediaAspect}
+              listThumbMaxEdge={288}
+              cacheNonce={Number(voice?.asset_version) || 1}
+              className="w-full"
+            />
+          ) : (
+            <DramaEmptyAssetImageSlot
+              isDark={isDark}
+              generating={imageGenerating}
+              aspect={mediaAspect}
+              onUpload={onUploadImage}
+            />
+          )}
+          <ModuleProgressBar
+            visible={imageGenerating}
+            progress={imageGenerating ? 35 : 100}
+            solidBackground={isDark ? '#1C1C1E' : '#e5e7eb'}
+            progressMessage="正在生成图片..."
+            borderRadius={8}
+          />
+          {imageUrl ? (
+            <button
+              type="button"
+              className={`nodrag absolute top-1 left-1 z-[60] flex h-5 w-5 items-center justify-center rounded-full ${
+                isDark
+                  ? 'bg-black/55 text-white/80 hover:bg-black/75 hover:text-white'
+                  : 'bg-black/40 text-white/90 hover:bg-black/60'
+              }`}
+              title="下载图片"
+              aria-label="下载图片"
+              onClick={(e) => {
+                e.stopPropagation();
+                void downloadDramaAssetImage(imageUrl, '系统提示音');
+              }}
+            >
+              <Download className="h-3 w-3" strokeWidth={2.5} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className={`nodrag absolute top-1 right-1 z-[60] flex h-5 w-5 items-center justify-center rounded-full text-[14px] leading-none ${
+              isDark
+                ? 'bg-black/55 text-white/80 hover:bg-black/75 hover:text-white'
+                : 'bg-black/40 text-white/90 hover:bg-black/60'
+            }`}
+            title="删除系统提示音卡（本剧本没有系统播报时可关掉）"
+            aria-label="删除系统提示音卡"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange(suppressDramaSystemVoice(session));
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div className="relative z-[50] flex min-w-0 items-center justify-center gap-1.5 px-2 py-1.5">
+          <span
+            className={`min-w-0 truncate text-center text-[12px] font-medium ${
+              isDark ? 'text-white/90' : 'text-gray-900'
+            }`}
+          >
+            系统提示音
+          </span>
+          <span
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] leading-none ${
+              isDark ? 'bg-violet-500/25 text-violet-100' : 'bg-violet-100 text-violet-800'
+            }`}
+          >
+            系统形象
+          </span>
+          {!imageUrl ? (
+            <span
+              className={`shrink-0 rounded px-1 py-0.5 text-[10px] ${
+                isDark ? 'bg-amber-500/25 text-amber-200' : 'bg-amber-100 text-amber-800'
+              }`}
+            >
+              需设计
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <DramaLiteVoiceBar
+        url={sampleUrl}
+        isDark={isDark}
+        generating={voiceGenerating}
+        downloadName="系统提示音"
+        onClear={() => onChange(clearDomainVoiceSample(session, voiceId))}
+        onDropFile={(file) => onDropFile?.(voiceId, file)}
+        onDropUrl={(url) => onChange(setDomainVoiceSample(session, voiceId, url))}
+      />
+      <div className="relative z-[40] flex w-full items-start gap-1">
+        <DramaAssetSourceMenu
+          isDark={isDark}
+          generating={imageGenerating}
+          generatingLabel="生成中"
+          primaryLabel="图片生成"
+          priceLabel={unitImagePriceLabel}
+          showLibrary={false}
+          canPickFromCanvas={!!canPickFromCanvas}
+          onGenerate={() => onGenerateImage?.()}
+          onUpload={() => onUploadImage?.()}
+          onPickCanvas={() => onPickImageFromCanvas?.()}
+          promptLabel="图片提示词"
+          onEditPrompt={onEditImagePrompt}
+        />
+        <DramaAssetSourceMenu
+          isDark={isDark}
+          generating={voiceGenerating}
+          generatingLabel="生成中"
+          primaryLabel="声音生成"
+          priceLabel={unitVoicePriceLabel}
+          showLibrary={false}
+          canPickFromCanvas={!!canPickVoiceFromCanvas}
+          onGenerate={() => onGenerateVoice?.(voiceId)}
+          onUpload={() => onUploadVoice?.(voiceId)}
+          onPickCanvas={() => onPickVoiceFromCanvas?.(voiceId)}
+          promptLabel="声音提示词"
+          onEditPrompt={onEditVoicePrompt}
+        />
+      </div>
+    </div>
+  );
+}
+
+function resolveCostumePullUpThumbUrl(
+  ch: DramaCharacter,
+  costume: DramaCharacterCostume,
+  pipeline?: DirectorPipelineState,
+  localPicks?: DramaLibraryPickItem[],
+): string {
+  const own = dramaCostumeImageUrl(costume);
+  if (own) return toDisplayableDramaMediaUrl(own);
+  const fromPipe = pickPipelineAssetImage(
+    pipeline?.assets?.characters,
+    costume.costume_id,
+    '',
+  );
+  if (fromPipe) return toDisplayableDramaMediaUrl(fromPipe);
+  const list = ch.costumes || [];
+  const idx = list.findIndex((x) => x.costume_id === costume.costume_id);
+  const isDefault = idx === 0 || String(costume.name || '').trim() === '默认服装';
+  if (!isDefault) return '';
+  const otherOwnsImage = list.some(
+    (x) => x.costume_id !== costume.costume_id && !!dramaCostumeImageUrl(x),
+  );
+  const fromCharacter = otherOwnsImage
+    ? ''
+    : resolveCharacterMasterReferenceUrl(ch) || String(ch.imageUrl || '').trim();
+  return toDisplayableDramaMediaUrl(
+    fromCharacter ||
+      pickPipelineAssetImage(pipeline?.assets?.characters, ch.character_id, ch.name) ||
+      pickDramaLibraryImageUrl(ch.name, localPicks || []),
   );
 }
 
@@ -4358,6 +5078,9 @@ function DramaCharacterCostumePullUp({
   onChange,
   anchorRef,
   showConfirm,
+  pipeline,
+  localPicks,
+  onUploadCostumeImage,
 }: {
   session: DramaDirectorSession;
   characterId: string;
@@ -4367,6 +5090,9 @@ function DramaCharacterCostumePullUp({
   onChange: (s: DramaDirectorSession) => void;
   anchorRef: React.RefObject<HTMLElement | null>;
   showConfirm: (message: string) => Promise<boolean>;
+  pipeline?: DirectorPipelineState;
+  localPicks?: DramaLibraryPickItem[];
+  onUploadCostumeImage?: (costumeId: string) => void;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null);
@@ -4445,9 +5171,30 @@ function DramaCharacterCostumePullUp({
         {costumes.length ? (
           costumes.map((c) => {
             const on = c.costume_id === active?.costume_id;
-            const thumb = dramaCostumeImageUrl(c);
+            const thumb = resolveCostumePullUpThumbUrl(ch, c, pipeline, localPicks);
             return (
               <div key={c.costume_id} className="flex items-stretch gap-0.5">
+                <button
+                  type="button"
+                  className={`nodrag relative mt-1.5 h-8 w-8 shrink-0 overflow-hidden rounded-md ${
+                    isDark
+                      ? 'bg-black/40 text-white/45 hover:ring-1 hover:ring-white/35'
+                      : 'bg-gray-100 text-gray-400 hover:ring-1 hover:ring-gray-300'
+                  }`}
+                  title={thumb ? '点击更换造型图' : '点击上传造型图'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onUploadCostumeImage?.(c.costume_id);
+                  }}
+                >
+                  {thumb ? (
+                    <img src={thumb} alt="" className="h-full w-full object-cover" draggable={false} />
+                  ) : (
+                    <span className="flex h-full w-full items-center justify-center text-[9px] leading-none">
+                      上传
+                    </span>
+                  )}
+                </button>
                 <button
                   type="button"
                   className={`${itemCls} ${on ? (isDark ? 'bg-violet-500/25' : 'bg-violet-50') : ''}`}
@@ -4456,15 +5203,6 @@ function DramaCharacterCostumePullUp({
                     onClose();
                   }}
                 >
-                  <span
-                    className={`h-8 w-8 shrink-0 overflow-hidden rounded-md ${
-                      isDark ? 'bg-black/40' : 'bg-gray-100'
-                    }`}
-                  >
-                    {thumb ? (
-                      <img src={thumb} alt="" className="h-full w-full object-cover" draggable={false} />
-                    ) : null}
-                  </span>
                   <span className="min-w-0 flex-1 truncate">{c.name || '未命名造型'}</span>
                   {on ? (
                     <span className={`shrink-0 text-[10px] ${isDark ? 'text-violet-200' : 'text-violet-700'}`}>
@@ -4665,12 +5403,14 @@ function DramaCharacterCostumePanel({
                         >
                           {img ? (
                             <RefImageHoverThumb
+                              key={img}
                               url={img}
                               alt=""
                               title="悬停放大"
                               objectFit="cover"
                               previewBorderless
                               boxAspect="9 / 16"
+                              cacheNonce={img}
                               className="w-full"
                             />
                           ) : (
@@ -4855,6 +5595,7 @@ function DramaAssetLibraryPanel({
   canPickFromCanvas,
   onClearAssetImage,
   assetGeneratingIds,
+  unitChatPriceLabel,
   unitVoicePriceLabel,
   batchVoicePriceLabel,
   canPickVoiceFromCanvas,
@@ -4866,6 +5607,8 @@ function DramaAssetLibraryPanel({
   runChat,
   chatModel,
   onEnterNext,
+  onMatchAssets: _onMatchAssets,
+  assetMatchDone: _assetMatchDone,
 }: {
   session: DramaDirectorSession;
   pipeline?: DirectorPipelineState;
@@ -4882,6 +5625,7 @@ function DramaAssetLibraryPanel({
   canPickFromCanvas?: boolean;
   onClearAssetImage?: (kind: DramaAssetVisualKind, assetId: string) => void;
   assetGeneratingIds?: Record<string, true>;
+  unitChatPriceLabel?: string | null;
   unitVoicePriceLabel?: string | null;
   batchVoicePriceLabel?: string | null;
   canPickVoiceFromCanvas?: boolean;
@@ -4897,6 +5641,8 @@ function DramaAssetLibraryPanel({
   ) => Promise<string>;
   chatModel?: string;
   onEnterNext?: () => void;
+  onMatchAssets?: () => void;
+  assetMatchDone?: boolean;
 }) {
   const { showConfirm } = useDarkAlert();
   const [tab, setTab] = useState<DramaAssetVisualKind>('characters');
@@ -4935,6 +5681,71 @@ function DramaAssetLibraryPanel({
       cancelled = true;
     };
   }, [projectId]);
+
+  useEffect(() => {
+    let next = stripDramaSystemSpeakerCharacters(syncDramaSystemVoice(session));
+    next = ensureVoiceSampleTexts(next);
+    if (next !== session) onChange(next);
+  }, [onChange, session]);
+
+  // 系统形象：pipeline/任务已成图但 Voice.imageUrl 未对齐时收回（修「任务列表有图、卡片不更新」）
+  useEffect(() => {
+    const sys = resolveDramaSystemVoice(session);
+    if (!sys) return;
+    const pipeUrl = pickPipelineAssetImage(
+      pipeline?.assets?.characters,
+      DRAMA_SYSTEM_SPEAKER_ID,
+      '系统提示音',
+    );
+    if (!pipeUrl) return;
+    const own = String(sys.imageUrl || '').trim();
+    if (own === pipeUrl && sys.image_status !== 'generating') return;
+    const patched = applyDramaSessionAssetImage(session, DRAMA_SYSTEM_SPEAKER_ID, {
+      imageUrl: pipeUrl,
+      status: 'ready',
+    });
+    if (patched) onChange(patched);
+  }, [onChange, session, pipeline?.assets?.characters]);
+
+  // 人物主卡：生成中/对账漏写时，用 pipeline 人物 id 成图收回（含造型槽被旧图钉死）
+  useEffect(() => {
+    const pipeList = pipeline?.assets?.characters || [];
+    if (!pipeList.length) return;
+    let next = session;
+    let changed = false;
+    for (const ch of session.bible.characters || []) {
+      if (isDramaSystemSpeakerCharacter(ch)) continue;
+      const id = String(ch.character_id || '').trim();
+      if (!id) continue;
+      const pipeUrl = pickPipelineAssetImage(pipeList, id, ch.name);
+      if (!pipeUrl) continue;
+      const own = String(ch.imageUrl || '').trim();
+      const st = String(ch.status || '').trim();
+      const generating = st === 'generating' || !!assetGeneratingIds?.[id];
+      const activeLook = activeDramaCostume(ch);
+      const lookUrl = dramaCostumeImageUrl(activeLook);
+      const lookStale = !!own && own === pipeUrl && !!lookUrl && lookUrl !== own;
+      if (generating) {
+        // 仍是旧定妆时不要提前收口；等 pipeline 换成新图再写回
+        if (pipeUrl === own) continue;
+      } else if (lookStale) {
+        // 主卡已新、造型仍旧
+      } else if (!own) {
+        // 主卡空，补上
+      } else {
+        continue;
+      }
+      const patched = applyDramaSessionAssetImage(next, id, {
+        imageUrl: pipeUrl,
+        status: 'ready',
+      });
+      if (patched) {
+        next = patched;
+        changed = true;
+      }
+    }
+    if (changed) onChange(next);
+  }, [onChange, session, pipeline?.assets?.characters, assetGeneratingIds]);
 
   const hydrateEmptyLooks = useCallback(
     async (base: DramaDirectorSession) => {
@@ -5034,20 +5845,53 @@ function DramaAssetLibraryPanel({
     ['creatures', '生物', session.bible.creatures.length],
   ] as const;
 
+  const appearanceCharOrder = collectSeriesCharacterAppearanceOrder(session);
+  const appearanceSceneOrder = collectOriginalSceneLocationsInOrder(
+    session.episode_bibles?.[session.active_episode_id]?.original_scenes || [],
+  );
+
   const list =
     tab === 'characters'
-      ? session.bible.characters.map((c) => {
+      ? sortDramaCharactersByAppearanceOrder(session.bible.characters, appearanceCharOrder)
+          .filter((c) => !isDramaSystemSpeakerCharacter(c))
+          .map((c) => {
           const activeLook = activeDramaCostume(c);
           const lookUrl = dramaCostumeImageUrl(activeLook);
-          // 有造型列表：优先当前造型图；造型图空时回退主形象/pipeline（避免任务已完成卡片仍空）
-          const cardUrl = (c.costumes || []).length
-            ? lookUrl ||
-              resolveCharacterMasterReferenceUrl(c) ||
-              pickPipelineAssetImage(pipeline?.assets?.characters, c.character_id, c.name) ||
-              pickDramaLibraryImageUrl(c.name, localPicks)
-            : resolveCharacterMasterReferenceUrl(c) ||
-              pickPipelineAssetImage(pipeline?.assets?.characters, c.character_id, c.name) ||
-              pickDramaLibraryImageUrl(c.name, localPicks);
+          const masterUrl = String(c.imageUrl || '').trim();
+          const costumes = c.costumes || [];
+          const pipeLook = activeLook
+            ? pickPipelineAssetImage(pipeline?.assets?.characters, activeLook.costume_id, '')
+            : '';
+          const pipeMaster = pickPipelineAssetImage(
+            pipeline?.assets?.characters,
+            c.character_id,
+            c.name,
+          );
+          const isPrimaryLook =
+            !activeLook ||
+            costumes[0]?.costume_id === activeLook.costume_id ||
+            String(activeLook.name || '').trim() === '默认服装';
+          // 当前造型有图就用这一套；禁止用主卡旧 imageUrl 盖住刚生成的造型图。
+          // 例外：主卡/pipeline 人物 id 已是新图，造型槽仍钉着旧图 → 用主卡（修「任务有图、卡片不更新」）。
+          const masterIsFresh =
+            !!masterUrl &&
+            !!pipeMaster &&
+            masterUrl === pipeMaster &&
+            !!lookUrl &&
+            lookUrl !== masterUrl;
+          const currentLookEmpty = costumes.length > 0 && !lookUrl && !pipeLook && !isPrimaryLook;
+          const cardUrl = currentLookEmpty
+            ? ''
+            : masterIsFresh
+              ? masterUrl
+              : lookUrl ||
+                pipeLook ||
+                masterUrl ||
+                (isPrimaryLook
+                  ? resolveCharacterMasterReferenceUrl(c) ||
+                    pipeMaster ||
+                    pickDramaLibraryImageUrl(c.name, localPicks)
+                  : '');
           return {
             id: c.character_id,
             name: c.name,
@@ -5056,21 +5900,23 @@ function DramaAssetLibraryPanel({
             sampleUrl: '',
             status: c.status,
             extra: `${Math.max(c.costumes.length, 1)} 套造型`,
+            rev: `${Number(c.asset_version) || 1}:${cardUrl}`,
           };
         })
       : tab === 'scenes'
-        ? session.bible.scenes.map((s) => ({
+        ? sortDramaScenesByAppearanceOrder(session.bible.scenes, appearanceSceneOrder).map((s) => ({
             id: s.scene_id,
             name: s.name,
             prompt: s.prompt,
             imageUrl: toDisplayableDramaMediaUrl(
-              resolveSceneMasterReferenceUrl(s) ||
-                pickPipelineAssetImage(pipeline?.assets?.scenes, s.scene_id, s.name || s.location) ||
-                s.imageUrl,
+              String(s.imageUrl || '').trim() ||
+                resolveSceneMasterReferenceUrl(s) ||
+                pickPipelineAssetImage(pipeline?.assets?.scenes, s.scene_id, s.name || s.location),
             ),
             sampleUrl: '',
             status: s.status,
             extra: s.variants.length ? `${s.variants.length} 变体` : s.time_default || '默认',
+            rev: Number(s.asset_version) || 1,
           }))
         : tab === 'props'
           ? session.bible.props.map((p) => ({
@@ -5078,13 +5924,14 @@ function DramaAssetLibraryPanel({
               name: p.name,
               prompt: p.prompt || p.description,
               imageUrl: toDisplayableDramaMediaUrl(
-                resolvePropMasterReferenceUrl(p) ||
-                  pickPipelineAssetImage(pipeline?.assets?.props, p.prop_id, p.name) ||
-                  p.imageUrl,
+                String(p.imageUrl || '').trim() ||
+                  resolvePropMasterReferenceUrl(p) ||
+                  pickPipelineAssetImage(pipeline?.assets?.props, p.prop_id, p.name),
               ),
               sampleUrl: '',
               status: p.status,
               extra: p.states.length ? `${p.states.length} 状态` : '',
+              rev: Number(p.asset_version) || 1,
             }))
           : session.bible.creatures.map((c) => ({
               id: c.creature_id,
@@ -5098,9 +5945,20 @@ function DramaAssetLibraryPanel({
               sampleUrl: '',
               status: c.status,
               extra: c.behavior,
+              rev: Number(c.asset_version) || 1,
             }));
 
   const isVisualTab = true;
+  const systemVoice = resolveDramaSystemVoice(session);
+  const systemVoiceGenerating = !!(
+    systemVoice &&
+    (systemVoice.status === 'generating' || !!assetGeneratingIds?.[systemVoice.voice_id])
+  );
+  const systemImageGenerating = !!(
+    systemVoice &&
+    (systemVoice.image_status === 'generating' ||
+      !!assetGeneratingIds?.[DRAMA_SYSTEM_SPEAKER_ID])
+  );
 
   const openUpload = (kind: DramaAssetVisualKind, id: string) => {
     uploadTargetRef.current = { kind, id };
@@ -5200,16 +6058,6 @@ function DramaAssetLibraryPanel({
             {label} ({n})
           </button>
         ))}
-        {session.bible.project.style || session.bible.project.visual_style ? (
-          <span
-            className={`text-[12px] px-2 py-1 rounded-md ${
-              isDark ? 'bg-amber-500/15 text-amber-200/90' : 'bg-amber-50 text-amber-800'
-            }`}
-            title="生图会强制锁定该题材服装/时代"
-          >
-            题材锁：{session.bible.project.style || session.bible.project.visual_style}
-          </span>
-        ) : null}
         <div className="ml-auto flex items-center gap-1.5 flex-wrap justify-end">
           {tab === 'characters' && missingDesign.length > 0 ? (
             <span
@@ -5244,6 +6092,10 @@ function DramaAssetLibraryPanel({
                         .map((c) => `${c.character_id}:${c.imageUrl || ''}`)
                         .join('|');
                       if (before !== after) onChange(next);
+                      const sys = resolveDramaSystemVoice(next);
+                      if (sys && !String(sys.imageUrl || '').trim()) {
+                        onGenerateAssetImage?.('characters', DRAMA_SYSTEM_SPEAKER_ID);
+                      }
                       for (const c of listCharactersMissingDesign(next)) {
                         onGenerateAssetImage?.('characters', c.character_id);
                       }
@@ -5398,18 +6250,6 @@ function DramaAssetLibraryPanel({
               </button>
             </DramaYuanbaoHoverWrap>
           ) : null}
-          {tab === 'characters' ? (
-            <button
-              type="button"
-              className={`nodrag rounded-lg px-3.5 py-2 text-[13px] font-medium ${
-                isDark ? 'bg-white/12 text-white' : 'bg-gray-100 text-gray-800'
-              }`}
-              title="从本剧人物库勾选已有人物与声音，写入本页"
-              onClick={() => setLibraryPick({ characterId: null, prefer: 'both' })}
-            >
-              勾选已有人物/声音
-            </button>
-          ) : null}
           {onEnterNext ? (
             <button
               type="button"
@@ -5424,7 +6264,7 @@ function DramaAssetLibraryPanel({
               }
               onClick={() => onEnterNext()}
             >
-              下一步：生成视频
+              确认匹配，进入导演分镜
             </button>
           ) : null}
         </div>
@@ -5436,6 +6276,31 @@ function DramaAssetLibraryPanel({
             : 'grid-cols-[repeat(10,minmax(0,1fr))]'
         }`}
       >
+        {tab === 'characters' && dramaSessionNeedsSystemVoice(session) ? (
+          <DramaSystemVoiceCard
+            session={session}
+            pipeline={pipeline}
+            isDark={isDark}
+            voiceGenerating={systemVoiceGenerating}
+            imageGenerating={systemImageGenerating}
+            unitVoicePriceLabel={unitVoicePriceLabel}
+            unitImagePriceLabel={unitImagePriceLabel}
+            canPickVoiceFromCanvas={canPickVoiceFromCanvas}
+            canPickFromCanvas={canPickFromCanvas}
+            onChange={onChange}
+            onGenerateVoice={onGenerateVoice}
+            onUploadVoice={openVoiceUpload}
+            onPickVoiceFromCanvas={onPickVoiceFromCanvas}
+            onGenerateImage={() => onGenerateAssetImage?.('characters', DRAMA_SYSTEM_SPEAKER_ID)}
+            onUploadImage={() => openUpload('characters', DRAMA_SYSTEM_SPEAKER_ID)}
+            onUploadImageFile={(file) => onUploadAssetImage?.('characters', DRAMA_SYSTEM_SPEAKER_ID, file)}
+            onPickImageFromCanvas={() => onPickAssetFromCanvas?.('characters', DRAMA_SYSTEM_SPEAKER_ID)}
+            onClearImage={() => onClearAssetImage?.('characters', DRAMA_SYSTEM_SPEAKER_ID)}
+            onEditVoicePrompt={() => setPromptEdit({ mode: 'voice', assetId: DRAMA_SYSTEM_SPEAKER_ID })}
+            onEditImagePrompt={() => setPromptEdit({ mode: 'image', assetId: DRAMA_SYSTEM_SPEAKER_ID })}
+            onDropFile={(voiceId, file) => applyVoiceFile(voiceId, file)}
+          />
+        ) : null}
         {list.map((item) => {
           // 进度 id 在：盖条（含重新生成）。仅 Domain 残留 generating 但已有图：不盖，避免任务完成仍「等待」
           const hasCardImage = !!String(item.imageUrl || '').trim();
@@ -5497,9 +6362,17 @@ function DramaAssetLibraryPanel({
                   if (dragOverAssetId !== item.id) setDragOverAssetId(item.id);
                   return;
                 }
-                if (types.includes('Files')) {
+                const isMediaDrop =
+                  !!peekCanvasImageDragUrl() ||
+                  !!peekCanvasAudioDragUrl() ||
+                  types.includes('Files') ||
+                  types.includes(NEXFLOW_CANVAS_IMAGE_DRAG_MIME) ||
+                  types.includes(NEXFLOW_CANVAS_AUDIO_DRAG_MIME) ||
+                  types.includes('text/uri-list');
+                if (isMediaDrop) {
                   e.preventDefault();
                   e.dataTransfer.dropEffect = 'copy';
+                  if (dragOverAssetId !== item.id) setDragOverAssetId(item.id);
                 }
               }}
               onDragLeave={(e) => {
@@ -5533,6 +6406,27 @@ function DramaAssetLibraryPanel({
                   reader.readAsDataURL(file);
                   return;
                 }
+                const canvasAudio = peekCanvasAudioDragUrl() || readDramaDropAudioUrl(e.dataTransfer);
+                if (canvasAudio && tab === 'characters') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragAssetId(null);
+                  setDragOverAssetId(null);
+                  endCanvasAudioDrag();
+                  const voiceId = findVoiceForCharacter(session, item.id)?.voice_id;
+                  if (voiceId) onChange(setDomainVoiceSample(session, voiceId, canvasAudio));
+                  return;
+                }
+                const canvasUrl = peekCanvasImageDragUrl() || readDramaDropImageUrl(e.dataTransfer);
+                if (canvasUrl) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragAssetId(null);
+                  setDragOverAssetId(null);
+                  endCanvasImageDrag();
+                  onChange(setDomainAssetImage(session, tab, item.id, canvasUrl));
+                  return;
+                }
                 const raw = String(e.dataTransfer.getData('text/plain') || '');
                 const m = raw.match(/^drama-asset:([^:]+):(.+)$/);
                 e.preventDefault();
@@ -5543,14 +6437,56 @@ function DramaAssetLibraryPanel({
                 onChange(reorderDomainAssets(session, tab, m[2], item.id));
               }}
             >
-              <div className={`${cardCls(isDark)} relative z-[20] flex flex-col overflow-hidden`}>
+              <div className={`${cardCls(isDark)} relative z-[20] flex flex-col overflow-visible`}>
                 <div
                   className={`group/img relative w-full overflow-hidden rounded-t-xl ${
                     isDark ? 'bg-black/40' : 'bg-gray-100'
                   }`}
+                  data-drama-drop="image"
+                  onDragOver={(e) => {
+                    if (
+                      !peekCanvasImageDragUrl() &&
+                      !Array.from(e.dataTransfer.types || []).some((t) =>
+                        t === NEXFLOW_CANVAS_IMAGE_DRAG_MIME || t === 'text/uri-list' || t === 'Files',
+                      )
+                    ) {
+                      return;
+                    }
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = 'copy';
+                    if (dragOverAssetId !== item.id) setDragOverAssetId(item.id);
+                  }}
+                  onDrop={(e) => {
+                    const file = e.dataTransfer.files?.[0];
+                    if (file && String(file.type || '').startsWith('image/')) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDragOverAssetId(null);
+                      if (onUploadAssetImage) {
+                        onUploadAssetImage(tab, item.id, file);
+                        return;
+                      }
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        const dataUrl = String(reader.result || '');
+                        if (dataUrl) onChange(setDomainAssetImage(session, tab, item.id, dataUrl));
+                      };
+                      reader.readAsDataURL(file);
+                      return;
+                    }
+                    const canvasUrl = peekCanvasImageDragUrl() || readDramaDropImageUrl(e.dataTransfer);
+                    if (!canvasUrl) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverAssetId(null);
+                    endCanvasImageDrag();
+                    onChange(setDomainAssetImage(session, tab, item.id, canvasUrl));
+                  }}
                 >
                   {item.imageUrl ? (
                     <RefImageHoverThumb
+                      key={`${item.imageUrl}:${item.rev || 1}`}
                       url={item.imageUrl}
                       alt=""
                       title="悬停放大"
@@ -5558,16 +6494,16 @@ function DramaAssetLibraryPanel({
                       previewBorderless
                       boxAspect={mediaAspect}
                       listThumbMaxEdge={288}
+                      cacheNonce={item.rev || 1}
                       className="w-full"
                     />
                   ) : (
-                    <div
-                      className={`flex w-full items-center justify-center text-[12px] px-2 text-center ${mutedCls(isDark)}`}
-                      style={{ aspectRatio: mediaAspect }}
-                      aria-hidden={generating}
-                    >
-                      {generating ? '' : '待生成/上传'}
-                    </div>
+                    <DramaEmptyAssetImageSlot
+                      isDark={isDark}
+                      generating={generating}
+                      aspect={mediaAspect}
+                      onUpload={() => openUpload(tab, item.id)}
+                    />
                   )}
                   <ModuleProgressBar
                     visible={generating}
@@ -5617,28 +6553,6 @@ function DramaAssetLibraryPanel({
                     isDark={isDark}
                     onCommit={(name) => onChange(setDomainAssetName(session, tab, item.id, name))}
                   />
-                  <DramaPromptHoverButton
-                    isDark={isDark}
-                    items={
-                      tab === 'characters'
-                        ? [
-                            {
-                              label: '图片提示词',
-                              onPick: () => setPromptEdit({ mode: 'image', assetId: item.id }),
-                            },
-                            {
-                              label: '声音提示词',
-                              onPick: () => setPromptEdit({ mode: 'voice', assetId: item.id }),
-                            },
-                          ]
-                        : [
-                            {
-                              label: '图片提示词',
-                              onPick: () => setPromptEdit({ mode: 'image', assetId: item.id }),
-                            },
-                          ]
-                    }
-                  />
                   {tab === 'characters' ? (
                     <button
                       type="button"
@@ -5687,6 +6601,7 @@ function DramaAssetLibraryPanel({
                   isDark={isDark}
                   generating={voiceGenerating}
                   onChange={onChange}
+                  onDropFile={(voiceId, file) => applyVoiceFile(voiceId, file)}
                 />
               ) : null}
               {isVisualTab ? (
@@ -5705,6 +6620,8 @@ function DramaAssetLibraryPanel({
                     onPickLibrary={() =>
                       setLibraryPick({ characterId: item.id, prefer: 'image' })
                     }
+                    promptLabel="图片提示词"
+                    onEditPrompt={() => setPromptEdit({ mode: 'image', assetId: item.id })}
                   />
                   {tab === 'characters' && linkedVoice ? (
                     <DramaAssetSourceMenu
@@ -5721,6 +6638,8 @@ function DramaAssetLibraryPanel({
                       onPickLibrary={() =>
                         setLibraryPick({ characterId: item.id, prefer: 'voice' })
                       }
+                      promptLabel="声音提示词"
+                      onEditPrompt={() => setPromptEdit({ mode: 'voice', assetId: item.id })}
                     />
                   ) : null}
                 </div>
@@ -5758,17 +6677,31 @@ function DramaAssetLibraryPanel({
       {promptEdit ? (
         <DramaPromptEditDialog
           isDark={isDark}
-          title={promptEdit.mode === 'voice' ? '声音提示词' : '图片提示词'}
+          title={
+            promptEdit.mode === 'voice'
+              ? promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                ? '系统音提示词'
+                : '声音提示词'
+              : promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                ? '系统形象提示词'
+                : '图片提示词'
+          }
           mode={promptEdit.mode}
           runChat={runChat}
           showAlert={showAlert}
           chatModel={chatModel}
+          unitChatPriceLabel={unitChatPriceLabel}
           value={
             promptEdit.mode === 'voice'
               ? String(
-                  findVoiceForCharacter(session, promptEdit.assetId)?.sample_text || '',
+                  findVoiceForCharacter(session, promptEdit.assetId)?.sample_text ||
+                    (promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                      ? resolveDramaSystemVoice(session)?.sample_text || ''
+                      : ''),
                 )
-              : String(
+              : promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                ? String(resolveDramaSystemVoice(session)?.image_prompt || '')
+                : String(
                   (tab === 'characters'
                     ? session.bible.characters.find((c) => c.character_id === promptEdit.assetId)?.prompt
                     : tab === 'scenes'
@@ -5781,8 +6714,12 @@ function DramaAssetLibraryPanel({
           }
           placeholder={
             promptEdit.mode === 'voice'
-              ? '名字\n年龄：…\n性别：男/女\n音色描述：甜美细声细语 / 粗放狂野…\n台词：\n（剧本 2～3 句，每句一行）'
-              : tab === 'characters'
+              ? promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                ? '系统\n年龄：非人\n性别：中性\n音色描述：机械电子播报，冷静、清晰、非人声…\n台词：\n（系统播报 2～3 句，每句一行）'
+                : '名字\n年龄：…\n性别：男/女\n音色描述：甜美细声细语 / 粗放狂野…\n台词：\n（剧本 2～3 句，每句一行）'
+              : promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                ? '半空浮现半透明3D全息系统面板，冷蓝光几何框与光粒子；科技感定妆图，禁止文字水印与真人面孔'
+                : tab === 'characters'
                 ? '年龄性别、高矮胖瘦、发型发色、服饰穿搭、表情、材质；须符合背景故事'
                 : tab === 'scenes'
                   ? '空场景：空间结构、材质陈设、光影氛围；须符合剧情背景'
@@ -5792,8 +6729,28 @@ function DramaAssetLibraryPanel({
           }
           onSave={(text) => {
             if (promptEdit.mode === 'voice') {
-              const voiceId = findVoiceForCharacter(session, promptEdit.assetId)?.voice_id;
+              const voiceId =
+                findVoiceForCharacter(session, promptEdit.assetId)?.voice_id ||
+                (promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID
+                  ? resolveDramaSystemVoice(session)?.voice_id
+                  : undefined);
               if (voiceId) onChange(setDomainAssetPrompt(session, 'voices', voiceId, text));
+              return;
+            }
+            if (promptEdit.assetId === DRAMA_SYSTEM_SPEAKER_ID) {
+              const sys = resolveDramaSystemVoice(session);
+              if (!sys) return;
+              onChange(
+                createEmptyDramaSession({
+                  ...session,
+                  bible: {
+                    ...session.bible,
+                    voices: session.bible.voices.map((v) =>
+                      v.voice_id === sys.voice_id ? { ...v, image_prompt: text } : v,
+                    ),
+                  },
+                }),
+              );
               return;
             }
             onChange(setDomainAssetPrompt(session, tab, promptEdit.assetId, text));
@@ -5810,6 +6767,9 @@ function DramaAssetLibraryPanel({
           anchorRef={costumeMenuAnchorRef}
           onChange={onChange}
           showConfirm={showConfirm}
+          pipeline={pipeline}
+          localPicks={localPicks}
+          onUploadCostumeImage={(costumeId) => openUpload('characters', costumeId)}
           onClose={() => setCostumeMenuId(null)}
         />
       ) : null}
@@ -5848,9 +6808,15 @@ function DramaAssetLibraryPanel({
 function H3PromptHoverBadge({
   prompt,
   isDark,
+  label = 'H3',
+  title = '悬停查看本镜编译提示词',
+  heading = '本镜编译提示词',
 }: {
   prompt: string;
   isDark: boolean;
+  label?: string;
+  title?: string;
+  heading?: string;
 }) {
   const text = String(prompt || '').trim();
   const [open, setOpen] = useState(false);
@@ -5894,7 +6860,7 @@ function H3PromptHoverBadge({
       <div
         ref={anchorRef}
         className="relative rounded-full bg-violet-500/20 px-2 py-0.5 text-[14px] font-medium text-violet-200 cursor-default"
-        title="悬停查看 H3 优化提示词"
+        title={title}
         onMouseEnter={() => {
           setOpen(true);
           place();
@@ -5904,7 +6870,7 @@ function H3PromptHoverBadge({
           setPos(null);
         }}
       >
-        H3
+        {label}
       </div>
       {open && pos
         ? createPortal(
@@ -5921,7 +6887,7 @@ function H3PromptHoverBadge({
                   isDark ? 'text-violet-300' : 'text-violet-700'
                 }`}
               >
-                H3 优化提示词
+                {heading}
               </div>
               <pre className="whitespace-pre-wrap break-words font-sans text-[24px] leading-[1.55]">
                 {text}
@@ -5972,6 +6938,78 @@ function formatDramaPlanDurationLabel(sec: number): string {
   return Number.isInteger(rounded) ? String(rounded) : String(rounded);
 }
 
+function resolveDramaShotDurationTiers(model: string): number[] {
+  const listed = listDirectorVideoDurationTiersSec(model);
+  return listed.length > 0 ? listed : [...DRAMA_SHOT_DURATION_TIERS];
+}
+
+function resolveDramaShotSelectedDurationSec(planSec: number, model: string): number {
+  const tiers = resolveDramaShotDurationTiers(model);
+  const rounded = Math.round(planSec);
+  if (tiers.includes(rounded) && Math.abs(planSec - rounded) < 0.05) return rounded;
+  const snapped = Number(pickNearestDirectorVideoBatchDuration(model, planSec));
+  return Number.isFinite(snapped) && snapped > 0 ? snapped : tiers[0] || 10;
+}
+
+function resolveDramaShotGenerateDurationSec(
+  planSec: number,
+  model: string,
+  modelParams?: Record<string, string> | null,
+): number {
+  return resolveDramaGenerateDurationSec(
+    resolveDramaShotSelectedDurationSec(planSec, model),
+    modelParams,
+    resolveDramaShotDurationTiers(model),
+  );
+}
+
+function DramaDurationTierPills({
+  tiers,
+  selectedSec,
+  disabled,
+  onPick,
+  title,
+}: {
+  tiers: number[];
+  selectedSec: number;
+  disabled?: boolean;
+  onPick: (sec: number) => void;
+  title?: string;
+}) {
+  return (
+    <div
+      className="inline-flex items-center rounded-full bg-sky-500/20 p-0.5 text-[13px] font-medium tabular-nums text-sky-200"
+      title={
+        title ||
+        '视频总时长。点选后彩条与提示词时段按占比换算（正文保留，只改时间点）'
+      }
+    >
+      {tiers.map((sec) => {
+        const selected = selectedSec === sec;
+        return (
+          <button
+            key={sec}
+            type="button"
+            disabled={disabled}
+            className={`nodrag rounded-full px-2 py-0.5 disabled:opacity-45 ${
+              selected
+                ? 'bg-sky-500/85 text-white'
+                : 'text-sky-200/80 hover:bg-sky-500/25 hover:text-white'
+            }`}
+            aria-pressed={selected}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(sec);
+            }}
+          >
+            {sec}s
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function formatDramaVideoGenButtonLabel(opts: {
   generating?: boolean;
   hasVideo: boolean;
@@ -6011,25 +7049,6 @@ function sumDramaYuanbaoHoverLabel(
   return `${n}镜合计 · ${cost}${unit}`;
 }
 
-/** 多项费用合并为一条悬停文案（提示词优化 + 出片） */
-function combineDramaYuanbaoHoverLabel(
-  labels: Array<string | null | undefined>,
-): string | null {
-  let sum = 0;
-  let unit = '元宝';
-  let n = 0;
-  for (const lab of labels) {
-    const m = String(lab || '').match(/(\d+(?:\.\d+)?)\s*(元宝|credits)/i);
-    if (!m) continue;
-    sum += Number(m[1]);
-    unit = /credit/i.test(m[2]) ? 'credits' : '元宝';
-    n += 1;
-  }
-  if (!n) return null;
-  const cost = Number.isInteger(sum) ? String(sum) : sum.toFixed(1);
-  return n > 1 ? `优化+出片 · ${cost}${unit}` : `${cost}${unit}`;
-}
-
 function dramaShotPreviewChecks(shot: DramaShot): { key: string; ok: boolean }[] {
   const events = shot.timeline_events || [];
   const hasVideo = !!String(shot.video_url || '').trim();
@@ -6051,7 +7070,7 @@ function dramaShotPreviewChecks(shot: DramaShot): { key: string; ok: boolean }[]
   ];
 }
 
-/** 本镜成片：画布表 ready 为真源；重新生成中不展示旧片（仅进度遮罩） */
+/** 本镜成片：画布表 ready 为真源。生成中仍保留已有 URL，避免全屏只剩进度条、切回窗口才看见片。 */
 function resolveDramaShotBoardVideo(
   shot: { video_url?: string; video_status?: string; video_node_id?: string; shot_no?: string },
   pipeline: DirectorPipelineState,
@@ -6062,19 +7081,19 @@ function resolveDramaShotBoardVideo(
   const sbUrl = String(sb.videoUrl || '').trim();
   const sbStatus = String(sb.videoStatus || '').trim();
 
-  const isGenerating =
-    ownStatus === 'generating' ||
-    ownStatus === 'queued' ||
-    sbStatus === 'generating' ||
-    sbStatus === 'queued';
+  const boardBusy = sbStatus === 'generating' || sbStatus === 'queued';
+  const ownBusy = ownStatus === 'generating' || ownStatus === 'queued';
 
-  if (isGenerating) {
-    return { videoUrl: '', videoStatus: 'generating' };
+  // 重新生成：Domain/画布任一侧仍在跑时优先 generating（即使旧成片 URL 仍在）
+  if (ownBusy || boardBusy) {
+    return { videoUrl: sbUrl || ownUrl, videoStatus: boardBusy && sbStatus === 'queued' ? 'queued' : 'generating' };
   }
 
+  // 画布表已 ready：侧栏任务已出片，分镜卡必须收条并展示，禁止再盖进度。
   if (sbUrl && (sbStatus === 'ready' || (!sbStatus && sbUrl))) {
     return { videoUrl: sbUrl, videoStatus: 'ready' };
   }
+
   if (ownUrl && (ownStatus === 'ready' || ownStatus === 'success')) {
     return { videoUrl: ownUrl, videoStatus: 'ready' };
   }
@@ -6083,29 +7102,178 @@ function resolveDramaShotBoardVideo(
   if (videoUrl) {
     return { videoUrl, videoStatus: sbStatus || ownStatus || 'ready' };
   }
-  const waiting =
-    ownStatus === 'generating' ||
-    ownStatus === 'queued' ||
-    sbStatus === 'generating' ||
-    sbStatus === 'queued';
-
-  if (waiting) {
-    return { videoUrl: '', videoStatus: 'generating' };
-  }
-  if (sbUrl) {
-    return { videoUrl: sbUrl, videoStatus: sbStatus || 'ready' };
-  }
-  if (ownUrl) {
-    return { videoUrl: ownUrl, videoStatus: ownStatus || 'ready' };
-  }
   return {
     videoUrl: '',
     videoStatus: ownStatus || sbStatus || 'pending',
   };
 }
 
+/** H3 成片开头常是黑场；静帧取片中附近，避免预览停在 0 秒全黑 */
+function dramaContentTimeSec(duration: number): number {
+  if (!Number.isFinite(duration) || duration <= 0) return 0.2;
+  if (duration < 0.5) return Math.max(0.02, duration * 0.45);
+  return Math.min(0.55, Math.max(0.18, duration * 0.16));
+}
+
+function captureDramaVideoStill(v: HTMLVideoElement): string {
+  const w = v.videoWidth;
+  const h = v.videoHeight;
+  if (!w || !h) return '';
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return '';
+    ctx.drawImage(v, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.78);
+  } catch {
+    return '';
+  }
+}
+
+/** 把解码帧画到 canvas。全屏里硬件 video overlay 经常整段黑，画面只能走这条软件路径。 */
+function blitDramaVideoFrame(v: HTMLVideoElement, c: HTMLCanvasElement): boolean {
+  const vw = v.videoWidth;
+  const vh = v.videoHeight;
+  if (!vw || !vh) return false;
+  const rect = c.getBoundingClientRect();
+  const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+  const outW = Math.max(1, Math.round((rect.width || vw) * dpr));
+  const outH = Math.max(1, Math.round((rect.height || vh) * dpr));
+  if (c.width !== outW || c.height !== outH) {
+    c.width = outW;
+    c.height = outH;
+  }
+  const ctx = c.getContext('2d');
+  if (!ctx) return false;
+  try {
+    ctx.clearRect(0, 0, outW, outH);
+    const scale = Math.min(outW / vw, outH / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    ctx.drawImage(v, (outW - dw) / 2, (outH - dh) / 2, dw, dh);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * 成片预览：挂载窗内（最多 3 镜）常驻 video 拉首帧；悬停有声播放；移开暂停静音。
+ * Chromium/Electron：从未 play 过的 <video> 在 CSS zoom 下会一直是黑块；
+ * 且 H3 第 0 帧经常是黑场。静音播 → seek 到有画面处 → 抓一帧 JPEG 盖住。
+ */
+function dramaKickVideoStillFrame(
+  v: HTMLVideoElement,
+  isHovering: () => boolean,
+  onPainted: (stillDataUrl?: string) => void,
+): () => void {
+  let cancelled = false;
+  let rvfc: number | null = null;
+  const cleanups: Array<() => void> = [];
+
+  const finish = () => {
+    if (cancelled) return;
+    cancelled = true;
+    let still = '';
+    if (!isHovering()) {
+      still = captureDramaVideoStill(v);
+      try {
+        v.pause();
+      } catch {
+        /* ignore */
+      }
+      v.muted = true;
+    }
+    onPainted(still);
+  };
+
+  const afterFrame = (fn: () => void) => {
+    if (typeof v.requestVideoFrameCallback === 'function') {
+      rvfc = v.requestVideoFrameCallback(() => {
+        rvfc = null;
+        fn();
+      });
+      return;
+    }
+    window.requestAnimationFrame(fn);
+  };
+
+  const seekToContent = () => {
+    if (cancelled || isHovering()) {
+      if (!cancelled) onPainted();
+      return;
+    }
+    const t = dramaContentTimeSec(v.duration);
+    const onSeeked = () => {
+      v.removeEventListener('seeked', onSeeked);
+      afterFrame(finish);
+    };
+    if (t <= 0.02 || Math.abs(v.currentTime - t) < 0.04) {
+      afterFrame(finish);
+      return;
+    }
+    v.addEventListener('seeked', onSeeked);
+    cleanups.push(() => v.removeEventListener('seeked', onSeeked));
+    try {
+      v.currentTime = t;
+    } catch {
+      finish();
+    }
+  };
+
+  const playMuted = () => {
+    if (cancelled || isHovering()) return;
+    v.muted = true;
+    const p = v.play();
+    if (p && typeof p.then === 'function') {
+      void p
+        .then(() => {
+          if (cancelled) return;
+          afterFrame(seekToContent);
+        })
+        .catch(() => {
+          if (!cancelled) seekToContent();
+        });
+    } else {
+      afterFrame(seekToContent);
+    }
+  };
+
+  if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    playMuted();
+  } else {
+    const onReady = () => {
+      v.removeEventListener('loadeddata', onReady);
+      v.removeEventListener('canplay', onReady);
+      playMuted();
+    };
+    v.addEventListener('loadeddata', onReady);
+    v.addEventListener('canplay', onReady);
+    cleanups.push(() => {
+      v.removeEventListener('loadeddata', onReady);
+      v.removeEventListener('canplay', onReady);
+    });
+  }
+
+  const fallback = window.setTimeout(finish, 1600);
+  cleanups.push(() => window.clearTimeout(fallback));
+
+  return () => {
+    cancelled = true;
+    if (rvfc != null && typeof v.cancelVideoFrameCallback === 'function') {
+      try {
+        v.cancelVideoFrameCallback(rvfc);
+      } catch {
+        /* ignore */
+      }
+    }
+    cleanups.forEach((fn) => fn());
+  };
+}
+
+/**
+ * 成片预览：挂载窗内常驻 video 拉首帧；悬停有声播放；移开暂停静音。
  * 窗外不挂 video，仅 poster / 占位，防多路解码 OOM。
  */
 const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
@@ -6113,25 +7281,56 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
   posterHint,
   generating,
   mountVideo = false,
+  forcePlay = false,
+  onMediaAspect,
 }: {
   playableUrl: string;
   posterHint?: string;
   isDark: boolean;
   generating: boolean;
-  /** 挂载窗内的镜：常驻 video 出首帧（约 3 路） */
+  /** 视口内短暂挂 video 解首帧后卸载解码器；悬停/强制播放再挂载 */
   mountVideo?: boolean;
+  /** 点选历史成片后立刻播放，不必先移回预览区 */
+  forcePlay?: boolean;
+  /** 读到成片真实宽高后回调，供外框跟随画面比例 */
+  onMediaAspect?: (aspectCss: string | null) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const hoveringRef = useRef(false);
+  const paintedUrlRef = useRef('');
+  const blitReadyRef = useRef(false);
+  const onMediaAspectRef = useRef(onMediaAspect);
+  onMediaAspectRef.current = onMediaAspect;
   const [hovering, setHovering] = useState(false);
   const [frameReady, setFrameReady] = useState(false);
+  const [stillShot, setStillShot] = useState('');
+  const [blitReady, setBlitReady] = useState(false);
+  /** 解完静帧后卸掉 video，避免视口内多路常驻解码 */
+  const [keepDecoder, setKeepDecoder] = useState(true);
   const poster = toDisplayableDramaMediaUrl(String(posterHint || '').trim());
-  const shouldMountVideo = !!playableUrl && (mountVideo || hovering);
-  const shouldPlay = !!playableUrl && hovering;
+  const shouldPlay = !!playableUrl && (hovering || forcePlay);
+  // 播放时挂载；或 mountVideo 且尚未解完静帧时短暂挂载
+  const shouldMountVideo = !!playableUrl && (shouldPlay || (mountVideo && keepDecoder));
+
+  const reportMediaAspect = useCallback((el: { videoWidth?: number; videoHeight?: number; naturalWidth?: number; naturalHeight?: number } | null) => {
+    if (!el) return;
+    const w = Number(el.videoWidth || el.naturalWidth || 0);
+    const h = Number(el.videoHeight || el.naturalHeight || 0);
+    if (!(w > 0 && h > 0)) return;
+    onMediaAspectRef.current?.(`${w} / ${h}`);
+  }, []);
 
   useEffect(() => {
+    hoveringRef.current = false;
+    paintedUrlRef.current = '';
+    blitReadyRef.current = false;
     setHovering(false);
     setFrameReady(false);
+    setStillShot('');
+    setBlitReady(false);
+    setKeepDecoder(true);
+    onMediaAspectRef.current?.(null);
   }, [playableUrl, posterHint, mountVideo]);
 
   useEffect(() => {
@@ -6152,43 +7351,125 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !shouldMountVideo) return;
-    if (!shouldPlay) {
-      v.muted = true;
-      v.pause();
-      if (!mountVideo) {
+    if (shouldPlay) {
+      v.muted = false;
+      v.volume = 1;
+      try {
+        if (v.currentTime > 0.08) v.currentTime = 0;
+      } catch {
+        /* ignore */
+      }
+      const start = () => {
+        void v.play().catch(() => {
+          v.muted = true;
+          void v.play().catch(() => undefined);
+        });
+      };
+      if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        start();
+      } else {
+        const onReady = () => {
+          v.removeEventListener('canplay', onReady);
+          start();
+        };
+        v.addEventListener('canplay', onReady);
+        return () => v.removeEventListener('canplay', onReady);
+      }
+      return;
+    }
+    v.muted = true;
+    if (mountVideo && keepDecoder && !shouldPlay) {
+      if (paintedUrlRef.current === playableUrl && stillShot) {
+        v.pause();
         try {
-          if (v.currentTime > 0.05) v.currentTime = 0;
+          v.removeAttribute('src');
+          v.load();
+        } catch {
+          /* ignore */
+        }
+        setKeepDecoder(false);
+        return;
+      }
+      return dramaKickVideoStillFrame(
+        v,
+        () => hoveringRef.current,
+        (still) => {
+          reportMediaAspect(v);
+          paintedUrlRef.current = playableUrl;
+          if (still) setStillShot(still);
+          setFrameReady(true);
+          try {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+          } catch {
+            /* ignore */
+          }
+          setKeepDecoder(false);
+        },
+      );
+    }
+    v.pause();
+    try {
+      if (v.currentTime > 0.05) v.currentTime = 0;
+    } catch {
+      /* ignore */
+    }
+  }, [shouldMountVideo, shouldPlay, mountVideo, playableUrl, forcePlay, keepDecoder, stillShot, reportMediaAspect]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c || !shouldMountVideo) return;
+    let stopped = false;
+    let rvfc: number | null = null;
+    let raf = 0;
+
+    const draw = () => {
+      if (stopped) return;
+      const ok = blitDramaVideoFrame(v, c);
+      if (ok && !blitReadyRef.current) {
+        blitReadyRef.current = true;
+        setBlitReady(true);
+      }
+    };
+    const loop = () => {
+      if (stopped) return;
+      draw();
+      if (!shouldPlay) return;
+      if (typeof v.requestVideoFrameCallback === 'function') {
+        rvfc = v.requestVideoFrameCallback(loop);
+      } else {
+        raf = window.requestAnimationFrame(loop);
+      }
+    };
+
+    if (shouldPlay) loop();
+    else draw();
+
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => draw()) : null;
+    ro?.observe(c);
+
+    return () => {
+      stopped = true;
+      ro?.disconnect();
+      if (rvfc != null && typeof v.cancelVideoFrameCallback === 'function') {
+        try {
+          v.cancelVideoFrameCallback(rvfc);
         } catch {
           /* ignore */
         }
       }
-      return;
-    }
-    v.muted = false;
-    v.volume = 1;
-    const start = () => {
-      void v.play().catch(() => {
-        // 个别环境仍拦有声自动播：回退静音至少能出画
-        v.muted = true;
-        void v.play().catch(() => undefined);
-      });
+      if (raf) window.cancelAnimationFrame(raf);
     };
-    if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-      start();
-    } else {
-      const onReady = () => {
-        v.removeEventListener('canplay', onReady);
-        start();
-      };
-      v.addEventListener('canplay', onReady);
-      return () => v.removeEventListener('canplay', onReady);
-    }
-  }, [shouldMountVideo, shouldPlay, mountVideo, playableUrl]);
+  }, [shouldMountVideo, shouldPlay, playableUrl, stillShot]);
 
   if (!playableUrl) return null;
 
-  const showPosterUnder = !frameReady && !!poster && !shouldPlay;
-  const showPlayHint = !hovering && (!mountVideo || !frameReady);
+  const showStillOver = !shouldPlay && !!stillShot;
+  // 未播放时都给提示；首帧就绪后仍显示，方便发现可悬停预览
+  const showPlayHint = !shouldPlay;
 
   return (
     <div
@@ -6202,12 +7483,13 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
         setHovering(false);
       }}
     >
-      {showPosterUnder ? (
+      {showStillOver ? (
         <img
-          src={poster}
+          src={stillShot}
           alt=""
-          className="absolute inset-0 h-full w-full object-contain"
+          className="pointer-events-none absolute inset-0 z-[1] h-full w-full object-contain"
           draggable={false}
+          onLoad={(e) => reportMediaAspect(e.currentTarget)}
         />
       ) : null}
       {!frameReady && !poster && !mountVideo ? (
@@ -6216,38 +7498,57 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
         </div>
       ) : null}
       {shouldMountVideo ? (
-        <video
-          ref={videoRef}
-          key={playableUrl}
-          src={playableUrl}
-          className="absolute inset-0 h-full w-full object-contain"
-          controls={false}
-          muted={!hovering}
-          playsInline
-          loop
-          preload="auto"
-          draggable={false}
-          onLoadedData={() => setFrameReady(true)}
-          onCanPlay={() => {
-            setFrameReady(true);
-            if (hoveringRef.current) {
+        <>
+          <video
+            ref={videoRef}
+            key={`${playableUrl}-${shouldPlay ? 'play' : 'still'}`}
+            src={playableUrl}
+            className="drama-shot-video-el"
+            controls={false}
+            muted={!hovering}
+            playsInline
+            loop
+            preload={shouldPlay ? 'auto' : 'metadata'}
+            draggable={false}
+            onLoadedData={() => {
               const v = videoRef.current;
-              if (v) {
-                v.muted = false;
-                v.volume = 1;
-                void v.play().catch(() => {
-                  v.muted = true;
-                  void v.play().catch(() => undefined);
-                });
+              const c = canvasRef.current;
+              if (v && c) blitDramaVideoFrame(v, c);
+              reportMediaAspect(v);
+              if (hoveringRef.current) setFrameReady(true);
+            }}
+            onLoadedMetadata={() => {
+              reportMediaAspect(videoRef.current);
+            }}
+            onCanPlay={() => {
+              reportMediaAspect(videoRef.current);
+              if (hoveringRef.current) {
+                setFrameReady(true);
+                const v = videoRef.current;
+                if (v) {
+                  v.muted = false;
+                  v.volume = 1;
+                  void v.play().catch(() => {
+                    v.muted = true;
+                    void v.play().catch(() => undefined);
+                  });
+                }
               }
-            }
-          }}
-          onError={() => setFrameReady(false)}
-        />
+            }}
+            onError={() => setFrameReady(false)}
+          />
+          <canvas
+            ref={canvasRef}
+            className={`pointer-events-none absolute inset-0 z-[1] h-full w-full ${
+              blitReady ? '' : 'opacity-0'
+            }`}
+            aria-hidden
+          />
+        </>
       ) : null}
       {showPlayHint ? (
         <div
-          className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center"
+          className="pointer-events-none absolute inset-0 z-[2] flex items-center justify-center"
           aria-hidden
         >
           {generating ? (
@@ -6264,6 +7565,168 @@ const DramaShotVideoPreview = React.memo(function DramaShotVideoPreview({
   );
 });
 
+/** 多版缩略图：不能只 metadata+seek，否则第二格经常停在黑场 */
+function DramaShotVideoThumb({ src }: { src: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [still, setStill] = useState('');
+  const [keepVideo, setKeepVideo] = useState(true);
+
+  useEffect(() => {
+    setStill('');
+    setKeepVideo(true);
+  }, [src]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !src || !keepVideo) return;
+    return dramaKickVideoStillFrame(v, () => false, (shot) => {
+      if (!shot) return;
+      setStill(shot);
+      try {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        /* ignore */
+      }
+      setKeepVideo(false);
+    });
+  }, [src, keepVideo]);
+
+  return (
+    <div className="relative aspect-video w-full bg-black/40">
+      {keepVideo ? (
+        <video
+          ref={videoRef}
+          key={src}
+          src={src}
+          className="absolute inset-0 h-full w-full object-cover pointer-events-none"
+          muted
+          playsInline
+          preload="auto"
+          draggable={false}
+        />
+      ) : null}
+      {still ? (
+        <img
+          src={still}
+          alt=""
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+          draggable={false}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** 多版成片切换：标题栏展开/收起（≥2 版显示；不靠悬停，避免预览播放误关） */
+function DramaShotVideoVersionPicker({
+  open,
+  versions,
+  currentUrl,
+  isDark,
+  disabled,
+  onPick,
+  defaultExpanded = true,
+}: {
+  open: boolean;
+  versions: string[];
+  currentUrl: string;
+  isDark: boolean;
+  disabled?: boolean;
+  onPick: (url: string) => void;
+  /** 首次出现时是否展开缩略图；之后由用户点标题栏切换 */
+  defaultExpanded?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(!!defaultExpanded);
+  useEffect(() => {
+    if (!open || versions.length < 2) setExpanded(!!defaultExpanded);
+  }, [open, versions.length, defaultExpanded]);
+
+  if (!open || versions.length < 2) return null;
+  const currentKey = directorMediaUrlKey(currentUrl) || currentUrl;
+  return (
+    <div
+      className={`relative z-20 mt-1 shrink-0 rounded-lg border p-1.5 shadow-xl ${
+        isDark ? 'border-white/15 bg-zinc-950' : 'border-gray-200 bg-white'
+      }`}
+      data-drama-video-picker=""
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onMouseEnter={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className={`nodrag flex w-full items-center justify-between gap-1 rounded-md px-0.5 py-0.5 text-left text-[12px] font-medium ${
+          isDark ? 'text-white/70 hover:bg-white/8 hover:text-white/90' : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+        }`}
+        title={expanded ? '收起历史纪录' : '展开历史纪录'}
+        aria-expanded={expanded}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setExpanded((v) => !v);
+        }}
+      >
+        <span>
+          历史纪录
+          <span className="ml-1 opacity-70">({versions.length})</span>
+        </span>
+        {expanded ? (
+          <ChevronUp className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+        )}
+      </button>
+      {expanded ? (
+        <div className="mt-1 grid max-h-56 grid-cols-2 gap-1.5 overflow-auto">
+          {versions.map((u, i) => {
+            const itemKey = directorMediaUrlKey(u) || u;
+            const on =
+              isDirectorShotVideoSelection(currentUrl, u) ||
+              (!!currentKey && itemKey === currentKey);
+            const src = toElectronVideoElementSrc(u) || toDisplayableDramaMediaUrl(u) || u;
+            return (
+              <button
+                key={`drama-vid-${itemKey || i}`}
+                type="button"
+                disabled={disabled}
+                className={`nodrag relative overflow-hidden rounded-md text-left ring-1 disabled:opacity-45 ${
+                  on
+                    ? 'ring-sky-400'
+                    : isDark
+                      ? 'ring-white/15 hover:ring-white/35'
+                      : 'ring-gray-300 hover:ring-gray-400'
+                }`}
+                title={`切换成片 ${i + 1}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onPick(u);
+                }}
+              >
+                <DramaShotVideoThumb src={src} />
+                {on ? (
+                  <span className="pointer-events-none absolute right-0.5 top-0.5 rounded-full bg-sky-500 p-0.5 text-white">
+                    <Check className="h-2.5 w-2.5" />
+                  </span>
+                ) : null}
+                <span
+                  className={`pointer-events-none absolute left-0.5 top-0.5 rounded px-0.5 text-[9px] font-medium tabular-nums ${
+                    isDark ? 'bg-black/65 text-white/90' : 'bg-white/90 text-gray-700'
+                  }`}
+                >
+                  {i + 1}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** 分镜卡右侧：单镜视频生成槽（可选手动视频模型 + 按模型挡位向上取整） */
 const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
   shot,
@@ -6274,7 +7737,9 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
   canGenerate,
   onSpawn,
   onModelChange,
+  onDurationChange,
   onAbandonWait,
+  onSelectVideo,
   priceLabel,
   forceGenerating,
   hideGenerate,
@@ -6289,7 +7754,9 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
   canGenerate: boolean;
   onSpawn: (shotNo: string, videoModel: string) => void;
   onModelChange?: (shotNo: string, videoModel: string) => void;
+  onDurationChange?: (shotNo: string, durationSec: number) => void;
   onAbandonWait?: (shotNo: string) => void;
+  onSelectVideo?: (shotNo: string, videoUrl: string) => void;
   priceLabel?: string | null;
   /** 即时绿条（不依赖 status 写回） */
   forceGenerating?: boolean;
@@ -6307,7 +7774,39 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
     hasShotAudio: hasAudio,
   });
   const planSec = Number(shot.duration_sec) > 0 ? Number(shot.duration_sec) : 5;
-  const tierSec = pickNearestDirectorVideoBatchDuration(model, planSec);
+  const durationTiers = resolveDramaShotDurationTiers(model);
+  const shotNo = String(shot.shot_no || '').trim();
+  const inferredFromPrompt = inferDramaDurationSecFromH3Prompt(
+    String(shot.h3_skill_prompt || ''),
+    durationTiers,
+  );
+  const genSec =
+    inferredFromPrompt != null
+      ? inferredFromPrompt
+      : resolveDramaShotGenerateDurationSec(planSec, model, shot.model_params);
+  const tierSec = String(genSec);
+
+  // 有优化稿时：时长档自动跟提示词时码对齐（不改写提示词正文）
+  useEffect(() => {
+    if (!onDurationChange || !shotNo || inferredFromPrompt == null) return;
+    const explicit = Number(
+      String(shot.model_params?.[DRAMA_SHOT_VIDEO_DURATION_PARAM] || '').trim(),
+    );
+    const plan = Number(shot.duration_sec) || 0;
+    if (
+      Math.abs(explicit - inferredFromPrompt) < 0.05 &&
+      Math.abs(plan - inferredFromPrompt) < 0.05
+    ) {
+      return;
+    }
+    onDurationChange(shotNo, inferredFromPrompt);
+  }, [
+    inferredFromPrompt,
+    onDurationChange,
+    shotNo,
+    shot.duration_sec,
+    shot.model_params?.[DRAMA_SHOT_VIDEO_DURATION_PARAM],
+  ]);
   const boardVideo = resolveDramaShotBoardVideo(shot, pipeline);
   const videoUrl = toDisplayableDramaMediaUrl(boardVideo.videoUrl);
   const playableVideoUrl = videoUrl ? toElectronVideoElementSrc(videoUrl) || videoUrl : '';
@@ -6316,6 +7815,7 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
     (videoUrl ? 'ready' : 'pending');
   const videoError = String(shot.video_error || '').trim();
   const ownStatus = String(shot.video_status || '').trim();
+  // 绿条/Domain generating 优先：旧成片仍在时也不能靠 boardReady 把进度条盖掉
   const isGenerating =
     !!forceGenerating ||
     status === 'generating' ||
@@ -6323,15 +7823,55 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
     ownStatus === 'generating' ||
     ownStatus === 'queued';
   const generating = isGenerating;
-  const previewPlayableUrl = isGenerating ? '' : playableVideoUrl;
   const planLabel = formatDramaPlanDurationLabel(planSec);
   const showSnap = Number(tierSec) !== planSec && Number(tierSec) !== Math.round(planSec);
-  const shotNo = String(shot.shot_no || '').trim();
   const modelMeta = modelOptions.find((m) => m.id === model);
   const checks = dramaShotPreviewChecks(shot);
-  const sbImage = String(
-    getDirectorShotStoryboard(pipeline, shotNo).imageUrl || shot.storyboard_image_url || '',
-  ).trim();
+  const sb = getDirectorShotStoryboard(pipeline, shotNo);
+  const sbImage = String(sb.imageUrl || shot.storyboard_image_url || '').trim();
+  // 与预览同源：Domain video_url 有片而 sb 空时，历史列表也要能看见当前成片
+  const videoVersions = listDirectorShotVideos({
+    videoUrl: boardVideo.videoUrl || sb.videoUrl,
+    videoUrlHistory: sb.videoUrlHistory,
+  });
+  const currentVideoUrl = String(boardVideo.videoUrl || sb.videoUrl || '').trim();
+  const [pickedUrl, setPickedUrl] = useState('');
+  const [wantPlay, setWantPlay] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const canPickVersions = !generating && !!onSelectVideo && videoVersions.length >= 2;
+  const activeVideoUrl = pickedUrl || currentVideoUrl;
+  const previewPlayableUrl = activeVideoUrl
+    ? toElectronVideoElementSrc(activeVideoUrl) ||
+      toDisplayableDramaMediaUrl(activeVideoUrl) ||
+      activeVideoUrl
+    : playableVideoUrl;
+  const aspectRatio =
+    session.meta.aspect_ratio === '16:9' ||
+    session.meta.aspect_ratio === '9:16' ||
+    session.meta.aspect_ratio === '3:4' ||
+    session.meta.aspect_ratio === '4:3'
+      ? session.meta.aspect_ratio
+      : '9:16';
+  const [mediaAspectCss, setMediaAspectCss] = useState<string | null>(null);
+  // 有成片：外框跟随画面真实比例；无片：跟顶部所选成片比例
+  const aspectStyle = mediaAspectCss
+    ? dramaAspectFitStyleFromCss(mediaAspectCss)
+    : dramaAspectFitStyle(aspectRatio);
+  const aspectLabel = mediaAspectCss
+    ? dramaAspectLabelFromCss(mediaAspectCss, aspectRatio)
+    : aspectRatio;
+
+  useEffect(() => {
+    setMediaAspectCss(null);
+  }, [previewPlayableUrl]);
+
+  useEffect(() => {
+    setPickedUrl((prev) => {
+      if (!prev) return prev;
+      if (currentVideoUrl && isDirectorShotVideoSelection(currentVideoUrl, prev)) return prev;
+      return '';
+    });
+  }, [currentVideoUrl]);
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-1">
@@ -6339,66 +7879,131 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
         <div className="text-[13px] font-semibold text-sky-300/90">视频预览</div>
         <div
           className={`text-[12px] tabular-nums ${mutedCls(isDark)}`}
-          title={`规划 ${planLabel}s，模型挡位向上取整为 ${tierSec}s`}
+          title={
+            showSnap || Number(tierSec) !== Number(planLabel)
+              ? `画幅 ${aspectLabel} · 规划 ${planLabel}s，将按 ${tierSec}s 档出片`
+              : `画幅 ${aspectLabel} · 将按 ${tierSec}s 档出片`
+          }
         >
+          <span className="mr-1.5 opacity-80">{aspectLabel}</span>
           {showSnap || Number(tierSec) !== Number(planLabel)
             ? `${planLabel}s → ${tierSec}s档`
             : `${tierSec}s档`}
         </div>
       </div>
-      <div
-        className={`relative min-h-[16rem] w-full flex-1 overflow-hidden rounded-lg ${
-          isDark ? 'bg-black/45 ring-1 ring-white/10' : 'bg-gray-100 ring-1 ring-gray-200'
-        }`}
-      >
-        <DramaShotVideoPreview
-          playableUrl={previewPlayableUrl}
-          posterHint={isGenerating ? '' : sbImage}
-          isDark={isDark}
-          generating={generating}
-          mountVideo={mountVideo && !isGenerating}
-        />
-        <ModuleProgressBar
-          visible={generating}
-          progress={generating ? 35 : 0}
-          solidBackground={isDark ? '#1C1C1E' : '#e5e7eb'}
-          progressMessage={progressMessage || '正在生成视频...'}
-          borderRadius={8}
-        />
-        {!videoUrl && !generating ? (
-          <>
-            {status === 'error' && videoError ? (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          className={`drama-shot-video-preview-shell relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg ${
+            isDark ? 'bg-black/25' : 'bg-gray-50'
+          }`}
+        >
+          <div
+            className={`drama-shot-video-stage relative overflow-hidden rounded-lg ${
+              isDark ? 'bg-black/45 ring-1 ring-white/10' : 'bg-gray-100 ring-1 ring-gray-200'
+            }`}
+            style={aspectStyle}
+            title={`成片画幅 ${aspectLabel}`}
+            onMouseEnter={() => setWantPlay(true)}
+            onMouseLeave={() => setWantPlay(false)}
+          >
+          <DramaShotVideoPreview
+            key={previewPlayableUrl || 'empty'}
+            playableUrl={previewPlayableUrl}
+            posterHint={sbImage}
+            isDark={isDark}
+            generating={generating}
+            mountVideo={mountVideo && !!previewPlayableUrl}
+            forcePlay={wantPlay}
+            onMediaAspect={setMediaAspectCss}
+          />
+          {previewPlayableUrl && !generating ? (
+            <button
+              type="button"
+              className={`nodrag absolute right-1.5 top-1.5 z-[3] rounded-md p-1.5 shadow-md ${
+                isDark
+                  ? 'bg-black/65 text-white hover:bg-black/80'
+                  : 'bg-white/90 text-gray-800 hover:bg-white'
+              }`}
+              title="放大观看"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setWantPlay(false);
+                setLightboxOpen(true);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <ZoomIn className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+          {!videoUrl && !generating ? (
+            <>
+              {status === 'error' && videoError ? (
+                <div
+                  className={`absolute inset-0 z-[2] flex flex-col items-center justify-center gap-1 px-3 text-center text-[12px] leading-snug ${
+                    isDark ? 'bg-rose-950/85 text-rose-100' : 'bg-rose-50 text-rose-800'
+                  }`}
+                >
+                  <span className="font-medium">生成失败</span>
+                  <span className="line-clamp-4 opacity-90">{videoError}</span>
+                </div>
+              ) : null}
+              {sbImage ? (
+                <img
+                  src={toDisplayableDramaMediaUrl(sbImage) || sbImage}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-contain opacity-90"
+                  draggable={false}
+                />
+              ) : null}
               <div
-                className={`absolute inset-0 z-[2] flex flex-col items-center justify-center gap-1 px-3 text-center text-[12px] leading-snug ${
-                  isDark ? 'bg-rose-950/85 text-rose-100' : 'bg-rose-50 text-rose-800'
+                className={`absolute inset-0 z-[1] flex flex-col items-center justify-center gap-0.5 px-2 text-center text-[13px] leading-snug ${
+                  sbImage ? 'bg-black/35 text-white' : mutedCls(isDark)
                 }`}
               >
-                <span className="font-medium">生成失败</span>
-                <span className="line-clamp-4 opacity-90">{videoError}</span>
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-white shadow-md">
+                  <Play className="h-5 w-5 translate-x-0.5" fill="currentColor" />
+                </span>
+                <span>{sbImage ? '请生成视频' : '待生成'}</span>
+                <span className="text-[14px]">按 {tierSec}s 挡位出片</span>
               </div>
-            ) : null}
-            {sbImage ? (
-              <img
-                src={toDisplayableDramaMediaUrl(sbImage) || sbImage}
-                alt=""
-                className="absolute inset-0 h-full w-full object-contain opacity-90"
-                draggable={false}
-              />
-            ) : null}
-            <div
-              className={`absolute inset-0 z-[1] flex flex-col items-center justify-center gap-0.5 px-2 text-center text-[13px] leading-snug ${
-                sbImage ? 'bg-black/35 text-white' : mutedCls(isDark)
-              }`}
-            >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-white shadow-md">
-                <Play className="h-5 w-5 translate-x-0.5" fill="currentColor" />
-              </span>
-              <span>{sbImage ? '请生成视频' : '待生成'}</span>
-              <span className="text-[14px]">按 {tierSec}s 挡位出片</span>
-            </div>
-          </>
-        ) : null}
+            </>
+          ) : null}
+          {canPickVersions ? (
+            <span className="pointer-events-none absolute bottom-1.5 left-1.5 z-[2] rounded bg-black/60 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white shadow-md">
+              {videoVersions.length} 个成片
+            </span>
+          ) : null}
+          </div>
+          <ModuleProgressBar
+            visible={generating}
+            progress={generating ? 35 : 0}
+            solidBackground={isDark ? '#1C1C1E' : '#e5e7eb'}
+            progressMessage={progressMessage || '正在生成视频...'}
+            borderRadius={8}
+          />
+        </div>
+        <DramaShotVideoVersionPicker
+          open={canPickVersions}
+          versions={videoVersions}
+          currentUrl={activeVideoUrl}
+          isDark={isDark}
+          disabled={busy}
+          onPick={(url) => {
+            setPickedUrl(url);
+            setWantPlay(true);
+            onSelectVideo?.(shotNo, url);
+          }}
+        />
       </div>
+      {lightboxOpen && activeVideoUrl ? (
+        <DramaVideoLightbox
+          url={activeVideoUrl}
+          name={`镜 ${shotNo || '?'}`}
+          isDark={isDark}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
       <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[11px]">
         {checks.map((c) => (
           <span
@@ -6415,7 +8020,7 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
           </span>
         ))}
       </div>
-      <div className="relative flex flex-col gap-1">
+      <div className="relative z-20 flex shrink-0 flex-col gap-1 pointer-events-auto">
         <label
           className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[14px] ${
             isDark ? 'bg-white/8' : 'bg-gray-50'
@@ -6445,6 +8050,20 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
             ))}
           </select>
         </label>
+        <label
+          className={`flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[14px] ${
+            isDark ? 'bg-white/8' : 'bg-gray-50'
+          }`}
+          title="视频总时长。有优化稿时按提示词时码自动选档；也可手改（手改会按比例重映射时码）"
+        >
+          <span className={`shrink-0 ${mutedCls(isDark)}`}>时长</span>
+          <DramaDurationTierPills
+            tiers={durationTiers}
+            selectedSec={genSec}
+            disabled={busy || generating}
+            onPick={(sec) => onDurationChange?.(shotNo, sec)}
+          />
+        </label>
         {hideGenerate ? null : (
         <DramaYuanbaoHoverWrap
           priceLabel={canGenerate && !generating ? priceLabel : null}
@@ -6460,7 +8079,7 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
             generating
               ? '生成中，请等待任务结束'
               : !canGenerate
-                ? '请先完成本镜提示词优化，再生成视频'
+                ? '本镜暂不可生成'
                 : `本镜将按 ${modelMeta?.label || model} · ${tierSec}s 挡位生成`
           }
           onClick={() => {
@@ -6481,11 +8100,20 @@ const DramaShotVideoSlot = React.memo(function DramaShotVideoSlot({
         {generating ? (
           <button
             type="button"
-            className={`nodrag w-full rounded-md px-2 py-1 text-[14px] ${
-              isDark ? 'bg-white/10 text-white/80' : 'bg-gray-100 text-gray-700'
+            className={`nodrag nopan relative z-30 w-full cursor-pointer rounded-md px-2 py-1.5 text-[14px] font-medium pointer-events-auto ${
+              isDark
+                ? 'bg-white/20 text-white ring-1 ring-white/35 hover:bg-white/30'
+                : 'bg-gray-200 text-gray-900 hover:bg-gray-300'
             }`}
             title="仅取消本地等待与绿条；已发出的任务无法撤回，费用不退"
-            onClick={() => onAbandonWait?.(shotNo)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (!shotNo) return;
+              onAbandonWait?.(shotNo);
+            }}
           >
             放弃等待
           </button>
@@ -6536,7 +8164,7 @@ function DramaViewportMount({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const unmountTimerRef = useRef(0);
-  const [visible, setVisible] = useState(!!force);
+  const [visible, setVisible] = useState(true);
 
   useEffect(() => {
     if (force) {
@@ -6551,7 +8179,7 @@ function DramaViewportMount({
     if (!el) return;
 
     let raf = 0;
-    const applyHit = (hit: boolean) => {
+    const applyHit = (hit: boolean, fromIo: boolean) => {
       if (hit) {
         if (unmountTimerRef.current) {
           window.clearTimeout(unmountTimerRef.current);
@@ -6560,16 +8188,20 @@ function DramaViewportMount({
         setVisible(true);
         return;
       }
+      // 初次 measure / 布局未稳不要拆卡，只信 IntersectionObserver 离开视口
+      if (!fromIo) return;
       if (unmountTimerRef.current) window.clearTimeout(unmountTimerRef.current);
       unmountTimerRef.current = window.setTimeout(() => {
         unmountTimerRef.current = 0;
         setVisible(false);
-      }, 160);
+      }, 240);
     };
     const measure = () => {
       raf = 0;
       if (!ref.current) return;
-      applyHit(isElementInScrollViewport(ref.current, scrollRoot, viewportMarginPx));
+      if (isElementInScrollViewport(ref.current, scrollRoot, viewportMarginPx)) {
+        applyHit(true, false);
+      }
     };
     const schedule = () => {
       if (raf) return;
@@ -6583,7 +8215,7 @@ function DramaViewportMount({
         ? new IntersectionObserver(
             (entries) => {
               const hit = entries.some((e) => e.isIntersecting);
-              applyHit(hit);
+              applyHit(hit, true);
             },
             {
               root: scrollRoot,
@@ -6639,17 +8271,19 @@ function DramaBoardPanel({
   onSpawnVideos,
   getShotVideoPriceLabel,
   unitChatPriceLabel,
+  unitImagePriceLabel,
+  storyboardImageGenSlot,
+  onGenerateShotStoryboard,
   videoGeneratingIds,
   onMarkVideoGenerating,
   onAbandonVideoWait,
-  onConfirmBoard,
-  onUnlockBoard,
   onNext,
   runChat,
   showAlert,
   onGenerateShotAudio,
   onAbandonShotAudio,
   unitVoicePriceLabel,
+  onApplyShotVideoToSplice,
 }: {
   session: DramaDirectorSession;
   pipeline: DirectorPipelineState;
@@ -6658,7 +8292,10 @@ function DramaBoardPanel({
   variant?: 'board' | 'videos';
   onChange: (
     s: DramaDirectorSession,
-    opts?: { storyboardsByShotNo?: DirectorPipelineState['storyboardsByShotNo'] },
+    opts?: {
+      storyboardsByShotNo?: DirectorPipelineState['storyboardsByShotNo'];
+      skipAssetsProjection?: boolean;
+    },
   ) => void;
   showConfirm: (message: string) => Promise<boolean>;
   onSpawnVideos?: (opts?: {
@@ -6669,18 +8306,21 @@ function DramaBoardPanel({
     videoModel?: string;
     /** 短剧：按镜号覆盖模型 */
     shotModels?: Record<string, string>;
+    /** 短剧：按镜号覆盖上云终稿（与「查看优化稿」一致，避免 setNodes 未刷新） */
+    shotPromptOverrides?: Record<string, string>;
   }) => void;
   getShotVideoPriceLabel?: (
     durationSec: number,
     opts?: { model?: string; preferLipsync?: boolean },
   ) => string | null;
-  /** 提示词优化 LLM 单次悬停价 */
+  /** 切段 AI 改写 / 合并镜头等 LLM 单次悬停价 */
   unitChatPriceLabel?: string | null;
+  unitImagePriceLabel?: string | null;
+  storyboardImageGenSlot?: React.ReactNode;
+  onGenerateShotStoryboard?: (shotNo: string, opts?: { force?: boolean }) => void;
   videoGeneratingIds?: Record<string, true>;
   onMarkVideoGenerating?: (shotNo: string, on: boolean) => void;
   onAbandonVideoWait?: (shotNo: string) => void;
-  onConfirmBoard: () => void;
-  onUnlockBoard: () => void;
   onNext: () => void;
   runChat: (
     systemPrompt: string,
@@ -6700,27 +8340,17 @@ function DramaBoardPanel({
   onGenerateShotAudio?: (shotId: string) => void;
   onAbandonShotAudio?: (shotId: string) => void;
   unitVoicePriceLabel?: string | null;
+  onApplyShotVideoToSplice?: (shotNo: string, videoUrl: string) => void;
 }) {
   const { locale } = useAppLocale();
-  const [enriching, setEnriching] = useState(false);
-  const [enrichProgress, setEnrichProgress] = useState('');
-  const [h3Optimizing, setH3Optimizing] = useState(false);
-  const [h3Progress, setH3Progress] = useState('');
   const [selectedShotIds, setSelectedShotIds] = useState<Record<string, true>>({});
   const [mergingShots, setMergingShots] = useState(false);
   const [mergeProgress, setMergeProgress] = useState('');
   const [focusShotId, setFocusShotId] = useState('');
-  const [activeEventId, setActiveEventId] = useState('');
-  const [promptEditorShotId, setPromptEditorShotId] = useState('');
-  const [promptEditorTab, setPromptEditorTab] = useState<'cut' | 'compiled'>('cut');
-  const [promptEditorAutoSkill, setPromptEditorAutoSkill] = useState(false);
-  /** 合并按钮：优化成功后自动出片 */
-  const [pendingGenAfterSkillId, setPendingGenAfterSkillId] = useState('');
-  /** 卡面「优化并生成」直跑中的镜 id 集合（可多镜并行） */
-  const [inlineOptimizeIds, setInlineOptimizeIds] = useState<Record<string, true>>({});
-  const [inlineOptimizeQueue, setInlineOptimizeQueue] = useState<
-    Record<string, import('../../utils/directorConcurrentChatQueue').DirectorConcurrentChatQueueStatus>
-  >({});
+  /** 正在跑官方 Skill 提示词优化的 shot_id */
+  const [skillOptimizingShotId, setSkillOptimizingShotId] = useState('');
+  /** 查看 Skill 优化稿全文 */
+  const [skillPromptViewShotId, setSkillPromptViewShotId] = useState('');
   /** 视口内由 DramaViewportMount 懒挂载；不再用固定 3 镜滑动窗 */
   const shotListScrollRef = useRef<HTMLDivElement>(null);
   const [shotListScrollEl, setShotListScrollEl] = useState<HTMLDivElement | null>(null);
@@ -6745,6 +8375,44 @@ function DramaBoardPanel({
   /** 多镜并行写回：避免闭包 session 把另一镜的 generating 盖掉 */
   const sessionRef = useRef(session);
   sessionRef.current = session;
+  const pipelineRef = useRef(pipeline);
+  pipelineRef.current = pipeline;
+  const applyShotVideo = useCallback(
+    (shotNo: string, url: string) => {
+      const key = String(shotNo || '').trim();
+      const videoUrl = String(url || '').trim();
+      if (!key || !videoUrl) return;
+      const live = sessionRef.current;
+      const nextPipe = updateDirectorShotStoryboard(pipelineRef.current, key, {
+        videoUrl,
+        videoStatus: 'ready',
+        videoError: '',
+      });
+      const nextShots = (live.shots || []).map((s) =>
+        String(s.shot_no || '').trim() === key
+          ? { ...s, video_url: videoUrl, video_status: 'ready', video_error: '' }
+          : s,
+      );
+      onChange(
+        { ...live, shots: nextShots },
+        { storyboardsByShotNo: nextPipe.storyboardsByShotNo, skipAssetsProjection: true },
+      );
+      onApplyShotVideoToSplice?.(key, videoUrl);
+    },
+    [onChange, onApplyShotVideoToSplice],
+  );
+  const pendingDurationRef = useRef<
+    Record<string, { duration_sec: number; timeline_events: DramaTimelineEvent[] }>
+  >({});
+  const [pendingDurationByShotId, setPendingDurationByShotId] = useState<
+    Record<string, { duration_sec: number; timeline_events: DramaTimelineEvent[] }>
+  >({});
+  const mergePendingDuration = (shot: DramaShot): DramaShot => {
+    const pending = pendingDurationRef.current[shot.shot_id];
+    return pending
+      ? { ...shot, duration_sec: pending.duration_sec, timeline_events: pending.timeline_events }
+      : shot;
+  };
   /** 结构化视听事件时间轴 v6 */
   const didThinTimelineFixRef = useRef<string>('');
   const selectedShotCount = Object.keys(selectedShotIds).length;
@@ -6765,7 +8433,7 @@ function DramaBoardPanel({
 
   const commitMergedShots = (
     plan: NonNullable<ReturnType<typeof planMergeDramaShots>>,
-    skill?: { final: string; source: string; draft: string },
+    merged?: { final: string; source: string; draft: string },
   ) => {
     let working: DramaDirectorSession = {
       ...session,
@@ -6774,16 +8442,15 @@ function DramaBoardPanel({
           ? ensureDramaShotTimelineEvents({
               ...s,
               ...plan.patch,
-              ...(skill
+              ...(merged
                 ? {
-                    h3_skill_prompt: skill.final,
-                    h3_skill_prompt_from: skill.source || skill.draft.slice(0, 200),
-                    last_compiled_prompt: skill.source || String(plan.patch.last_compiled_prompt || ''),
+                    last_compiled_prompt:
+                      merged.source || String(plan.patch.last_compiled_prompt || ''),
                     confirmed_at: Date.now(),
                     needs_review: false,
                   }
                 : {}),
-            })
+            }, session)
           : s,
       ),
       meta: {
@@ -6817,7 +8484,7 @@ function DramaBoardPanel({
   };
 
   const handleMergeSelectedShots = async () => {
-    if (busy || enriching || h3Optimizing || mergingShots) return;
+    if (busy || mergingShots) return;
     const ids = Object.keys(selectedShotIds).filter((id) => selectedShotIds[id]);
     if (ids.length < 2) {
       showAlert('请至少勾选 2 个镜头再合并');
@@ -6840,7 +8507,7 @@ function DramaBoardPanel({
       `将合并镜头 ${nos} 为一镜（保留镜头${targetNo}）。\n\n` +
         `· 参考图/人物/道具会去重保留不重复项\n` +
         `· 时间轴与提示词按顺序拼接\n` +
-        `· 随后调用大模型整合为单镜提示词\n` +
+        `· 随后调用大模型整合时间轴与切段\n` +
         `· 其余镜头将删除，已有成片不保留\n\n确定继续？`,
     );
     if (!ok) return;
@@ -6855,20 +8522,20 @@ function DramaBoardPanel({
             (session.shots || []).findIndex((x) => x.shot_id === a.shot_id) -
             (session.shots || []).findIndex((x) => x.shot_id === b.shot_id),
         );
-      setMergeProgress('大模型整合提示词…');
-      const skill = await runDramaMultiShotH3SkillMerge({
+      setMergeProgress('大模型整合时间轴…');
+      const merged = await runDramaMultiShotH3SkillMerge({
         session,
         sourceShots,
         mergedShot: plan.mergedShot,
         runChat,
         locale: locale === 'en' ? 'en' : 'zh-CN',
       });
-      const reportPreview = String(skill.report || '').trim().slice(0, 900);
+      const reportPreview = String(merged.report || '').trim().slice(0, 900);
       const adopt = await showConfirm(
         `整合完成。${reportPreview ? `\n\n整合报告：\n${reportPreview}` : ''}\n\n确认写入镜头${targetNo}并删除其余所选镜头？`,
       );
       if (!adopt) return;
-      commitMergedShots(plan, skill);
+      commitMergedShots(plan, merged);
       showAlert(`已合并为镜头${targetNo}，请检查时间轴与提示词后再出片`);
     } catch (e) {
       showAlert(formatCloudLlmUserError(e) || '合并镜头失败');
@@ -6886,11 +8553,6 @@ function DramaBoardPanel({
   );
 
   const missingDesign = listCharactersMissingDesign(session);
-  const h3ReadyCount = shots.filter(
-    (s) =>
-      !!s.directing_enhance_revision?.accepted ||
-      (s.performance_plan || []).some((b) => b.source === 'llm_enhanced'),
-  ).length;
 
   useEffect(() => {
     if (variant !== 'board') return;
@@ -6909,218 +8571,9 @@ function DramaBoardPanel({
     didThinTimelineFixRef.current = 'v6-events';
   }, []);
 
-  const handleEnrich = async (useLlm: boolean) => {
-    if (enriching || h3Optimizing || busy) return;
-    setEnriching(true);
-    setEnrichProgress('');
-    try {
-      let next = enrichAllDramaShotsLocally(session);
-      if (useLlm) {
-        const targets = (next.shots || []).filter((s) => !(Number(s.confirmed_at) > 0));
-        const batchSize = Math.max(1, DRAMA_BOARD_ENRICH_BATCH);
-        let failBatches = 0;
-        for (let i = 0; i < targets.length; i += batchSize) {
-          const batch = targets.slice(i, i + batchSize);
-          const done = Math.min(i + batch.length, targets.length);
-          setEnrichProgress(`${done}/${targets.length}`);
-          const { systemPrompt, userPrompt } = buildDramaBoardEnrichMessages(next, {
-            shotIds: batch.map((s) => s.shot_id),
-          });
-          try {
-            const text = await runChat(systemPrompt, userPrompt, {
-              max_tokens: 16384,
-              temperature: 0.5,
-            });
-            next = applyDramaBoardEnrichResult(next, text);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            // 截断时拆成更小批重试本批
-            if (/截断|finish_reason=length|max_tokens/i.test(msg) && batch.length > 1) {
-              for (const shot of batch) {
-                setEnrichProgress(`${done}/${targets.length} · 重试镜${shot.shot_no || ''}`);
-                try {
-                  const retry = buildDramaBoardEnrichMessages(next, {
-                    shotIds: [shot.shot_id],
-                  });
-                  const text = await runChat(retry.systemPrompt, retry.userPrompt, {
-                    max_tokens: 8192,
-                    temperature: 0.45,
-                  });
-                  next = applyDramaBoardEnrichResult(next, text);
-                } catch {
-                  failBatches += 1;
-                }
-              }
-            } else {
-              failBatches += 1;
-              if (i === 0 && targets.length === batch.length) throw e;
-            }
-          }
-        }
-        if (failBatches && failBatches >= Math.ceil(targets.length / batchSize)) {
-          throw new Error('导演脚本补全失败：多批输出被截断或模型异常，请稍后重试或换模型');
-        }
-      }
-      const dirty = listDirtyDirectingShotIds(next);
-      next = applyDramaDirectingBreakdownSession(next, dirty.length ? { shotIds: dirty } : undefined);
-      if (useLlm) {
-        const llmByShotId: Record<
-          string,
-          NonNullable<ReturnType<typeof parseDramaDirectingBreakdownLlm>>
-        > = {};
-        for (let i = 0; i < next.shots.length; i += 1) {
-          const shot = next.shots[i];
-          if (Number(shot.confirmed_at) > 0) continue;
-          const fp = dramaShotDirectingFingerprint(shot);
-          if (
-            shot.directing_breakdown?.sourceFingerprint === fp &&
-            shot.directing_breakdown.beats?.length &&
-            shot.directing_breakdown.source === 'llm'
-          ) {
-            continue;
-          }
-          try {
-            setEnrichProgress(`拆戏 ${i + 1}/${next.shots.length}`);
-            const msgs = buildDramaDirectingBreakdownMessages(
-              next,
-              shot,
-              i > 0 ? next.shots[i - 1] : null,
-            );
-            const raw = await runChat(msgs.systemPrompt, msgs.userPrompt, {
-              max_tokens: 4096,
-              temperature: 0.35,
-            });
-            const parsed = parseDramaDirectingBreakdownLlm(raw, shot.shot_id);
-            if (parsed) llmByShotId[shot.shot_id] = parsed;
-          } catch {
-            /* 单镜拆戏失败不阻断 */
-          }
-        }
-        const ids = Object.keys(llmByShotId);
-        if (ids.length) {
-          next = applyDramaDirectingBreakdownSession(next, {
-            force: true,
-            shotIds: ids,
-            llmByShotId,
-          });
-        }
-      }
-      onChange(refreshDramaContinuity(next));
-      showAlert(
-        useLlm
-          ? `已补全 ${next.shots.length} 镜导演拆戏与时间轴（未覆盖已确认镜头）`
-          : `已按规则估算 ${next.shots.length} 镜时长、拆戏与时间轴`,
-      );
-    } catch (e) {
-      onChange(enrichAllDramaShotsLocally(session));
-      showAlert(e instanceof Error ? e.message : String(e));
-    } finally {
-      setEnriching(false);
-      setEnrichProgress('');
-    }
-  };
-
-  const handleH3Optimize = async (_thenGoAssets = false) => {
-    if (enriching || h3Optimizing || busy || !shots.length) return;
-    if (missingDesign.length) {
-      showAlert(
-        `还有 ${missingDesign.length} 个出场人物未设计形象，请先回「资产生成」完成后再做 H3 提示词优化。`,
-      );
-      return;
-    }
-    setH3Optimizing(true);
-    setH3Progress(`0/${shots.length}`);
-    try {
-      let working = enrichAllDramaShotsLocally(session);
-      let ok = 0;
-      let fail = 0;
-      let warnN = 0;
-      const nextShots = [...working.shots];
-      for (let i = 0; i < nextShots.length; i++) {
-        const shot = enrichDramaShotLocally(working, nextShots[i]);
-        setH3Progress(`${i + 1}/${nextShots.length}`);
-        try {
-          const { systemPrompt, userPrompt } = buildDramaShotH3OptimizeMessages(working, shot);
-          const raw = await runChat(systemPrompt, userPrompt, {
-            max_tokens: 4096,
-            temperature: 0.4,
-          });
-          const { patch, blocked } = parseDramaDirectingEnhancePatch(raw, shot.shot_id);
-          if (!(patch.performance_plan?.length || patch.directing_enhance)) {
-            fail += 1;
-            nextShots[i] = shot;
-            continue;
-          }
-          const applied = applyDramaDirectingEnhancePatch(shot, patch, blocked);
-          if (applied.revision.blocked.length) warnN += 1;
-          const hasDlg = dramaShotHasSpokenDialogue(applied.shot);
-          const model = resolveDramaShotVideoModel(
-            applied.shot.model_params,
-            working.meta.videoBatchModel,
-            {
-              hasDialogue: hasDlg,
-              hasShotAudio: !!String(applied.shot.audio_url || '').trim(),
-            },
-          );
-          const mode = dramaVideoModelRequiresShotAudio(model) ? 'h3-audio' : 'h3-multi';
-          const compiled = compileDramaShotVideoRequest(working, applied.shot, {
-            mode,
-            model,
-            locale,
-          });
-          nextShots[i] = {
-            ...applied.shot,
-            last_compiled_prompt: compiled.prompt,
-          };
-          ok += 1;
-        } catch {
-          fail += 1;
-          nextShots[i] = shot;
-        }
-      }
-      working = refreshDramaPackages({
-        ...working,
-        shots: nextShots,
-      });
-      onChange(refreshDramaContinuity(working));
-      showAlert(
-        fail
-          ? `H3 导演增强完成：成功 ${ok} 镜，失败 ${fail} 镜${warnN ? `，${warnN} 镜有字段被丢弃` : ''}`
-          : `H3 导演增强完成：${ok} 镜已写入表演层（未覆盖 final_prompt）${
-              warnN ? `，${warnN} 镜有禁止字段被丢弃` : ''
-            }`,
-      );
-    } catch (e) {
-      showAlert(e instanceof Error ? e.message : String(e));
-    } finally {
-      setH3Optimizing(false);
-      setH3Progress('');
-    }
-  };
-
-  const handleRevertH3Enhance = () => {
-    if (enriching || h3Optimizing || busy || !shots.length) return;
-    const nextShots = shots.map((s) =>
-      s.directing_enhance_revision?.accepted ? revertDramaDirectingEnhance(s) : s,
-    );
-    onChange(
-      refreshDramaPackages({
-        ...session,
-        shots: nextShots,
-      }),
-    );
-    showAlert('已撤销本集最近一次 H3 导演增强，表演层已恢复');
-  };
-
-  const handleGoAssets = () => {
-    onConfirmBoard();
-  };
-
   const videoModel = normalizeDramaSupportedVideoModel(
     session.meta.videoBatchModel || 'minimax-h3-multi',
   );
-  const boardConfirmed = isDramaBoardConfirmed(session);
-  const videoGenEnabled = variant === 'videos' || boardConfirmed;
   const aspectRatio =
     session.meta.aspect_ratio === '16:9' ||
     session.meta.aspect_ratio === '9:16' ||
@@ -7156,6 +8609,33 @@ function DramaBoardPanel({
     );
   };
 
+  const videoResolution = normalizeDirectorVideoBatchResolution(
+    videoModel === 'minimax-h3-audio' ? 'minimax-h3-audio' : 'minimax-h3-multi',
+    session.meta.videoBatchResolution ||
+      session.meta.videoBatchLipsyncResolution ||
+      pipeline.videoBatchResolution ||
+      '720p',
+  );
+  const videoResolutionOptions =
+    getDirectorVideoBatchResolutionOptions(
+      videoModel === 'minimax-h3-audio' ? 'minimax-h3-audio' : 'minimax-h3-multi',
+    ) || [];
+
+  const setVideoResolution = (raw: string) => {
+    const res = normalizeDirectorVideoBatchResolution('minimax-h3-multi', raw);
+    const lipsyncRes = normalizeDirectorVideoBatchResolution('minimax-h3-audio', raw);
+    onChange(
+      createEmptyDramaSession({
+        ...session,
+        meta: {
+          ...session.meta,
+          videoBatchResolution: res,
+          videoBatchLipsyncResolution: lipsyncRes,
+        },
+      }),
+    );
+  };
+
   const setShotVideoModel = useCallback((shotNo: string, raw: string) => {
     const no = String(shotNo || '').trim();
     if (!no) return;
@@ -7176,7 +8656,11 @@ function DramaBoardPanel({
     );
   }, [onChange]);
 
-  const patchShotById = useCallback((shotId: string, patch: Partial<DramaShot>) => {
+  const patchShotById = useCallback((
+    shotId: string,
+    patch: Partial<DramaShot>,
+    opts?: { skipBreakdown?: boolean; skipAssetsProjection?: boolean },
+  ) => {
     const id = String(shotId || '').trim();
     if (!id) return;
     const base = sessionRef.current;
@@ -7185,7 +8669,16 @@ function DramaBoardPanel({
     // 热路径：禁止 createEmptyDramaSession 重扫全部分镜（输入/点选会卡）
     let next: DramaDirectorSession = { ...base, shots: nextShots };
     const after = nextShots.find((s) => s.shot_id === id);
+    const durationOnly = Object.keys(patch).every(
+      (k) =>
+        k === 'duration_sec' ||
+        k === 'timeline_events' ||
+        k === 'timeline_beats' ||
+        k === 'audio_timeline',
+    );
     if (
+      !opts?.skipBreakdown &&
+      !durationOnly &&
       before &&
       after &&
       dramaShotDirectingFingerprint(before) !== dramaShotDirectingFingerprint(after) &&
@@ -7197,7 +8690,9 @@ function DramaBoardPanel({
       next = applyDramaDirectingBreakdownSession(next, { shotIds });
     }
     sessionRef.current = next;
-    onChange(next);
+    onChange(next, {
+      skipAssetsProjection: opts?.skipAssetsProjection ?? durationOnly,
+    });
   }, [onChange]);
 
   const commitShotListEdit = (
@@ -7223,7 +8718,7 @@ function DramaBoardPanel({
   };
 
   const handleDeleteShotAt = async (index: number) => {
-    if (busy || enriching || h3Optimizing) return;
+    if (busy) return;
     if ((session.shots || []).length <= 1) {
       showAlert('至少保留 1 个镜头');
       return;
@@ -7236,60 +8731,358 @@ function DramaBoardPanel({
   };
 
   const handleInsertShotAt = (atIndex: number) => {
-    if (busy || enriching || h3Optimizing) return;
+    if (busy) return;
     commitShotListEdit(insertDramaShotAt(session, atIndex), {
       type: 'insert',
       index: atIndex,
     });
   };
 
-  const applyShotDurationSec = (shot: DramaShot, nextSec: number) => {
-    const dur = snapDramaShotDurationSec(nextSec);
-    const stored = Number(shot.duration_sec);
-    const lastEnd = Math.max(
-      0,
-      ...(Array.isArray(shot.timeline_events) ? shot.timeline_events : []).map(
-        (e) => Number(e.end_sec) || 0,
-      ),
-    );
-    const prev = lastEnd > 0.1 ? lastEnd : Number.isFinite(stored) && stored > 0 ? stored : dur;
-    if (Math.abs(prev - dur) < 1e-6 && Math.abs((Number.isFinite(stored) ? stored : dur) - dur) < 1e-6) {
-      return;
+  useEffect(() => {
+    const pending = pendingDurationRef.current;
+    const ids = Object.keys(pending);
+    if (!ids.length) return;
+    let changed = false;
+    const next = { ...pending };
+    for (const id of ids) {
+      const s = session.shots.find((x) => x.shot_id === id);
+      if (!s || Math.abs(Number(s.duration_sec) - pending[id].duration_sec) < 1e-6) {
+        delete next[id];
+        changed = true;
+      }
     }
-    const scaled = rescaleDramaTimelineEventsToDuration(shot.timeline_events, prev, dur);
-    const nextShot = ensureDramaShotTimelineEvents({
-      ...shot,
-      duration_sec: dur,
-      timeline_events: scaled,
+    if (!changed) return;
+    pendingDurationRef.current = next;
+    setPendingDurationByShotId(next);
+  }, [session.shots]);
+
+  const handleShotVideoDurationChange = (shotNo: string, sec: number) => {
+    const no = String(shotNo || '').trim();
+    const latest = sessionRef.current.shots.find((x) => String(x.shot_no || '').trim() === no);
+    if (!latest) return;
+    const merged = mergePendingDuration(latest);
+    const model = resolveDramaShotVideoModel(merged.model_params, sessionRef.current.meta.videoBatchModel, {
+      hasDialogue: dramaShotHasSpokenDialogue(merged),
+      hasShotAudio: !!String(merged.audio_url || '').trim(),
     });
-    patchShotById(shot.shot_id, {
-      duration_sec: nextShot.duration_sec,
-      timeline_events: nextShot.timeline_events,
-      timeline_beats: nextShot.timeline_beats,
-      audio_timeline: deriveDramaAudioTimelineFromShotEvents(session, nextShot.timeline_events),
+    const tiers = resolveDramaShotDurationTiers(model);
+    const n = Number(sec);
+    const dur = tiers.includes(n) ? n : snapDramaShotDurationSec(n);
+    const fromSec = Math.max(
+      0.1,
+      Number(merged.duration_sec) || 0,
+      ...(merged.timeline_events || []).map((e) => Number(e.end_sec) || 0),
+    );
+    const already =
+      Math.abs(fromSec - dur) < 0.15 &&
+      String(merged.model_params?.[DRAMA_SHOT_VIDEO_DURATION_PARAM] || '') === String(dur);
+    if (already) return;
+
+    // 视频时长 = 总时长；彩条切段按占比缩放到新总时长
+    // 若档位正是优化稿时码反推结果，不重映射提示词（保留分析稿时码）
+    const inferred = inferDramaDurationSecFromH3Prompt(
+      String(merged.h3_skill_prompt || ''),
+      tiers,
+    );
+    const fromPrompt = inferred != null && Math.abs(inferred - dur) < 0.05;
+    const aligned = alignDramaShotTimelineToGenerateDuration(merged, dur, {
+      remapPrompts: !fromPrompt,
     });
+    patchShotById(
+      aligned.shot.shot_id,
+      {
+        duration_sec: aligned.shot.duration_sec,
+        timeline_events: aligned.shot.timeline_events,
+        model_params: aligned.shot.model_params,
+        h3_skill_prompt: aligned.shot.h3_skill_prompt,
+        h3_skill_prompt_from: aligned.shot.h3_skill_prompt_from,
+      },
+      { skipBreakdown: true, skipAssetsProjection: true },
+    );
+    const pending = { ...pendingDurationRef.current };
+    if (pending[aligned.shot.shot_id]) {
+      delete pending[aligned.shot.shot_id];
+      pendingDurationRef.current = pending;
+      setPendingDurationByShotId(pending);
+    }
   };
 
-  const spawnOneShot = useCallback((shotNo: string, pickedModel?: string, opts?: { skipOptimizeGate?: boolean }) => {
-    const base = sessionRef.current;
+  /** 提示词优化：与画布同一 Skill；先把彩条/时段对齐到出片生成时长 */
+  const optimizeShotWithH3Skill = useCallback(
+    async (
+      shotId: string,
+      opts?: { quiet?: boolean; force?: boolean },
+    ): Promise<DramaShot | null> => {
+      const base0 = {
+        ...sessionRef.current,
+        shots: sessionRef.current.shots.map(mergePendingDuration),
+      };
+      const rawShot = base0.shots.find((s) => s.shot_id === shotId);
+      if (!rawShot) return null;
+      const matchBlock = dramaManualPipelineBlockReason(base0, 'skill_seal');
+      if (matchBlock) {
+        if (!opts?.quiet) showAlert(matchBlock);
+        return null;
+      }
+
+      const videoModel0 = resolveDramaShotVideoModel(
+        rawShot.model_params,
+        base0.meta.videoBatchModel,
+        {
+          hasDialogue: dramaShotHasSpokenDialogue(rawShot),
+          hasShotAudio: !!String(rawShot.audio_url || '').trim(),
+        },
+      );
+      const genSec = resolveDramaShotGenerateDurationSec(
+        Number(rawShot.duration_sec) || 10,
+        videoModel0,
+        rawShot.model_params,
+      );
+      const alignedRes = alignDramaShotTimelineToGenerateDuration(rawShot, genSec);
+      let shot = alignedRes.shot;
+      if (alignedRes.changed) {
+        patchShotById(
+          shot.shot_id,
+          {
+            duration_sec: shot.duration_sec,
+            timeline_events: shot.timeline_events,
+            model_params: shot.model_params,
+            h3_skill_prompt: shot.h3_skill_prompt,
+            h3_skill_prompt_from: shot.h3_skill_prompt_from,
+          },
+          { skipBreakdown: true, skipAssetsProjection: true },
+        );
+        const pending = { ...pendingDurationRef.current };
+        if (pending[shot.shot_id]) {
+          delete pending[shot.shot_id];
+          pendingDurationRef.current = pending;
+          setPendingDurationByShotId(pending);
+        }
+      }
+
+      const base = {
+        ...sessionRef.current,
+        shots: sessionRef.current.shots.map((s) =>
+          s.shot_id === shot.shot_id ? shot : mergePendingDuration(s),
+        ),
+      };
+
+      const sourcePrompt = composeDramaShotLensTaggedPrompt(base, shot);
+      if (
+        !opts?.force &&
+        dramaShotSkillMatchesLocale(shot, locale) &&
+        String(shot.h3_skill_prompt_from || '').trim() === sourcePrompt
+      ) {
+        if (!opts?.quiet) {
+          showAlert(
+            locale === 'en'
+              ? `Shot ${shot.shot_no}: Skill prompt is already up to date`
+              : `镜头${shot.shot_no} 已是最新 MiniMax H3 Skill 优化稿`,
+          );
+        }
+        return shot;
+      }
+      if (!window.electronAPI?.getMinimaxH3PromptGuide) {
+        if (!opts?.quiet) {
+          showAlert(
+            locale === 'en'
+              ? 'MiniMax H3 Skill guide is unavailable in this build'
+              : '本构建缺少 MiniMax H3 Skill 指南',
+          );
+        }
+        return null;
+      }
+      setSkillOptimizingShotId(shot.shot_id);
+      try {
+        const videoModel = resolveDramaShotVideoModel(
+          shot.model_params,
+          base.meta.videoBatchModel,
+          {
+            hasDialogue: dramaShotHasSpokenDialogue(shot),
+            hasShotAudio: !!String(shot.audio_url || '').trim(),
+          },
+        );
+        const modelId =
+          videoModel === 'minimax-h3-audio' ? 'minimax-h3-audio' : 'minimax-h3-multi';
+        const structure = resolveMinimaxH3OptimizeStructure(modelId);
+        const guideRes = await window.electronAPI.getMinimaxH3PromptGuide(structure);
+        if (!guideRes?.ok) {
+          throw new Error(
+            (guideRes as { error?: string } | null)?.error ||
+              (locale === 'en' ? 'Failed to load H3 Skill guide' : '加载 H3 Skill 指南失败'),
+          );
+        }
+        const built = buildDramaShotH3SkillOptimizeMessages({
+          session: base,
+          shot,
+          skillMd: guideRes.skillMd,
+          guideText: guideRes.guide,
+          sourcePrompt,
+          videoModel: modelId,
+        });
+        const raw = await runChat(built.systemPrompt, built.userPrompt, {
+          max_tokens: 8192,
+          temperature: 0.2,
+          concurrent: true,
+          skillOptimize: true,
+        });
+        const optimized = applyDramaShotH3SkillOptimizeResult(
+          base,
+          shot,
+          raw,
+          built.sourcePrompt,
+          built.structure,
+        );
+        const tiers = resolveDramaShotDurationTiers(
+          resolveDramaShotVideoModel(shot.model_params, base.meta.videoBatchModel, {
+            hasDialogue: dramaShotHasSpokenDialogue(shot),
+            hasShotAudio: !!String(shot.audio_url || '').trim(),
+          }),
+        );
+        const inferred = inferDramaDurationSecFromH3Prompt(
+          optimized.h3_skill_prompt || '',
+          tiers,
+        );
+        const synced =
+          inferred != null
+            ? alignDramaShotTimelineToGenerateDuration(optimized, inferred, {
+                remapPrompts: false,
+              }).shot
+            : {
+                ...optimized,
+                duration_sec: shot.duration_sec,
+                timeline_events: shot.timeline_events,
+                model_params: shot.model_params,
+              };
+        patchShotById(synced.shot_id, {
+          duration_sec: synced.duration_sec,
+          timeline_events: synced.timeline_events,
+          model_params: synced.model_params,
+          last_compiled_prompt: synced.last_compiled_prompt,
+          h3_skill_prompt: synced.h3_skill_prompt,
+          h3_skill_prompt_from: synced.h3_skill_prompt_from,
+        });
+        if (!opts?.quiet) {
+          showAlert(
+            dramaShotSkillMatchesLocale(synced, locale)
+              ? locale === 'en'
+                ? `Shot ${synced.shot_no}: MiniMax H3 Skill optimize done (${synced.duration_sec}s)`
+                : `镜头${synced.shot_no} 已用 MiniMax H3 Skill 优化（时长档已按提示词时码对齐 ${synced.duration_sec}s）`
+              : locale === 'en'
+                ? `Shot ${synced.shot_no}: optimize finished — please check prompt format`
+                : `镜头${synced.shot_no} 优化完成（请再检查提示词格式）`,
+          );
+        }
+        return synced;
+      } catch (e) {
+        if (!opts?.quiet) {
+          showAlert(
+            formatCloudLlmUserError(e) ||
+              (locale === 'en' ? 'Prompt optimize failed' : '提示词优化失败'),
+          );
+        }
+        throw e;
+      } finally {
+        setSkillOptimizingShotId((cur) => (cur === shot.shot_id ? '' : cur));
+      }
+    },
+    [locale, mergePendingDuration, patchShotById, runChat, showAlert],
+  );
+
+  /** 出片前确保 Skill 终稿；先对齐生成时长，失败时回退本地英文密封 */
+  const ensureShotH3SkillOptimized = useCallback(
+    async (shot: DramaShot, opts?: { quiet?: boolean }): Promise<DramaShot> => {
+      const base0 = {
+        ...sessionRef.current,
+        shots: sessionRef.current.shots.map(mergePendingDuration),
+      };
+      const live0 = base0.shots.find((s) => s.shot_id === shot.shot_id) || shot;
+      const videoModel0 = resolveDramaShotVideoModel(
+        live0.model_params,
+        base0.meta.videoBatchModel,
+        {
+          hasDialogue: dramaShotHasSpokenDialogue(live0),
+          hasShotAudio: !!String(live0.audio_url || '').trim(),
+        },
+      );
+      const genSec = resolveDramaShotGenerateDurationSec(
+        Number(live0.duration_sec) || 10,
+        videoModel0,
+        live0.model_params,
+      );
+      const alignedRes = alignDramaShotTimelineToGenerateDuration(live0, genSec);
+      let live = alignedRes.shot;
+      if (alignedRes.changed) {
+        patchShotById(
+          live.shot_id,
+          {
+            duration_sec: live.duration_sec,
+            timeline_events: live.timeline_events,
+            model_params: live.model_params,
+            h3_skill_prompt: live.h3_skill_prompt,
+            h3_skill_prompt_from: live.h3_skill_prompt_from,
+          },
+          { skipBreakdown: true, skipAssetsProjection: true },
+        );
+      }
+      // 已有优化稿（含中文 Skill / 白话）：出片只保留，不重跑、不回退密封冲掉
+      if (String(live.h3_skill_prompt || '').trim()) {
+        return live;
+      }
+      try {
+        const optimized = await optimizeShotWithH3Skill(live.shot_id, {
+          quiet: opts?.quiet ?? true,
+        });
+        if (optimized && String(optimized.h3_skill_prompt || '').trim()) return optimized;
+      } catch {
+        /* fallback below */
+      }
+      const base = {
+        ...sessionRef.current,
+        shots: sessionRef.current.shots.map((s) =>
+          s.shot_id === live.shot_id ? live : mergePendingDuration(s),
+        ),
+      };
+      const current = base.shots.find((s) => s.shot_id === live.shot_id) || live;
+      const sealed = applyDramaShotZhPlainOfficialSeal(base, current);
+      patchShotById(sealed.shot_id, {
+        duration_sec: current.duration_sec,
+        timeline_events: current.timeline_events,
+        model_params: current.model_params,
+        last_compiled_prompt: sealed.last_compiled_prompt,
+        h3_skill_prompt: sealed.h3_skill_prompt,
+        h3_skill_prompt_from: sealed.h3_skill_prompt_from,
+      });
+      return {
+        ...sealed,
+        duration_sec: current.duration_sec,
+        timeline_events: current.timeline_events,
+        model_params: current.model_params,
+      };
+    },
+    [locale, mergePendingDuration, optimizeShotWithH3Skill, patchShotById],
+  );
+
+  const spawnOneShot = useCallback(async (shotNo: string, pickedModel?: string) => {
+    const base = {
+      ...sessionRef.current,
+      shots: sessionRef.current.shots.map(mergePendingDuration),
+    };
     const no = String(shotNo || '').trim();
     if (!no) return;
-    const shot = base.shots.find((s) => String(s.shot_no || '').trim() === no);
-    const hasOptimized = !!String(shot?.h3_skill_prompt || '').trim();
-    if (!hasOptimized && !opts?.skipOptimizeGate) {
-      showAlert('请先完成本镜「提示词优化」，再生成视频');
-      setPromptEditorShotId(String(shot?.shot_id || '').trim());
-      setPromptEditorTab('compiled');
-      setPromptEditorAutoSkill(true);
-      return;
-    }
-    if (!videoGenEnabled && variant === 'videos') {
-      showAlert('请先确认导演表，再生成视频');
-      return;
-    }
+    let shot = base.shots.find((s) => String(s.shot_no || '').trim() === no);
     if (videoGeneratingIds?.[no]) {
       showAlert('本镜正在生成中，请等待完成或点「放弃等待」');
       return;
+    }
+    const matchBlock = dramaManualPipelineBlockReason(base, 'generate');
+    if (matchBlock) {
+      showAlert(matchBlock);
+      return;
+    }
+    if (shot) {
+      shot = await ensureShotH3SkillOptimized(shot, { quiet: true });
+      base.shots = base.shots.map((s) => (s.shot_id === shot!.shot_id ? shot! : s));
     }
     if (shot) {
       const synced = syncDramaShotCharacterIds(base, shot);
@@ -7321,6 +9114,21 @@ function DramaBoardPanel({
       );
       return;
     }
+    // 仅显式勾选「用分镜图作出片参考」时，缺图才先触发生成；未勾选走场景+人/道具/生物
+    if (shot) {
+      const boardSb = getDirectorShotStoryboard(pipeline, no).imageUrl;
+      const sbUrl = resolveDramaShotStoryboardImageUrl(shot, boardSb);
+      if (sbUrl && !String(shot.storyboard_image_url || '').trim()) {
+        shot = { ...shot, storyboard_image_url: sbUrl };
+        patchShotById(shot.shot_id, { storyboard_image_url: sbUrl });
+        base.shots = base.shots.map((s) => (s.shot_id === shot!.shot_id ? shot! : s));
+      }
+      if (shot.use_storyboard_as_video_ref === true && !sbUrl) {
+        onGenerateShotStoryboard?.(no, { force: false });
+        showAlert('本镜已勾选用分镜图作出片参考，但尚无分镜图，已开始生成。完成后请再点「生成视频」。');
+        return;
+      }
+    }
     let next = refreshDramaPackages(base, videoModelForShot);
     next = {
       ...next,
@@ -7337,6 +9145,36 @@ function DramaBoardPanel({
     onMarkVideoGenerating?.(no, true);
     onChange(next);
     const useLipsync = videoModelForShot === 'minimax-h3-audio';
+    const cloudPrompt = shot
+      ? (() => {
+          // 优先原样用已优化中文稿；仅做确定性封口，不再 Compiler 重写
+          const raw = String(shot.h3_skill_prompt || '').trim();
+          const source =
+            raw ||
+            resolveDramaProductionH3Prompt(next, shot, {
+              locale,
+              durationSec:
+                Number(shot.duration_sec) > 0 ? Number(shot.duration_sec) : undefined,
+            });
+          const style = resolveDramaShotVisualStylePrompt(next, shot);
+          return sealDramaProductionCloudPrompt(source, {
+            hasDialogue: hasDlg,
+            preserveChinese: /[\u4e00-\u9fff]/.test(source),
+            storyboardPicIndex: resolveDramaShotStoryboardPictureIndex(next, shot),
+            styleHint: [
+              style.body,
+              style.name,
+              next.bible?.project?.visual_style,
+              next.bible?.project?.color_style,
+              source,
+            ]
+              .filter(Boolean)
+              .join(' '),
+            session: next,
+            shot,
+          });
+        })()
+      : '';
     onSpawnVideos?.(
       useLipsync
         ? {
@@ -7345,14 +9183,16 @@ function DramaBoardPanel({
             lipsyncShotNos: [no],
             videoModel: videoModelForShot,
             shotModels: { [no]: videoModelForShot },
+            ...(cloudPrompt ? { shotPromptOverrides: { [no]: cloudPrompt } } : {}),
           }
         : {
             shotNos: [no],
             videoModel: videoModelForShot,
             shotModels: { [no]: videoModelForShot },
+            ...(cloudPrompt ? { shotPromptOverrides: { [no]: cloudPrompt } } : {}),
           },
     );
-  }, [videoGeneratingIds, videoGenEnabled, variant, showAlert, patchShotById, onSpawnVideos, onMarkVideoGenerating, onChange]);
+  }, [ensureShotH3SkillOptimized, videoGeneratingIds, showAlert, patchShotById, onSpawnVideos, onMarkVideoGenerating, onChange, locale, pipeline, onGenerateShotStoryboard]);
 
   const shotNeedsBatchVideo = (s: DramaShot) => {
     const no = String(s.shot_no || '').trim();
@@ -7374,11 +9214,15 @@ function DramaBoardPanel({
   );
   const pendingBatchPriceLabel = sumDramaYuanbaoHoverLabel(
     pendingVideoShots.map((s) => {
-      const dur = snapDramaShotDurationSec(Number(s.duration_sec) || 10);
       const model = resolveDramaShotVideoModel(s.model_params, session.meta.videoBatchModel, {
         hasDialogue: dramaShotHasSpokenDialogue(s),
         hasShotAudio: !!String(s.audio_url || '').trim(),
       });
+      const dur = resolveDramaShotGenerateDurationSec(
+        Number(s.duration_sec) || 10,
+        model,
+        s.model_params,
+      );
       return getShotVideoPriceLabel?.(dur, {
         model,
         preferLipsync: dramaVideoModelRequiresShotAudio(model),
@@ -7387,11 +9231,15 @@ function DramaBoardPanel({
   );
   const allRerunBatchPriceLabel = sumDramaYuanbaoHoverLabel(
     allRerunVideoShots.map((s) => {
-      const dur = snapDramaShotDurationSec(Number(s.duration_sec) || 10);
       const model = resolveDramaShotVideoModel(s.model_params, session.meta.videoBatchModel, {
         hasDialogue: dramaShotHasSpokenDialogue(s),
         hasShotAudio: !!String(s.audio_url || '').trim(),
       });
+      const dur = resolveDramaShotGenerateDurationSec(
+        Number(s.duration_sec) || 10,
+        model,
+        s.model_params,
+      );
       return getShotVideoPriceLabel?.(dur, {
         model,
         preferLipsync: dramaVideoModelRequiresShotAudio(model),
@@ -7402,15 +9250,35 @@ function DramaBoardPanel({
     const no = String(s.shot_no || '').trim();
     return !!(no && !videoGeneratingIds?.[no] && !shotNeedsBatchVideo(s));
   }).length;
-  const busyVideoCount = shots.filter((s) =>
-    videoGeneratingIds?.[String(s.shot_no || '').trim()],
-  ).length;
+  const busyVideoCount = shots.filter((s) => {
+    const no = String(s.shot_no || '').trim();
+    if (!no) return false;
+    if (videoGeneratingIds?.[no]) return true;
+    const st = String(s.video_status || '').trim();
+    if (st === 'generating' || st === 'queued') return true;
+    const board = resolveDramaShotBoardVideo(s, pipeline);
+    return board.videoStatus === 'generating' || board.videoStatus === 'queued';
+  }).length;
 
-  const spawnAllShots = (mode: 'missing' | 'all' = 'missing') => {
-    if (!videoGenEnabled) {
-      showAlert('请先确认导演表，再生成视频');
-      return;
+  const abandonAllVideoWaits = () => {
+    for (const s of shots) {
+      const no = String(s.shot_no || '').trim();
+      if (!no) continue;
+      const st = String(s.video_status || '').trim();
+      const board = resolveDramaShotBoardVideo(s, pipeline);
+      if (
+        videoGeneratingIds?.[no] ||
+        st === 'generating' ||
+        st === 'queued' ||
+        board.videoStatus === 'generating' ||
+        board.videoStatus === 'queued'
+      ) {
+        onAbandonVideoWait?.(no);
+      }
     }
+  };
+
+  const spawnAllShots = async (mode: 'missing' | 'all' = 'missing') => {
     if (!shots.length) {
       showAlert('暂无镜头可生成');
       return;
@@ -7440,12 +9308,19 @@ function DramaBoardPanel({
       })
       .filter(Boolean);
     if (castBlocked.length) {
-      showAlert(
-        `以下镜头未标明空镜却缺出场人物/人物素材，请先补齐再生成：\n${castBlocked.slice(0, 6).join('\n')}${
+      const ok = await showConfirm(
+        `以下镜头未标明空镜却缺出场人物/人物素材：\n${castBlocked.slice(0, 6).join('\n')}${
           castBlocked.length > 6 ? `\n…另有 ${castBlocked.length - 6} 镜` : ''
-        }`,
+        }\n\n确认继续生成？`,
       );
-      return;
+      if (!ok) return;
+    }
+    for (const s of targetShots) {
+      try {
+        await ensureShotH3SkillOptimized(s, { quiet: true });
+      } catch {
+        /* ensure 内部已本地回退 */
+      }
     }
     const shotModels: Record<string, string> = {};
     const lipsyncNos: string[] = [];
@@ -7474,7 +9349,34 @@ function DramaBoardPanel({
       );
       return;
     }
-    let next = refreshDramaPackages(session, videoModel);
+    const missingSbNos = targetShots
+      .map((s) => {
+        if (s.use_storyboard_as_video_ref !== true) return '';
+        const no = String(s.shot_no || '').trim();
+        if (!no) return '';
+        const url = resolveDramaShotStoryboardImageUrl(
+          s,
+          getDirectorShotStoryboard(pipeline, no).imageUrl,
+        );
+        return url ? '' : no;
+      })
+      .filter(Boolean);
+    if (missingSbNos.length) {
+      for (const no of missingSbNos) onGenerateShotStoryboard?.(no, { force: false });
+      showAlert(
+        `镜 ${missingSbNos.slice(0, 8).join('、')}${
+          missingSbNos.length > 8 ? ` 等 ${missingSbNos.length} 镜` : ''
+        } 已勾选用分镜图作出片参考但尚无分镜图，已开始生成。完成后请再点生成视频。`,
+      );
+      return;
+    }
+    let next = refreshDramaPackages(
+      {
+        ...sessionRef.current,
+        shots: sessionRef.current.shots.map(mergePendingDuration),
+      },
+      videoModel,
+    );
     for (const pkg of Object.values(next.packages || {})) {
       const adapter = getDramaVideoAdapter(pkg.adapter_id);
       if (!adapter) continue;
@@ -7484,8 +9386,10 @@ function DramaBoardPanel({
         const no = String(shot.shot_no || '').trim();
         if (!targetNos.has(no)) continue;
         const m = normalizeDramaSupportedVideoModel(shotModels[no] || videoModel);
-        const tier = Number(
-          pickNearestDirectorVideoBatchDuration(m, Number(shot.duration_sec) || 5),
+        const tier = resolveDramaShotGenerateDurationSec(
+          Number(shot.duration_sec) || 5,
+          m,
+          shot.model_params,
         );
         adapter.build({
           shot,
@@ -7516,6 +9420,36 @@ function DramaBoardPanel({
     for (const no of targetNos) onMarkVideoGenerating?.(no, true);
     onChange(next);
     const shotNoList = [...targetNos];
+    const shotPromptOverrides: Record<string, string> = {};
+    for (const s of next.shots) {
+      const no = String(s.shot_no || '').trim();
+      if (!no || !targetNos.has(no)) continue;
+      const raw = String(s.h3_skill_prompt || '').trim();
+      const source =
+        raw ||
+        resolveDramaProductionH3Prompt(next, s, {
+          locale,
+          durationSec: Number(s.duration_sec) > 0 ? Number(s.duration_sec) : undefined,
+        });
+      const style = resolveDramaShotVisualStylePrompt(next, s);
+      const text = sealDramaProductionCloudPrompt(source, {
+        hasDialogue: dramaShotHasSpokenDialogue(s),
+        preserveChinese: /[\u4e00-\u9fff]/.test(source),
+        storyboardPicIndex: resolveDramaShotStoryboardPictureIndex(next, s),
+        styleHint: [
+          style.body,
+          style.name,
+          next.bible?.project?.visual_style,
+          next.bible?.project?.color_style,
+          source,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        session: next,
+        shot: s,
+      });
+      if (text) shotPromptOverrides[no] = text;
+    }
     onSpawnVideos?.(
       lipsyncNos.length
         ? {
@@ -7524,84 +9458,25 @@ function DramaBoardPanel({
             lipsyncShotNos: lipsyncNos,
             videoModel,
             shotModels,
+            ...(Object.keys(shotPromptOverrides).length
+              ? { shotPromptOverrides }
+              : {}),
           }
-        : { shotNos: shotNoList, videoModel, shotModels },
+        : {
+            shotNos: shotNoList,
+            videoModel,
+            shotModels,
+            ...(Object.keys(shotPromptOverrides).length
+              ? { shotPromptOverrides }
+              : {}),
+          },
     );
   };
 
-  const runOptimizeAndGenerate = async (raw: DramaShot) => {
-    const live = sessionRef.current;
-    const enriched = enrichDramaShotLocally(live, raw);
-    const no = String(enriched.shot_no || '').trim();
-    const shotId = String(enriched.shot_id || '').trim();
-    if (!no || !shotId) return;
-    if (inlineOptimizeIds[shotId] || videoGeneratingIds?.[no]) return;
-    const hasOptimized = !!String(enriched.h3_skill_prompt || '').trim();
-    if (hasOptimized) {
-      spawnOneShot(no);
-      return;
-    }
-    // 一点即亮绿条：优化阶段也算「生成中」，避免预览区仍停在静帧
-    onMarkVideoGenerating?.(no, true);
-    const base = sessionRef.current;
-    onChange({
-      ...base,
-      shots: (base.shots || []).map((s) =>
-        s.shot_id === shotId
-          ? { ...s, video_status: 'generating', video_error: '' }
-          : s,
-      ),
-    });
-    setInlineOptimizeIds((prev) => ({ ...prev, [shotId]: true }));
-    setInlineOptimizeQueue((prev) => {
-      if (!prev[shotId]) return prev;
-      const next = { ...prev };
-      delete next[shotId];
-      return next;
-    });
-    try {
-      const result = await runDramaShotH3SkillOptimize({
-        session: sessionRef.current,
-        shot: enrichDramaShotLocally(sessionRef.current, raw),
-        runChat,
-        locale: locale === 'en' ? 'en' : 'zh-CN',
-        onQueueStatus: (st) => {
-          setInlineOptimizeQueue((prev) => ({ ...prev, [shotId]: st }));
-        },
-      });
-      patchShotById(shotId, {
-        last_compiled_prompt: result.source || String(enriched.last_compiled_prompt || ''),
-        h3_skill_prompt: result.final,
-        h3_skill_prompt_from: result.source || result.draft.slice(0, 200),
-        confirmed_at: Number(enriched.confirmed_at) > 0 ? enriched.confirmed_at : Date.now(),
-        needs_review: false,
-        video_status: 'generating',
-      });
-      window.setTimeout(() => {
-        spawnOneShot(no, undefined, { skipOptimizeGate: true });
-      }, 80);
-    } catch (e) {
-      const errMsg = formatCloudLlmUserError(e) || '提示词优化失败';
-      onMarkVideoGenerating?.(no, false);
-      patchShotById(shotId, {
-        video_status: String(enriched.video_url || '').trim() ? 'ready' : 'error',
-        video_error: errMsg,
-      });
-      showAlert(errMsg);
-    } finally {
-      setInlineOptimizeQueue((prev) => {
-        if (!prev[shotId]) return prev;
-        const next = { ...prev };
-        delete next[shotId];
-        return next;
-      });
-      setInlineOptimizeIds((prev) => {
-        if (!prev[shotId]) return prev;
-        const next = { ...prev };
-        delete next[shotId];
-        return next;
-      });
-    }
+  const runGenerateShot = (raw: DramaShot) => {
+    const no = String(raw.shot_no || '').trim();
+    if (!no) return;
+    spawnOneShot(no);
   };
 
   const thumbBox = (extra = '') =>
@@ -7621,7 +9496,10 @@ function DramaBoardPanel({
     },
   ) => {
     // 勿每帧 enrichDramaShotLocally：会 createEmptyDramaShot 整镜克隆，多卡重渲染即 OOM
-    const s = raw;
+    const pending = pendingDurationByShotId[raw.shot_id];
+    const s = pending
+      ? { ...raw, duration_sec: pending.duration_sec, timeline_events: pending.timeline_events }
+      : raw;
     const warn = issues.some((i) => i.shot_id === s.shot_id && i.severity !== 'info');
     const characters = resolveBoardShotCharacters(session, s);
     const lens = formatBoardLensLabel(s);
@@ -7634,8 +9512,6 @@ function DramaBoardPanel({
       if (c.character_id) nameById.set(c.character_id, c.name);
     }
     const shotConfirmed = isDramaShotConfirmed(s);
-    const hasOptimized = !!String(s.h3_skill_prompt || '').trim();
-    const canGenThis = hasOptimized;
     const fill = !!opts?.fill;
     const shotIndex = Number.isFinite(opts?.index) ? Number(opts?.index) : -1;
     const inWindow = opts?.inWindow === true;
@@ -7643,48 +9519,37 @@ function DramaBoardPanel({
     const mediaActive = opts?.mediaActive ?? inWindow;
     const boardVideoForCard = resolveDramaShotBoardVideo(s, pipeline);
     const shotNoForCard = String(s.shot_no || '').trim();
+    const shotNoBare = shotNoForCard.replace(/^0+(?=\d)/, '') || shotNoForCard;
     const isVideoGenerating =
       !!videoGeneratingIds?.[shotNoForCard] ||
-      !!inlineOptimizeIds[s.shot_id] ||
+      !!videoGeneratingIds?.[shotNoBare] ||
+      Object.keys(videoGeneratingIds || {}).some((k) => {
+        const key = String(k || '').trim();
+        if (!key) return false;
+        if (key === shotNoForCard || key === shotNoBare) return true;
+        const bare = key.replace(/^0+(?=\d)/, '') || key;
+        return bare === shotNoBare || key.endsWith(`:${shotNoForCard}`) || key.endsWith(`:${shotNoBare}`);
+      }) ||
       s.video_status === 'generating' ||
       s.video_status === 'queued' ||
       boardVideoForCard.videoStatus === 'generating' ||
       boardVideoForCard.videoStatus === 'queued';
     const generating = isVideoGenerating;
-    const optimizingOnly =
-      !!inlineOptimizeIds[s.shot_id] && !videoGeneratingIds?.[shotNoForCard];
-    const optimizeQueue = inlineOptimizeQueue[s.shot_id];
-    const optimizeWaiting = optimizeQueue?.phase === 'waiting';
     const plan = Number(s.duration_sec) || 0;
     const shotModel = resolveDramaShotVideoModel(s.model_params, session.meta.videoBatchModel, {
       hasDialogue: dramaShotHasSpokenDialogue(s),
       hasShotAudio: !!String(s.audio_url || '').trim(),
     });
-    const durationTiers = (() => {
-      const listed = listDirectorVideoDurationTiersSec(shotModel);
-      return listed.length > 0 ? listed : [...DRAMA_SHOT_DURATION_TIERS];
-    })();
-    const durShown = snapDramaShotDurationSec(plan || 10);
-    const priceLabel = getShotVideoPriceLabel?.(durShown, {
+    const genDur = resolveDramaShotGenerateDurationSec(plan || 10, shotModel, s.model_params);
+    const priceLabel = getShotVideoPriceLabel?.(genDur, {
       model: shotModel,
       preferLipsync: shotModel === 'minimax-h3-audio',
     });
-    const mergedActionPrice = hasOptimized
-      ? priceLabel
-      : combineDramaYuanbaoHoverLabel([unitChatPriceLabel, priceLabel]) ||
-        priceLabel ||
-        unitChatPriceLabel ||
-        null;
-    const openPromptEditor = (opts?: { tab?: 'cut' | 'compiled'; autoSkill?: boolean }) => {
-      setPromptEditorShotId(s.shot_id);
-      setPromptEditorTab(opts?.tab || 'cut');
-      setPromptEditorAutoSkill(!!opts?.autoSkill);
-    };
 
     return (
       <DramaViewportMount
         scrollRoot={shotListScrollEl}
-        force={!!fill || s.shot_id === focusShotId}
+        force={!!fill || s.shot_id === focusShotId || generating}
         minHeightPx={380}
         viewportMarginPx={48}
         shellId={s.shot_id}
@@ -7701,13 +9566,7 @@ function DramaBoardPanel({
                 visible
                 progress={35}
                 solidBackground={isDark ? '#1C1C1E' : '#e5e7eb'}
-                progressMessage={
-                  optimizeWaiting
-                    ? `镜头${String(s.shot_no || '').padStart(2, '0')} · 等待中（${optimizeQueue!.position}/${optimizeQueue!.total}）`
-                    : optimizingOnly
-                      ? `镜头${String(s.shot_no || '').padStart(2, '0')} · 优化提示词中…`
-                      : `镜头${String(s.shot_no || '').padStart(2, '0')} · 正在生成视频…`
-                }
+                progressMessage={`镜头${String(s.shot_no || '').padStart(2, '0')} · 正在生成视频…`}
                 borderRadius={8}
               />
             </div>
@@ -7745,7 +9604,7 @@ function DramaBoardPanel({
               type="checkbox"
               className="h-3.5 w-3.5 rounded border-white/30 bg-transparent accent-sky-500"
               checked={!!selectedShotIds[s.shot_id]}
-              disabled={busy || enriching || h3Optimizing || mergingShots || generating}
+              disabled={busy || mergingShots || generating}
               onChange={() => toggleShotSelected(s.shot_id)}
             />
           </label>
@@ -7761,7 +9620,7 @@ function DramaBoardPanel({
                   : 'text-gray-500 hover:bg-gray-200 hover:text-gray-900'
               }`}
               title="在上方插入空镜头"
-              disabled={busy || enriching || h3Optimizing || generating}
+              disabled={busy || generating}
               onClick={(e) => {
                 e.stopPropagation();
                 handleInsertShotAt(Math.max(0, shotIndex));
@@ -7777,7 +9636,7 @@ function DramaBoardPanel({
                   : 'text-gray-500 hover:bg-gray-200 hover:text-gray-900'
               }`}
               title="在下方插入空镜头"
-              disabled={busy || enriching || h3Optimizing || generating}
+              disabled={busy || generating}
               onClick={(e) => {
                 e.stopPropagation();
                 handleInsertShotAt(Math.max(0, shotIndex) + 1);
@@ -7793,7 +9652,7 @@ function DramaBoardPanel({
                   : 'text-gray-500 hover:bg-rose-50 hover:text-rose-600'
               }`}
               title="删除此镜头"
-              disabled={busy || enriching || h3Optimizing || generating || shots.length <= 1}
+              disabled={busy || generating || shots.length <= 1}
               onClick={(e) => {
                 e.stopPropagation();
                 void handleDeleteShotAt(Math.max(0, shotIndex));
@@ -7801,33 +9660,6 @@ function DramaBoardPanel({
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
-          </div>
-          <div
-            className="inline-flex items-center rounded-full bg-sky-500/20 p-0.5 text-[13px] font-medium tabular-nums text-sky-200"
-            title="本镜时长：按当前模型支持的档位出片（MiniMax H3 为 6 / 10 / 15 / 20 秒）"
-          >
-            {durationTiers.map((sec) => {
-              const selected = durShown === sec;
-              return (
-                <button
-                  key={sec}
-                  type="button"
-                  disabled={busy || enriching || h3Optimizing || generating}
-                  className={`nodrag rounded-full px-2 py-0.5 disabled:opacity-45 ${
-                    selected
-                      ? 'bg-sky-500/85 text-white'
-                      : 'text-sky-200/80 hover:bg-sky-500/25 hover:text-white'
-                  }`}
-                  aria-pressed={selected}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    applyShotDurationSec(raw, sec);
-                  }}
-                >
-                  {sec}s
-                </button>
-              );
-            })}
           </div>
           {(() => {
             const sug = (getActiveEpisodeBible(session).shot_suggestions || []).find(
@@ -7844,25 +9676,50 @@ function DramaBoardPanel({
                 className={`max-w-[11rem] truncate rounded-full px-2 py-0.5 text-[11px] tabular-nums ${
                   isDark ? 'bg-white/8 text-white/65' : 'bg-gray-100 text-gray-600'
                 }`}
-                title={sug.duration_why || '分镜脚本规划时长（小数秒；出片仍用左侧档位）'}
+                title={sug.duration_why || '分镜脚本规划时长（小数秒；出片仍用右侧时长档）'}
               >
                 规划{Number(sug.duration_sec) > 0 ? Number(sug.duration_sec).toFixed(1) : ai.toFixed(1)}s
                 {hasBand ? ` · ${lo.toFixed(1)}–${hi.toFixed(1)}` : ''}
               </div>
             );
           })()}
-          {hasOptimized ? (
-            <div className="rounded-full bg-violet-500/20 px-2 py-0.5 text-[13px] text-violet-200">
-              提示词已优化
-            </div>
-          ) : shotConfirmed ? (
+          {shotConfirmed ? (
             <div className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[13px] text-emerald-200">
               已确认本镜
             </div>
           ) : null}
-          {String(s.last_compiled_prompt || '').trim() ? (
-            <H3PromptHoverBadge prompt={String(s.last_compiled_prompt || '')} isDark={isDark} />
-          ) : null}
+          {(() => {
+            const skillPrompt = String(s.h3_skill_prompt || '').trim();
+            const compiledPrompt = String(s.last_compiled_prompt || '').trim();
+            const sealed = dramaShotSkillMatchesLocale(s, locale) && !!skillPrompt;
+            const showPrompt = sealed ? skillPrompt : compiledPrompt;
+            if (!showPrompt) return null;
+            return (
+              <H3PromptHoverBadge
+                prompt={showPrompt}
+                isDark={isDark}
+                label={sealed ? (locale === 'en' ? 'Skill' : '优化稿') : 'H3'}
+                title={
+                  sealed
+                    ? locale === 'en'
+                      ? 'Hover to view MiniMax H3 Skill final prompt'
+                      : '悬停查看 MiniMax H3 Skill 最终提示词'
+                    : locale === 'en'
+                      ? 'Hover to view compiled prompt'
+                      : '悬停查看本镜编译提示词'
+                }
+                heading={
+                  sealed
+                    ? locale === 'en'
+                      ? 'MiniMax H3 Skill final prompt'
+                      : 'MiniMax H3 Skill 最终提示词'
+                    : locale === 'en'
+                      ? 'Compiled prompt'
+                      : '本镜编译提示词'
+                }
+              />
+            );
+          })()}
           {place ? (
             <div className={`max-w-[12rem] truncate text-[13px] ${mutedCls(isDark)}`}>{place}</div>
           ) : null}
@@ -7885,7 +9742,7 @@ function DramaBoardPanel({
               session={session}
               shot={s}
               isDark={isDark}
-              busy={busy || enriching || h3Optimizing}
+              busy={busy}
               thumbBox={thumbBox}
               mediaActive={mediaActive}
               onPatchShot={patchShotById}
@@ -7902,16 +9759,31 @@ function DramaBoardPanel({
               session={session}
               shot={s}
               isDark={isDark}
-              busy={busy || enriching || h3Optimizing}
+              busy={busy}
               timeline={timeline}
               nameById={nameById}
-              onRequestOpenEditor={openPromptEditor}
+              runChat={runChat}
+              showAlert={showAlert}
+              unitChatPriceLabel={unitChatPriceLabel}
+              unitImagePriceLabel={unitImagePriceLabel}
+              storyboardImageGenSlot={storyboardImageGenSlot}
+              storyboardImageUrl={
+                String(
+                  getDirectorShotStoryboard(pipeline, shotNoForCard).imageUrl ||
+                    s.storyboard_image_url ||
+                    '',
+                ).trim() || null
+              }
+              storyboardGenerating={
+                getDirectorShotStoryboard(pipeline, shotNoForCard).status === 'generating'
+              }
+              onGenerateShotStoryboard={onGenerateShotStoryboard}
               onPatchShot={(patch) => patchShotById(s.shot_id, patch)}
               onPatchTimeline={(nextEvents) => {
                 const nextShot = ensureDramaShotTimelineEvents({
                   ...s,
                   timeline_events: nextEvents,
-                });
+                }, session, { preserveTiming: true });
                 patchShotById(s.shot_id, {
                   timeline_events: nextShot.timeline_events,
                   timeline_beats: nextShot.timeline_beats,
@@ -7919,59 +9791,118 @@ function DramaBoardPanel({
                     session,
                     nextShot.timeline_events,
                   ),
-                  h3_skill_prompt: '',
-                  h3_skill_prompt_from: '',
+                  // 保留已优化中文稿（图二），改彩条不冲掉
                 });
               }}
+              skillPromptActionSlot={
+                <DramaYuanbaoHoverWrap
+                  tipBelow
+                  className="shrink-0"
+                  priceLabel={
+                    !dramaShotSkillMatchesLocale(s, locale) &&
+                    skillOptimizingShotId !== s.shot_id &&
+                    !generating
+                      ? unitChatPriceLabel
+                      : null
+                  }
+                >
+                  <button
+                    type="button"
+                    className={`nodrag rounded-md px-2.5 py-1.5 text-[13px] font-medium ${
+                      isDark
+                        ? dramaShotSkillMatchesLocale(s, locale)
+                          ? 'bg-emerald-500/25 text-emerald-100 ring-1 ring-emerald-400/40'
+                          : 'bg-violet-500/80 text-white hover:bg-violet-500'
+                        : dramaShotSkillMatchesLocale(s, locale)
+                          ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-300'
+                          : 'bg-violet-600 text-white hover:bg-violet-700'
+                    }`}
+                    title={
+                      dramaShotSkillMatchesLocale(s, locale)
+                        ? locale === 'en'
+                          ? 'View MiniMax H3 Skill final prompt (sent to API)'
+                          : '查看 MiniMax H3 Skill 最终提示词（发往 API）'
+                        : locale === 'en'
+                          ? 'Optimize with MiniMax H3 Skill (same as canvas video node)'
+                          : '用 MiniMax H3 Skill 优化（与画布视频节点同一套）'
+                    }
+                    disabled={generating || skillOptimizingShotId === s.shot_id || !!busy}
+                    onClick={() => {
+                      if (dramaShotSkillMatchesLocale(s, locale)) {
+                        setSkillPromptViewShotId(s.shot_id);
+                        return;
+                      }
+                      void optimizeShotWithH3Skill(s.shot_id, {
+                        force: isDramaShotH3SkillSealed(s),
+                      }).catch(() => undefined);
+                    }}
+                  >
+                    {skillOptimizingShotId === s.shot_id
+                      ? locale === 'en'
+                        ? 'Optimizing…'
+                        : '优化中…'
+                      : dramaShotSkillMatchesLocale(s, locale)
+                        ? locale === 'en'
+                          ? 'View Skill prompt'
+                          : '查看优化稿'
+                        : locale === 'en'
+                          ? 'Optimize prompt'
+                          : '提示词优化'}
+                  </button>
+                </DramaYuanbaoHoverWrap>
+              }
             />
           </div>
 
           <div className="flex h-full min-h-0 min-w-0 flex-col gap-1.5">
-            <div className="min-h-0 min-w-0 flex-1">
+            <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
               <DramaShotVideoSlot
                 shot={s}
                 session={session}
                 pipeline={pipeline}
                 isDark={isDark}
-                busy={busy || enriching || h3Optimizing}
-                canGenerate={canGenThis}
+                busy={busy}
+                canGenerate
                 onSpawn={spawnOneShot}
                 onModelChange={setShotVideoModel}
+                onDurationChange={handleShotVideoDurationChange}
                 onAbandonWait={onAbandonVideoWait}
+                onSelectVideo={applyShotVideo}
                 priceLabel={priceLabel}
                 forceGenerating={generating}
-                progressMessage={
-                  optimizeWaiting
-                    ? `等待中（${optimizeQueue.position}/${optimizeQueue.total}）…`
-                    : optimizingOnly
-                      ? '正在优化提示词...'
-                      : '正在生成视频...'
-                }
+                progressMessage="正在生成视频..."
                 hideGenerate={variant === 'board'}
                 mountVideo={mountVideo}
               />
             </div>
             {variant === 'board' ? (
-              <div className="flex shrink-0 flex-wrap items-stretch gap-1.5">
-                <button
-                  type="button"
-                  className={`nodrag min-w-0 flex-1 rounded-lg px-2 py-1.5 text-[13px] font-medium ${
-                    isDark
-                      ? 'bg-amber-400/90 text-black hover:bg-amber-400'
-                      : 'bg-amber-500 text-white hover:bg-amber-600'
-                  }`}
-                  title="在弹窗中修改切段与整镜编译稿"
-                  disabled={enriching || h3Optimizing || generating}
-                  onClick={() => openPromptEditor({ tab: 'cut' })}
-                >
-                  提示词修改
-                </button>
+              <div className="relative z-30 flex shrink-0 flex-wrap items-stretch gap-1.5 pointer-events-auto">
+                {generating ? (
+                  <button
+                    type="button"
+                    className={`nodrag nopan relative z-30 min-w-0 flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-[13px] font-medium pointer-events-auto ${
+                      isDark
+                        ? 'bg-white/20 text-white ring-1 ring-white/35 hover:bg-white/30'
+                        : 'bg-gray-200 text-gray-900 hover:bg-gray-300'
+                    }`}
+                    title="仅取消本地等待与绿条；已发出的任务无法撤回，费用不退"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const no = String(s.shot_no || '').trim();
+                      if (!no) return;
+                      onAbandonVideoWait?.(no);
+                    }}
+                  >
+                    放弃等待
+                  </button>
+                ) : null}
                 <DramaYuanbaoHoverWrap
                   tipBelow
                   className="min-w-0 flex-1"
-                  priceLabel={
-                    !generating && !inlineOptimizeIds[s.shot_id] ? mergedActionPrice : null
-                  }
+                  priceLabel={!generating ? priceLabel : null}
                 >
                   <button
                     type="button"
@@ -7980,33 +9911,22 @@ function DramaBoardPanel({
                         ? 'bg-sky-500/85 text-white hover:bg-sky-500'
                         : 'bg-gray-900 text-white'
                     }`}
-                    disabled={
-                      generating ||
-                      enriching ||
-                      h3Optimizing ||
-                      !!inlineOptimizeIds[s.shot_id]
-                    }
+                    disabled={generating || skillOptimizingShotId === s.shot_id}
                     title={
-                      generating || inlineOptimizeIds[s.shot_id]
+                      generating
                         ? '处理中'
-                        : hasOptimized
-                          ? '使用已优化提示词生成本镜视频'
-                          : '一点即跑：提示词优化后自动出片（费用含优化+出片）'
+                        : isDramaShotH3SkillSealed(s)
+                          ? `用本镜 Skill 优化稿按 ${genDur}s 出片`
+                          : `将先自动 Skill 优化提示词，再按 ${genDur}s 出片`
                     }
-                    onClick={() => void runOptimizeAndGenerate(raw)}
+                    onClick={() => runGenerateShot(raw)}
                   >
                     {generating
-                      ? optimizeWaiting
-                        ? `等待中（${optimizeQueue!.position}/${optimizeQueue!.total}）`
-                        : optimizingOnly
-                          ? '优化中…'
-                          : '生成中…'
-                      : hasOptimized
-                          ? formatDramaVideoGenButtonLabel({
-                              hasVideo: !!s.video_url,
-                              durationSec: durShown,
-                            })
-                          : `优化并生成 · ${Math.round(durShown) || 6}s`}
+                      ? '生成中…'
+                      : formatDramaVideoGenButtonLabel({
+                          hasVideo: !!s.video_url,
+                          durationSec: genDur,
+                        })}
                   </button>
                 </DramaYuanbaoHoverWrap>
               </div>
@@ -8019,37 +9939,53 @@ function DramaBoardPanel({
     );
   };
 
-  const editorShotRaw = promptEditorShotId
-    ? shots.find((x) => x.shot_id === promptEditorShotId) || null
+  const skillViewShot = skillPromptViewShotId
+    ? shots.find((x) => x.shot_id === skillPromptViewShotId) || null
     : null;
-  const editorShotEnriched = editorShotRaw
-    ? enrichDramaShotLocally(session, editorShotRaw)
-    : null;
-  const editorTimeline = editorShotEnriched?.timeline_events?.length
-    ? editorShotEnriched.timeline_events
-    : [];
-  const editorNameById = (() => {
-    const map = new Map(
-      (session.bible.characters || []).map((c) => [c.character_id, c.name] as const),
-    );
-    if (editorShotEnriched) {
-      for (const c of resolveBoardShotCharacters(session, editorShotEnriched)) {
-        if (c.character_id) map.set(c.character_id, c.name);
-      }
-    }
-    return map;
-  })();
-
-  const promptEditorPortal =
-    editorShotEnriched && typeof document !== 'undefined'
+  const skillViewSession = {
+    ...sessionRef.current,
+    shots: sessionRef.current.shots.map(mergePendingDuration),
+  };
+  const skillViewSource = skillViewShot
+    ? String(skillViewShot.h3_skill_prompt || '').trim() ||
+      resolveDramaProductionH3Prompt(skillViewSession, skillViewShot, {
+        locale,
+        durationSec:
+          Number(skillViewShot.duration_sec) > 0
+            ? Number(skillViewShot.duration_sec)
+            : undefined,
+      })
+    : '';
+  const skillViewText = skillViewShot
+    ? (() => {
+        const style = resolveDramaShotVisualStylePrompt(skillViewSession, skillViewShot);
+        return sealDramaProductionCloudPrompt(skillViewSource, {
+          hasDialogue: dramaShotHasSpokenDialogue(skillViewShot),
+          preserveChinese: /[\u4e00-\u9fff]/.test(skillViewSource),
+          storyboardPicIndex: resolveDramaShotStoryboardPictureIndex(
+            skillViewSession,
+            skillViewShot,
+          ),
+          styleHint: [
+            style.body,
+            style.name,
+            skillViewSession.bible?.project?.visual_style,
+            skillViewSession.bible?.project?.color_style,
+            skillViewSource,
+          ]
+            .filter(Boolean)
+            .join(' '),
+          session: skillViewSession,
+          shot: skillViewShot,
+        });
+      })()
+    : '';
+  const skillPromptViewPortal =
+    skillViewShot && skillViewText && typeof document !== 'undefined'
       ? createPortal(
           <div
-            className="fixed inset-0 z-[100120] flex items-center justify-center p-3"
-            onClick={() => {
-              setPromptEditorShotId('');
-              setPromptEditorAutoSkill(false);
-              setPendingGenAfterSkillId('');
-            }}
+            className="fixed inset-0 z-[100130] flex items-center justify-center p-3"
+            onClick={() => setSkillPromptViewShotId('')}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div
@@ -8068,78 +10004,80 @@ function DramaBoardPanel({
               >
                 <div className="min-w-0">
                   <div className="text-[15px] font-semibold">
-                    镜头{String(editorShotEnriched.shot_no || '').padStart(2, '0')} · 提示词编辑
+                    {locale === 'en'
+                      ? `Shot ${String(skillViewShot.shot_no || '').padStart(2, '0')} · MiniMax H3 Skill final prompt`
+                      : `镜头${String(skillViewShot.shot_no || '').padStart(2, '0')} · MiniMax H3 Skill 最终提示词`}
                   </div>
                   <div className={`truncate text-[12px] ${mutedCls(isDark)}`}>
-                    {pendingGenAfterSkillId === editorShotEnriched.shot_id
-                      ? '优化确认后将自动生成视频'
-                      : '切段修改与整镜编译稿都在此窗口'}
+                    {locale === 'en'
+                      ? 'Same Skill as canvas video node — exact text sent to the API'
+                      : '与画布视频节点同一 Skill，即发往视频 API 的最终提示词'}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className={`nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[18px] ${
-                    isDark ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                  }`}
-                  onClick={() => {
-                    setPromptEditorShotId('');
-                    setPromptEditorAutoSkill(false);
-                    setPendingGenAfterSkillId('');
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-hidden p-3">
-                <DramaExecuteTablePanel
-                  key={editorShotEnriched.shot_id}
-                  session={session}
-                  shot={editorShotEnriched}
-                  isDark={isDark}
-                  timeline={editorTimeline}
-                  nameById={editorNameById}
-                  activeEventId={activeEventId}
-                  onSelectEvent={setActiveEventId}
-                  runChat={runChat}
-                  showAlert={showAlert}
-                  busy={busy || enriching || h3Optimizing}
-                  initialTab={promptEditorTab}
-                  autoRunSkillOptimize={promptEditorAutoSkill}
-                  onAutoRunSkillConsumed={() => setPromptEditorAutoSkill(false)}
-                  onPatchTimeline={(nextEvents) => {
-                    const nextShot = ensureDramaShotTimelineEvents({
-                      ...editorShotEnriched,
-                      timeline_events: nextEvents,
-                    });
-                    patchShotById(editorShotEnriched.shot_id, {
-                      timeline_events: nextShot.timeline_events,
-                      timeline_beats: nextShot.timeline_beats,
-                      audio_timeline: deriveDramaAudioTimelineFromShotEvents(
-                        session,
-                        nextShot.timeline_events,
-                      ),
-                      h3_skill_prompt: '',
-                      h3_skill_prompt_from: '',
-                    });
-                  }}
-                  onPatchShot={(patch) => {
-                    patchShotById(editorShotEnriched.shot_id, patch);
-                    const skill = String(patch.h3_skill_prompt || '').trim();
-                    if (
-                      skill &&
-                      pendingGenAfterSkillId === editorShotEnriched.shot_id
-                    ) {
-                      const no = String(editorShotEnriched.shot_no || '').trim();
-                      setPendingGenAfterSkillId('');
-                      setPromptEditorShotId('');
-                      setPromptEditorAutoSkill(false);
-                      window.setTimeout(() => {
-                        if (no) spawnOneShot(no);
-                      }, 120);
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <DramaYuanbaoHoverWrap
+                    tipBelow
+                    priceLabel={
+                      skillOptimizingShotId !== skillViewShot.shot_id
+                        ? unitChatPriceLabel
+                        : null
                     }
-                  }}
-                />
+                  >
+                    <button
+                      type="button"
+                      className={`nodrag rounded-lg px-2.5 py-1 text-[12px] font-medium ${
+                        isDark
+                          ? 'bg-violet-500/80 text-white hover:bg-violet-500'
+                          : 'bg-violet-600 text-white hover:bg-violet-700'
+                      }`}
+                      disabled={skillOptimizingShotId === skillViewShot.shot_id}
+                      onClick={() => {
+                        setSkillPromptViewShotId('');
+                        void optimizeShotWithH3Skill(skillViewShot.shot_id, { force: true }).catch(
+                          () => undefined,
+                        );
+                      }}
+                    >
+                      {locale === 'en' ? 'Re-optimize' : '重新优化'}
+                    </button>
+                  </DramaYuanbaoHoverWrap>
+                  <button
+                    type="button"
+                    className={`nodrag rounded-lg px-2.5 py-1 text-[12px] font-medium ${
+                      isDark
+                        ? 'bg-white/10 text-white hover:bg-white/15'
+                        : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                    }`}
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(skillViewText).then(
+                        () =>
+                          showAlert?.(
+                            locale === 'en' ? 'Final API prompt copied' : '已复制上云最终提示词',
+                          ),
+                        () => showAlert?.(locale === 'en' ? 'Copy failed' : '复制失败'),
+                      );
+                    }}
+                  >
+                    {locale === 'en' ? 'Copy all' : '复制全文'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`nodrag flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[18px] ${
+                      isDark ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                    }`}
+                    onClick={() => setSkillPromptViewShotId('')}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
+              <pre
+                className={`min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-4 py-3 text-[13px] leading-relaxed custom-scrollbar-dark ${
+                  isDark ? 'text-white/85' : 'text-gray-800'
+                }`}
+              >
+                {skillViewText}
+              </pre>
             </div>
           </div>,
           document.body,
@@ -8148,7 +10086,7 @@ function DramaBoardPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-      {promptEditorPortal}
+      {skillPromptViewPortal}
       {/* 操作栏（分镜页不展示整片风格长 Prompt） */}
       <div className={`${cardCls(isDark)} shrink-0 p-3 flex flex-wrap items-center gap-2`}>
           <label
@@ -8161,7 +10099,7 @@ function DramaBoardPanel({
             <select
               className={darkSelectCls('text-[15px]')}
               value={aspectRatio}
-              disabled={busy || enriching || h3Optimizing}
+              disabled={busy}
               onChange={(e) => setAspectRatio(e.target.value)}
               onClick={(e) => e.stopPropagation()}
             >
@@ -8189,7 +10127,7 @@ function DramaBoardPanel({
             <select
               className={darkSelectCls('text-[15px]')}
               value={videoModel}
-              disabled={busy || enriching || h3Optimizing}
+              disabled={busy}
               onChange={(e) => setDefaultVideoModel(e.target.value)}
               onClick={(e) => e.stopPropagation()}
             >
@@ -8205,25 +10143,48 @@ function DramaBoardPanel({
               ))}
             </select>
           </label>
+          <label
+            className={`flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[15px] ${
+              isDark ? 'bg-white/8' : 'bg-gray-50'
+            }`}
+            title="出片清晰度（MiniMax-H3：480P / 720P；口型与全能共用）"
+          >
+            <span className={mutedCls(isDark)}>清晰度</span>
+            <select
+              className={darkSelectCls('text-[15px]')}
+              value={videoResolution}
+              disabled={busy}
+              onChange={(e) => setVideoResolution(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {videoResolutionOptions.map((opt) => (
+                <option key={opt.value} value={opt.value} className="bg-[#1c1c1e] text-white">
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
           {variant === 'videos' ? null : (
             <>
-          <button
-            type="button"
-            disabled={
-              mergingShots || enriching || h3Optimizing || busy || selectedShotCount < 2
-            }
-            className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
-              isDark ? 'bg-amber-500/85 text-white' : 'bg-amber-600 text-white'
-            }`}
-            title="勾选至少 2 镜：去重参考图、拼接时间轴，并由大模型整合为单镜提示词"
-            onClick={() => void handleMergeSelectedShots()}
-          >
-            {mergingShots
-              ? mergeProgress || '合并镜头中…'
-              : selectedShotCount >= 2
-                ? `合并所选 ${selectedShotCount} 镜`
-                : '合并所选镜头'}
-          </button>
+          <DramaYuanbaoHoverWrap priceLabel={unitChatPriceLabel} tipBelow>
+            <button
+              type="button"
+              disabled={
+                mergingShots || busy || selectedShotCount < 2
+              }
+              className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
+                isDark ? 'bg-amber-500/85 text-white' : 'bg-amber-600 text-white'
+              }`}
+              title="勾选至少 2 镜：去重参考图、拼接时间轴，并由大模型整合切段"
+              onClick={() => void handleMergeSelectedShots()}
+            >
+              {mergingShots
+                ? mergeProgress || '合并镜头中…'
+                : selectedShotCount >= 2
+                  ? `合并所选 ${selectedShotCount} 镜`
+                  : '合并所选镜头'}
+            </button>
+          </DramaYuanbaoHoverWrap>
           {selectedShotCount > 0 ? (
             <button
               type="button"
@@ -8236,133 +10197,78 @@ function DramaBoardPanel({
               取消勾选 ({selectedShotCount})
             </button>
           ) : null}
-          <button
-            type="button"
-            disabled={enriching || h3Optimizing || busy || !shots.length}
-            className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
-              isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
-            }`}
-            onClick={() => void handleEnrich(true)}
+          <DramaYuanbaoHoverWrap
+            priceLabel={pendingVideoShots.length ? pendingBatchPriceLabel : null}
+            tipBelow
           >
-            {enriching
-              ? enrichProgress
-                ? `补全中… ${enrichProgress}`
-                : '补全中…'
-              : '一键补全导演脚本'}
-          </button>
-          <button
-            type="button"
-            disabled={enriching || h3Optimizing || busy || !shots.length}
-            className={`nodrag rounded-lg px-3 py-2 text-[16px] disabled:opacity-45 ${
-              isDark ? 'bg-white/10' : 'bg-gray-100'
-            }`}
-            onClick={() => void handleEnrich(false)}
-          >
-            仅规则估算时长
-          </button>
-          <button
-            type="button"
-            disabled={enriching || h3Optimizing || busy || !shots.length}
-            className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
-              isDark ? 'bg-violet-500/80 text-white' : 'bg-violet-700 text-white'
-            }`}
-            title="导演增强：只加细表演/运镜，不覆盖 final_prompt；出片由 Compiler 实时生成"
-            onClick={() => void handleH3Optimize(false)}
-          >
-            {h3Optimizing
-              ? `H3优化中 ${h3Progress}`
-              : h3ReadyCount === shots.length && shots.length
-                ? 'H3提示词已就绪'
-                : 'H3提示词优化'}
-          </button>
-          {shots.some((s) => s.directing_enhance_revision?.accepted) ? (
             <button
               type="button"
-              disabled={enriching || h3Optimizing || busy}
+              disabled={busy || !pendingVideoShots.length}
+              className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
+                isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
+              }`}
+              title={
+                pendingVideoShots.length
+                  ? '只生成尚未出片或失败的镜头，已有成片的不重跑'
+                  : '没有待生成镜头'
+              }
+              onClick={() => spawnAllShots('missing')}
+            >
+              {pendingVideoShots.length
+                ? `生成未出片 ${pendingVideoShots.length} 镜`
+                : '未出片已齐'}
+            </button>
+          </DramaYuanbaoHoverWrap>
+          {busyVideoCount > 0 ? (
+            <button
+              type="button"
+              className={`nodrag nopan cursor-pointer rounded-lg px-3 py-2 text-[16px] font-medium ${
+                isDark
+                  ? 'bg-white/20 text-white ring-1 ring-white/30 hover:bg-white/28'
+                  : 'bg-gray-200 text-gray-900 hover:bg-gray-300'
+              }`}
+              title="仅取消本地等待与绿条；已发出的任务无法撤回，费用不退"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                abandonAllVideoWaits();
+              }}
+            >
+              全部放弃等待 {busyVideoCount} 镜
+            </button>
+          ) : null}
+          <DramaYuanbaoHoverWrap
+            priceLabel={allRerunVideoShots.length ? allRerunBatchPriceLabel : null}
+            tipBelow
+          >
+            <button
+              type="button"
+              disabled={busy || !shots.length}
               className={`nodrag rounded-lg px-3 py-2 text-[16px] disabled:opacity-45 ${
                 isDark ? 'bg-white/10' : 'bg-gray-100'
               }`}
-              title="恢复增强前的 PerformancePlan"
-              onClick={handleRevertH3Enhance}
+              title="包括已有成片的镜头，会重新扣费生成"
+              onClick={() => spawnAllShots('all')}
             >
-              撤销增强
+              全部重跑
             </button>
-          ) : null}
+          </DramaYuanbaoHoverWrap>
           <button
             type="button"
-            disabled={enriching || h3Optimizing || busy || !shots.length}
+            disabled={!shots.length}
             className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
-              isDark ? 'bg-emerald-500/80 text-white' : 'bg-emerald-700 text-white'
+              isDark ? 'bg-emerald-500/80 text-white' : 'bg-gray-900 text-white'
             }`}
-            onClick={handleGoAssets}
+            onClick={onNext}
           >
-            确认导演表
+            进入成片
           </button>
-          {boardConfirmed ? (
-            <>
-              <button
-                type="button"
-                className={`nodrag rounded-lg px-3 py-2 text-[16px] ${
-                  isDark ? 'bg-white/10' : 'bg-gray-100'
-                }`}
-                onClick={onUnlockBoard}
-              >
-                解除确认
-              </button>
-              <DramaYuanbaoHoverWrap
-                priceLabel={pendingVideoShots.length ? pendingBatchPriceLabel : null}
-                tipBelow
-              >
-                <button
-                  type="button"
-                  disabled={busy || !pendingVideoShots.length}
-                  className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium disabled:opacity-45 ${
-                    isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
-                  }`}
-                  title={
-                    pendingVideoShots.length
-                      ? '只生成尚未出片或失败的镜头，已有成片的不重跑'
-                      : '没有待生成镜头'
-                  }
-                  onClick={() => spawnAllShots('missing')}
-                >
-                  {pendingVideoShots.length
-                    ? `生成未出片 ${pendingVideoShots.length} 镜`
-                    : '未出片已齐'}
-                </button>
-              </DramaYuanbaoHoverWrap>
-              <DramaYuanbaoHoverWrap
-                priceLabel={allRerunVideoShots.length ? allRerunBatchPriceLabel : null}
-                tipBelow
-              >
-                <button
-                  type="button"
-                  disabled={busy || !shots.length}
-                  className={`nodrag rounded-lg px-3 py-2 text-[16px] disabled:opacity-45 ${
-                    isDark ? 'bg-white/10' : 'bg-gray-100'
-                  }`}
-                  title="包括已有成片的镜头，会重新扣费生成"
-                  onClick={() => spawnAllShots('all')}
-                >
-                  全部重跑
-                </button>
-              </DramaYuanbaoHoverWrap>
-              <button
-                type="button"
-                className={`nodrag rounded-lg px-3 py-2 text-[16px] font-medium ${
-                  isDark ? 'bg-emerald-500/80 text-white' : 'bg-gray-900 text-white'
-                }`}
-                onClick={onNext}
-              >
-                进入成片
-              </button>
-              <div className={`text-[15px] ${mutedCls(isDark)}`}>
-                {shots.length} 镜 · 已出片 {readyVideoCount}
-                {busyVideoCount ? ` · 生成中 ${busyVideoCount}` : ''}
-                {pendingVideoShots.length ? ` · 待生成 ${pendingVideoShots.length}` : ''}
-              </div>
-            </>
-          ) : null}
+          <div className={`text-[15px] ${mutedCls(isDark)}`}>
+            {shots.length} 镜 · 已出片 {readyVideoCount}
+            {busyVideoCount ? ` · 生成中 ${busyVideoCount}` : ''}
+            {pendingVideoShots.length ? ` · 待生成 ${pendingVideoShots.length}` : ''}
+          </div>
           {missingDesign.length > 0 ? (
             <div className={`text-[15px] ${mutedCls(isDark)}`}>
               {missingDesign.length} 人尚无参考图 → 请返回「素材准备」补齐
@@ -8423,7 +10329,7 @@ function DramaBoardPanel({
               className={`nodrag inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-[13px] font-medium ${
                 isDark ? 'bg-sky-500/80 text-white' : 'bg-gray-900 text-white'
               }`}
-              disabled={busy || enriching || h3Optimizing}
+              disabled={busy}
               onClick={() => handleInsertShotAt(0)}
             >
               <Plus className="h-4 w-4" />
@@ -8443,7 +10349,7 @@ function DramaBoardPanel({
                           ? 'border-white/15 text-white/55 hover:border-sky-400/50 hover:bg-sky-500/10 hover:text-sky-200'
                           : 'border-gray-300 text-gray-500 hover:border-sky-400 hover:bg-sky-50 hover:text-sky-700'
                       }`}
-                      disabled={busy || enriching || h3Optimizing}
+                      disabled={busy}
                       onClick={() => handleInsertShotAt(index)}
                     >
                       <Plus className="h-3.5 w-3.5" />
@@ -8452,7 +10358,7 @@ function DramaBoardPanel({
                   ) : null}
                   {renderShotCard(raw, {
                     index,
-                    // 视口内镜头挂载 video 显示首帧（当前帧），悬停播放；视口外由 DramaViewportMount 卸载、不加载
+                    // 视口内短暂解首帧后卸 video；滚出由 DramaViewportMount 整卡卸载
                     mountVideo: true,
                     mediaActive: true,
                   })}
@@ -8463,7 +10369,7 @@ function DramaBoardPanel({
                         ? 'border-white/15 text-white/55 hover:border-sky-400/50 hover:bg-sky-500/10 hover:text-sky-200'
                         : 'border-gray-300 text-gray-500 hover:border-sky-400 hover:bg-sky-50 hover:text-sky-700'
                     }`}
-                    disabled={busy || enriching || h3Optimizing}
+                    disabled={busy}
                     onClick={() => handleInsertShotAt(index + 1)}
                   >
                     <Plus className="h-3.5 w-3.5" />
@@ -8479,12 +10385,160 @@ function DramaBoardPanel({
   );
 }
 
-function dramaFinalCutAspectBoxClass(ratio?: string): string {
+function dramaAspectRatioParts(ratio?: string): { w: number; h: number; css: string; label: string } {
   const r = String(ratio || '').trim();
+  if (r === '16:9') return { w: 16, h: 9, css: '16 / 9', label: '16:9' };
+  if (r === '4:3') return { w: 4, h: 3, css: '4 / 3', label: '4:3' };
+  if (r === '3:4') return { w: 3, h: 4, css: '3 / 4', label: '3:4' };
+  return { w: 9, h: 16, css: '9 / 16', label: '9:16' };
+}
+
+function dramaFinalCutAspectBoxClass(ratio?: string): string {
+  const r = dramaAspectRatioParts(ratio).label;
   if (r === '16:9') return 'aspect-[16/9]';
   if (r === '4:3') return 'aspect-[4/3]';
   if (r === '3:4') return 'aspect-[3/4]';
   return 'aspect-[9/16]';
+}
+
+/** 内联 aspect-ratio，避免任意值 class 未进 CSS 包时失效 */
+function dramaAspectRatioStyle(ratio?: string): React.CSSProperties {
+  return { aspectRatio: dramaAspectRatioParts(ratio).css };
+}
+
+/**
+ * 在父盒内按比例 letterbox：只钉住长边，另一边由 aspect-ratio 算出，避免双 min+cq 把框撑满后竖片两侧留黑。
+ */
+function dramaAspectFitStyle(ratio?: string): React.CSSProperties {
+  const { w, h, css } = dramaAspectRatioParts(ratio);
+  const portrait = h >= w;
+  return {
+    aspectRatio: css,
+    maxWidth: '100%',
+    maxHeight: '100%',
+    ...(portrait
+      ? { height: '100%', width: 'auto' }
+      : { width: '100%', height: 'auto' }),
+  };
+}
+
+/** 按媒体真实宽高比适配预览框（有成片时跟随画面，不再硬套会话 16:9） */
+function dramaAspectFitStyleFromCss(aspectCss: string): React.CSSProperties {
+  const parts = String(aspectCss || '')
+    .split('/')
+    .map((x) => Number(String(x).trim()));
+  const w = parts[0];
+  const h = parts[1];
+  if (!(w > 0 && h > 0)) return dramaAspectFitStyle('9:16');
+  const portrait = h >= w;
+  return {
+    aspectRatio: `${w} / ${h}`,
+    maxWidth: '100%',
+    maxHeight: '100%',
+    ...(portrait
+      ? { height: '100%', width: 'auto' }
+      : { width: '100%', height: 'auto' }),
+  };
+}
+
+function dramaAspectLabelFromCss(aspectCss: string | null | undefined, fallback: string): string {
+  const parts = String(aspectCss || '')
+    .split('/')
+    .map((x) => Number(String(x).trim()));
+  const w = parts[0];
+  const h = parts[1];
+  if (!(w > 0 && h > 0)) return fallback;
+  const r = w / h;
+  const candidates: Array<{ id: string; v: number }> = [
+    { id: '16:9', v: 16 / 9 },
+    { id: '4:3', v: 4 / 3 },
+    { id: '3:4', v: 3 / 4 },
+    { id: '9:16', v: 9 / 16 },
+  ];
+  let best = candidates[0];
+  let bestD = Math.abs(r - best.v);
+  for (const c of candidates) {
+    const d = Math.abs(r - c.v);
+    if (d < bestD) {
+      best = c;
+      bestD = d;
+    }
+  }
+  return best.id;
+}
+
+function dramaAspectIsPortrait(ratio?: string): boolean {
+  const r = dramaAspectRatioParts(ratio).label;
+  return r === '9:16' || r === '3:4';
+}
+
+function DramaVideoLightbox({
+  url,
+  name,
+  isDark,
+  onClose,
+}: {
+  url: string;
+  name?: string;
+  isDark: boolean;
+  onClose: () => void;
+}) {
+  const playable = toElectronVideoElementSrc(url) || toDisplayableDramaMediaUrl(url) || url;
+  if (!playable || typeof document === 'undefined') return null;
+  return createPortal(
+    <div
+      className={`fixed inset-0 z-[100002] flex items-center justify-center p-6 ${
+        isDark ? 'bg-black/80' : 'bg-black/50'
+      }`}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <div
+        className={`relative flex max-h-[min(90vh,900px)] w-full max-w-[min(92vw,1100px)] flex-col overflow-hidden rounded-2xl shadow-2xl ring-1 ${
+          isDark ? 'bg-zinc-900 ring-white/15' : 'bg-gray-100 ring-gray-200'
+        }`}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
+          <div
+            className={`truncate text-base font-semibold ${
+              isDark ? 'text-white' : 'text-gray-900'
+            }`}
+          >
+            {name || '视频预览'}
+          </div>
+          <button
+            type="button"
+            className={`nodrag shrink-0 rounded-lg p-1.5 ${
+              isDark ? 'text-white/60 hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100'
+            }`}
+            title="关闭"
+            onClick={onClose}
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 pb-4">
+          <video
+            key={playable}
+            src={playable}
+            className="nodrag max-h-[min(78vh,780px)] max-w-full rounded-lg bg-black"
+            controls
+            playsInline
+            preload="auto"
+            onLoadedData={(e) => {
+              void e.currentTarget.play().catch(() => undefined);
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+          />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 function reorderDramaFinalCutShots(
@@ -8507,9 +10561,15 @@ function DramaFinalCutShotCard({
   index,
   isDark,
   aspectBoxClass,
+  aspectStyle,
+  posterHint,
+  videoVersions = [],
+  selected,
   dragging,
   dropTarget,
   hoverDisabled,
+  onSelectCard,
+  onSelectVideo,
   onDragStartShot,
   onDragEndShot,
   onDragOverShot,
@@ -8519,41 +10579,162 @@ function DramaFinalCutShotCard({
   index: number;
   isDark: boolean;
   aspectBoxClass: string;
+  aspectStyle: React.CSSProperties;
+  /** 分镜图 / 其它静帧封面 */
+  posterHint?: string;
+  videoVersions?: string[];
+  selected?: boolean;
   dragging: boolean;
   dropTarget: boolean;
   hoverDisabled: boolean;
+  onSelectCard?: (shotId: string) => void;
+  onSelectVideo?: (shotNo: string, videoUrl: string) => void;
   onDragStartShot: (shotId: string, e: React.DragEvent) => void;
   onDragEndShot: () => void;
   onDragOverShot: (shotId: string, e: React.DragEvent) => void;
   onDropShot: (shotId: string, e: React.DragEvent) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const hoverActiveRef = useRef(false);
+  const stillAttemptedRef = useRef(false);
   const [hoverActive, setHoverActive] = useState(false);
+  const [inView, setInView] = useState(false);
+  const [stillShot, setStillShot] = useState('');
+  const [capturing, setCapturing] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const url = String(shot.video_url || '').trim();
   const playable = url ? toElectronVideoElementSrc(url) || url : '';
   const poster = toDisplayableDramaMediaUrl(
-    String(shot.storyboard_image_url || '').trim(),
+    String(posterHint || shot.storyboard_image_url || '').trim(),
   );
+  const cover = stillShot || poster;
   const no = String(shot.shot_no || '').trim() || '?';
+  const needStill = !!playable && !poster && !stillShot;
+
+  useEffect(() => {
+    hoverActiveRef.current = false;
+    stillAttemptedRef.current = false;
+    setHoverActive(false);
+    setStillShot('');
+    setCapturing(false);
+  }, [playable, poster]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setInView(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        const hit = entries.some((e) => e.isIntersecting);
+        setInView(hit);
+      },
+      { root: null, rootMargin: '80px', threshold: 0.05 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   const stopHoverPlay = () => {
     const v = videoRef.current;
     if (!v) return;
     v.pause();
+    v.muted = true;
     try {
-      v.currentTime = 0;
+      v.removeAttribute('src');
+      v.load();
     } catch {
       /* ignore */
     }
   };
 
+  // 仅悬停挂载并播放；离开卸载，网格不再常驻多路 <video>
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !playable || !hoverActive) return;
+    v.muted = false;
+    v.volume = 1;
+    try {
+      if (v.currentTime > 0.08) v.currentTime = 0;
+    } catch {
+      /* ignore */
+    }
+    void v.play().catch(() => {
+      v.muted = true;
+      void v.play().catch(() => undefined);
+    });
+  }, [hoverActive, playable]);
+
+  // 有成片、无封面：进入视口后抓一帧静帧，未悬停也显示缩略图
+  useEffect(() => {
+    if (!needStill || !inView || hoverActive || stillAttemptedRef.current) return;
+    stillAttemptedRef.current = true;
+    setCapturing(true);
+    let cancelled = false;
+    let cleanupKick: (() => void) | undefined;
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = playable;
+    const finish = (still?: string) => {
+      if (cancelled) return;
+      const urlStill = String(still || '').trim();
+      if (urlStill) setStillShot(urlStill);
+      setCapturing(false);
+      try {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        /* ignore */
+      }
+    };
+    cleanupKick = dramaKickVideoStillFrame(v, () => hoverActiveRef.current, finish);
+    return () => {
+      cancelled = true;
+      cleanupKick?.();
+      try {
+        v.pause();
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [needStill, inView, hoverActive, playable]);
+
+  useEffect(() => {
+    return () => {
+      const v = videoRef.current;
+      if (!v) return;
+      v.pause();
+      v.muted = true;
+      try {
+        v.removeAttribute('src');
+        v.load();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [playable]);
+
   return (
     <div
+      ref={rootRef}
       draggable
       className={`nodrag nowheel relative min-w-0 overflow-hidden cursor-grab active:cursor-grabbing ${cardCls(isDark)} ${
         dragging ? 'opacity-50' : ''
-      } ${dropTarget ? 'ring-2 ring-sky-400/80' : ''}`}
+      } ${dropTarget ? 'ring-2 ring-sky-400/80' : ''} ${
+        selected ? 'ring-2 ring-emerald-400/80' : ''
+      }`}
       onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        if ((e.target as HTMLElement | null)?.closest?.('a, button, [data-no-card-drag]')) return;
+        onSelectCard?.(shot.shot_id);
+      }}
       onDragStart={(e) => {
         stopHoverPlay();
         setHoverActive(false);
@@ -8564,55 +10745,92 @@ function DramaFinalCutShotCard({
       onDrop={(e) => onDropShot(shot.shot_id, e)}
       onMouseEnter={() => {
         if (hoverDisabled || dragging || !playable) return;
+        hoverActiveRef.current = true;
         setHoverActive(true);
-        requestAnimationFrame(() => {
-          const v = videoRef.current;
-          if (!v) return;
-          v.muted = false;
-          void v.play().catch(() => {
-            v.muted = true;
-            void v.play().catch(() => undefined);
-          });
-        });
       }}
       onMouseLeave={() => {
+        hoverActiveRef.current = false;
         stopHoverPlay();
         setHoverActive(false);
       }}
     >
       {playable && hoverActive ? (
-        <video
-          ref={videoRef}
-          src={playable}
-          className={`w-full bg-black object-contain ${aspectBoxClass}`}
-          muted
-          playsInline
-          loop
-          preload="metadata"
-          draggable={false}
-        />
-      ) : poster ? (
-        <img
-          src={poster}
-          alt=""
-          className={`w-full bg-black object-contain ${aspectBoxClass}`}
-          draggable={false}
-        />
+        <div className={`relative w-full overflow-hidden bg-black ${aspectBoxClass}`} style={aspectStyle}>
+          <video
+            ref={videoRef}
+            key={playable}
+            src={playable}
+            poster={cover || undefined}
+            className="drama-shot-video-el absolute inset-0 h-full w-full bg-black object-contain"
+            muted={false}
+            playsInline
+            loop
+            preload="auto"
+            draggable={false}
+          />
+        </div>
+      ) : cover ? (
+        <div className={`relative w-full overflow-hidden bg-black ${aspectBoxClass}`} style={aspectStyle}>
+          <img
+            src={cover}
+            alt=""
+            className="absolute inset-0 h-full w-full object-contain"
+            draggable={false}
+          />
+          {playable ? (
+            <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center">
+              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-white shadow-md">
+                <Play className="h-5 w-5 translate-x-0.5" fill="currentColor" />
+              </span>
+            </div>
+          ) : null}
+        </div>
       ) : playable ? (
         <div
-          className={`relative flex w-full items-center justify-center bg-black ${aspectBoxClass}`}
+          className={`relative flex w-full items-center justify-center overflow-hidden text-[12px] ${aspectBoxClass} ${mutedCls(isDark)} ${
+            isDark ? 'bg-white/[0.04]' : 'bg-gray-100'
+          }`}
+          style={aspectStyle}
         >
-          <span className="text-[12px] text-white/70">悬停预览</span>
+          {capturing || needStill ? '加载缩略图…' : '悬停预览'}
+          <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-white shadow-md">
+              <Play className="h-5 w-5 translate-x-0.5" fill="currentColor" />
+            </span>
+          </div>
         </div>
       ) : (
         <div
-          className={`flex w-full items-center justify-center text-[12px] ${aspectBoxClass} ${mutedCls(isDark)} ${
+          className={`flex w-full items-center justify-center overflow-hidden text-[12px] ${aspectBoxClass} ${mutedCls(isDark)} ${
             isDark ? 'bg-white/[0.04]' : 'bg-gray-100'
           }`}
+          style={aspectStyle}
         >
           未出片
         </div>
       )}
+      {playable ? (
+        <button
+          type="button"
+          data-no-card-drag=""
+          className={`nodrag absolute right-1.5 top-1.5 z-[3] rounded-md p-1.5 shadow-md ${
+            isDark
+              ? 'bg-black/65 text-white hover:bg-black/80'
+              : 'bg-white/90 text-gray-800 hover:bg-white'
+          }`}
+          title="放大观看"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            stopHoverPlay();
+            setHoverActive(false);
+            setLightboxOpen(true);
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
       <div className="flex items-center justify-between gap-1 px-2 py-1.5 text-[12px]">
         <span className="font-medium tabular-nums">
           {index + 1}. 镜 {no}
@@ -8630,19 +10848,53 @@ function DramaFinalCutShotCard({
           </a>
         ) : null}
       </div>
+      {selected && videoVersions.length >= 2 && onSelectVideo ? (
+        <div className="px-1.5 pb-1.5" data-no-card-drag="">
+          <DramaShotVideoVersionPicker
+            open
+            versions={videoVersions}
+            currentUrl={url}
+            isDark={isDark}
+            onPick={(nextUrl) => {
+              const shotNo = String(shot.shot_no || '').trim();
+              if (shotNo) onSelectVideo(shotNo, nextUrl);
+            }}
+          />
+        </div>
+      ) : videoVersions.length >= 2 ? (
+        <div className={`px-2 pb-1.5 text-[11px] ${mutedCls(isDark)}`}>
+          点击卡片可切换历史纪录（{videoVersions.length}）
+        </div>
+      ) : null}
+      {lightboxOpen && url ? (
+        <DramaVideoLightbox
+          url={url}
+          name={`镜 ${no}`}
+          isDark={isDark}
+          onClose={() => setLightboxOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
 
 function DramaFinalCutPanel({
   session,
+  pipeline,
   isDark,
   onChange,
   onVideosToSplice,
 }: {
   session: DramaDirectorSession;
+  pipeline: DirectorPipelineState;
   isDark: boolean;
-  onChange: (s: DramaDirectorSession) => void;
+  onChange: (
+    s: DramaDirectorSession,
+    opts?: {
+      storyboardsByShotNo?: DirectorPipelineState['storyboardsByShotNo'];
+      skipAssetsProjection?: boolean;
+    },
+  ) => void;
   onVideosToSplice?: () => void;
 }) {
   const shots = session.shots || [];
@@ -8652,7 +10904,10 @@ function DramaFinalCutPanel({
   const dragShotId = useRef<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
   const aspectBoxClass = dramaFinalCutAspectBoxClass(session.meta.aspect_ratio);
+  const aspectStyle = dramaAspectRatioStyle(session.meta.aspect_ratio);
+  const portraitGrid = dramaAspectIsPortrait(session.meta.aspect_ratio);
 
   useEffect(() => {
     if (autoOnce.current) return;
@@ -8668,11 +10923,34 @@ function DramaFinalCutPanel({
     window.setTimeout(() => onVideosToSplice?.(), 80);
   };
 
+  const selectShotVideo = (shotNo: string, videoUrl: string) => {
+    const key = String(shotNo || '').trim();
+    const nextUrl = String(videoUrl || '').trim();
+    if (!key || !nextUrl) return;
+    const nextPipe = updateDirectorShotStoryboard(pipeline, key, {
+      videoUrl: nextUrl,
+      videoStatus: 'ready',
+      videoError: '',
+    });
+    onChange(
+      {
+        ...session,
+        shots: (session.shots || []).map((s) =>
+          String(s.shot_no || '').trim() === key
+            ? { ...s, video_url: nextUrl, video_status: 'ready', video_error: '' }
+            : s,
+        ),
+      },
+      { storyboardsByShotNo: nextPipe.storyboardsByShotNo, skipAssetsProjection: true },
+    );
+    window.setTimeout(() => onVideosToSplice?.(), 80);
+  };
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <div className={`${cardCls(isDark)} p-3 flex flex-wrap items-center justify-between gap-2`}>
         <div className={`text-[13px] leading-relaxed ${mutedCls(isDark)}`}>
-          按成片比例预览，悬停播放；拖动卡片可改写入剪辑的顺序。未出片镜头会跳过。
+          按成片比例预览，默认显示缩略图，悬停播放；点击已出片卡片可切换历史纪录；拖动可改写入剪辑顺序。
         </div>
         <button
           type="button"
@@ -8694,59 +10972,81 @@ function DramaFinalCutPanel({
           <div className={`text-[13px] ${mutedCls(isDark)}`}>
             {shots.length} 镜 · 已出片 {ready.length}
             {missing ? ` · 未出片 ${missing}` : ''}
-            {' · 一排 6 个，可拖动改序'}
+            {' · '}
+            {portraitGrid ? '一排 8 个' : '一排 6 个'}
+            {'，可拖动改序'}
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-6 content-start gap-3 overflow-auto custom-scrollbar-dark pr-0.5">
-            {shots.map((shot, index) => (
-              <DramaFinalCutShotCard
-                key={shot.shot_id}
-                shot={shot}
-                index={index}
-                isDark={isDark}
-                aspectBoxClass={aspectBoxClass}
-                dragging={draggingId === shot.shot_id}
-                dropTarget={dropTargetId === shot.shot_id && draggingId !== shot.shot_id}
-                hoverDisabled={!!draggingId}
-                onDragStartShot={(shotId, e) => {
-                  const t = e.target as HTMLElement | null;
-                  if (t?.closest?.('a, button, [data-no-card-drag]')) {
+          <div
+            className={`grid min-h-0 flex-1 content-start gap-3 overflow-auto custom-scrollbar-dark pr-0.5 ${
+              portraitGrid ? 'grid-cols-8' : 'grid-cols-6'
+            }`}
+          >
+            {shots.map((shot, index) => {
+              const sb = getDirectorShotStoryboard(pipeline, String(shot.shot_no || '').trim());
+              const posterHint =
+                String(shot.storyboard_image_url || '').trim() ||
+                String(sb.imageUrl || '').trim();
+              const videoVersions = listDirectorShotVideos({
+                videoUrl: String(shot.video_url || sb.videoUrl || '').trim(),
+                videoUrlHistory: sb.videoUrlHistory,
+              });
+              return (
+                <DramaFinalCutShotCard
+                  key={shot.shot_id}
+                  shot={shot}
+                  index={index}
+                  isDark={isDark}
+                  aspectBoxClass={aspectBoxClass}
+                  aspectStyle={aspectStyle}
+                  posterHint={posterHint}
+                  videoVersions={videoVersions}
+                  selected={selectedShotId === shot.shot_id}
+                  dragging={draggingId === shot.shot_id}
+                  dropTarget={dropTargetId === shot.shot_id && draggingId !== shot.shot_id}
+                  hoverDisabled={!!draggingId}
+                  onSelectCard={setSelectedShotId}
+                  onSelectVideo={selectShotVideo}
+                  onDragStartShot={(shotId, e) => {
+                    const t = e.target as HTMLElement | null;
+                    if (t?.closest?.('a, button, [data-no-card-drag]')) {
+                      e.preventDefault();
+                      return;
+                    }
+                    e.dataTransfer.setData('application/x-nexflow-drama-shot', shotId);
+                    e.dataTransfer.setData('text/plain', `drama-shot:${shotId}`);
+                    e.dataTransfer.effectAllowed = 'move';
+                    dragShotId.current = shotId;
+                    setDraggingId(shotId);
+                  }}
+                  onDragEndShot={() => {
+                    dragShotId.current = null;
+                    setDraggingId(null);
+                    setDropTargetId(null);
+                  }}
+                  onDragOverShot={(shotId, e) => {
+                    const types = Array.from(e.dataTransfer.types || []);
+                    const isReorder =
+                      types.includes('application/x-nexflow-drama-shot') || !!dragShotId.current;
+                    if (!isReorder) return;
                     e.preventDefault();
-                    return;
-                  }
-                  e.dataTransfer.setData('application/x-nexflow-drama-shot', shotId);
-                  e.dataTransfer.setData('text/plain', `drama-shot:${shotId}`);
-                  e.dataTransfer.effectAllowed = 'move';
-                  dragShotId.current = shotId;
-                  setDraggingId(shotId);
-                }}
-                onDragEndShot={() => {
-                  dragShotId.current = null;
-                  setDraggingId(null);
-                  setDropTargetId(null);
-                }}
-                onDragOverShot={(shotId, e) => {
-                  const types = Array.from(e.dataTransfer.types || []);
-                  const isReorder =
-                    types.includes('application/x-nexflow-drama-shot') || !!dragShotId.current;
-                  if (!isReorder) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = 'move';
-                  if (dropTargetId !== shotId) setDropTargetId(shotId);
-                }}
-                onDropShot={(shotId, e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const fromId =
-                    e.dataTransfer.getData('application/x-nexflow-drama-shot') ||
-                    dragShotId.current ||
-                    '';
-                  dragShotId.current = null;
-                  setDraggingId(null);
-                  setDropTargetId(null);
-                  applyReorder(fromId, shotId);
-                }}
-              />
-            ))}
+                    e.dataTransfer.dropEffect = 'move';
+                    if (dropTargetId !== shotId) setDropTargetId(shotId);
+                  }}
+                  onDropShot={(shotId, e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const fromId =
+                      e.dataTransfer.getData('application/x-nexflow-drama-shot') ||
+                      dragShotId.current ||
+                      '';
+                    dragShotId.current = null;
+                    setDraggingId(null);
+                    setDropTargetId(null);
+                    applyReorder(fromId, shotId);
+                  }}
+                />
+              );
+            })}
           </div>
         </>
       )}

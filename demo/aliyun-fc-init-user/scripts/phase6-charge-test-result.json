@@ -1,0 +1,144 @@
+{
+  "passed": true,
+  "stats": {
+    "real_charge": 3,
+    "idempotent_charge": 29,
+    "insufficient": 1,
+    "charge_fail": 0,
+    "refund": 1,
+    "idempotent_refund": 9,
+    "negative_balance": false,
+    "double_charge": false,
+    "double_refund": false,
+    "slot_leak": false,
+    "queued_charged": false,
+    "wrote_running": false,
+    "runninghub_calls": 0,
+    "tests": [
+      {
+        "name": "A_normal_charge",
+        "ok": true,
+        "detail": {
+          "balance": 80,
+          "stage": "charged",
+          "status": "claimed",
+          "sot": "APPLIED",
+          "charge": "charged"
+        }
+      },
+      {
+        "name": "E_repeat_charge_x10",
+        "ok": true,
+        "detail": {
+          "balance": 80,
+          "idem": 10
+        }
+      },
+      {
+        "name": "F_crash_after_atomic_debit",
+        "ok": true,
+        "detail": {
+          "balF": 85,
+          "stage": "charged",
+          "charge": "charged",
+          "rec": {
+            "ok": true,
+            "money_sot": "APPLIED",
+            "action": "finalized"
+          }
+        }
+      },
+      {
+        "name": "G_timeout_style_retry_no_double",
+        "ok": true,
+        "detail": {
+          "balG": 85,
+          "g1": {
+            "ok": true,
+            "idempotent": true,
+            "task_id": "3cb940ea-ea12-49a4-b10d-c07d18e3ce9e",
+            "execution_stage": "charged"
+          },
+          "g2": {
+            "ok": true,
+            "idempotent": true,
+            "task_id": "3cb940ea-ea12-49a4-b10d-c07d18e3ce9e",
+            "execution_stage": "charged"
+          }
+        }
+      },
+      {
+        "name": "H_ledger_recovery",
+        "ok": true,
+        "detail": {
+          "ok": true,
+          "money_sot": "APPLIED",
+          "action": "finalized"
+        }
+      },
+      {
+        "name": "I_refund_x10",
+        "ok": true,
+        "detail": {
+          "balBeforeRef": 85,
+          "balAfterRef": 100,
+          "refIdem": 9
+        }
+      },
+      {
+        "name": "B_insufficient_balance",
+        "ok": true,
+        "detail": {
+          "balB": 10,
+          "status": "failed",
+          "plat": 2,
+          "userOcc": 2,
+          "rB": {
+            "ok": false,
+            "reason": "BALANCE_INSUFFICIENT",
+            "task_id": "a38d0270-ba8b-42e4-8a39-774ea8d348be",
+            "failed": true,
+            "money_sot": "NOT_APPLIED"
+          }
+        }
+      },
+      {
+        "name": "C_20_workers_same_task",
+        "ok": true,
+        "detail": {
+          "realC": 1,
+          "idemC": 19,
+          "balC": 70,
+          "sotC": "APPLIED",
+          "okN": 20
+        }
+      },
+      {
+        "name": "D_two_tasks_compete_balance",
+        "ok": true,
+        "detail": {
+          "d1": false,
+          "d2": true,
+          "balD": 20,
+          "successD": 1,
+          "failD": 1
+        }
+      },
+      {
+        "name": "J_queue_claim_charge_cap",
+        "ok": true,
+        "detail": {
+          "claimedJ": 5,
+          "chargedJ": 5,
+          "queuedJ": 45,
+          "n": 50
+        }
+      }
+    ]
+  },
+  "receipt_example": {
+    "operation_id": "chg_2cefd715-b26d-4596-992e-e03d2c4f5f7b",
+    "col": "dr_85399c6f69380422",
+    "note": "dr_{opHash} on nx_users"
+  }
+}

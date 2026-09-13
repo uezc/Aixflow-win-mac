@@ -1,0 +1,295 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "IMAGE_QUEUE_ONLY_MODEL_IDS length 9",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_Z_IMAGE_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_LENS_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_FLUX2_KLEIN_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_RHART_IMAGE_G2_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_BANANA_20_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_SEEDREAM_V5_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_YOUCHUAN_V81_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_YOUCHUAN_V82_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "IMAGE_QUEUE_ONLY has IMAGE_QUEUE_RHART_IMAGE_G25_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value z-image",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value lens",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value flux2-klein",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value rhart-image-g-2",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value banana-2.0",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value seedream-v5",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value youchuan-text-to-image-v81",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value youchuan-text-to-image-v82",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value rhart-image-g-2.5",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildZImageRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildLensRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildFlux2KleinRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildRhartImageG2RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildBanana20RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildSeedreamV5RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildYouchuanV81RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildYouchuanV82RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildRhartImageG25RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasZImageQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasLensQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasFlux2KleinQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasRhartImageG2QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasBanana20QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasSeedreamV5QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasYouchuanV81QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasYouchuanV82QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasRhartImageG25QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "isImageQueueGoldenPathEnabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "assertNotDirectChargeForImageQueueOnlyModel",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageQueueProviderForward type",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeImageCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider prepareHttpsImageUrlsForQueue",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider assertNotDirectCharge",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider queue-only early reject",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeZImageCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeLensCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeFlux2KleinCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeRhartImageG2CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeBanana20CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeSeedreamV5CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeYouchuanV81CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeYouchuanV82CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageProvider executeRhartImageG25CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageInputPanel imports isImageQueueOnlyModel",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ImageInputPanel sets nxCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "pricing fail-closed demo/aliyun-fc-init-user/pricing/price_calculator.mjs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "pricing fail-closed demo/aliyun-fc-init-user/app/pricing/price_calculator.mjs",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "pricing fail-closed pricing/price_calculator.mjs",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

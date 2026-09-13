@@ -16,7 +16,10 @@ import { resolveOriginalImageUrlIfPreview, resolveOriginalImageUrls } from '../u
 import { buildFcErrorPayload } from '../../utils/fcBalanceError.js';
 import { tryRefundFcForwardCharge } from '../../utils/fcRefundCharge.js';
 import { getAliyunFcInitUserUrl } from '../../config/aliyunConfig.js';
-import { preferDirectOssUrlForThirdPartyImageRef } from '../../config/ossConfig.js';
+import {
+  isOurOssOrCdnObjectUrl,
+  preferDirectOssUrlForThirdPartyImageRef,
+} from '../../config/ossConfig.js';
 import { getCloudAiBlockReason, buildCloudAiBlockedPayload } from '../../utils/cloudAiGate.js';
 import {
   imageRhPollSleepMs,
@@ -33,6 +36,45 @@ import {
   Z_IMAGE_ASPECT_RATIOS,
   normalizeZImageResolutionTier,
 } from '../../../common/zImageDimensions.js';
+import {
+  assertNotDirectChargeForImageQueueOnlyModel,
+  buildBanana20RhForward,
+  buildFlux2KleinRhForward,
+  buildLensRhForward,
+  buildRhartImageG2RhForward,
+  buildRhartImageG25RhForward,
+  buildSeedreamV5RhForward,
+  buildYouchuanV81RhForward,
+  buildYouchuanV82RhForward,
+  buildZImageRhForward,
+  IMAGE_QUEUE_BANANA_20_MODEL,
+  IMAGE_QUEUE_FLUX2_KLEIN_MODEL,
+  IMAGE_QUEUE_LENS_MODEL,
+  IMAGE_QUEUE_RHART_IMAGE_G2_MODEL,
+  IMAGE_QUEUE_RHART_IMAGE_G25_MODEL,
+  IMAGE_QUEUE_SEEDREAM_V5_MODEL,
+  IMAGE_QUEUE_YOUCHUAN_V81_MODEL,
+  IMAGE_QUEUE_YOUCHUAN_V82_MODEL,
+  IMAGE_QUEUE_Z_IMAGE_MODEL,
+  type ImageQueueProviderForward,
+  isCanvasBanana20QueueGoldenPathInput,
+  isCanvasFlux2KleinQueueGoldenPathInput,
+  isCanvasLensQueueGoldenPathInput,
+  isCanvasRhartImageG2QueueGoldenPathInput,
+  isCanvasRhartImageG25QueueGoldenPathInput,
+  isCanvasSeedreamV5QueueGoldenPathInput,
+  isCanvasYouchuanV81QueueGoldenPathInput,
+  isCanvasYouchuanV82QueueGoldenPathInput,
+  isCanvasZImageQueueGoldenPathInput,
+  isImageQueueGoldenPathEnabled,
+  isImageQueueOnlyModel,
+  youchuanV81BillingResolution,
+  youchuanV82BillingResolution,
+} from '../../../shared/imageQueueGoldenPath.js';
+import {
+  mapCloudTaskToUserQueueUx,
+  USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+} from '../../../shared/userQueueTaskUx.js';
 
 interface ImageInput {
   model?: string;
@@ -47,6 +89,16 @@ interface ImageInput {
   seedreamWidth?: number;
   seedreamHeight?: number;
   resolution?: string;
+  projectId?: string;
+  nxCloudQueueGoldenPath?: boolean;
+  directorSpawned?: boolean;
+  drama?: boolean;
+  hd?: boolean;
+  quality?: string;
+  chaos?: number;
+  stylize?: number;
+  raw?: boolean;
+  iw?: number;
 }
 
 /** seedream-v4.5 比例→像素（1024-4096） */
@@ -265,7 +317,13 @@ export class ImageProvider extends BaseProvider {
     billingModelId?: string,
     prepaidLedgerTaskId?: string | null,
     rhRegion?: 'cn' | 'ai',
+    /** 画布 model id（queue-only 守卫用；勿用 path slug） */
+    canvasModelId?: string,
   ): Promise<Record<string, unknown>> {
+    assertNotDirectChargeForImageQueueOnlyModel(
+      canvasModelId || billingModelId || fallbackFcId,
+      'rhPostCharge',
+    );
     const path = this.pathFromRunningHubUrl(fullUrl);
     const bid = billingModelId?.trim();
     const usePrepaid = prepaidLedgerTaskId != null && String(prepaidLedgerTaskId).trim() !== '';
@@ -393,6 +451,812 @@ export class ImageProvider extends BaseProvider {
     return '1k';
   }
 
+  /** Queue Create 前：本地/外链图 → 我方 OSS HTTPS（禁止把 local/data 写入 forward） */
+  private async prepareHttpsImageUrlsForQueue(images: string[]): Promise<string[]> {
+    const toProcess = (images || []).map((u) => String(u || '').trim()).filter(Boolean);
+    if (toProcess.length < 1) return [];
+    const { VideoProvider } = await import('./VideoProvider.js');
+    const videoProvider = new VideoProvider();
+    const out: string[] = [];
+    for (const imageUrl of toProcess) {
+      let processed: string;
+      if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+        if (isOurOssOrCdnObjectUrl(imageUrl)) {
+          processed = preferDirectOssUrlForThirdPartyImageRef(imageUrl);
+        } else {
+          const axios = (await import('axios')).default;
+          const response = await axios.get(imageUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+          });
+          const mimeType =
+            (response.headers['content-type'] as string) || 'image/png';
+          processed = preferDirectOssUrlForThirdPartyImageRef(
+            await videoProvider.uploadImageToOSS(Buffer.from(response.data), mimeType),
+          );
+        }
+      } else if (imageUrl.startsWith('local-resource://') || imageUrl.startsWith('file://')) {
+        let filePath = imageUrl.startsWith('local-resource://')
+          ? imageUrl.replace(/^local-resource:\/\//, '')
+          : imageUrl.replace(/^file:\/\//, '');
+        if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':') {
+          filePath = filePath.slice(1);
+        }
+        filePath = decodeURIComponent(filePath);
+        if (filePath.match(/^[/\\]+[a-zA-Z]:[/\\]/)) filePath = filePath.replace(/^[/\\]+/, '');
+        if (filePath.match(/^[a-zA-Z]\//)) {
+          filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+        }
+        const userDataPath = app.getPath('userData');
+        let normalizedFilePath = path.normalize(filePath);
+        if (!path.isAbsolute(normalizedFilePath)) {
+          normalizedFilePath = path.resolve(userDataPath, normalizedFilePath);
+        }
+        if (!isLocalResourcePathAllowed(normalizedFilePath)) {
+          throw new Error(`访问路径超出允许范围: ${filePath}`);
+        }
+        if (!fs.existsSync(normalizedFilePath)) {
+          throw new Error(`文件不存在: ${normalizedFilePath}`);
+        }
+        const imageBuffer = fs.readFileSync(normalizedFilePath);
+        const ext = path.extname(normalizedFilePath).toLowerCase();
+        const mimeType =
+          ext === '.jpg' || ext === '.jpeg'
+            ? 'image/jpeg'
+            : ext === '.webp'
+              ? 'image/webp'
+              : 'image/png';
+        processed = preferDirectOssUrlForThirdPartyImageRef(
+          await videoProvider.uploadImageToOSS(imageBuffer, mimeType),
+        );
+      } else if (imageUrl.startsWith('data:image/')) {
+        const base64Data = imageUrl.split(',')[1];
+        if (!base64Data) throw new Error('Base64 Data URL 格式无效');
+        const imageBuffer = Buffer.from(base64Data, 'base64');
+        const mimeMatch = imageUrl.match(/^data:image\/(\w+);base64,/);
+        const mimeType = mimeMatch ? `image/${mimeMatch[1]}` : 'image/png';
+        processed = preferDirectOssUrlForThirdPartyImageRef(
+          await videoProvider.uploadImageToOSS(imageBuffer, mimeType),
+        );
+      } else {
+        throw new Error(`不支持的图片 URL 格式: ${imageUrl.substring(0, 50)}`);
+      }
+      if (!processed.startsWith('https://')) {
+        throw new Error(`Queue 参考图必须为 https://，实际: ${String(processed).slice(0, 80)}`);
+      }
+      out.push(processed);
+    }
+    return out;
+  }
+
+  private async executeImageCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    model: string;
+    billingModelId: string;
+    rhForward: ImageQueueProviderForward;
+    prompt: string;
+    nodeData: Record<string, unknown>;
+    logTag?: string;
+  }): Promise<void> {
+    const {
+      nodeId,
+      imageInput,
+      onStatus,
+      model,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData,
+      logTag = 'image-queue-golden',
+    } = opts;
+
+    onStatus({ nodeId, status: 'START', payload: { progress: 1, text: '任务已提交云端队列…' } });
+
+    const {
+      isNxSaasMode,
+      isNxOfflineCloudSession,
+      getNxAccessToken,
+      nxCloudTasksCreate,
+      nxCloudTaskStatus,
+    } = await import('../../services/aliyunService.js');
+
+    if (!isImageQueueGoldenPathEnabled()) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: 'IMAGE_QUEUE_ENABLED 未开启，无法使用 queue golden path' },
+      });
+      return;
+    }
+    if (
+      !getAliyunFcInitUserUrl().trim() ||
+      !isNxSaasMode() ||
+      isNxOfflineCloudSession() ||
+      !getNxAccessToken()
+    ) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: '请先登录云端账号后再使用 queue 图片生成' },
+      });
+      return;
+    }
+
+    let taskId: string;
+    try {
+      const created = await nxCloudTasksCreate({
+        model_id: billingModelId,
+        type: 'image',
+        execution_mode: 'queue',
+        provider_forward_json: rhForward,
+        params: {
+          nodeId,
+          taskKind: 'image',
+          model,
+          prompt: prompt.slice(0, 4000),
+          nxCloudQueueGoldenPath: true,
+        },
+        nodeData: {
+          ...nodeData,
+          model,
+          prompt,
+          ...(imageInput.projectId ? { projectId: imageInput.projectId } : {}),
+        },
+      });
+      taskId = created.task_id;
+      const { notifyNxCloudTaskTrack } = await import('../../nxCloudTaskTrackNotifier.js');
+      notifyNxCloudTaskTrack({ taskId, nodeId, taskType: 'image', balance: created.balance });
+      console.log(
+        `[ImageProvider][${logTag}] created task=${taskId} model=${billingModelId} rhRegion=${rhForward.rhRegion ?? '?'} quoted=${created.quoted_cost_coins ?? '?'}`,
+      );
+    } catch (e) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: buildFcErrorPayload(e, '创建云端队列任务失败'),
+      });
+      return;
+    }
+
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: {
+        progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+        text: '准备排队…',
+        cloudTaskId: taskId,
+      },
+    });
+
+    const deadline = Date.now() + 30 * 60_000;
+    let pollN = 0;
+    while (Date.now() < deadline) {
+      pollN += 1;
+      const sleepMs = pollN <= 3 ? 3000 : pollN <= 12 ? 8000 : 15_000;
+      await new Promise((r) => setTimeout(r, sleepMs));
+      let row: Awaited<ReturnType<typeof nxCloudTaskStatus>>;
+      try {
+        row = await nxCloudTaskStatus(taskId);
+      } catch (e) {
+        console.warn(`[ImageProvider][${logTag}] status poll error`, e);
+        continue;
+      }
+      const st = String(row.status || '').toLowerCase();
+      const ux = mapCloudTaskToUserQueueUx({
+        status: row.status,
+        execution_stage: row.execution_stage,
+        ahead_count: row.ahead_count,
+        queue_position: row.queue_position,
+        queue_position_available: row.queue_position_available,
+        queue_position_complete: row.queue_position_complete,
+        error_msg: row.error_msg,
+        error_code: row.error_code,
+        refunded: row.refunded,
+      });
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: {
+          progress: USER_QUEUE_UX_INDETERMINATE_PROGRESS,
+          text: ux.progressMessage,
+          cloudTaskId: taskId,
+          execution_stage: String(row.execution_stage || ''),
+          ahead_count: row.ahead_count ?? null,
+          queue_position: row.queue_position ?? null,
+        },
+      });
+
+      if (st === 'success') {
+        const { splitNxTaskResultOssUrls } = await import('../../services/aliyunService.js');
+        const urls = splitNxTaskResultOssUrls(row.result_oss_url);
+        if (urls.length === 0) {
+          continue;
+        }
+        // 悠船/MJ 等多图：落盘后写入 outputImages；单图保持原行为
+        let imageUrl = urls[0];
+        let outputImages = urls;
+        try {
+          const downloaded = await downloadRhOutputImagesToLocal(urls, urls[0], {
+            nodeId,
+            nodeTitle: String((imageInput as { title?: string }).title || model || 'image'),
+            projectId: imageInput.projectId,
+            prompt,
+            model,
+          });
+          imageUrl = downloaded.finalImageUrl;
+          outputImages = downloaded.outputImages;
+        } catch (dlErr) {
+          console.warn(`[ImageProvider][${logTag}] 多图落盘失败，使用远端 URL`, dlErr);
+        }
+        onStatus({
+          nodeId,
+          status: 'SUCCESS',
+          payload: {
+            imageUrl,
+            outputImages,
+            cloudTaskId: taskId,
+            progress: 100,
+            text: outputImages.length > 1 ? `生成完成（${outputImages.length} 张）` : '生成完成',
+          },
+        });
+        return;
+      }
+      if (st === 'failed' || st === 'cancelled' || st === 'timeout') {
+        const errMsg =
+          ux.failureDetail?.replace(/^失败原因：/, '') ||
+          String(row.error_msg || row.error_code || '图片生成失败');
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error: row.refunded ? `${ux.progressMessage}${errMsg ? `：${errMsg}` : ''}` : errMsg,
+            cloudTaskId: taskId,
+            ...(String(row.error_code || '') === 'BALANCE_INSUFFICIENT'
+              ? { balanceInsufficient: true }
+              : {}),
+          },
+        });
+        return;
+      }
+    }
+
+    onStatus({
+      nodeId,
+      status: 'ERROR',
+      payload: { error: '云端任务超时，请稍后在任务列表查看', cloudTaskId: taskId },
+    });
+  }
+
+  private normalizeImageRefsForQueue(raw: unknown): string[] {
+    if (raw == null) return [];
+    const arr = Array.isArray(raw) ? raw : [raw];
+    return arr.map((u) => String(u ?? '').trim()).filter((u) => u.length > 0);
+  }
+
+  private async executeZImageCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt } = opts;
+    const tier = normalizeZImageResolutionTier(imageInput.resolution);
+    const billingModelId = zImageBillingModelId(tier);
+    const rhForward = buildZImageRhForward({
+      prompt,
+      aspectRatio: imageInput.aspect_ratio,
+      resolution: tier,
+      billingModelId,
+    });
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_Z_IMAGE_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution: tier,
+      },
+      logTag: 'queue-z-image',
+    });
+  }
+
+  private async executeLensCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt } = opts;
+    const tier = normalizeZImageResolutionTier(imageInput.resolution);
+    const billingModelId = lensBillingModelId(tier);
+    const rhForward = buildLensRhForward({
+      prompt,
+      aspectRatio: imageInput.aspect_ratio,
+      resolution: tier,
+      billingModelId,
+    });
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_LENS_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio || '9:16',
+        resolution: tier,
+      },
+      logTag: 'queue-lens',
+    });
+  }
+
+  private async executeFlux2KleinCloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    onStatus({
+      nodeId,
+      status: 'PROCESSING',
+      payload: { progress: 2, text: '正在处理参考图…' },
+    });
+    let imageUrls: string[];
+    try {
+      imageUrls = await this.prepareHttpsImageUrlsForQueue(images);
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || '参考图处理失败') },
+      });
+      return;
+    }
+    const tier = normalizeZImageResolutionTier(imageInput.resolution);
+    const billingModelId = flux2KleinBillingModelId(tier);
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildFlux2KleinRhForward({
+        prompt,
+        imageUrls,
+        aspectRatio: imageInput.aspect_ratio,
+        resolution: tier,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'Flux2 Klein forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_FLUX2_KLEIN_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution: tier,
+      },
+      logTag: 'queue-flux2-klein',
+    });
+  }
+
+  private async executeRhartImageG2CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let imageUrls: string[] | undefined;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        imageUrls = await this.prepareHttpsImageUrlsForQueue(images);
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const resolution = this.toRunningHubResolution(imageInput.resolution);
+    const billingModelId = IMAGE_QUEUE_RHART_IMAGE_G2_MODEL;
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildRhartImageG2RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        resolution,
+        imageUrls,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'rhart-image-g-2 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_RHART_IMAGE_G2_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution,
+      },
+      logTag: 'queue-rhart-image-g-2',
+    });
+  }
+
+  private async executeRhartImageG25CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let imageUrls: string[] | undefined;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        imageUrls = await this.prepareHttpsImageUrlsForQueue(images);
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const resolution = this.toRunningHubResolution(imageInput.resolution);
+    const billingModelId = IMAGE_QUEUE_RHART_IMAGE_G25_MODEL;
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildRhartImageG25RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        resolution,
+        imageUrls,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'rhart-image-g-2.5 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_RHART_IMAGE_G25_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution,
+      },
+      logTag: 'queue-rhart-image-g-2.5',
+    });
+  }
+
+  private async executeBanana20CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let imageUrls: string[] | undefined;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        imageUrls = await this.prepareHttpsImageUrlsForQueue(images);
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const resolution = this.toRunningHubResolution(imageInput.resolution);
+    const billingModelId = IMAGE_QUEUE_BANANA_20_MODEL;
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildBanana20RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        resolution,
+        imageUrls,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'banana-2.0 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_BANANA_20_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution,
+      },
+      logTag: 'queue-banana-2.0',
+    });
+  }
+
+  private async executeSeedreamV5CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let imageUrls: string[] | undefined;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        imageUrls = await this.prepareHttpsImageUrlsForQueue(images);
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const resRaw = String(imageInput.resolution || '').trim().toLowerCase();
+    const seedreamResolution = resRaw === '2k' || resRaw === '3k' ? resRaw : undefined;
+    const billingModelId = IMAGE_QUEUE_SEEDREAM_V5_MODEL;
+    const dims =
+      seedreamResolution
+        ? undefined
+        : resolveSeedreamPixelSize(
+            'seedream-v5',
+            imageInput.aspect_ratio,
+            Number(imageInput.seedreamWidth) || undefined,
+            Number(imageInput.seedreamHeight) || undefined,
+          );
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildSeedreamV5RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        resolution: seedreamResolution,
+        width: dims?.width,
+        height: dims?.height,
+        imageUrls,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'seedream-v5 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_SEEDREAM_V5_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution: seedreamResolution || resRaw || '2k',
+        ...(dims ? { seedreamWidth: dims.width, seedreamHeight: dims.height } : {}),
+      },
+      logTag: 'queue-seedream-v5',
+    });
+  }
+
+  private async executeYouchuanV81CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let styleUrl: string | null = null;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        const urls = await this.prepareHttpsImageUrlsForQueue(images.slice(0, 1));
+        styleUrl = urls[0] || null;
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const billingResolution = youchuanV81BillingResolution({
+      hd: imageInput.hd,
+      resolution: imageInput.resolution,
+    });
+    const hd = billingResolution === 'hd';
+    const billingModelId = IMAGE_QUEUE_YOUCHUAN_V81_MODEL;
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildYouchuanV81RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        hd,
+        quality: imageInput.quality,
+        chaos: imageInput.chaos,
+        stylize: imageInput.stylize,
+        raw: imageInput.raw,
+        imageUrl: styleUrl,
+        iw: imageInput.iw,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'youchuan-v81 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_YOUCHUAN_V81_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution: billingResolution,
+        hd,
+      },
+      logTag: 'queue-youchuan-v81',
+    });
+  }
+
+  private async executeYouchuanV82CloudQueueGoldenPath(opts: {
+    nodeId: string;
+    imageInput: ImageInput;
+    onStatus: AIExecuteParams['onStatus'];
+    prompt: string;
+    images: string[];
+  }): Promise<void> {
+    const { nodeId, imageInput, onStatus, prompt, images } = opts;
+    let styleUrl: string | null = null;
+    if (images.length > 0) {
+      onStatus({
+        nodeId,
+        status: 'PROCESSING',
+        payload: { progress: 2, text: '正在处理参考图…' },
+      });
+      try {
+        const urls = await this.prepareHttpsImageUrlsForQueue(images.slice(0, 1));
+        styleUrl = urls[0] || null;
+      } catch (e: any) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: String(e?.message || e || '参考图处理失败') },
+        });
+        return;
+      }
+    }
+    const billingResolution = youchuanV82BillingResolution({
+      hd: imageInput.hd,
+      resolution: imageInput.resolution,
+    });
+    const hd = billingResolution === 'hd';
+    const billingModelId = IMAGE_QUEUE_YOUCHUAN_V82_MODEL;
+    let rhForward: ImageQueueProviderForward;
+    try {
+      rhForward = buildYouchuanV82RhForward({
+        prompt,
+        aspectRatio: imageInput.aspect_ratio,
+        hd,
+        quality: imageInput.quality,
+        chaos: imageInput.chaos,
+        stylize: imageInput.stylize,
+        raw: imageInput.raw,
+        imageUrl: styleUrl,
+        iw: imageInput.iw,
+        billingModelId,
+      });
+    } catch (e: any) {
+      onStatus({
+        nodeId,
+        status: 'ERROR',
+        payload: { error: String(e?.message || e || 'youchuan-v82 forward 构建失败') },
+      });
+      return;
+    }
+    await this.executeImageCloudQueueGoldenPath({
+      nodeId,
+      imageInput,
+      onStatus,
+      model: IMAGE_QUEUE_YOUCHUAN_V82_MODEL,
+      billingModelId,
+      rhForward,
+      prompt,
+      nodeData: {
+        aspect_ratio: imageInput.aspect_ratio,
+        resolution: billingResolution,
+        hd,
+      },
+      logTag: 'queue-youchuan-v82',
+    });
+  }
+
   async execute(params: AIExecuteParams): Promise<void> {
     const { nodeId, input, onStatus } = params;
 
@@ -418,6 +1282,166 @@ export class ImageProvider extends BaseProvider {
         },
       });
       return;
+    }
+
+    // P0：Queue-only 型号在进度引擎之前强制走 Unified Queue（禁止 Direct）
+    {
+      const modelEarly = String(imageInput.model || 'rhart-image-g-2').trim();
+      const promptEarly = String(imageInput.prompt || '').trim();
+      const imageRefsEarly = this.normalizeImageRefsForQueue(imageInput.image);
+      if (imageRefsEarly.length > 0) {
+        imageInput.image =
+          imageRefsEarly.length === 1 ? imageRefsEarly[0] : imageRefsEarly;
+      } else {
+        delete (imageInput as { image?: string | string[] }).image;
+      }
+      if (isImageQueueOnlyModel(modelEarly)) {
+        (imageInput as ImageInput).nxCloudQueueGoldenPath = true;
+      }
+      const queueForcedInput = {
+        ...(imageInput as unknown as Record<string, unknown>),
+        model: modelEarly,
+        nxCloudQueueGoldenPath: true,
+        image: imageRefsEarly.length === 1 ? imageRefsEarly[0] : imageRefsEarly,
+      };
+
+      if (!promptEarly && isImageQueueOnlyModel(modelEarly)) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: { error: '提示词是必需的' },
+        });
+        return;
+      }
+
+      if (
+        modelEarly === IMAGE_QUEUE_Z_IMAGE_MODEL &&
+        isCanvasZImageQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeZImageCloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_LENS_MODEL &&
+        isCanvasLensQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeLensCloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_FLUX2_KLEIN_MODEL &&
+        isCanvasFlux2KleinQueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeFlux2KleinCloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_RHART_IMAGE_G2_MODEL &&
+        isCanvasRhartImageG2QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhartImageG2CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_RHART_IMAGE_G25_MODEL &&
+        isCanvasRhartImageG25QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeRhartImageG25CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_BANANA_20_MODEL &&
+        isCanvasBanana20QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeBanana20CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_SEEDREAM_V5_MODEL &&
+        isCanvasSeedreamV5QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeSeedreamV5CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_YOUCHUAN_V81_MODEL &&
+        isCanvasYouchuanV81QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeYouchuanV81CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+      if (
+        modelEarly === IMAGE_QUEUE_YOUCHUAN_V82_MODEL &&
+        isCanvasYouchuanV82QueueGoldenPathInput(queueForcedInput)
+      ) {
+        await this.executeYouchuanV82CloudQueueGoldenPath({
+          nodeId,
+          imageInput,
+          onStatus,
+          prompt: promptEarly,
+          images: imageRefsEarly,
+        });
+        return;
+      }
+
+      if (isImageQueueOnlyModel(modelEarly)) {
+        onStatus({
+          nodeId,
+          status: 'ERROR',
+          payload: {
+            error:
+              `模型 ${modelEarly} 已强制走云端排队，无法使用 Direct。` +
+              '请检查：已登录云端、IMAGE_QUEUE_ENABLED 未关闭、输入形态与该模型匹配（文生/图生）。',
+          },
+        });
+        return;
+      }
     }
 
     // 创建统一模拟进度引擎
@@ -472,6 +1496,13 @@ export class ImageProvider extends BaseProvider {
         throw new Error('提示词是必需的');
       }
 
+      // 双重保险：Queue-only 不应落到 Direct（上方已 early-return）
+      if (isImageQueueOnlyModel(model)) {
+        throw new Error(
+          `QUEUE_ONLY_MODEL_DIRECT_FORBIDDEN:${model} 已强制云端排队，禁止 Direct`,
+        );
+      }
+
       const retiredImageModels = new Set([
         'nano-banana',
         'nano-banana-2',
@@ -486,7 +1517,7 @@ export class ImageProvider extends BaseProvider {
       ]);
       if (retiredImageModels.has(String(model))) {
         throw new Error(
-          '该图片模型已从前端下架，请在面板中改用全能图片 V2、Seedream v5、悠船文生图 v8.1 等模型。',
+          '该图片模型已从前端下架，请在面板中改用全能图片 V2、Seedream v5、悠船文生图 v8.2 等模型。',
         );
       }
 
@@ -494,10 +1525,12 @@ export class ImageProvider extends BaseProvider {
         'banana-2.0',
         'seedream-v5',
         'rhart-image-g-2',
+        'rhart-image-g-2.5',
         'flux2-klein',
         'z-image',
         'lens',
         'youchuan-text-to-image-v81',
+        'youchuan-text-to-image-v82',
       ]);
       if (!knownImageModels.has(String(model))) {
         throw new Error(`不支持的图片模型：${model}。请改用面板中的活跃模型。`);
@@ -525,8 +1558,13 @@ export class ImageProvider extends BaseProvider {
       console.log(`[图片生成] 模式: ${isImageToImage ? '图生图' : '文生图'}, 模型: ${model}, 参考图数量: ${isImageToImage ? imageRefs.length : 0}`);
 
       // 仅文生图且不允许参考图的模型：有参考图时硬拒（与 imageModelUiPolicy 对齐）
-      // 注：悠船 v7/v81 文生图可选用一张 style 图，不得在此硬拒，应落入下方文生图分支
-      const textToImageNoRefsModels = new Set(['mj-v7', 'z-image', 'lens', 'rhart-image-g']);
+      // 注：悠船 v7/v81/v82 文生图可选用一张 style/垫图，不得在此硬拒，应落入下方文生图分支
+      const textToImageNoRefsModels = new Set([
+        'mj-v7',
+        'z-image',
+        'lens',
+        'rhart-image-g',
+      ]);
       if (isImageToImage && textToImageNoRefsModels.has(String(model))) {
         const labelMap: Record<string, string> = {
           'mj-v7': 'MJ V7',
@@ -546,6 +1584,7 @@ export class ImageProvider extends BaseProvider {
         model !== 'z-image' &&
         model !== 'lens' &&
         model !== 'youchuan-text-to-image-v81' &&
+        model !== 'youchuan-text-to-image-v82' &&
         model !== 'youchuan-text-to-image-v7' &&
         model !== 'rhart-image-g'
       ) {
@@ -560,7 +1599,8 @@ export class ImageProvider extends BaseProvider {
               : model === 'seedream-v4.5' ||
                   model === 'seedream-v5' ||
                   model === 'banana-2.0' ||
-                  model === 'rhart-image-g-2'
+                  model === 'rhart-image-g-2' ||
+                  model === 'rhart-image-g-2.5'
                 ? 10
                 : 5;
         if (imageArray.length > maxImagesAllowed) {
@@ -933,6 +1973,48 @@ export class ImageProvider extends BaseProvider {
           console.log(
             `[图片生成] 提交图生图到 RunningHub（全能图片 G-2.0 / rhart-image-g-2），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}, 图片数量: ${imageUrls.length}`,
           );
+        } else if (model === 'rhart-image-g-2.5') {
+          // 全能图片 G-2.5 图生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-g-2.5/sunburst/image-to-image
+          const trimmedPrompt = prompt.trim();
+          if (!trimmedPrompt || trimmedPrompt.length > 20000) {
+            throw new Error('全能图片 G-2.5 提示词长度为 1-20000 字');
+          }
+          if (imageUrls.length === 0) {
+            throw new Error('全能图片 G-2.5 图生图需要至少 1 张参考图');
+          }
+          if (imageUrls.length > 10) {
+            throw new Error('全能图片 G-2.5 图生图最多 10 张参考图');
+          }
+          const validAspectRatiosG25 = [
+            '1:1',
+            '2:3',
+            '3:2',
+            '4:5',
+            '5:4',
+            '4:3',
+            '3:4',
+            '16:9',
+            '9:16',
+            '21:9',
+            '9:21',
+            '2:1',
+            '1:2',
+            '3:1',
+            '1:3',
+          ];
+          const finalAspectRatio =
+            aspect_ratio && validAspectRatiosG25.includes(aspect_ratio) ? aspect_ratio : '1:1';
+          const finalResolution = this.toRunningHubResolution((imageInput as any).resolution);
+          submitUrl = `${this.runningHubApiBaseUrl}/rhart-image-g-2.5/sunburst/image-to-image`;
+          submitPayload = {
+            imageUrls,
+            prompt: trimmedPrompt,
+            resolution: finalResolution,
+            aspectRatio: finalAspectRatio,
+          };
+          console.log(
+            `[图片生成] 提交图生图到 RunningHub（全能图片 G-2.5 / sunburst），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}, 图片数量: ${imageUrls.length}`,
+          );
         } else {
           throw new Error(`不支持的图片模型：${model}。请改用面板中的活跃模型。`);
         }
@@ -961,7 +2043,7 @@ export class ImageProvider extends BaseProvider {
         let perfCreateDoneI2I = 0;
         let perfForwardDoneI2I = 0;
         const rhRegionI2I: 'cn' | 'ai' | undefined =
-          model === 'banana-2.0' || model === 'rhart-image-g-2'
+          model === 'banana-2.0' || model === 'rhart-image-g-2' || model === 'rhart-image-g-2.5'
             ? 'ai'
             : model === 'seedream-v5'
               ? 'cn'
@@ -981,6 +2063,7 @@ export class ImageProvider extends BaseProvider {
             billingModelI2I,
             ledgerIdI2I,
             rhRegionI2I,
+            String(model),
           );
           perfForwardDoneI2I = Date.now();
           fcChargedTaskId = ledgerIdI2I || fcGenIdI2I;
@@ -1216,6 +2299,46 @@ export class ImageProvider extends BaseProvider {
         };
         console.log(
           `[图片生成] 使用全能图片 G-2.0 文生图（rhart-image-g-2/text-to-image，海外），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}`,
+        );
+      } else if (model === 'rhart-image-g-2.5') {
+        // 安全网：有参考图时绝不能落到文生图分支（应已在上方 sunburst image-to-image 处理并 return）
+        if (isImageToImage) {
+          throw new Error(
+            '全能图片 G-2.5 图生图路径异常：请重试。若持续失败，请改选全能图片 G-2.0 / V2。',
+          );
+        }
+        const trimmedPrompt = prompt.trim();
+        if (!trimmedPrompt || trimmedPrompt.length > 20000) {
+          throw new Error('全能图片 G-2.5 提示词长度为 1-20000 字');
+        }
+        const validAspectRatiosG25 = [
+          '1:1',
+          '2:3',
+          '3:2',
+          '4:5',
+          '5:4',
+          '4:3',
+          '3:4',
+          '16:9',
+          '9:16',
+          '21:9',
+          '9:21',
+          '2:1',
+          '1:2',
+          '3:1',
+          '1:3',
+        ];
+        const finalAspectRatio =
+          aspect_ratio && validAspectRatiosG25.includes(aspect_ratio) ? aspect_ratio : '16:9';
+        const finalResolution = this.toRunningHubResolution((imageInput as any).resolution);
+        submitUrl = `${this.runningHubApiBaseUrl}/rhart-image-g-2.5/flare/text-to-image`;
+        submitPayload = {
+          prompt: trimmedPrompt,
+          aspectRatio: finalAspectRatio,
+          resolution: finalResolution,
+        };
+        console.log(
+          `[图片生成] 使用全能图片 G-2.5 文生图（rhart-image-g-2.5/flare/text-to-image，海外），resolution: ${finalResolution}, aspectRatio: ${finalAspectRatio}`,
         );
       } else if (model === 'rhart-image-g') {
         // 全能图片 X 文生图：海外 https://www.runninghub.ai/openapi/v2/rhart-image-g/text-to-image
@@ -1609,6 +2732,94 @@ export class ImageProvider extends BaseProvider {
         console.log(
           `[图片生成] 使用悠船文生图-v8.1，aspectRatio: ${finalAspectRatio}, hd: ${hd}, quality: ${quality}`,
         );
+      } else if (model === 'youchuan-text-to-image-v82') {
+        // 悠船文生图-v8.2：海外 https://www.runninghub.ai/openapi/v2/youchuan/text-to-image-v82
+        const trimmedPrompt = prompt.trim();
+        if (!trimmedPrompt || trimmedPrompt.length > 8192) {
+          throw new Error('悠船 v8.2 提示词长度为 1-8192 字');
+        }
+        let finalAspectRatio =
+          aspect_ratio && validAspectRatiosYouchuan.includes(aspect_ratio) ? aspect_ratio : '1:1';
+        const resRaw = String((imageInput as any).resolution || '').trim().toLowerCase();
+        const hd =
+          (imageInput as any).hd === true ||
+          resRaw === 'hd' ||
+          resRaw === '2k' ||
+          resRaw === 'true';
+        const qualityRaw = String((imageInput as any).quality || '1').trim();
+        const quality = qualityRaw === '4' ? '4' : '1';
+        submitUrl = `${this.runningHubApiBaseUrl}/youchuan/text-to-image-v82`;
+        submitPayload = {
+          prompt: trimmedPrompt,
+          chaos: Math.max(0, Math.min(100, Number((imageInput as any).chaos) || 0)),
+          quality,
+          stylize: Math.max(0, Math.min(1000, Number((imageInput as any).stylize) || 0)),
+          raw: !!(imageInput as any).raw,
+          imageUrl: null,
+          iw: 1,
+          sref: null,
+          sw: 100,
+          sv: 6,
+          aspectRatio: finalAspectRatio,
+          hd,
+        };
+        const firstImage = imageInput.image
+          ? Array.isArray(imageInput.image)
+            ? imageInput.image[0]
+            : imageInput.image
+          : '';
+        if (firstImage) {
+          let imageUrlForYouchuan: string;
+          if (firstImage.startsWith('http://') || firstImage.startsWith('https://')) {
+            imageUrlForYouchuan = firstImage;
+          } else {
+            let imageBuffer: Buffer;
+            let mimeType = 'image/png';
+            if (firstImage.startsWith('local-resource://') || firstImage.startsWith('file://')) {
+              let filePath = firstImage.startsWith('local-resource://')
+                ? firstImage.replace(/^local-resource:\/\//, '')
+                : firstImage.replace(/^file:\/\//, '');
+              if (filePath.startsWith('/') && filePath.length > 1 && filePath[2] === ':')
+                filePath = filePath.slice(1);
+              filePath = decodeURIComponent(filePath);
+              if (filePath.match(/^[/\\]+[a-zA-Z]:[/\\]/)) filePath = filePath.replace(/^[/\\]+/, '');
+              if (filePath.match(/^[a-zA-Z]\//))
+                filePath = filePath[0].toUpperCase() + ':' + filePath.substring(1);
+              const userDataPath = app.getPath('userData');
+              let normalizedFilePath = path.normalize(filePath);
+              if (!path.isAbsolute(normalizedFilePath))
+                normalizedFilePath = path.resolve(userDataPath, normalizedFilePath);
+              if (!isLocalResourcePathAllowed(normalizedFilePath))
+                throw new Error(`访问路径超出允许范围: ${filePath}`);
+              if (!fs.existsSync(normalizedFilePath))
+                throw new Error(`文件不存在: ${normalizedFilePath}`);
+              imageBuffer = fs.readFileSync(normalizedFilePath);
+              const ext = path.extname(normalizedFilePath).toLowerCase();
+              mimeType =
+                ext === '.jpg' || ext === '.jpeg'
+                  ? 'image/jpeg'
+                  : ext === '.webp'
+                    ? 'image/webp'
+                    : 'image/png';
+            } else if (firstImage.startsWith('data:image/')) {
+              const base64Data = firstImage.split(',')[1];
+              if (!base64Data) throw new Error('Base64 Data URL 格式无效');
+              imageBuffer = Buffer.from(base64Data, 'base64');
+              const mimeMatch = firstImage.match(/^data:image\/(\w+);base64,/);
+              mimeType = mimeMatch ? `image/${mimeMatch[1]}` : 'image/png';
+            } else {
+              throw new Error(`不支持的图片 URL 格式: ${firstImage.substring(0, 50)}`);
+            }
+            const { VideoProvider } = await import('./VideoProvider.js');
+            const videoProvider = new VideoProvider();
+            imageUrlForYouchuan = await videoProvider.uploadImageToOSS(imageBuffer, mimeType);
+          }
+          submitPayload.imageUrl = imageUrlForYouchuan;
+          submitPayload.iw = Math.max(0, Math.min(3, Number((imageInput as any).iw) || 1));
+        }
+        console.log(
+          `[图片生成] 使用悠船文生图-v8.2，aspectRatio: ${finalAspectRatio}, hd: ${hd}, quality: ${quality}`,
+        );
       } else {
         throw new Error(`不支持的图片模型：${model}。请改用面板中的活跃模型。`);
       }
@@ -1642,9 +2853,11 @@ export class ImageProvider extends BaseProvider {
       // Flux 已在上方文生分支硬拒，此处勿再比较（TS 会判定无重叠）
       const rhRegionTxt: 'cn' | 'ai' | undefined =
         model === 'youchuan-text-to-image-v81' ||
+        model === 'youchuan-text-to-image-v82' ||
         model === 'banana-2.0' ||
         model === 'rhart-image-g' ||
-        model === 'rhart-image-g-2'
+        model === 'rhart-image-g-2' ||
+        model === 'rhart-image-g-2.5'
           ? 'ai'
           : model === 'seedream-v5'
             ? 'cn'
@@ -1659,6 +2872,7 @@ export class ImageProvider extends BaseProvider {
         billingModelIdForCharge,
         ledgerIdTxt,
         rhRegionTxt,
+        String(model),
       );
       const perfForwardDoneTxt = Date.now();
       fcChargedTaskId = ledgerIdTxt || fcGenIdTxt;

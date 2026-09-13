@@ -18,12 +18,16 @@ const MAX_ZOOM = 8;
 
 export const ImagePreviewWithTools: React.FC<ImagePreviewWithToolsProps> = ({
   imageUrl,
+  localPath,
   onClose,
   onImportToCanvas,
   importToCanvasLabel = '导入到画布',
 }) => {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [displaySrc, setDisplaySrc] = useState(imageUrl);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const triedLocalFallbackRef = useRef(false);
   const dragRef = useRef<{
     active: boolean;
     startX: number;
@@ -37,7 +41,10 @@ export const ImagePreviewWithTools: React.FC<ImagePreviewWithToolsProps> = ({
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
-  }, [imageUrl]);
+    setDisplaySrc(imageUrl);
+    setLoadFailed(false);
+    triedLocalFallbackRef.current = false;
+  }, [imageUrl, localPath]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -127,7 +134,7 @@ export const ImagePreviewWithTools: React.FC<ImagePreviewWithToolsProps> = ({
         }}
       >
         <img
-          src={imageUrl}
+          src={displaySrc}
           alt="预览"
           className="max-w-full max-h-full object-contain rounded-lg shadow-2xl select-none pointer-events-none"
           draggable={false}
@@ -135,8 +142,30 @@ export const ImagePreviewWithTools: React.FC<ImagePreviewWithToolsProps> = ({
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: 'center center',
             transition: dragRef.current?.active ? 'none' : 'transform 80ms ease-out',
+            display: loadFailed ? 'none' : undefined,
+          }}
+          onError={() => {
+            if (!triedLocalFallbackRef.current && localPath) {
+              triedLocalFallbackRef.current = true;
+              let p = String(localPath || '').trim().replace(/\\/g, '/');
+              if (p.match(/^\/[a-zA-Z]:/)) p = p.substring(1);
+              if (p && !/^https?:\/\//i.test(p) && !p.startsWith('data:') && !p.startsWith('local-resource://')) {
+                p = `local-resource://${p}`;
+              }
+              if (p && p !== displaySrc) {
+                setDisplaySrc(p);
+                return;
+              }
+            }
+            setLoadFailed(true);
           }}
         />
+        {loadFailed ? (
+          <div className="pointer-events-none flex flex-col items-center gap-2 text-white/80 text-sm">
+            <span>加载失败</span>
+            <span className="text-xs text-white/50 max-w-[70vw] break-all">{displaySrc || imageUrl}</span>
+          </div>
+        ) : null}
         {zoom > 1.01 ? (
           <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/55 px-3 py-1 text-xs text-white/90">
             {Math.round(zoom * 100)}%

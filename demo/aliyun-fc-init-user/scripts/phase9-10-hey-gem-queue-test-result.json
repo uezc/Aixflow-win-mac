@@ -1,0 +1,137 @@
+{
+  "phase": "9.10-hey-gem",
+  "conclusion": "PASS",
+  "finished_at": "2026-09-07T12:14:30.936Z",
+  "rh_submit_calls": 6,
+  "pass": 19,
+  "fail": 0,
+  "tests": [
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "path": "/run/ai-app/2071200225913565185",
+        "sku": "hey-gem-plus"
+      }
+    },
+    {
+      "name": "media_must_be_oss_https",
+      "ok": true,
+      "detail": {
+        "rejected": true
+      }
+    },
+    {
+      "name": "test_create_queued",
+      "ok": true,
+      "detail": {
+        "status": "queued"
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 10
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_hg_single"
+      }
+    },
+    {
+      "name": "test_poll_cn",
+      "ok": true,
+      "detail": {
+        "seen": "cn"
+      }
+    },
+    {
+      "name": "test_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success"
+      }
+    },
+    {
+      "name": "dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 10
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed"
+      }
+    },
+    {
+      "name": "provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 1970,
+        "bal1": 1970,
+        "bal2": 1970
+      }
+    },
+    {
+      "name": "timeout_unknown_no_blind_recreate",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_requires_audio",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_drama_excluded",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "queue_only_forced",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasEarly": true,
+        "directSealed": true
+      }
+    },
+    {
+      "name": "regression_prior_queue_only",
+      "ok": true,
+      "detail": {}
+    }
+  ]
+}

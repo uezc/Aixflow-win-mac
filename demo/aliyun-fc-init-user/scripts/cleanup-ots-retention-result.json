@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "dry_run": false,
+  "cutoff_ms": 1788614222127,
+  "task_retention_days": 3,
+  "tx_keep_per_user": 100,
+  "skip_tasks": true,
+  "skip_tx": false,
+  "tasks": {
+    "scanned": 0,
+    "matched": 0,
+    "deleted": 0,
+    "charges_deleted": 0,
+    "work_deleted": 0,
+    "errors": 0
+  },
+  "transactions": {
+    "users_scanned": 963,
+    "kept": 3131,
+    "matched_delete": 5000,
+    "deleted": 5000,
+    "errors": 0
+  },
+  "note": "APPLY：已按限额删除。"
+}

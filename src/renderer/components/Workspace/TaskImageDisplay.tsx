@@ -73,12 +73,17 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
   }, []);
 
   React.useEffect(() => {
+    const localOk =
+      task.localFilePath &&
+      !/\.(txt|json|md|csv|html?|xml)$/i.test(String(task.localFilePath));
     const srcsRaw = Array.isArray(task.outputImages) && task.outputImages.length > 0
       ? task.outputImages
-      : task.localFilePath
-        ? [task.localFilePath]
+      : localOk
+        ? [task.localFilePath!]
         : [task.imageUrl || ''];
-    const srcs = srcsRaw.map((u) => formatImagePath(u || '')).filter(Boolean);
+    const srcs = srcsRaw
+      .map((u) => formatImagePath(u || ''))
+      .filter((u) => u && !/\.(txt|json|md|csv)(?:$|[?#])/i.test(u));
     if (srcs.length === 0) {
       setMappedImageUrl(null);
       setMappedImageUrls([]);
@@ -120,13 +125,27 @@ export const TaskImageDisplay: React.FC<TaskImageDisplayProps> = ({
   }
 
   const handlePreview = (imageOverride?: string) => {
-    const imageToPreview =
-      imageOverride ||
-      (task.localFilePath ? formatImagePath(task.localFilePath) : formatImagePath(task.imageUrl || ''));
+    // 优先用缩略图已成功映射的 URL；勿优先可能失效/未映射的 localFilePath（会导致大图预览失败而列表缩略图正常）
+    const rawCandidates = [
+      imageOverride,
+      mappedImageUrl || undefined,
+      ...(Array.isArray(task.outputImages) ? task.outputImages : []),
+      task.imageUrl,
+      task.localFilePath,
+    ];
+    let imageToPreview = '';
+    for (const c of rawCandidates) {
+      const f = formatImagePath(String(c || '').trim());
+      if (f) {
+        imageToPreview = f;
+        break;
+      }
+    }
     const nodeId = task.nodeId;
+    if (!imageToPreview) return;
     if (projectId && imageToPreview.startsWith('local-resource://')) {
       mapProjectPath(imageToPreview, projectId)
-        .then((mapped) => onPreview(mapped, nodeId))
+        .then((mapped) => onPreview(mapped || imageToPreview, nodeId))
         .catch(() => onPreview(imageToPreview, nodeId));
     } else {
       onPreview(imageToPreview, nodeId);

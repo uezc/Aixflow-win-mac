@@ -1,0 +1,50 @@
+{
+  "at": "2026-09-09T15:43:16.884Z",
+  "tests": {
+    "resource_pool_rw": {
+      "task_pool": "cn_video",
+      "work_pool": "cn_video",
+      "ok": true
+    },
+    "release1_refill1": {
+      "before": 5,
+      "mid": 4,
+      "after": 5,
+      "refill_claimed": 1,
+      "ok": true
+    },
+    "duplicate_claim": {
+      "ok": 1,
+      "results": [
+        {
+          "ok": true
+        },
+        {
+          "ok": false,
+          "reason": "CLAIM_RACE"
+        },
+        {
+          "ok": false,
+          "reason": "CLAIM_RACE"
+        }
+      ],
+      "pass": true
+    },
+    "idle_behavior": {
+      "http_status": 200,
+      "elapsed_ms": 328,
+      "idle_no_patrol": true,
+      "idle_short_circuit": true,
+      "queue_mode": "idle",
+      "summary": {
+        "lease_recovered": 0,
+        "claimed": 0,
+        "charged": 0,
+        "dispatched_ok": 0,
+        "poll_settled": 0
+      },
+      "ok": true
+    }
+  },
+  "errors": []
+}

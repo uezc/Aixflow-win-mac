@@ -1,0 +1,216 @@
+{
+  "mode": "APPLY",
+  "model_filter": "p5-live-video",
+  "count": 7,
+  "safe_terminal_count": 6,
+  "tasks": [
+    {
+      "task_id": "1fb20850-fec5-4b6c-913a-e25b7d3dac83",
+      "model_id": "p5-live-video",
+      "status": "failed",
+      "execution_stage": "done",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "NO_FORWARD_PAYLOAD",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591146972,
+      "updated_at": 1788593184220,
+      "safe_terminal": false
+    },
+    {
+      "task_id": "1fbbb2c3-e62c-462c-9389-5f44c336e716",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591160214,
+      "updated_at": 1788591160214,
+      "safe_terminal": true
+    },
+    {
+      "task_id": "1fc750bb-0193-48c4-9485-48fc3a5160c2",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591154919,
+      "updated_at": 1788591154919,
+      "safe_terminal": true
+    },
+    {
+      "task_id": "1fead48d-a16b-4115-9229-83752e424e15",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591622044,
+      "updated_at": 1788591622044,
+      "safe_terminal": true
+    },
+    {
+      "task_id": "1ffc7604-bdf4-40af-b109-9513425a5614",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591616713,
+      "updated_at": 1788591616713,
+      "safe_terminal": true
+    },
+    {
+      "task_id": "56947bd0-67e8-419b-a37a-e3f616b6af61",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": false,
+      "created_at": 1788591334292,
+      "updated_at": 1788591334292,
+      "safe_terminal": true
+    },
+    {
+      "task_id": "5749667c-a446-449f-ad1b-a021fcc370ef",
+      "model_id": "p5-live-video",
+      "status": "claimed",
+      "execution_stage": "charged",
+      "quoted_cost": 0,
+      "provider_forward_json": "",
+      "provider_error": "",
+      "user_slot_held": false,
+      "platform_slot_held": true,
+      "created_at": 1788590651964,
+      "updated_at": 1788590651964,
+      "safe_terminal": true
+    }
+  ],
+  "actions": [
+    {
+      "task_id": "1fbbb2c3-e62c-462c-9389-5f44c336e716",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "1fc750bb-0193-48c4-9485-48fc3a5160c2",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "1fead48d-a16b-4115-9229-83752e424e15",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "1ffc7604-bdf4-40af-b109-9513425a5614",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "56947bd0-67e8-419b-a37a-e3f616b6af61",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    },
+    {
+      "task_id": "5749667c-a446-449f-ad1b-a021fcc370ef",
+      "r1": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "marked": true
+      },
+      "r2": {
+        "ok": false,
+        "reason": "NO_FORWARD_PAYLOAD",
+        "failed": true,
+        "terminal": true
+      },
+      "final_status": "failed",
+      "final_stage": "done",
+      "user_slot_held": false,
+      "platform_slot_held": false
+    }
+  ]
+}

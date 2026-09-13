@@ -1,0 +1,183 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "rhRegion": "cn",
+        "path": "/run/ai-app/2085687129061019649",
+        "img": "openapi/p94/mock-ref.jpg",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "duration_6s",
+      "ok": true,
+      "detail": {
+        "field": "6",
+        "sku": "minimax-h3-i2v-720p-6s"
+      }
+    },
+    {
+      "name": "duration_10s",
+      "ok": true,
+      "detail": {
+        "field": "10",
+        "sku": "minimax-h3-i2v-720p-10s"
+      }
+    },
+    {
+      "name": "duration_15s",
+      "ok": true,
+      "detail": {
+        "field": "15",
+        "sku": "minimax-h3-i2v-720p-15s"
+      }
+    },
+    {
+      "name": "duration_20s",
+      "ok": true,
+      "detail": {
+        "field": "20",
+        "sku": "minimax-h3-i2v-720p-20s"
+      }
+    },
+    {
+      "name": "test_create_queued",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "rhRegion": "cn"
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 9
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_h3i2v_single",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test_poll_cn",
+      "ok": true,
+      "detail": {
+        "seen": "cn"
+      }
+    },
+    {
+      "name": "test_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "url": "https://example.com/h3-i2v-golden.mp4",
+        "occupied": 0
+      }
+    },
+    {
+      "name": "dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 9
+      }
+    },
+    {
+      "name": "image_or_rh_media_fail_no_create",
+      "ok": true,
+      "detail": {
+        "rejectedLocal": true,
+        "rejectedOssHttps": true
+      }
+    },
+    {
+      "name": "submit_fail_refund",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 1973,
+        "bal1": 1973
+      }
+    },
+    {
+      "name": "provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 1973,
+        "bal1": 1973,
+        "bal2": 1973
+      }
+    },
+    {
+      "name": "lease_recovery",
+      "ok": true,
+      "detail": {
+        "before": "claimed",
+        "after": "queued"
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {
+        "on": true
+      }
+    },
+    {
+      "name": "gate_off_direct_fallback",
+      "ok": true,
+      "detail": {
+        "off": false
+      }
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasEarly": true,
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {
+        "good": true,
+        "bad": false
+      }
+    },
+    {
+      "name": "regression_forwards",
+      "ok": true,
+      "detail": {
+        "rhartT2v": "ai",
+        "rhartI2v": "/rhart-video-g/image-to-video",
+        "h3": "cn",
+        "ltx": "ai"
+      }
+    }
+  ],
+  "rh_submit_calls": 6
+}

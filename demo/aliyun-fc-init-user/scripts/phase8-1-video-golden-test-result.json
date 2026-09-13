@@ -1,0 +1,76 @@
+{
+  "passed": true,
+  "stats": {
+    "rh_submit_calls": 4,
+    "double_rh_submit": false,
+    "double_charge": false,
+    "double_refund": false,
+    "slot_leak": false,
+    "tests": [
+      {
+        "name": "1_create_queued_with_forward",
+        "ok": true,
+        "detail": {
+          "status": "queued",
+          "quoted": 5
+        }
+      },
+      {
+        "name": "1_full_pipeline_success",
+        "ok": true,
+        "detail": {
+          "status": "success",
+          "stage": "done",
+          "pid": "rh_single"
+        }
+      },
+      {
+        "name": "2_insufficient_no_rh",
+        "ok": true,
+        "detail": {
+          "status": "failed",
+          "rh": 0
+        }
+      },
+      {
+        "name": "3_user_concurrency_5_of_6",
+        "ok": true,
+        "detail": {
+          "claimed": 5,
+          "sixth": "queued"
+        }
+      },
+      {
+        "name": "7_no_double_rh_submit",
+        "ok": true,
+        "detail": {
+          "submits": 1,
+          "pid": "rh_storm"
+        }
+      },
+      {
+        "name": "8_timeout_unknown_no_retry_no_refund",
+        "ok": true,
+        "detail": {
+          "unknown": "1",
+          "held": {
+            "u": true,
+            "p": true
+          }
+        }
+      },
+      {
+        "name": "10_provider_fail_refund",
+        "ok": true,
+        "detail": {
+          "status": "failed",
+          "r2": {
+            "ok": true,
+            "idempotent": true,
+            "status": "failed"
+          }
+        }
+      }
+    ]
+  }
+}

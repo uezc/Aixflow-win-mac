@@ -4,13 +4,23 @@
  */
 
 import { dramaShotHasSpokenDialogue } from './migrateH3Compiler.js';
+import {
+  composeDramaShotLensTaggedPrompt,
+  isDramaH3AntiCrosstalkPrompt,
+  isDramaH3LensTaggedPrompt,
+  isLegacyDramaH3ChineseLensPrompt,
+} from './composeDramaShotLensPrompt.js';
 import { formatDramaDialogueLines } from './factories.js';
-import { formatDramaTimelineEventDisplay } from './timelineEvent.js';
+import {
+  formatDramaTimelineEventDisplay,
+  spokenTextFromDramaTimelineEvent,
+} from './timelineEvent.js';
 import {
   dramaShotRequiresCast,
   isDramaShotExplicitEmptyShot,
   listDramaShotCastDisplayNames,
 } from './shotCastGate.js';
+import { getVisualStylePreset } from './visualStylePresets.js';
 import type { DramaDirectorSession, DramaShot } from './types.js';
 
 export type DramaH3PlatformMode = 'api' | 'local';
@@ -49,35 +59,23 @@ export const DRAMA_H3_SPLICE_INTEGRATE_SYSTEM_PROMPT = `【身份】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [修正后的完整提示词，可直接发 H3]
 
+【H3 生产终稿 - 覆盖下文旧说明书格式】
+平台 api 的第三部分必须是短中文时间轴自然语言（见【H3 生产终稿格式】）。
+Skill / 规则只约束你，禁止写进终稿。
+禁止输出：[场景概述]、[Spoken-words lock]、[NO_DIALOGUE]、[场景锚点锁定]、[视觉风格]、[对白规则]、[声音描述]、[负面清单]、【目标】【节拍】、**[镜头 N]**、【参考对应】【主体定义】、JSON、表格、解释、前缀。
+不要重新创作剧情或重新设计分镜。只执行已确定的导演意图。
+
 【拼接规则】
 将输入数据拼接成一份完整提示词草稿，包含以下必要信息：
-- 有/无对白模式声明
-- [场景概述]（一句话地图：谁、在哪里、干什么、和谁/是否独处、情绪基调；可先草稿，整合层再精炼）
-- 参考图/音绑定（图N是什么，音频N是什么）
-- 视觉风格（继承全局风格，但可被分镜表的光线覆盖）
-- 镜头时间线（按分镜表顺序，每个镜头标注时间窗、动作、对白、声音）
-- 负面清单（禁止出现的内容）
+- 场景与人物锁定（风格名 + 地点 + 参考图身份/空间连续）
+- 按时间顺序的镜头时间线（机位、动作、表情、特殊事件、对白、声音）
+- 结束态与禁止字幕
 
-拼接时不做去重，不做冲突解决，只做信息堆叠。若提供了整镜编译稿，可并入草稿，但仍须完整堆叠分镜与参考绑定信息。
-
-【场景概述规则 - 强制】
-整合终稿（平台 api）开头，必须在 [NO_DIALOGUE] 或 [Spoken-words lock] 之后、场景锚点/视觉风格之前，插入一段 [场景概述]：
-
-格式：[场景概述] 一句话说清这个视频是什么（谁、在哪里、干什么、和谁或是否独处、什么情绪基调）。不超过50字。不包含任何镜头术语（景别、运镜、焦段、跟拍、甩镜等），只用叙事语言。
-
-作用：在 H3 读细节之前先建立整体语境（“地图”），防止 Context-IR 自行脑补成错误故事模板（如雨夜+外卖员→两人深情对望）。
-
-示例：
-- ✅ "[场景概述] 雨夜，外卖员周一川在积水街道上独自骑行，穿过密集车流，冲向写字楼入口。"
-- ✅ "[场景概述] 写字楼内，周一川站在办公桌前，与西装男对峙，压抑沉默。"
-- ❌ "[场景概述] 中近景低角度跟拍周一川骑行"（不能写镜头术语）
-- ❌ "[场景概述] 周一川很焦虑"（不能只写情绪）
-
-层级提醒：场景概述=地图；时间线=显微镜。缺地图时细节指令会被模型脑补覆盖。
+拼接时不做去重，不做冲突解决，只做信息堆叠。若提供了整镜编译稿，优先沿用其短中文时间轴形态。
 
 【出演门禁 - 强制】
 - 若本镜未明确标成空镜/无人物：必须写清出场角色姓名（与人物参考图一致），禁止「出场人物」「某人」「路人甲」等匿名占位。
-- [场景概述] 与时间线动作主语必须点名谁出演；有人物参考图时动作须落到对应姓名。
+- 时间线动作主语必须点名谁出演；有人物参考图时动作须落到对应姓名。
 - 仅当输入明确空镜时，才可写无人物、无人脸、无肢体。
 
 【整合规则 - 强制】
@@ -87,26 +85,23 @@ export const DRAMA_H3_SPLICE_INTEGRATE_SYSTEM_PROMPT = `【身份】
    - 同一约束声明（如"无对白""不要说""不要说话"）出现多次 → 只保留第一次，删除后续
    - 同一视觉描述重复出现 → 只保留最完整的一条
    - 同一声音描述重复出现 → 只保留最完整的一条
-   - [场景概述] 只保留一条，放在模式声明之后
+   - 说明书标题、规则段、重复风格词 → 删除，只留生产正文
 
 2. 合并：
    - 同类信息（如多个"保持图1"的约束）→ 合并为一段
    - 同一时间窗的对白 + 动作 + 声音 → 合并到该时间窗内
-   - 多个负面词 → 合并为一段，用逗号分隔
+   - 多个负面词 → 收成结尾一句：不生成字幕、弹幕或其他可读文字
 
 3. 修正格式：
-   - 时间戳统一为 [HH:MM:SS.mmm] 格式（若平台为 api 且终稿用中文自然语言，可用「0.0–2.0秒」等清晰时间窗，但不得混用多种乱格式）
-   - 对白用 <d>[Chinese] ... </d> 标签包裹（有对白时）
-   - 参考图用 <图N> 或 Picture N / 图N 一致引用
-   - 参考音用 <音频N> 标签引用
-   - 角色用 <主体N> 或清晰角色名引用，前后一致
-   - [场景概述] 必须带标签，纯叙事，≤50字，无镜头术语
+   - 时间戳统一为 00:00–00:03.6
+   - 对白用 <d>[Chinese]台词</d> 标签包裹（有对白时；禁止输出占位符）
+   - 参考图用 <Picture N>，参考音用 <Audio N>
+   - 角色用姓名，不要写 <Subject N>
 
 4. 补缺：
    - 缺失 duration_sec → 从分镜表秒列获取
-   - 缺失有/无对白模式声明 → 从 hasDialogue 字段获取
-   - 缺失参考图绑定 → 从输入数据中补全
-   - 缺失 [场景概述] → 根据出场角色、地点、动作、是否独处、情绪基调补写一句（强制）
+   - 缺失参考图锁定 → 开头一句补上人物与空间连续
+   - 缺失时间轴 → 按彩条切段补 00:00–00:03.6 段
 
 5. 解冲突：
    - 光线冲突（全局暖光 vs 分镜冷光）→ 分镜优先
@@ -124,49 +119,134 @@ export const DRAMA_H3_SPLICE_INTEGRATE_SYSTEM_PROMPT = `【身份】
 分镜表 > 角色人设 > 全局风格 > 资产描述
 
 【终稿语言规则】
-- 平台模式 api → 终稿用中文自然语言为主；有对白时口语放在 <d>[Chinese] ... </d>；不要输出英文六段字段名；必须含 [场景概述]
-- 平台模式 local → 终稿用英文六段式：subject_definitions → summary → retention_analysis → detailed_description → overall_soundscape → non_diegetic_music；其中 summary 须承担与 [场景概述] 同等的“整体是什么”职责（叙事一句，无镜头术语）
+- 平台模式 api → 终稿用短中文时间轴生产稿。台词必须进 <d>[Chinese]…</d>，每句前面写说话人姓名。不要输出英文八段字段名（英文由「提示词优化」生成）
+- 平台模式 local → 终稿用英文 8 段：subject_definitions → summary → retention_analysis → detailed_description → overall_soundscape → non_diegetic_music
 
 【终稿结构（api）】
-无对白模式：
-[NO_DIALOGUE] + [场景概述] + 场景锚点锁定 + 视觉风格 + 镜头时间线 + 声音描述 + 负面清单
-
-有对白模式：
-[Spoken-words lock] 语义 + [场景概述] + 场景锚点锁定 + 视觉风格 + 对白规则 + 镜头时间线（含对白窗） + 声音描述 + 负面清单
-
-【密度标杆示例 · 15秒有对白镜（api 终稿，勿照抄剧情，只学结构与单窗密度）】
-时长 15s 时时间线须覆盖 [00:00.000–00:15.000]，通常 2 个 6s 全窗 + 1 个 3s 收束窗；每窗含空间、表演、光影、拟音四要素，对白落在子时间窗 <d> 内。
-
-[Spoken-words lock] 成片中仅允许在 <d>[Chinese] ... </d> 标签内出现人声台词；仅在对应时间窗内说出标签中的中文原句。其余时间仅保留环境声与拟音，所有角色闭口，无额外人声、旁白、低语、歌唱或重复台词。口型仅在台词时间窗内与台词同步。无烧录字幕、无屏幕字幕、无可读文字。
-[场景概述] 雨夜，外卖员周一川遭客户差评后独自冒雨奔波，本段为金鼎国际1708办公室内与客户对峙开端。
-[场景锚点锁定] <图1>为金鼎国际1708室办公室视觉锚点：办公桌、三台显示器、代码界面、人体工学椅、深色玻璃窗。<图2>为周一川身份与湿透外卖服锚点。程序员客户为<主体3>，仅出现于办公室段，与周一川严格区分，外观前后一致。
-[视觉风格] 电影质感，低饱和、高反差、深层阴影与压黑黑位；35mm变形宽银幕构图，中等景深、椭圆散景、轻微变形耀斑；Kodak Vision3 500T胶片颗粒，都市雨夜悬疑氛围，写实电影光影。各时间窗光线以分镜描述为准。
-[对白规则] 本镜 15 秒内：周一川仅说「雨太大了」；程序员客户仅说「超时多久了」。无配乐、无歌曲、无额外声音角色。
-[时间线]
-[00:00.000–00:06.000] 金鼎国际1708室。周一川站在办公桌外，不敢靠近，将保温袋搁在桌沿，指尖擦过水渍；眼皮低垂、嘴唇发白、指尖蜷起。桌面暖台灯照亮袋口，屏幕冷光切过手背。保温袋落桌闷响、水滴砸桌、键盘骤停。 [00:04.500–00:06.000] 周一川低声说：<d>[Chinese] 雨太大了。</d>
-[00:06.000–00:12.000] 程序员客户隔着显示器抬眼，屏幕边缘压住前景；冷屏光从下托脸，台灯硬边勾出轮廓。客户眉心拧紧、嘴角下压，直视周一川。键盘停键声、椅轮轻响、主机风扇轰鸣。 [00:10.500–00:12.000] 程序员客户说：<d>[Chinese] 超时多久了？</d>
-[00:12.000–00:15.000] 周一川盯住桌面水渍，吸气卡住，瞳孔缩紧、鼻翼翕动、湿睫毛轻颤，随后缓慢抬眼。客户显示器虚化于前景。屏幕冷光铺过半张脸，台灯暖边被阴影截断。滞住的呼吸、水滴落地、低频风扇。
-[声音描述] 全程仅使用上述对白、环境声与拟音。办公室段以键盘、风扇、雨拍窗构成压迫感；无配乐。
-[负面清单] 无烧录字幕、无屏幕字幕、无可读文字、无水印、无Logo、无额外UI；无额外角色、无额外人声、无旁白、无配乐、无歌曲；不改变<图2>周一川身份和服装；程序员客户不得被替换成周一川；不改变办公室既定空间关系。
+开头一句锁定风格、地点、参考图人物与空间
+→ 按切段输出 00:00–00:03.6 时间轴（镜头、动作、表情、事件、对白、声音）
+→ 结尾一句连续性 + 禁止字幕
 
 【硬性禁止】
 1. 终稿中不得出现调试用语（如"不要说这行""不要读这条"）
-2. 终稿中不得出现占位符（如空的 【 】、+ +）
+2. 终稿中不得出现占位符（如空的 【 】、+ +，以及 <d>[Chinese] ... </d> 模板占位符）
 3. 终稿中不得堆叠重复声明
 4. 终稿中不得保留任何未解决的角色名/角色编号缺失
 5. 第三部分只能是终稿正文，不要再解释
-6. api 终稿不得缺少 [场景概述]；[场景概述] 不得写成景别/运镜/焦段等镜头术语`;
+6. api 终稿不得输出 [场景概述]、[Spoken-words lock]、[NO_DIALOGUE]、**[镜头 N]**、【目标】【节拍】
+7. 有几句台词就写几个 <d>[Chinese]…</d>；每句独立成段并写说话人。禁止全文只留 1 个 <d> 把多角色台词粘在一起
+8. 对白原文不得改写、扩写、缩写
+9. 动作按时间顺序一句一句写，不要压成同时发生
+10. 不要堆叠互相冲突的摄影指令
+11. 不要擅自加人物、道具、音乐、旁白、字幕
+12. 硬切只在输入明确要求时写「切入」或「硬切」；黑场写「画面迅速进入纯黑。」
+13. 彩条切段有几句对白就写几句进 <d>；禁止因为多句对白就改成无对白或删台词
+
+【H3 生产终稿格式 - 最高优先（api）】
+第三部分只输出一段可直接发给 MiniMax H3 的短中文自然语言。不要输出分析、JSON、表格、解释、规则说明、「以下是提示词」。
+
+电影质感的电竞直播间，保持 <Picture 1> 中的电竞直播间空间结构与 <Picture 2> 中江澈的外貌服装完全一致。
+
+00:00–00:03.6：
+中景，微俯视，35mm电影镜头，摄影机缓慢向前推进。江澈走进电竞直播间，在电脑前站定。只有自然的电竞直播间环境底噪。
+
+00:03.6–00:07.9：
+切入近景，平视，85mm电影镜头，摄影机缓慢贴近江澈。江澈使用 <Audio 1> 参考音色，自然说：
+<d>[Chinese]切段对白原文</d>
+短暂停顿后继续说：
+<d>[Chinese]下一句原文</d>
+
+00:07.9–00:12.6：
+大特写，平视，85mm电影镜头，镜头快速推近。江澈身体突然僵住。紧张地说：
+<d>[Chinese]播啊，怎么不播。</d>
+窗外突然闪过一道强烈白光。画面迅速进入纯黑。
+
+全程保持人物外貌、服装、场景结构和视觉风格连续。人物对白只存在于声音中，不生成字幕、弹幕或其他可读文字。
+
+规则：
+- 时段数量 = 彩条切段数，禁止合并/省略
+- 时间戳写成 00:03.6，禁止 00:03.600，禁止换行拆开小数
+- 硬切写「切入」，不要写 [切]
+- 每句台词必须单独成段，前面写角色名，台词只在 <d>[Chinese]…</d>
+- 禁止：江澈 用力了啊，执事长老 再用点力（动作和台词混写、逗号连不同角色）
+- 必须保留切段里已有的全部台词，不编造
+- 不要把 Visual Bible 英文长句重复贴进每一段
+
+【紧凑输出格式 - 不要使用】
+平台 api 终稿必须用【H3 生产终稿格式】。下面旧紧凑八段仅作对照，禁止当作终稿输出。
+
+【目标】<一句话：这场戏讲什么、悬念/冲突点>（≤30 字）
+
+【参考】图1=<角色/场景>（<3 个视觉锚点>）；图2=<场景/道具>（<3 个视觉锚点>）；图3=<道具/屏幕>（<3 个视觉锚点>）
+
+【主体】<角色名>，<发型>，<服装>，<姿态>，<关键光效>（≤30 字）
+
+【节拍】
+1. [机位指令] <动作一句话>「<对白原文>」 <起>-<止>s
+2. [机位指令] <动作一句话>（无对白时省略「」）<起>-<止>s
+...（每行 ≤30 字，机位指令必须从以下枚举中取：固定机位/手持跟拍/手持微晃/hard cut 急推/急推/缓推/特写定格/过肩/低角度/俯瞰/广角/屏幕特写/近景/中景/全景/远景/大远景）
+
+【摄影】<运镜总规则>；<例外处>；<禁止项>（≤40 字 1 行）
+
+【音频】对白逐字；<环境声层次>；<收尾声>（≤40 字 1 行）
+
+【不变】<4-6 项连续性锁，逗号分隔>（≤40 字 1 行）
+
+【终态】<结束画面状态>（≤20 字 1 行）
+
+【紧凑格式铁律】
+1. 对白用「」中文括号包裹（不用 <d> 标签，H3 skill 优化阶段会嵌入 <d>[Chinese]xxx</d>）
+2. 时长用「0-4s」简洁格式（不用 [00:00.000-00:04.000] 毫秒，skill 优化阶段会补到毫秒）
+3. 节拍每行 ≤30 字，超出视为不合格
+4. 全文 ≤400 字（不含【目标】等标签本身）
+5. 节拍数 = 时间线事件数，每个事件一行，不得合并/省略
+6. 彩条切段有对白的行必须带「原文」；多句全部保留，禁止写成无对白 / [NO_DIALOGUE] / 全程闭口
+
+【紧凑格式标杆示例（勿照抄剧情，只学结构与单行密度）】
+【目标】国服第一主播雷暴夜下播前，一句狠话被雷打断的悬念
+
+【参考】图1=江澈角色卡（红发黑卫衣冷脸）；图2=电竞直播间（RGB灯+蓝屏）
+
+【主体】江澈，红发，黑色卫衣，电竞椅上半躺，冷蓝屏光打在脸上
+
+【节拍】
+1. [固定机位] 他对麦克风开口：「家人们，这把打完就下播了。」 0-4s
+2. [屏幕特写] 结算界面，白色弹幕滚过传来观众兴奋的呼喊「澈神今天又杀疯了！」「全能王名不虚传！」 4-7s
+3. [近景] 他挑眉轻笑：「明天冲峡谷之巅第一，差三百分。」 7-11s
+4. [hard cut 急推] 窗外白光猛劈，屏幕炸蓝，他瞳孔骤缩、肩头一颤 11-14s
+5. [特写定格] 电光在脸上明灭，嘴唇微张没出声，电流声贴耳 14-15s
+
+【摄影】全段固定/手持微晃，仅第4拍一次急推，禁止缓慢推进
+
+【音频】对白逐字；雷声由远及近；收尾电流声
+
+【不变】红发、黑卫衣、冷蓝屏光、电竞椅位置
+
+【终态】画面骤暗，悬念收口
+
+【紧凑格式校验（自检，不合格需重写）】
+1. 含 8 个标签：【目标】【参考】【主体】【节拍】【摄影】【音频】【不变】【终态】
+2. 节拍每行首字符为数字+点+空格（"1. "），格式「N. [机位] 动作 起-止s」
+3. 对白用「」包裹，不用 <d>
+4. 时长用「起-止s」，不用 [HH:MM.XXX-HH:MM.XXX]
+5. 全文 ≤400 字
+6. 节拍数与时间线事件数一致`;
+
 
 function visualStyleLine(session: DramaDirectorSession): string {
   const pvb = session.bible.projectVisualBible;
   const dna = pvb?.visualDNA || session.bible.visualDNA;
-  return String(
-    pvb?.stylePrompt ||
+  const preset = getVisualStylePreset(pvb?.presetId || dna?.presetId || '');
+  const short = String(
+    preset?.visualDNA?.promptTemplateZh ||
+      preset?.visualDNA?.promptTemplate ||
+      pvb?.stylePrompt ||
       dna?.generatedPrompt ||
       session.bible.visual?.style ||
       session.meta.globalStyle ||
       '',
   ).trim();
+  return short;
 }
 
 function fmtShotTable(session: DramaDirectorSession, shot: DramaShot): string {
@@ -195,9 +275,35 @@ function fmtShotTable(session: DramaDirectorSession, shot: DramaShot): string {
     `镜头目的：${shot.purpose || shot.dramatic_purpose || '—'}`,
     `视觉焦点：${shot.visual_focus || '—'}`,
     `出场角色：${castLine}`,
-    `对白：${formatDramaDialogueLines(shot.dialogue) || '（无）'}`,
+    `对白：${formatDramaDialogueLines(shot.dialogue) || cutDialogueLines(shot) || '（无）'}`,
     `潜台词/备注：${shot.continuity_notes || '—'}`,
     `时间轴切段：\n${timeline}`,
+    cutDialogueLockBlock(shot),
+  ].filter(Boolean).join('\n');
+}
+
+function cutDialogueLines(shot: DramaShot): string {
+  return (shot.timeline_events || [])
+    .map((ev) => spokenTextFromDramaTimelineEvent(ev))
+    .filter(Boolean)
+    .map((t) => `「${t}」`)
+    .join('；');
+}
+
+function cutDialogueLockBlock(shot: DramaShot): string {
+  const rows = (shot.timeline_events || [])
+    .map((ev, i) => {
+      const text = spokenTextFromDramaTimelineEvent(ev);
+      if (!text) return '';
+      const t0 = Number(ev.start_sec) || 0;
+      const t1 = Number(ev.end_sec) || t0;
+      return `${i + 1}. ${t0}-${t1}s 「${text}」`;
+    })
+    .filter(Boolean);
+  if (!rows.length) return '';
+  return [
+    '切段对白（必须全部写入终稿【节拍】对应行的「」以及【音频】逐字；禁止输出 [NO_DIALOGUE]，禁止写全程闭口/无对白）：',
+    ...rows,
   ].join('\n');
 }
 
@@ -240,6 +346,9 @@ export function buildDramaH3SpliceIntegrateUserPrompt(input: DramaH3SpliceIntegr
     audios || '（无）',
     '',
     `hasDialogue：${hasDialogue ? 'true' : 'false'}`,
+    hasDialogue
+      ? '对白硬锁：切段已有台词。终稿必须保留全部「」原文。禁止 [NO_DIALOGUE]、禁止写江澈全程闭口/无人声/无对白。'
+      : '',
     `平台模式：${platform}`,
     '',
     compiled
@@ -247,8 +356,8 @@ export function buildDramaH3SpliceIntegrateUserPrompt(input: DramaH3SpliceIntegr
       : '当前整镜编译稿：（无，请仅根据分镜与参考绑定拼接）',
     '',
     '请按系统提示词执行拼接+整合，输出三部分结果。',
-    '硬性提醒：api 终稿必须在模式声明之后立即包含一行 [场景概述]（≤50字纯叙事，无景别/运镜术语），否则视为不合格。',
-    `时间线必须覆盖 [00:00.000–00:${String(shot.duration_sec).padStart(2, '0')}.000]，单窗信息密度对齐系统提示词中的「15秒有对白镜」标杆（动作+微表情+光影+拟音，对白落子窗 <d> 内）。`,
+    '硬性提醒：api 终稿必须是短中文时间轴生产稿（开头锁定 + 00:00–00:03.6 切段 + 结尾连续性）。禁止 [场景概述]、[镜头 N]、【节拍】。',
+    `时间线必须覆盖 00:00–${String(shot.duration_sec).padStart(2, '0')} 对应时段，切段有几句台词就写几个 <d>[Chinese]…</d>。`,
   ].join('\n');
 }
 
@@ -313,6 +422,9 @@ export function buildDramaMultiShotMergeUserPrompt(input: DramaMultiShotMergeInp
     audios || '（无）',
     '',
     `hasDialogue：${hasDialogue ? 'true' : 'false'}`,
+    hasDialogue
+      ? '对白硬锁：切段已有台词。终稿必须保留全部「」原文。禁止 [NO_DIALOGUE]、禁止写全程闭口/无人声/无对白。'
+      : '',
     `平台模式：${platform}`,
     '',
     compiled
@@ -320,8 +432,8 @@ export function buildDramaMultiShotMergeUserPrompt(input: DramaMultiShotMergeInp
       : '多镜提示词草稿：（无，请根据合并分镜表拼接）',
     '',
     '请按系统提示词执行拼接+整合，输出三部分结果；终稿必须是合并后的**一镜**连续提示词。',
-    '硬性提醒：api 终稿必须在模式声明之后立即包含一行 [场景概述]（≤50字纯叙事，无景别/运镜术语），否则视为不合格。',
-    `时间线必须覆盖 [00:00.000–00:${String(mergedShot.duration_sec).padStart(2, '0')}.000]，单窗信息密度对齐系统提示词中的「15秒有对白镜」标杆（动作+微表情+光影+拟音，对白落子窗 <d> 内）。`,
+    '硬性提醒：api 终稿必须是短中文时间轴生产稿（开头锁定 + 00:00–00:03.6 切段 + 结尾连续性）。禁止 [场景概述]、[镜头 N]、【节拍】。',
+    `时间线必须覆盖 00:00–${String(mergedShot.duration_sec).padStart(2, '0')} 对应时段，切段有几句台词就写几个 <d>[Chinese]…</d>。`,
   ].join('\n');
 }
 
@@ -398,7 +510,365 @@ export function isAcceptableDramaH3SpliceFinal(final: string, platformMode: Dram
   if (platformMode === 'local') {
     return /subject_definitions\s*:/i.test(t) && /detailed_description\s*:/i.test(t);
   }
-  // api：必须有「场景概述」地图句，防止 H3 Context-IR 脑补故事
+  // api：短中文时间轴生产稿（带 <d>）或已优化英文 8 段
+  if (isDramaH3AntiCrosstalkPrompt(t)) return true;
+  if (isLegacyDramaH3ChineseLensPrompt(t)) return false;
+  if (isDramaH3LensTaggedPrompt(t)) return true;
   if (!/\[场景概述\]/.test(t)) return false;
   return true;
+}
+
+/**
+ * 如果终稿缺少 [场景概述]，从 shot 信息自动补一个，避免直接 throw 阻塞生成。
+ * 插入位置：[NO_DIALOGUE] 或 [Spoken-words lock] 之后、其他段之前。
+ */
+export function ensureDramaH3SceneOverview(
+  final: string,
+  shot: DramaShot,
+  session: DramaDirectorSession,
+): string {
+  const t = String(final || '').trim();
+  if (/\[场景概述\]/.test(t)) return t;
+
+  // 从 shot 信息提取场景概述素材
+  const castNames = listDramaShotCastDisplayNames(session, shot);
+  const beat = (session.scene_beats || []).find((b) => b.scene_beat_id === shot.scene_beat_id);
+  const location = String(beat?.location_name || shot.shot_no || '').trim();
+  const dialogueStr = formatDramaDialogueLines(shot.dialogue || []);
+  const hasDialogue = dramaShotHasSpokenDialogue(shot);
+  const isEmptyShot = isDramaShotExplicitEmptyShot(shot);
+
+  // 构造 80-120 字场景概述
+  const whoPart = castNames.length
+    ? castNames.slice(0, 3).join('与')
+    : isEmptyShot
+      ? '空镜'
+      : '角色';
+  const locPart = location || '场景中';
+  const dlgPart = hasDialogue && dialogueStr
+    ? `对白：「${String(dialogueStr).slice(0, 40)}${dialogueStr.length > 40 ? '…' : ''}」`
+    : isEmptyShot
+      ? '无人物'
+      : '无对白';
+  const moodPart = String(shot.expression || '').trim();
+  const actionPart = String(shot.action || '').trim().slice(0, 50);
+
+  const overview = [
+    `[场景概述] ${locPart}，`,
+    whoPart,
+    isEmptyShot ? '' : `${actionPart ? '正在' + actionPart : ''}`,
+    dlgPart ? '，' + dlgPart : '',
+    moodPart ? '，情绪基调' + moodPart : '',
+    '。',
+  ].join('').replace(/，+/g, '，').replace(/，。/g, '。');
+
+  // 插入到 [NO_DIALOGUE] 或 [Spoken-words lock] 之后
+  const insertAfter = /\[NO_DIALOGUE\]|\[Spoken-words lock\]/;
+  if (insertAfter.test(t)) {
+    return t.replace(insertAfter, (m) => `${m}\n${overview}`);
+  }
+  // 否则插入到开头
+  return `${overview}\n${t}`;
+}
+
+/**
+ * 如果终稿格式不合规但内容可用，做最小修复后返回；否则返回 null。
+ * 修复项：缺少 [场景概述] → 自动补全
+ */
+export function repairDramaH3SpliceFinal(
+  final: string,
+  shot: DramaShot,
+  session: DramaDirectorSession,
+  platformMode: DramaH3PlatformMode = 'api',
+): string | null {
+  const t = String(final || '').trim();
+  if (t.length < 40) return null;
+  if (/第一部分\s*[:：]?\s*拼接草稿|第二部分\s*[:：]?\s*整合报告/.test(t)) return null;
+  if (/不要说这行|不要读这条/.test(t)) return null;
+  if (platformMode === 'local') {
+    if (/subject_definitions\s*:/i.test(t) && /detailed_description\s*:/i.test(t)) return t;
+    return null;
+  }
+  if (isDramaH3AntiCrosstalkPrompt(t)) return t;
+  if (isDramaH3LensTaggedPrompt(t) && !isLegacyDramaH3ChineseLensPrompt(t)) return t;
+  const lens = composeDramaShotLensTaggedPrompt(session, shot);
+  if (isDramaH3LensTaggedPrompt(lens)) return lens;
+  if (!/\[场景概述\]/.test(t)) {
+    return ensureDramaH3SceneOverview(t, shot, session);
+  }
+  return t;
+}
+
+// ===== 紧凑格式校验（v3 增量）=====
+
+const DRAMA_H3_COMPACT_LABELS = [
+  '【目标】',
+  '【参考】',
+  '【主体】',
+  '【节拍】',
+  '【摄影】',
+  '【音频】',
+  '【不变】',
+  '【终态】',
+] as const;
+
+/** 允许的机位指令枚举（节拍行 [xxx] 内必须是其中之一，可中英混用） */
+const DRAMA_H3_COMPACT_CAMERA_ENUM = [
+  '固定机位',
+  '手持跟拍',
+  '手持微晃',
+  'hard cut 急推',
+  '急推',
+  '缓推',
+  '特写定格',
+  '过肩',
+  '低角度',
+  '俯瞰',
+  '广角',
+  '屏幕特写',
+  '近景',
+  '中景',
+  '全景',
+  '远景',
+  '大远景',
+  '特写',
+];
+
+/**
+ * 校验终稿是否符合紧凑 8 段格式（v3 增量）。
+ * 通过 = 可作为 H3 skill 优化的密集源；不通过 = 调用方降级走原 8 段长描写。
+ *
+ * 校验项：
+ * 1. 含 8 个标签：【目标】【参考】【主体】【节拍】【摄影】【音频】【不变】【终态】
+ * 2. 不含 <d>[Chinese] 标签（紧凑格式对白用「」，<d> 由 skill 优化阶段嵌入）
+ * 3. 节拍行格式「N. [机位] 动作 起-止s」
+ * 4. 节拍每行 ≤30 字（不含时间戳）
+ * 5. 时长格式「起-止s」，不用 [HH:MM.XXX-HH:MM.XXX]
+ * 6. 全文 ≤500 字（含标签；放宽到 500 防 LLM 偶尔多写）
+ * 7. 节拍机位指令必须从枚举中取
+ */
+export function isAcceptableDramaH3CompactFinal(final: string): boolean {
+  const t = String(final || '').trim();
+  if (!t) return false;
+
+  // 1. 含 8 个标签
+  for (const label of DRAMA_H3_COMPACT_LABELS) {
+    if (!t.includes(label)) return false;
+  }
+
+  // 2. 不含 <d>[Chinese] 标签（紧凑格式对白用「」）
+  if (/<d>\s*\[Chinese/i.test(t)) return false;
+
+  // 3. 不含 [场景概述] / [Spoken-words lock] 等长格式标签（防 LLM 混合输出）
+  if (/\[场景概述\]|\[Spoken-words lock\]|\[场景锚点锁定\]|\[对白规则\]|\[声音描述\]|\[负面清单\]/.test(t)) {
+    return false;
+  }
+
+  // 4. 全文 ≤500 字
+  if (t.length > 500) return false;
+
+  // 5. 提取【节拍】段
+  const beatMatch = t.match(/【节拍】\s*\n([\s\S]*?)(?=\n【|$)/);
+  if (!beatMatch) return false;
+  const beatBody = beatMatch[1].trim();
+  if (!beatBody) return false;
+
+  // 6. 节拍行格式「N. [机位] 动作 起-止s」
+  const beatLines = beatBody.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (beatLines.length === 0) return false;
+
+  // 每行必须以「数字. 」开头
+  for (const line of beatLines) {
+    if (!/^\d+\.\s/.test(line)) return false;
+    // 必须有时长「起-止s」
+    if (!/\d+-\d+s/.test(line)) return false;
+    // 不用毫秒格式
+    if (/\[\d{2}:\d{2}\.\d{3}/.test(line)) return false;
+    // 行长 ≤30 字（去掉时间戳后算）
+    const stripped = line.replace(/\d+-\d+s$/, '').replace(/^\d+\.\s/, '').trim();
+    if (stripped.length > 60) return false; // 放宽到 60 防 LLM 写中文一字算多
+  }
+
+  // 7. 机位指令必须从枚举中取（[xxx] 内容必须是枚举之一）
+  for (const line of beatLines) {
+    const camMatch = line.match(/\[([^\]]+)\]/);
+    if (!camMatch) return false;
+    const cam = camMatch[1].trim();
+    if (!DRAMA_H3_COMPACT_CAMERA_ENUM.includes(cam)) return false;
+  }
+
+  return true;
+}
+
+function overlapSec(a0: number, a1: number, b0: number, b1: number): boolean {
+  return a0 < b1 - 1e-6 && b0 < a1 - 1e-6;
+}
+
+/** 切段已有台词时，清掉 LLM 误写的 [NO_DIALOGUE]/全程闭口，并把「」补回节拍 */
+export function reinjectCutDialogueIntoDramaH3Final(final: string, shot: DramaShot): string {
+  const cuts = (shot.timeline_events || [])
+    .map((ev, index) => ({
+      index,
+      start_sec: Number(ev.start_sec) || 0,
+      end_sec: Number(ev.end_sec) || 0,
+      text: spokenTextFromDramaTimelineEvent(ev),
+    }))
+    .filter((x) => x.text);
+  if (!cuts.length) return String(final || '').trim();
+
+  let t = String(final || '').replace(/\r\n/g, '\n');
+  t = t.replace(/^\[NO_DIALOGUE\][^\n]*\n*/i, '');
+  t = t.replace(/^[^\n]*全程闭口[^\n]*\n*/gm, '');
+  t = t.replace(/【音频】\s*无对白[；;，,\s]*/g, '【音频】');
+
+  const beatMatch = t.match(/【节拍】\s*\n([\s\S]*?)(?=\n【|$)/);
+  if (beatMatch) {
+    const nextLines = beatMatch[1].split('\n').map((line) => {
+      const raw = line;
+      const num = line.match(/^(\d+)\.\s/);
+      const time = line.match(/(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)s/);
+      const hit =
+        (num ? cuts.find((c) => c.index === Number(num[1]) - 1) : null) ||
+        (time
+          ? cuts.find((c) =>
+              overlapSec(Number(time[1]), Number(time[2]), c.start_sec, c.end_sec),
+            )
+          : null);
+      if (!hit) return raw;
+      if (raw.includes(`「${hit.text}」`) || raw.includes(hit.text)) return raw;
+      if (/\d+(?:\.\d+)?-\d+(?:\.\d+)?s\s*$/.test(raw)) {
+        return raw.replace(/(\s*\d+(?:\.\d+)?-\d+(?:\.\d+)?s\s*)$/, ` 「${hit.text}」$1`);
+      }
+      return `${raw} 「${hit.text}」`;
+    });
+    t = t.replace(beatMatch[0], `【节拍】\n${nextLines.join('\n')}${beatMatch[0].endsWith('\n') ? '\n' : ''}`);
+  }
+
+  if (/【音频】/.test(t) && !cuts.some((c) => t.includes(c.text))) {
+    const listed = cuts.map((c) => `「${c.text}」`).join('；');
+    t = t.replace(/【音频】/, `【音频】对白${listed}；`);
+  }
+  return t.trim();
+}
+
+/**
+ * 从 LLM 输出中提取紧凑格式终稿。
+ * LLM 仍可能输出三部分结构（第一/二/三部分），本函数提取第三部分并校验是否紧凑格式。
+ * 返回 { ok, final, error? }：ok=true 时 final 为紧凑格式终稿。
+ */
+export function extractDramaH3CompactFinal(raw: string): {
+  ok: boolean;
+  final: string;
+  error?: string;
+} {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+  // 复用现有 parseDramaH3SpliceIntegrateResult 提取第三部分
+  const parsed = parseDramaH3SpliceIntegrateResult(text);
+  const final = parsed.final;
+
+  if (
+    (isDramaH3LensTaggedPrompt(final) && !isLegacyDramaH3ChineseLensPrompt(final)) ||
+    isAcceptableDramaH3CompactFinal(final)
+  ) {
+    return { ok: true, final };
+  }
+  return {
+    ok: false,
+    final,
+    error: '紧凑格式校验失败：缺标签 / 含 <d> 标签 / 节拍行超长 / 机位非枚举',
+  };
+}
+
+// ===== H3 提示词运行时校验（v3 新增）=====
+
+/** 统计提示词内 <d>[Chinese] 出现次数（原文 token 不变，禁止空格变体绕过） */
+export function countDramaH3DialogueTags(prompt: string): number {
+  const t = String(prompt || '');
+  let count = 0;
+  // 匹配 <d>[Chinese]xxx</d>，允许中文/全角空格
+  const re = /<d>\s*\[Chinese[^\]]*\]\s*[^<]*<\/d>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    count++;
+    // 防死循环
+    if (m.index === re.lastIndex) re.lastIndex++;
+  }
+  return count;
+}
+
+/**
+ * 检测单镜对白句数。
+ * @returns 句数；0 表示无对白
+ */
+export function countDramaShotDialogueSentences(shot: DramaShot): number {
+  const list = shot.dialogue || [];
+  return list.filter((d) => String(d?.text || '').trim().length > 0).length;
+}
+
+/**
+ * short-drama 拆镜判定：单镜对白 ≥2 句 → 触发拆镜警告。
+ * 上层调用此函数决定是否拆镜。本函数只判定不执行拆镜。
+ */
+export function needsDramaShotSplitForH3Audio(shot: DramaShot): {
+  needSplit: boolean;
+  dialogueCount: number;
+  reason: string;
+} {
+  const n = countDramaShotDialogueSentences(shot);
+  if (n <= 1) {
+    return { needSplit: false, dialogueCount: n, reason: '' };
+  }
+  return {
+    needSplit: true,
+    dialogueCount: n,
+    reason: `short-drama 单镜只允许 1 句对白，当前镜 ${shot.shot_no} 有 ${n} 句，须拆为 ${n} 个子镜，每镜仅保留 1 句台词，保证全文 <d>[Chinese] 计数严格等于 1。`,
+  };
+}
+
+/**
+ * 提示词运行时硬校验。任一项不通过直接拦截，不向下游输出。
+ * @returns ok=true 通过；ok=false 拦截，errors 为失败原因列表
+ */
+export function validateDramaH3SpliceFinal(final: string): {
+  ok: boolean;
+  errors: string[];
+} {
+  const errors: string[] = [];
+  const t = String(final || '');
+
+  // 1. 禁止存在子串 `<d>[Chinese] ... </d>`（占位符）
+  if (/<d>\s*\[Chinese[^\]]*\]\s*\.\.\.\s*<\/d>/i.test(t)) {
+    errors.push('禁止存在模板占位符 `<d>[Chinese] ... </d>`，必须替换为真实台词。');
+  }
+
+  // 2. 统计 <d>[Chinese] 出现次数必须等于 1
+  const tagCount = countDramaH3DialogueTags(t);
+  if (tagCount !== 1) {
+    errors.push(`全文 <d>[Chinese] 出现次数必须等于 1，当前为 ${tagCount}。`);
+  }
+
+  // 3. 必须包含防朗读硬约束文本
+  if (!t.includes('本提示词不是配音稿，禁止朗读提示词')) {
+    errors.push('[Spoken-words lock] 必须包含文本：本提示词不是配音稿，禁止朗读提示词');
+  }
+
+  // 4. <d> 标签必须位于时间线切片内部，不能出现在 Spoken-words lock 头部
+  // 找到 [Spoken-words lock] 段范围（从该标签到下一个 [ 标签之间）
+  const spokenMatch = /\[Spoken-words lock\][\s\S]*?(?=\n\[)/i.exec(t);
+  if (spokenMatch && /<d>\s*\[Chinese/i.test(spokenMatch[0])) {
+    errors.push('<d> 标签不得出现在 [Spoken-words lock] 头部，必须位于时间线切片内部。');
+  }
+  // 同时确认 <d> 标签位于 [时间线] 段内
+  const timelineMatch = /\[时间线\]([\s\S]*?)(?=\n\[负面清单\]|\n\[声音描述\]|\n$|$)/i.exec(t);
+  if (timelineMatch && !/<d>\s*\[Chinese/i.test(timelineMatch[1])) {
+    errors.push('<d> 标签必须位于 [时间线] 切片内部，当前时间线段未检出 <d> 标签。');
+  }
+
+  // 5. 时间切片格式正则校验 [HH:MM.XXX–HH:MM.XXX]（支持 – en-dash 与 - 普通连字符）
+  const sliceRe = /\[\d{2}:\d{2}\.\d{3}[–\-]\d{2}:\d{2}\.\d{3}\]/;
+  if (!sliceRe.test(t)) {
+    errors.push('时间线必须包含至少一个时间切片 [HH:MM.XXX–HH:MM.XXX]，格式不合规。');
+  }
+
+  return { ok: errors.length === 0, errors };
 }

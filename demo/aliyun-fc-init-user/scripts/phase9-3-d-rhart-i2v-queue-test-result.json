@@ -1,0 +1,148 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "region_i2v_ai_via_forward",
+      "ok": true,
+      "detail": {
+        "rhRegion": "ai",
+        "pick": "ai",
+        "path": "/rhart-video-g/image-to-video",
+        "durationType": "number",
+        "image0": "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72"
+      }
+    },
+    {
+      "name": "test1_create_queued_i2v_forward",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "rhRegion": "ai",
+        "path": "/rhart-video-g/image-to-video",
+        "nImg": 1
+      }
+    },
+    {
+      "name": "test2_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test3_charge",
+      "ok": true,
+      "detail": {
+        "stage": "charged",
+        "delta": 4
+      }
+    },
+    {
+      "name": "test4_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "pid": "rh_i2v_single",
+        "submits": 1
+      }
+    },
+    {
+      "name": "test5_poll_ai",
+      "ok": true,
+      "detail": {
+        "seen": "ai"
+      }
+    },
+    {
+      "name": "test6_success_result_and_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "url": "https://example.com/rhart-i2v-golden.mp4",
+        "user_slot": false,
+        "plat_slot": false,
+        "occupied": 0
+      }
+    },
+    {
+      "name": "test7_duplicate_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1,
+        "pid": "rh_i2v_storm"
+      }
+    },
+    {
+      "name": "test8_duplicate_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 4
+      }
+    },
+    {
+      "name": "test9_submit_failure_refund",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "pid": "",
+        "bal0": 988,
+        "bal1": 988,
+        "err": "MOCK_SUBMIT_FAIL"
+      }
+    },
+    {
+      "name": "test10_provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 988,
+        "bal1": 988,
+        "bal2": 988
+      }
+    },
+    {
+      "name": "test11_image_prep_failure_no_create_no_charge",
+      "ok": true,
+      "detail": {
+        "rejected": true,
+        "rejectedData": true,
+        "createAttempted": false,
+        "bal0": 988,
+        "bal1": 988
+      }
+    },
+    {
+      "name": "test12_seven_image_urls",
+      "ok": true,
+      "detail": {
+        "n": 7
+      }
+    },
+    {
+      "name": "test12_seven_persisted",
+      "ok": true,
+      "detail": {
+        "n": 7
+      }
+    },
+    {
+      "name": "invalid_forward_not_in_candidates",
+      "ok": true,
+      "detail": {
+        "cands_has_good": true,
+        "cands_has_bad": false,
+        "inv_has_bad": true
+      }
+    },
+    {
+      "name": "regression_forwards_unchanged",
+      "ok": true,
+      "detail": {
+        "rhart": "ai",
+        "h3": "cn",
+        "ltx": "ai"
+      }
+    }
+  ],
+  "rh_submit_calls": 7
+}

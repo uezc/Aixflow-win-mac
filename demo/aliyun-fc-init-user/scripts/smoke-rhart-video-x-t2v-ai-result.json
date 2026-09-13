@@ -1,0 +1,48 @@
+{
+  "model": "rhart-video-x",
+  "mapping": {
+    "forceOverseasByBillingOrPath": true,
+    "pathMatchesOverseasPrefix": true,
+    "region_selected": "ai",
+    "api_base": "https://www.runninghub.ai/openapi/v2",
+    "final_url": "https://www.runninghub.ai/openapi/v2/rhart-video-g/text-to-video",
+    "api_key_env": "RUNNINGHUB_API_KEY_AI",
+    "api_key_present": true
+  },
+  "request": {
+    "method": "POST",
+    "content_type": "application/json",
+    "authorization": "Bearer ***REDACTED***",
+    "body": {
+      "prompt": "Smoke test rhart-video-x: soft daylight meadow, static camera, no text overlay.",
+      "aspectRatio": "16:9",
+      "resolution": "720p",
+      "duration": 10
+    }
+  },
+  "submit": {
+    "http_status": 200,
+    "ok": true,
+    "content_type": "application/json",
+    "raw_body": "{\"taskId\":\"\",\"status\":\"\",\"errorCode\":\"605\",\"errorMessage\":\"Your balance is insufficient. Please top up your account.\",\"results\":null,\"clientId\":\"\",\"promptTips\":\"\",\"failedReason\":{},\"usage\":null,\"parentTaskId\":null,\"taskUsageList\":null}",
+    "json": {
+      "taskId": "",
+      "status": "",
+      "errorCode": "605",
+      "errorMessage": "Your balance is insufficient. Please top up your account.",
+      "results": null,
+      "clientId": "",
+      "promptTips": "",
+      "failedReason": {},
+      "usage": null,
+      "parentTaskId": null,
+      "taskUsageList": null
+    },
+    "taskId": "",
+    "errorCode": "605",
+    "errorMessage": "Your balance is insufficient. Please top up your account.",
+    "status": ""
+  },
+  "query": null,
+  "conclusion": "FAIL"
+}

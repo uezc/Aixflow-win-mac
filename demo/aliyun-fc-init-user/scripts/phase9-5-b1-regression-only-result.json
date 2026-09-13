@@ -1,0 +1,49 @@
+{
+  "started_at": "2026-09-06T01:30:38.632Z",
+  "invalid_forward": "PASS",
+  "duplicate_charge": "PASS",
+  "duplicate_refund": "PASS",
+  "h3_t2v": {
+    "ok": true,
+    "status": "success",
+    "pid": "2096411037137063937",
+    "region": "cn",
+    "err": "",
+    "blocked_external": false
+  },
+  "ltx_t2v": {
+    "ok": true,
+    "status": "success",
+    "pid": "2096412732044636161",
+    "region": "ai",
+    "err": "",
+    "blocked_external": false
+  },
+  "h3_i2v": {
+    "ok": true,
+    "status": "success",
+    "pid": "2096413977029603330",
+    "region": "cn",
+    "err": "",
+    "blocked_external": false
+  },
+  "rhart_t2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID",
+    "blocked_external": true
+  },
+  "rhart_i2v": {
+    "ok": false,
+    "status": "failed",
+    "pid": "",
+    "region": "ai",
+    "err": "PROVIDER_NO_TASK_ID",
+    "blocked_external": true
+  },
+  "conclusion": "PASS",
+  "external_blocker": "rhart-video-x PROVIDER_NO_TASK_ID (likely RH.ai 605)",
+  "finished_at": "2026-09-06T01:52:25.111Z"
+}

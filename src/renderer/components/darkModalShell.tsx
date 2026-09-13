@@ -47,11 +47,11 @@ export const nexflowOrangePillBtnBg = 'linear-gradient(to right, #ea580c, #f9731
 
 /** 元宝悬停价签（金边金字，按钮上方） */
 export const yuanbaoHoverTipAboveCls =
-  'pointer-events-none absolute left-1/2 z-[80] -translate-x-1/2 bottom-[calc(100%+6px)] whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium tabular-nums shadow-md bg-[#2a2218]/95 text-amber-200/95 border-amber-500/45';
+  'pointer-events-none absolute left-1/2 z-[80] -translate-x-1/2 bottom-[calc(100%+6px)] inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums shadow-md bg-[#2a2218]/95 text-amber-200 border-amber-400/55';
 
 /** 元宝悬停价签（向下弹出，避免顶栏裁切） */
 export const yuanbaoHoverTipBelowCls =
-  'pointer-events-none absolute left-1/2 z-[80] -translate-x-1/2 top-[calc(100%+6px)] bottom-auto whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-medium tabular-nums shadow-md bg-[#2a2218]/95 text-amber-200/95 border-amber-500/45';
+  'pointer-events-none absolute left-1/2 z-[80] -translate-x-1/2 top-[calc(100%+6px)] bottom-auto inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums shadow-md bg-[#2a2218]/95 text-amber-200 border-amber-400/55';
 
 export type DarkModalFrameProps = {
   open: boolean;

@@ -1,0 +1,99 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "region_ltx_ai_via_forward",
+      "ok": true,
+      "detail": {
+        "rhRegion": "ai",
+        "pick": "ai",
+        "path": "/run/ai-app/2034994243982336001",
+        "duration": "10"
+      }
+    },
+    {
+      "name": "create_queued_ltx_forward",
+      "ok": true,
+      "detail": {
+        "status": "queued",
+        "rhRegion": "ai",
+        "path": "/run/ai-app/2034994243982336001"
+      }
+    },
+    {
+      "name": "full_pipeline_success",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "pid": "rh_ltx_single",
+        "balance": 992,
+        "submits": 1,
+        "user_slot": false,
+        "occupied": 0,
+        "url": "https://example.com/ltx-golden.mp4"
+      }
+    },
+    {
+      "name": "duplicate_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 8
+      }
+    },
+    {
+      "name": "duplicate_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1,
+        "pid": "rh_ltx_storm"
+      }
+    },
+    {
+      "name": "poll_rhRegion_ai",
+      "ok": true,
+      "detail": {
+        "seen": "ai"
+      }
+    },
+    {
+      "name": "submit_failure_refund",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "pid": "",
+        "bal0": 976,
+        "bal1": 976,
+        "err": "MOCK_SUBMIT_FAIL"
+      }
+    },
+    {
+      "name": "provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 976,
+        "bal1": 976,
+        "bal2": 976
+      }
+    },
+    {
+      "name": "invalid_forward_not_in_candidates",
+      "ok": true,
+      "detail": {
+        "cands_has_good": true,
+        "cands_has_bad": false,
+        "inv_has_bad": true
+      }
+    },
+    {
+      "name": "rhart_h3_forward_unchanged",
+      "ok": true,
+      "detail": {
+        "rhart": "ai",
+        "h3": "cn"
+      }
+    }
+  ],
+  "rh_submit_calls": 6
+}

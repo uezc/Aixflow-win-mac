@@ -1,0 +1,19 @@
+{
+  "conclusion": "PASS",
+  "aixflow_task": "4f51785f-4cb1-4897-84e2-8250fd092aed",
+  "rh_task": "2096199148701192193",
+  "submit_region": "ai",
+  "poll_region": "ai",
+  "quoted_cost": 4,
+  "actual_charge": 4,
+  "charge_count": 1,
+  "refund_count": 0,
+  "final_status": "success",
+  "error_msg": "",
+  "result_url": "https://rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com/5a156a5ba540f37cb0f6ed383e65f294/output/cb1e9247-678e-4803-9918-48ed105d2c87.mp4",
+  "user_occupied": 0,
+  "platform_occupied": 1,
+  "user_slot_held": false,
+  "platform_slot_held": false,
+  "image": "https://nexflow-temp-images.oss-cn-hongkong.aliyuncs.com/p93d-i2v-test/1788607602254_b2eac80c.jpg"
+}

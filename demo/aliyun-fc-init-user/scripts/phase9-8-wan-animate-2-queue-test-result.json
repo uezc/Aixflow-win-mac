@@ -1,0 +1,177 @@
+{
+  "phase": "9.8-wan-animate-2",
+  "conclusion": "PASS",
+  "finished_at": "2026-09-07T11:36:31.705Z",
+  "rh_submit_calls": 6,
+  "pass": 24,
+  "fail": 0,
+  "tests": [
+    {
+      "name": "create_forward_shape",
+      "ok": true,
+      "detail": {
+        "path": "/run/ai-app/2086818758475210753",
+        "sku": "wan-animate-2-720p",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "resolution_mapping",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "optional_prompt",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "media_must_be_oss_https",
+      "ok": true,
+      "detail": {
+        "rejectedRhFile": true
+      }
+    },
+    {
+      "name": "test_create_queued",
+      "ok": true,
+      "detail": {
+        "status": "queued"
+      }
+    },
+    {
+      "name": "test_claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "test_charge",
+      "ok": true,
+      "detail": {
+        "delta": 8
+      }
+    },
+    {
+      "name": "test_dispatch",
+      "ok": true,
+      "detail": {
+        "pid": "rh_wa2_single"
+      }
+    },
+    {
+      "name": "test_poll_cn",
+      "ok": true,
+      "detail": {
+        "seen": "cn"
+      }
+    },
+    {
+      "name": "test_success_release",
+      "ok": true,
+      "detail": {
+        "status": "success",
+        "stage": "done"
+      }
+    },
+    {
+      "name": "dup_dispatch_one_rh",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "dup_charge_once",
+      "ok": true,
+      "detail": {
+        "delta": 8
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed"
+      }
+    },
+    {
+      "name": "provider_fail_refund_once",
+      "ok": true,
+      "detail": {
+        "bal0": 1976,
+        "bal1": 1976,
+        "bal2": 1976
+      }
+    },
+    {
+      "name": "timeout_unknown_no_blind_recreate",
+      "ok": true,
+      "detail": {
+        "status1": "failed",
+        "submits": 1
+      }
+    },
+    {
+      "name": "gate_on",
+      "ok": true,
+      "detail": {
+        "on": true
+      }
+    },
+    {
+      "name": "gate_requires_video",
+      "ok": true,
+      "detail": {
+        "noVideo": false
+      }
+    },
+    {
+      "name": "gate_not_wan_animate_v1",
+      "ok": true,
+      "detail": {
+        "wrongModel": false
+      }
+    },
+    {
+      "name": "gate_drama_excluded",
+      "ok": true,
+      "detail": {
+        "dramaOff": false
+      }
+    },
+    {
+      "name": "queue_only_forced",
+      "ok": true,
+      "detail": {
+        "queueOnly": true
+      }
+    },
+    {
+      "name": "gate_on_no_direct_after_queue",
+      "ok": true,
+      "detail": {
+        "hasEarly": true,
+        "directSealed": true
+      }
+    },
+    {
+      "name": "diff_appid_from_wan_animate",
+      "ok": true,
+      "detail": {
+        "wa1Intact": true
+      }
+    },
+    {
+      "name": "regression_h3_multi_audio_queue_only",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "regression_wan_animate_v1_queue_only",
+      "ok": true,
+      "detail": {}
+    }
+  ]
+}

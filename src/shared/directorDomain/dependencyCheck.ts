@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Dependency Checker + Shot Generation Contract（纯函数，Phase 1）
  *
  * 原则：模型未被明确提供的信息，不允许自行创造。
@@ -125,7 +125,7 @@ export function checkDramaShotDependencies(
   // —— Scene ——
   const sceneId = String(shot.scene_asset_id || '').trim();
   const scene = sceneId
-    ? session.bible.scenes.find((s) => s.scene_id === sceneId)
+    ? (session.bible?.scenes || []).find((s) => s.scene_id === sceneId)
     : null;
   if (!sceneId) {
     items.push({
@@ -193,7 +193,7 @@ export function checkDramaShotDependencies(
     warnings.push('有对白但未绑定 character_ids');
   }
   for (const id of charIds) {
-    const ch = session.bible.characters.find((c) => c.character_id === id);
+    const ch = (session.bible?.characters || []).find((c) => c.character_id === id);
     if (!ch) {
       items.push({
         key: `character:${id}`,

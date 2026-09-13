@@ -60,8 +60,8 @@ export function toChineseUserMessage(raw: string | undefined | null): string {
  */
 export function userFacingErrorMessage(raw: string | undefined | null, locale: AppLocale): string {
   const rawStr = String(raw ?? '').trim();
-  if (rawStr.includes('元宝不足')) {
-    return locale === 'en' ? 'Insufficient credits. Please recharge.' : '元宝不足请充值';
+  if (rawStr.includes('元宝不足') || rawStr.includes('余额不足') || /BALANCE_INSUFFICIENT/i.test(rawStr)) {
+    return locale === 'en' ? 'Insufficient credits. Please recharge.' : '元宝不足，请充值';
   }
   if (locale === 'zh') return toChineseUserMessage(raw);
   const s = String(raw ?? '').trim();

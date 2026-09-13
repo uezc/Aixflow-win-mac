@@ -37,6 +37,7 @@ import {
   type MinimaxH3AudioDurationChoice,
   type SeedanceRatioChoice,
 } from './videoBillingSku';
+import { normalizeMinimaxH3Resolution, type MinimaxH3Resolution } from '../../common/minimaxH3Resolution.js';
 import { DEFAULT_VIDEO_ASPECT_RATIO } from './nodeSizeFromAspectRatio';
 import { ensureDirectorMvVideoPromptGuards, ensureDirectorDramaVideoPromptGuards, adaptDirectorPromptForLtxI2v, stripDirectorPromptInventedLook, isDirectorEmptyShotPrompt, DIRECTOR_EMPTY_SHOT_NEGATIVE_PROMPT, DIRECTOR_MV_SCENE_NEGATIVE_PROMPT } from '../../shared/directorPipeline';
 import {
@@ -80,12 +81,12 @@ const DIRECTOR_I2V_MODEL_META: Record<
   },
   'minimax-h3-i2v': {
     label: 'MiniMax-H3 图生视频',
-    title: '1 张参考图；720P；时长 6/10/15/20 秒',
+    title: '1 张参考图；480P/720P；时长 6/10/15/20 秒',
   },
   'minimax-h3-multi': {
     label: 'MiniMax H3 全能参考',
     title:
-      '无参考可文生；最多 9 张参考图 + 最多 3 路参考音；720P；时长 6/10/15/20 秒',
+      '无参考可文生；最多 9 张参考图 + 最多 3 路参考音；480P/720P；时长 6/10/15/20 秒',
   },
   'seedance-2.0-fast': {
     label: 'Seedance 2.0 Fast',
@@ -122,7 +123,7 @@ export const DIRECTOR_VIDEO_LIPSYNC_MODELS = [
   {
     value: DIRECTOR_VIDEO_MINIMAX_LIPSYNC_MODEL,
     label: 'MiniMax-H3 口型同步',
-    title: '1–5 张参考图 + 必填参考音；720P；成片跟参考音；计费 6/10/15/20 秒档向上取整',
+    title: '1–5 张参考图 + 必填参考音；480P/720P；成片跟参考音；计费 6/10/15/20 秒档向上取整',
   },
 ] as const;
 
@@ -258,7 +259,7 @@ export function directorVideoBatchMaxImages(model: string): number {
 const LTX_I2V_RES_OPTIONS = ['720', '1280', '1920'] as const;
 const P_RES_OPTIONS = ['720p', '1080p', '4k'] as const;
 const MINIMAX_H3_DURATION_OPTIONS = MINIMAX_H3_DURATION_SEC_OPTIONS.map(String) as readonly MinimaxH3DurationChoice[];
-const MINIMAX_H3_RES_OPTIONS = ['720p'] as const;
+const MINIMAX_H3_RES_OPTIONS = ['480p', '720p'] as const;
 const MINIMAX_H3_ASPECT_OPTIONS = [
   '16:9',
   '9:16',
@@ -372,7 +373,7 @@ export function getDirectorVideoBatchResolutionOptions(
   if (isDirectorMinimaxLipsyncModel(model)) {
     return MINIMAX_H3_RES_OPTIONS.map((r) => ({
       value: r,
-      label: '720P',
+      label: r === '480p' ? '480P' : '720P',
     }));
   }
   if (isDirectorLipsyncModel(model)) {
@@ -393,7 +394,7 @@ export function getDirectorVideoBatchResolutionOptions(
   if (m === 'minimax-h3-i2v' || m === 'minimax-h3-multi') {
     return MINIMAX_H3_RES_OPTIONS.map((r) => ({
       value: r,
-      label: '720P',
+      label: r === '480p' ? '480P' : '720P',
     }));
   }
   if (m === 'rhart-video-x') return null; // 固定 720p
@@ -513,7 +514,7 @@ export function normalizeDirectorVideoBatchResolution(
   model: string,
   raw: string | undefined | null,
 ): string {
-  if (isDirectorMinimaxLipsyncModel(model)) return '720p';
+  if (isDirectorMinimaxLipsyncModel(model)) return normalizeMinimaxH3Resolution(raw);
   if (isDirectorLipsyncModel(model)) {
     const s = String(raw ?? '').trim();
     return (LTX_I2V_RES_OPTIONS as readonly string[]).includes(s) ? s : '720';
@@ -521,7 +522,7 @@ export function normalizeDirectorVideoBatchResolution(
   const m = normalizeDirectorVideoBatchModel(model);
   if (m === 'ltx-2.3-i2v') return coerceLtxI2vResolution(raw);
   if (m === 'minimax-h3-i2v' || m === 'minimax-h3-multi') {
-    return '720p';
+    return normalizeMinimaxH3Resolution(raw);
   }
   if (m === 'rhart-video-x') return '720p';
   if (m === 'seedance-2.0-fast' || m === 'seedance-2.0-mini') {
@@ -945,7 +946,7 @@ export function buildDirectorSpawnedVideoNodeData(input: {
       return {
         ...base,
         durationMinimaxH3: normalizeMinimaxH3AudioDurationChoice(duration, 20),
-        resolutionMinimaxH3: '720p' as const,
+        resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution) as MinimaxH3Resolution,
         inputAudioUrl: inputAudioUrl || '',
         ...clipMeta,
       };
@@ -968,14 +969,14 @@ export function buildDirectorSpawnedVideoNodeData(input: {
     return {
       ...base,
       durationMinimaxH3: normalizeMinimaxH3DurationChoice(duration, 10),
-      resolutionMinimaxH3: '720p' as const,
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution) as MinimaxH3Resolution,
     };
   }
   if (model === 'minimax-h3-multi') {
     return {
       ...base,
       durationMinimaxH3: normalizeMinimaxH3DurationChoice(duration, 10),
-      resolutionMinimaxH3: '720p' as const,
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution) as MinimaxH3Resolution,
       ...(mergedAudioUrls[0] ? { inputAudioUrl: mergedAudioUrls[0] } : {}),
       ...(mergedAudioUrls.length > 0 ? { inputAudioUrls: mergedAudioUrls } : {}),
     };
@@ -1021,7 +1022,7 @@ export function buildDirectorVideoPriceParams(opts: {
   resolutionLtx23I2v?: '720' | '1280' | '1920';
   resolutionLtx23Lipsync?: string;
   durationMinimaxH3?: MinimaxH3DurationChoice | MinimaxH3AudioDurationChoice;
-  resolutionMinimaxH3?: '720p';
+  resolutionMinimaxH3?: MinimaxH3Resolution;
   durationSeedance?: '5' | '10' | '15';
   resolutionSeedance?: '480p' | '720p' | '1080p' | '2k' | '4k';
   resolutionRhartV31?: '720p' | '1080p' | '4k';
@@ -1039,7 +1040,7 @@ export function buildDirectorVideoPriceParams(opts: {
       return {
         model,
         durationMinimaxH3: normalizeMinimaxH3AudioDurationChoice(duration, 20),
-        resolutionMinimaxH3: '720p',
+        resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution),
       };
     }
     return { model, resolutionLtx23Lipsync: resolution };
@@ -1055,14 +1056,14 @@ export function buildDirectorVideoPriceParams(opts: {
     return {
       model,
       durationMinimaxH3: normalizeMinimaxH3DurationChoice(duration, 10),
-      resolutionMinimaxH3: '720p',
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution),
     };
   }
   if (model === 'minimax-h3-multi') {
     return {
       model,
       durationMinimaxH3: normalizeMinimaxH3DurationChoice(duration, 10),
-      resolutionMinimaxH3: '720p',
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(resolution),
     };
   }
   if (model === 'rhart-v3.1-pro-se') {
@@ -1117,8 +1118,8 @@ export function buildDirectorSpawnedVideoInvokeInput(
     ? (nodeData.inputImages as string[]).map((u) => String(u || '').trim()).filter(Boolean)
     : [];
   if (!prompt && !lipsync) return null;
-  // 导演台生视频均为图生：无参考图则不发起
-  if (images.length === 0) return null;
+  // H3 全能参考允许 0 张参考图（文生）；口型同步仍必须有图
+  if (images.length === 0 && model !== 'minimax-h3-multi') return null;
 
   const aspectRatio = String(nodeData.aspectRatio || '16:9');
   const projectId = String(opts?.projectId || '').trim();
@@ -1167,7 +1168,7 @@ export function buildDirectorSpawnedVideoInvokeInput(
                 nodeData.durationMinimaxH3 as string | number | undefined,
                 20,
               ),
-        resolutionMinimaxH3: '720p',
+        resolutionMinimaxH3: normalizeMinimaxH3Resolution(nodeData.resolutionMinimaxH3),
         inputAudioUrl: audio,
         ...clipFields,
       };
@@ -1202,7 +1203,7 @@ export function buildDirectorSpawnedVideoInvokeInput(
         nodeData.durationMinimaxH3 as string | number | undefined,
         10,
       ),
-      resolutionMinimaxH3: '720p',
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(nodeData.resolutionMinimaxH3),
     };
   }
   if (model === 'minimax-h3-multi') {
@@ -1220,7 +1221,7 @@ export function buildDirectorSpawnedVideoInvokeInput(
         nodeData.durationMinimaxH3 as string | number | undefined,
         10,
       ),
-      resolutionMinimaxH3: '720p',
+      resolutionMinimaxH3: normalizeMinimaxH3Resolution(nodeData.resolutionMinimaxH3),
       ...(audios[0] ? { inputAudioUrl: audios[0] } : {}),
       ...(audios.length > 0 ? { inputAudioUrls: audios } : {}),
     };

@@ -1,0 +1,100 @@
+{
+  "started_at": "2026-09-05T02:49:38.562Z",
+  "credential_hydrate": {
+    "source": "fc_hk_env",
+    "region": "cn-hongkong",
+    "functionName": "nexflow-api",
+    "injected_env_names": [
+      "RUNNINGHUB_API_KEY",
+      "RUNNINGHUB_API_KEY_AI",
+      "RUNNINGHUB_API_BASE"
+    ]
+  },
+  "mapping": {
+    "aixflow_model_id": "sora-2",
+    "billing_model_id": "sora-2",
+    "provider": "runninghub",
+    "forward_path": "/rhart-video-s/text-to-video",
+    "forceOverseasByBillingOrPath": false,
+    "pathMatchesOverseasPrefix": false,
+    "region_selected": "cn",
+    "api_base": "https://www.runninghub.cn/openapi/v2",
+    "final_url": "https://www.runninghub.cn/openapi/v2/rhart-video-s/text-to-video",
+    "api_key_present": true,
+    "api_key_env_name": "RUNNINGHUB_API_KEY"
+  },
+  "request": {
+    "method": "POST",
+    "content_type": "application/json",
+    "authorization": "Bearer ***REDACTED***",
+    "body_field_names": [
+      "prompt",
+      "duration",
+      "aspectRatio"
+    ],
+    "body": {
+      "prompt": "Phase81 RH diagnostic only: soft daylight forest path, static camera, no text.",
+      "duration": "10",
+      "aspectRatio": "16:9"
+    }
+  },
+  "response": {
+    "http_status": 200,
+    "ok": true,
+    "content_type": "application/json",
+    "headers_safe": {
+      "connection": "keep-alive",
+      "content-encoding": "gzip",
+      "content-type": "application/json",
+      "date": "Sat, 05 Sep 2026 02:49:40 GMT",
+      "eo-cache-status": "MISS",
+      "eo-log-uuid": "1859451472338051089",
+      "server": "nginx",
+      "transfer-encoding": "chunked",
+      "vary": "Accept-Encoding, Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+      "x-frame-options": "SAMEORIGIN"
+    },
+    "raw_body": "{\"taskId\":\"\",\"status\":\"\",\"errorCode\":\"40310\",\"errorMessage\":\"Due to compliance requirements, this model is no longer available on the CN endpoint. Please migrate to the AI endpoint (runninghub.ai). | 因合规要求，该模型在当前CN节点已下线，请前往全球站 (runninghub.ai) 接入使用。\",\"results\":null,\"clientId\":\"\",\"promptTips\":\"\",\"failedReason\":{},\"usage\":null,\"parentTaskId\":null,\"taskUsageList\":null}",
+    "json": {
+      "taskId": "",
+      "status": "",
+      "errorCode": "40310",
+      "errorMessage": "Due to compliance requirements, this model is no longer available on the CN endpoint. Please migrate to the AI endpoint (runninghub.ai). | 因合规要求，该模型在当前CN节点已下线，请前往全球站 (runninghub.ai) 接入使用。",
+      "results": null,
+      "clientId": "",
+      "promptTips": "",
+      "failedReason": {},
+      "usage": null,
+      "parentTaskId": null,
+      "taskUsageList": null
+    },
+    "json_top_keys": [
+      "taskId",
+      "status",
+      "errorCode",
+      "errorMessage",
+      "results",
+      "clientId",
+      "promptTips",
+      "failedReason",
+      "usage",
+      "parentTaskId",
+      "taskUsageList"
+    ],
+    "nested_data_keys": []
+  },
+  "parser": {
+    "extractRhTaskIdFromForwardData": "",
+    "looks_for": [
+      "taskId",
+      "task_id",
+      "data.taskId",
+      "data.task_id"
+    ],
+    "submit_ok_would_be": true,
+    "provider_no_task_id_would_trigger": true
+  },
+  "conclusion_hints": [
+    "HTTP_200_BUT_NO_TASK_ID"
+  ]
+}

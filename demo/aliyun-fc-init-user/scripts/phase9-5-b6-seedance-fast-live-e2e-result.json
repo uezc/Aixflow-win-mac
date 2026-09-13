@@ -1,0 +1,71 @@
+{
+  "started_at": "2026-09-06T07:37:21.450Z",
+  "conclusion": "PASS",
+  "errors": [],
+  "live_a_t2v": {
+    "ok": true,
+    "external": false,
+    "aixflow_task_id": "161bef0e-3714-4a0a-9f56-f3b01256190e",
+    "runninghub_task_id": "2096503127812804610",
+    "region": "cn",
+    "path": "/rhart-video/sparkvideo-2.0-fast/multimodal-video",
+    "billing_sku": "seedance-2-0-fast-720p-5s",
+    "image_count": 0,
+    "quoted_cost": 60,
+    "actual_charge": 60,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/ed8fcf3c-cb3d-4209-b877-0ca11c518dc9.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 60,
+    "error_code": "",
+    "error_message": "",
+    "expect_sku": "seedance-2-0-fast-720p-5s",
+    "expect_charge": 60,
+    "error": null
+  },
+  "live_b_i2v": {
+    "ok": true,
+    "external": false,
+    "aixflow_task_id": "21204b45-7a8e-4682-a32c-dda605848315",
+    "runninghub_task_id": "2096503878232465410",
+    "region": "cn",
+    "path": "/rhart-video/sparkvideo-2.0-fast/multimodal-video",
+    "billing_sku": "seedance-2-0-fast-720p-5s",
+    "image_count": 1,
+    "quoted_cost": 60,
+    "actual_charge": 60,
+    "charge_status": "charged",
+    "charge_count": 1,
+    "refund_count": 0,
+    "final_status": "success",
+    "result_url": "https://rh-images-1252422369.cos.ap-beijing.myqcloud.com/93d62671528af65094f3916bbf04666a/output/ac38fe53-8321-402d-9d38-406bed8ae7bd.mp4",
+    "user_slot_held": false,
+    "platform_slot_held": false,
+    "balance_delta": 60,
+    "error_code": "",
+    "error_message": "",
+    "expect_sku": "seedance-2-0-fast-720p-5s",
+    "expect_charge": 60,
+    "error": null
+  },
+  "live_c_multi": {
+    "ok": null,
+    "skipped": true,
+    "note": "NOT RUN (set P95B6_LIVE_C=1 to enable)"
+  },
+  "live_fail_refund": {
+    "ok": true,
+    "status": "failed",
+    "bal0": 500,
+    "bal1": 500
+  },
+  "external_blocker": null,
+  "ots_prices": {
+    "seedance-2-0-fast-720p-5s": 60
+  },
+  "finished_at": "2026-09-06T07:44:13.217Z"
+}

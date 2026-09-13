@@ -582,7 +582,7 @@ export type DirectorPipelineStrings = {
   generateAllScenes: string;
   generateAllProps: string;
   generateAllCreatures: string;
-  /** MV 场景步：批量生成场景九宫格 */
+  /** MV 场景步：批量生成场景图 */
   batchGenerateSceneImages: string;
   /** 角色卡：隐藏链接提示（不展示正文） */
   characterLinkedHint: string;
@@ -905,7 +905,7 @@ const zh: DirectorPipelineStrings = {
   castComboDuoMf: '一男一女',
   castComboDuoFf: '两个女主',
   castComboDuoMm: '两个男主',
-  scenesHint: '根据剧本场景库列出地点，再一键生成九宫格空场景参考图（不生成道具）',
+  scenesHint: '根据剧本场景库列出地点，再一键生成单张空场景参考图（不生成道具）',
   scenesSyncFromScript: '同步场景',
   scenesNeedScript: '请先在「剧本」步骤填写场景库（如：天台：……）',
   scenesFromScriptCount: '剧本识别到 {n} 个场景',
@@ -948,7 +948,7 @@ const zh: DirectorPipelineStrings = {
   storySectionWorldViewPh: '时空、氛围、视觉基调…',
   storySectionRelationshipsPh: '谁与谁、过往与当下…',
   storySectionCharactersPh: '一人一行：姓名：性别，年龄感，五官发型，服装，气质（可直接作生图 prompt）',
-  storySectionScenesPh: '一景一行：短名：室内外 + 地点 + 光色 + 陈设（无人物空场景，供九宫格）',
+  storySectionScenesPh: '一景一行：短名：室内外 + 地点 + 光色 + 陈设（无人物空场景，供单张场景定妆）',
   storySectionPropsPh: '关键道具，可空…',
   storyAnalyzeBtn: 'AI 分析音乐',
   storyGenerateOutlineBtn: '生成故事',
@@ -1111,7 +1111,7 @@ const zh: DirectorPipelineStrings = {
   asrNeedLogin: '云端转写需要登录，是否前往登录？',
   goLogin: '前往登录',
   asrBalanceInsufficient:
-    '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。',
+    '元宝不足，请充值',
   lyricTimelineEmpty: '未识别到可用片段',
   lyricTimelineNeedEngine: '当前环境不支持云端歌词转写。请登录账号后重试，或完全退出后重新运行应用（需重建主进程）',
   lyricTimelineSeparateFallback: '人声分离不可用，已改用整曲识别（精度可能下降）',
@@ -1207,7 +1207,7 @@ const zh: DirectorPipelineStrings = {
   generateAllCreatures: '生成所有生物',
   batchGenerateSceneImages: '一键生成所有场景图',
   characterLinkedHint: '生成时自动附加真人写实四宫格（等大、无分界线；正文不显示）',
-  sceneLinkedHint: '生成时自动附加九宫格通用约束：等大分格、无间隙、无文字、空场景（正文不显示）',
+  sceneLinkedHint: '生成时自动附加单张场景约束：空场景、无文字、禁止九宫格拼贴（正文不显示）',
   creditsSuffix: '元宝',
   otsPriceRequired: '请登录',
   batchVideoYuanbaoHover: '{n}个视频共{cost}',
@@ -1508,7 +1508,7 @@ const en: DirectorPipelineStrings = {
   castComboDuoMf: '1 male + 1 female',
   castComboDuoFf: '2 female leads',
   castComboDuoMm: '2 male leads',
-  scenesHint: 'List locations from the script, then generate 9-grid empty scene maps (no props)',
+  scenesHint: 'List locations from the script, then generate single empty scene plates (no props)',
   scenesSyncFromScript: 'Sync scenes',
   scenesNeedScript: 'Add a scene list in the Script step first (e.g. Rooftop: …)',
   scenesFromScriptCount: '{n} scenes from script',
@@ -1719,7 +1719,7 @@ const en: DirectorPipelineStrings = {
   asrNeedLogin: 'Cloud transcription requires sign-in. Go to sign in?',
   goLogin: 'Go to sign in',
   asrBalanceInsufficient:
-    'Insufficient balance\n\nYour account balance is not enough for this action. Please top up in Settings and try again.',
+    'Insufficient credits. Please recharge.',
   lyricTimelineEmpty: 'No usable segments found',
   lyricTimelineNeedEngine:
     'Cloud lyric transcription is unavailable. Sign in and retry, or fully quit and relaunch the app (rebuild main process)',
@@ -1817,7 +1817,7 @@ const en: DirectorPipelineStrings = {
   generateAllCreatures: 'Generate all creatures',
   batchGenerateSceneImages: 'Generate all scene images',
   characterLinkedHint: 'Photoreal 2×2 sheet auto-appended (equal cells, no gutters; hidden in text)',
-  sceneLinkedHint: '9-grid rules auto-appended: equal cells, no gaps, no text, empty set (hidden in text)',
+  sceneLinkedHint: 'Single-scene rules auto-appended: empty set, no text, no nine-grid collage (hidden in text)',
   creditsSuffix: 'credits',
   otsPriceRequired: 'Please sign in',
   batchVideoYuanbaoHover: '{n} videos for {cost}',

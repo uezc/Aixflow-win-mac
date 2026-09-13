@@ -1,0 +1,195 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "AUDIO_QUEUE_ONLY_MODEL_IDS length 5",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AUDIO_QUEUE_ONLY has AUDIO_QUEUE_SPEECH_28_HD_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AUDIO_QUEUE_ONLY has AUDIO_QUEUE_INDEX_TTS2_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AUDIO_QUEUE_ONLY has AUDIO_QUEUE_DOUBAO_SEED_AUDIO_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AUDIO_QUEUE_ONLY has AUDIO_QUEUE_RHART_SONG_V55_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AUDIO_QUEUE_ONLY has AUDIO_QUEUE_RVC_VOICE_TRAIN_MODEL",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value speech-2.8-hd",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value index-tts2",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value doubao-seed-audio-1.0",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value rhart-song-v5.5",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "const value rvc-voice-train",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "ai-voice-cover NOT in AUDIO_QUEUE_ONLY",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildSpeech28HdRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildIndexTts2RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildDoubaoSeedAudioRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildRhartSongV55RhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "builder buildRvcVoiceTrainRhForward",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasSpeech28HdQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasIndexTts2QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasDoubaoSeedAudioQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasRhartSongV55QueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "gate isCanvasRvcVoiceTrainQueueGoldenPathInput",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "isAudioQueueGoldenPathEnabled",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "assertNotDirectChargeForAudioQueueOnlyModel",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioQueueProviderForward type",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeAudioCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider queue-only early reject",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider assertNotDirectCharge",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider keeps ai-voice-cover local",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeSpeech28HdCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeIndexTts2CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeDoubaoSeedAudioCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeRhartSongV55CloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioProvider executeRvcVoiceTrainCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioInputPanel imports isAudioQueueOnlyModel",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "AudioInputPanel sets nxCloudQueueGoldenPath",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "normalizeQueueTaskType accepts audio",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "platformConcurrencyConfig getGlobalAudioConcurrency",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

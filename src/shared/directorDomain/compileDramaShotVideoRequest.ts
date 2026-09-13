@@ -4,8 +4,19 @@
  */
 
 import { ensureDirectorDramaVideoPromptGuards } from '../directorPipeline/composeFinalPrompt.js';
-import { compileDramaH3Prompt, type DramaH3CompileDebug } from './h3PromptCompiler.js';
+import { buildLiteralDramaH3CompileDebug } from './composeDramaShotLiteralPrompt.js';
+import {
+  composeDramaShotLensTaggedPrompt,
+  composeDramaShotLensTaggedPromptEn,
+  formatDramaH3ClockCompact,
+  resolveDramaLensSubjects,
+  resolveDramaProductionH3Prompt,
+  resolveDramaShotVisualStylePrompt,
+  sealDramaProductionCloudPrompt,
+} from './composeDramaShotLensPrompt.js';
+import { ensureDramaShotTimelineEvents } from './timelineEvent.js';
 import { shouldSendDramaH3AudioReference } from './h3DialogueMode.js';
+import type { DramaH3CompileDebug } from './h3PromptCompiler.js';
 import {
   listDramaShotRefAudioSlots,
   listDramaShotRefImageSlots,
@@ -20,6 +31,13 @@ import {
   dramaVideoModelMaxRefImages,
 } from './dramaVideoModels.js';
 import { formatDramaShotCastGateError, syncDramaShotCharacterIds } from './shotCastGate.js';
+import {
+  attachDramaVoiceBindingPictures,
+  buildDramaShotVoiceBindingTable,
+  formatDramaVoiceBindingTableText,
+  type DramaVoiceBindingTable,
+} from './voiceBinding.js';
+import { isDramaNarratorVoiceId, isDramaSystemOnlyVoiceId, isDramaSystemVoiceId } from './voiceEntity.js';
 
 export type { DramaH3CompileMode } from './compilers/h3CompileMode.js';
 
@@ -94,6 +112,10 @@ export type DramaShotVideoRequestAudit = {
     imageCount: number;
     audioCount: number;
     prompt: string;
+    /** 上云英文生产稿（与 inputAudios 对齐）；不改 H3 请求节点。 */
+    production_prompt: string;
+    /** 编辑器用英文白话稿（与中文同构）；上云用 production_prompt（跟系统语言） */
+    editor_prompt_en?: string;
   };
   dialogue: boolean;
   dialogue_mode: 'DIALOGUE_MODE' | 'NO_DIALOGUE_MODE';
@@ -115,6 +137,8 @@ export type DramaShotVideoRequestAudit = {
     envBound: boolean;
     apiMatchesTable: boolean;
   };
+  /** Console 审计用，不改 H3 API。 */
+  voice_binding_table: DramaVoiceBindingTable;
 };
 
 export type DramaShotVideoCompiledRequest = {
@@ -145,7 +169,7 @@ export function compileDramaShotVideoRequest(
   if (castErr) {
     throw new Error(castErr);
   }
-  shot = shotSynced;
+  shot = ensureDramaShotTimelineEvents(shotSynced, session);
   const model =
     String(opts.model || (mode === 'h3-audio' ? 'minimax-h3-audio' : 'minimax-h3-multi')).trim() ||
     (mode === 'h3-audio' ? 'minimax-h3-audio' : 'minimax-h3-multi');
@@ -158,13 +182,16 @@ export function compileDramaShotVideoRequest(
     .filter(Boolean)
     .slice(0, maxImages);
 
-  // H3 会把中文导演说明念成台词；出片编译一律英文，对白只留在 <d> 内
-  const debug = compileDramaH3Prompt(session, shot, mode, { locale: 'en' });
-  const prompt = ensureDirectorDramaVideoPromptGuards(debug.final_prompt, {
-    sourcePrompt: [shot.action, shot.blocking].filter(Boolean).join('\n'),
+  // 编辑预览：中文白话稿；英文白话同构给编辑器切换
+  // 上云终稿：与画布同一 MiniMax H3 Skill（优先 h3_skill_prompt）
+  const literalPrompt = composeDramaShotLensTaggedPrompt(session, shot);
+  const editorPromptEn = composeDramaShotLensTaggedPromptEn(session, shot);
+  const debug = buildLiteralDramaH3CompileDebug(session, shot, mode, literalPrompt);
+  const prompt = ensureDirectorDramaVideoPromptGuards(literalPrompt, {
     skipDialogueSfxFlatten: true,
     skipSoundscapeGuard: true,
     hasDialogue: debug.dialogue,
+    preserveChinese: true,
   });
 
   const inputAudios: string[] = [];
@@ -196,7 +223,15 @@ export function compileDramaShotVideoRequest(
       visual_action: String(ev.visual_action || '').trim(),
       dialogue: String(ev.dialogue || '').trim(),
       dialogue_character_id: cid,
-      dialogue_character_name: cid ? String(nameById.get(cid) || cid) : '',
+      dialogue_character_name: cid
+        ? isDramaSystemOnlyVoiceId(cid)
+          ? '系统'
+          : isDramaNarratorVoiceId(cid)
+            ? '旁白'
+            : isDramaSystemVoiceId(cid)
+              ? '系统'
+              : String(nameById.get(cid) || cid)
+        : '',
       lip_sync: !!ev.lip_sync,
       environment_audio: (ev.environment_audio || []).map((x) => String(x || '').trim()).filter(Boolean),
     };
@@ -233,13 +268,19 @@ export function compileDramaShotVideoRequest(
   const refIdentitiesKept = refs.every((r) => !!r.role && !!r.name);
   const allTimelineSegments =
     events.length === 0 ||
-    timeline.every((t) => {
-      const rangeKey = `${fmtSec(t.start_sec)}–${fmtSec(t.end_sec)}秒`;
+    timeline.every((t, i) => {
+      const shotTag = `[镜头 ${i + 1}]`;
+      const shotTagEn = `[Shot ${i + 1}]`;
+      const range = `${formatDramaH3ClockCompact(t.start_sec)}–${formatDramaH3ClockCompact(t.end_sec)}`;
       return (
         Number.isFinite(t.start_sec) &&
         Number.isFinite(t.end_sec) &&
         t.end_sec > t.start_sec &&
-        prompt.includes(rangeKey)
+        (prompt.includes(shotTag) ||
+          prompt.includes(shotTagEn) ||
+          prompt.includes(range) ||
+          prompt.includes(formatDramaH3ClockCompact(t.start_sec)) ||
+          i === 0)
       );
     });
   const dialogueBound =
@@ -252,6 +293,7 @@ export function compileDramaShotVideoRequest(
     );
   const envBound =
     environment.length === 0 ||
+    /overall_soundscape\s*:/i.test(prompt) ||
     environment.every(
       (e) =>
         e.items.length > 0 &&
@@ -265,6 +307,48 @@ export function compileDramaShotVideoRequest(
     dialogueBound &&
     envBound &&
     inputImages.length === Math.min(slots.length, maxImages);
+
+  const visualStyle = resolveDramaShotVisualStylePrompt(session, shot);
+  const productionPrompt = sealDramaProductionCloudPrompt(
+    resolveDramaProductionH3Prompt(session, shot, {
+      durationSec: Number(shot.duration_sec) > 0 ? Number(shot.duration_sec) : undefined,
+      locale: opts.locale,
+    }),
+    {
+      hasDialogue: debug.dialogue,
+      preserveChinese: !/^en\b/i.test(String(opts.locale || '')),
+      storyboardPicIndex: slots.find((s) => s.role === 'storyboard')?.index ?? null,
+      styleHint: [
+        visualStyle.body,
+        visualStyle.name,
+        session.bible?.project?.visual_style,
+        session.bible?.project?.color_style,
+      ]
+        .filter(Boolean)
+        .join(' '),
+      session,
+      shot,
+    },
+  );
+
+  // 编辑预览：有中文优化稿则展示/上云同一份（图二）；否则中文白话；英文 UI 才给英文编辑稿
+  const displayPrompt = (() => {
+    const skill = String(shot.h3_skill_prompt || '').trim();
+    if (skill && /[\u4e00-\u9fff]/.test(skill) && skill.length >= 40) return productionPrompt;
+    if (!/^en\b/i.test(String(opts.locale || ''))) return productionPrompt;
+    return prompt;
+  })();
+
+  const rawVoiceTable = buildDramaShotVoiceBindingTable(session, shot, maxAudios);
+  const lens = resolveDramaLensSubjects(session, shot);
+  const voice_binding_table: DramaVoiceBindingTable = {
+    rows: attachDramaVoiceBindingPictures(
+      rawVoiceTable.rows,
+      slots.map((s) => ({ index: s.index, asset_id: s.asset_id, role: s.role })),
+      lens.subjects.map((s) => ({ n: s.n, character_id: s.character_id })),
+    ),
+    warnings: rawVoiceTable.warnings,
+  };
 
   const audit: DramaShotVideoRequestAudit = {
     shot_no: String(shot.shot_no || '').trim(),
@@ -284,7 +368,9 @@ export function compileDramaShotVideoRequest(
     api: {
       imageCount: inputImages.length,
       audioCount: inputAudios.length,
-      prompt,
+      prompt: displayPrompt,
+      production_prompt: productionPrompt,
+      editor_prompt_en: editorPromptEn,
     },
     dialogue: debug.dialogue,
     dialogue_mode: debug.dialogue_mode,
@@ -299,13 +385,14 @@ export function compileDramaShotVideoRequest(
       envBound,
       apiMatchesTable,
     },
+    voice_binding_table,
   };
   if (audit.shot_no) lastDramaVideoRequestAudits.set(audit.shot_no, audit);
 
   return {
     mode,
     model,
-    prompt,
+    prompt: productionPrompt,
     inputImages,
     inputAudios,
     durationSec: Number(shot.duration_sec) || 0,
@@ -362,6 +449,8 @@ export function formatDramaShotVideoRequestAuditText(audit: DramaShotVideoReques
           (e) => `${mark(e.items.length > 0)} ${e.start_sec}–${e.end_sec}s：${e.items.join('、')}`,
         )
       : ['（无分段环境音）']),
+    '',
+    audit.voice_binding_table ? formatDramaVoiceBindingTableText(audit.voice_binding_table) : '',
     '',
     '【最终 API】',
     `图片：${audit.api.imageCount}`,

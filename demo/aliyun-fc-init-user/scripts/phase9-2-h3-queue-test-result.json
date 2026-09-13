@@ -1,0 +1,107 @@
+{
+  "passed": true,
+  "stats": {
+    "rh_submit_calls": 5,
+    "tests": [
+      {
+        "name": "region_h3_cn_rhart_ai",
+        "ok": true,
+        "detail": {
+          "h3_forceOverseas": false,
+          "h3_pick": "cn",
+          "h3_rhRegion": "cn",
+          "rhart_forceOverseas": true,
+          "rhart_pick": "ai",
+          "rhart_rhRegion": "ai",
+          "duration_type": "string"
+        }
+      },
+      {
+        "name": "1_create_queued_h3_forward",
+        "ok": true,
+        "detail": {
+          "status": "queued",
+          "rhRegion": "cn",
+          "path": "/run/ai-app/2085682347676102657",
+          "dur": "10"
+        }
+      },
+      {
+        "name": "1_full_pipeline_success",
+        "ok": true,
+        "detail": {
+          "status": "success",
+          "stage": "done",
+          "pid": "rh_h3_single",
+          "balance": 992,
+          "submits": 1,
+          "user_slot": false,
+          "platform_slot": false
+        }
+      },
+      {
+        "name": "6_duplicate_charge_once",
+        "ok": true,
+        "detail": {
+          "delta": 8,
+          "stage": "charged",
+          "bal0": 992,
+          "bal1": 984
+        }
+      },
+      {
+        "name": "5_duplicate_dispatch_one_rh",
+        "ok": true,
+        "detail": {
+          "submits": 1,
+          "pid": "rh_h3_storm"
+        }
+      },
+      {
+        "name": "4_poll_rhRegion_cn",
+        "ok": true,
+        "detail": {
+          "seen": "cn"
+        }
+      },
+      {
+        "name": "7_refund_once",
+        "ok": true,
+        "detail": {
+          "status": "failed",
+          "bal0": 976,
+          "bal1": 976,
+          "bal2": 976,
+          "r2": {
+            "ok": true,
+            "idempotent": true,
+            "terminal": true,
+            "status": "failed"
+          }
+        }
+      },
+      {
+        "name": "8_lease_recovery",
+        "ok": true,
+        "detail": {
+          "status": "success",
+          "pid": "rh_h3_reclaim",
+          "submits": 1,
+          "charged": 8,
+          "user_slot": false,
+          "platform_slot": false
+        }
+      }
+    ],
+    "regions": {
+      "h3_forceOverseas": false,
+      "h3_pick": "cn",
+      "h3_rhRegion": "cn",
+      "rhart_forceOverseas": true,
+      "rhart_pick": "ai",
+      "rhart_rhRegion": "ai",
+      "duration_type": "string"
+    }
+  },
+  "conclusion": "PASS"
+}

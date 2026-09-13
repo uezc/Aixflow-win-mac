@@ -1,0 +1,38 @@
+{
+  "at": "2026-09-05T00:37:48.619Z",
+  "ots": {
+    "ok": true,
+    "detail": "video.max=100 video.running=0",
+    "write_ok": true
+  },
+  "fc": {
+    "ok": true,
+    "endpoints": {
+      "promote-queued-tasks": {
+        "status": 200,
+        "error": "ok"
+      },
+      "charge-claimed-tasks": {
+        "status": 200,
+        "error": "ok"
+      },
+      "dispatch-charged-tasks": {
+        "status": 200,
+        "error": "ok"
+      },
+      "poll-provider-tasks": {
+        "status": 200,
+        "error": "ok"
+      }
+    }
+  },
+  "rh": {
+    "ok": false,
+    "detail": "RUNNINGHUB_API_KEY unset locally; assuming FC env has key (not verified from local)",
+    "skipped": true
+  },
+  "flags": {
+    "VIDEO_QUEUE_ENABLED": "1",
+    "VITE_VIDEO_QUEUE_ENABLED": "1"
+  }
+}

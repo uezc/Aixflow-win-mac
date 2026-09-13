@@ -4,7 +4,7 @@ export const CLOUD_RATE_LIMIT_USER_MSG =
   '请求过于频繁（云端限流）。请等待约 1 分钟后再试。批量优化提示词、生成故事或分批写剧本连点都会触发。';
 
 export const CLOUD_FC_TIMEOUT_USER_MSG =
-  '剧本分析超时（云端函数执行超时）。请缩短本集正文后重试；或到阿里云控制台把函数超时调到 300 秒以上。';
+  '云端函数执行超时（单次最长约 120 秒）。人物/场景分析已完成，但整集分镜脚本一次生成太重。请点「重新生成分镜脚本」——会按场次分批再试。';
 
 export function isCloudRateLimitError(e: unknown): boolean {
   const msg = String((e as Error)?.message || e || '');
@@ -26,6 +26,14 @@ export function isCloudLlmAbortError(e: unknown): boolean {
 export function formatCloudLlmUserError(raw: unknown): string {
   const s = String((raw as Error)?.message || raw || '').trim();
   if (!s) return '请求失败，请稍后重试';
+  if (
+    /BALANCE_INSUFFICIENT/i.test(s) ||
+    s.includes('元宝不足') ||
+    s.includes('余额不足') ||
+    /quota is not enough|remain quota|insufficient (?:balance|credits|quota)/i.test(s)
+  ) {
+    return '元宝不足，请充值';
+  }
   if (isCloudLlmAbortError(raw) || isCloudLlmAbortError(s)) {
     return '请求已取消（可能点了取消，或同时发起了另一次对话）。可再点一次「提示词优化」。';
   }

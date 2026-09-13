@@ -215,6 +215,8 @@ async function beginSnipSession() {
             // 主窗口全屏时，普通置顶窗获得焦点常会逼出 Windows 任务栏；对该显示器进入独占全屏可压住任务栏
             if (process.platform === 'win32') {
               win.setFullScreen(true);
+              // 全屏后 Windows 常把窗口重新挂回 Alt+Tab，必须再藏一次
+              win.setSkipTaskbar(true);
             }
             try {
               win.setAlwaysOnTop(true, 'screen-saver', 1);

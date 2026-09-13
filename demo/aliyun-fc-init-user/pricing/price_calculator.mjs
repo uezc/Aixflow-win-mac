@@ -25,6 +25,8 @@ import {
   getVideoBillingQuantity,
   getVideoQuantityForCloudKey,
   inferUiSecondsFromBillingSkuOnly,
+  isPerSecondDurationRequiredModel,
+  perSecondBaseModelFromSku,
 } from './videoBillingCloud.mjs';
 import { applyMarkup } from './markup_table.mjs';
 import { resolveCloudYuanbaoFromEnv } from './price_tiers.mjs';
@@ -95,6 +97,16 @@ export function getImagePrice(params, opts = {}) {
     const t = IMAGE_MODEL_CNY['youchuan-text-to-image-v81'];
     const r = normRes(resolution);
     if (r === 'hd' || r === '2k') base = t.hd ?? t.default;
+    else base = t.default;
+  } else if (model === 'youchuan-text-to-image-v82') {
+    const t = IMAGE_MODEL_CNY['youchuan-text-to-image-v82'];
+    const r = normRes(resolution);
+    if (r === 'hd' || r === '2k') base = t.hd ?? t.default;
+    else base = t.default;
+  } else if (model === 'rhart-image-g-2.5') {
+    const r = normRes(resolution);
+    const t = IMAGE_MODEL_CNY['rhart-image-g-2.5'];
+    if (r === '2k' || r === '4k') base = t['2k'];
     else base = t.default;
   }   else if (model === 'seedream-v4.5') base = IMAGE_MODEL_CNY['seedream-v4.5'];
   else if (model === 'seedream-v5') {
@@ -311,6 +323,7 @@ export function cnyRetailToYuanbaoInt(cny, env) {
 export const IMAGE_BILLING_MULTIPLIER_BY_MODEL = {
   'banana-2.0': 4,
   'rhart-image-g-2': 4,
+  'rhart-image-g-2.5': 4,
   'rhart-image-g': 1,
   'nano-banana': 1,
   'nano-banana-2': 1,
@@ -320,6 +333,7 @@ export const IMAGE_BILLING_MULTIPLIER_BY_MODEL = {
   'gpt-image-2': 1,
   'youchuan-text-to-image-v7': 1,
   'youchuan-text-to-image-v81': 1,
+  'youchuan-text-to-image-v82': 1,
   'seedream-v4.5': 1,
   'seedream-v5': 1,
   'z-image': 1,
@@ -347,9 +361,10 @@ export function yuanbaoCostFromTableDimensions(basePrice, multiplier, yuanbaoRat
   const mul = Number(multiplier);
   const yr = Number(yuanbaoRate);
   const q = Number(quantity);
-  if (![bp, mul, yr, q].every(Number.isFinite) || bp < 0 || mul < 0 || yr <= 0 || q <= 0) return null;
+  // base_price 必须 >0：缺列/写成 0 时禁止落到 Math.max(1,0)=1 元宝
+  if (![bp, mul, yr, q].every(Number.isFinite) || bp <= 0 || mul <= 0 || yr <= 0 || q <= 0) return null;
   const v = bp * mul * yr * q;
-  if (!Number.isFinite(v)) return null;
+  if (!Number.isFinite(v) || v <= 0) return null;
   return Math.max(1, Math.round(v));
 }
 
@@ -364,7 +379,9 @@ function cnyToYuanbaoInt(cny, env) {
 function mapImageSizeHint(v) {
   const s = String(v || '').trim().toLowerCase();
   if (s === '4k' || s.includes('4k')) return '4k';
+  if (s === '3k' || s.includes('3k')) return '3k';
   if (s === '2k' || s.includes('2k')) return '2k';
+  if (s === '1k' || s === 'hd' || s === 'default') return s;
   return undefined;
 }
 
@@ -393,6 +410,7 @@ const RH_IMAGE_SLUG_TO_BILLING_MODEL = {
   'rhart-image-n-g31-flash': 'banana-2.0',
   'rhart-image-g-2': 'rhart-image-g-2',
   'rhart-image-g-2-official': 'rhart-image-g-2',
+  'rhart-image-g-2.5': 'rhart-image-g-2.5',
   'rhart-image-g': 'rhart-image-g',
   /** 路径首段与计费 id 相同，显式列出便于归一后命中、并与文档对齐 */
   'seedream-v4.5': 'seedream-v4.5',
@@ -402,6 +420,8 @@ const RH_IMAGE_SLUG_TO_BILLING_MODEL = {
   youchuan: 'youchuan-text-to-image-v7',
   'text-to-image-v81': 'youchuan-text-to-image-v81',
   'youchuan-text-to-image-v81': 'youchuan-text-to-image-v81',
+  'text-to-image-v82': 'youchuan-text-to-image-v82',
+  'youchuan-text-to-image-v82': 'youchuan-text-to-image-v82',
   /** RunningHub AI App：MJ V7 */
   'mj-v7': 'mj-v7',
   'gpt-image-2': 'gpt-image-2',
@@ -678,11 +698,12 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
     baseModel === 'minimax-h3-multi'
   ) {
     out.model = baseModel;
-    out.resolutionMinimaxH3 = '720p'; // 仅 720P；旧 SKU 含 1080p 亦按 720p 计价维度解析
+    // mid 含 480p → 480p；否则（含旧 1080p）按 720p 计价维度解析
+    out.resolutionMinimaxH3 = String(mid || '').toLowerCase().includes('480p') ? '480p' : '720p';
     out.durationMinimaxH3 = String(normalizeMinimaxH3DurationSec(durationSec > 0 ? durationSec : 10, 10));
   } else if (baseModel === 'minimax-h3-audio') {
     out.model = baseModel;
-    out.resolutionMinimaxH3 = '720p';
+    out.resolutionMinimaxH3 = String(mid || '').toLowerCase().includes('480p') ? '480p' : '720p';
     out.durationMinimaxH3 = String(
       normalizeMinimaxH3AudioDurationSec(durationSec > 0 ? durationSec : 20, 20),
     );
@@ -723,12 +744,10 @@ function applyVideoSkuToNodeData(parsed, nodeData) {
 function nxModelRowToYuanbao(row, quantity) {
   if (!row || typeof row !== 'object') return null;
   if (row.is_active === false) return null;
-  return yuanbaoCostFromTableDimensions(
-    row.base_price,
-    row.multiplier != null ? row.multiplier : 1,
-    row.yuanbao_rate != null ? row.yuanbao_rate : 10,
-    quantity,
-  );
+  // 缺列 fail-closed：禁止默认 multiplier=1 / yuanbao_rate=10 掩盖运营配置丢失
+  if (row.base_price == null || row.multiplier == null || row.yuanbao_rate == null) return null;
+  if (quantity == null || !(Number(quantity) > 0)) return null;
+  return yuanbaoCostFromTableDimensions(row.base_price, row.multiplier, row.yuanbao_rate, quantity);
 }
 
 /**
@@ -742,22 +761,41 @@ function tryNxModelConfigById(map, modelId, quantity = 1) {
   return nxModelRowToYuanbao(row, quantity);
 }
 
+/** 分档计价图片：缺 resolution 禁止回落裸 model（防欠费） */
+function isImageResolutionRequiredModel(mNorm) {
+  const m = String(mNorm || '').trim().toLowerCase();
+  return (
+    m === 'banana-2.0' ||
+    m === 'rhart-image-g-2' ||
+    m === 'youchuan-text-to-image-v81' ||
+    m === 'youchuan-text-to-image-v82' ||
+    m === 'rhart-image-g-2.5' ||
+    m === 'seedream-v5'
+  );
+}
+
+function resolveImageBillingResolution(nodeData) {
+  const nd = nodeData && typeof nodeData === 'object' ? nodeData : {};
+  const resRaw = nd.resolution;
+  const res =
+    (typeof resRaw === 'string' && resRaw.trim()) ||
+    (resRaw != null && String(resRaw).trim()) ||
+    mapImageSizeHint(nd.image_size) ||
+    mapImageSizeHint(nd.size);
+  return res ? String(res).trim().toLowerCase() : '';
+}
+
 /**
  * 图片：优先 `model-resolution` 再裸 model（与 src/renderer/utils/cloudModelPricing getImageDisplayPrice 一致）
+ * 分档模型缺 resolution → null（由 getFinalPrice 抛 image_resolution_required）
  * @param {string} mNorm
  * @param {Record<string, unknown>} nodeData
  * @param {Record<string, NxModelConfigRowLike>|null|undefined} map
  */
 function tryNxModelConfigImage(mNorm, nodeData, map) {
   if (!map || typeof map !== 'object') return null;
-  const resRaw = nodeData.resolution;
-  const res =
-    (typeof resRaw === 'string' && resRaw.trim()) ||
-    (resRaw != null && String(resRaw).trim()) ||
-    mapImageSizeHint(nodeData.image_size) ||
-    mapImageSizeHint(nodeData.size);
   const m = String(mNorm || '').trim();
-  const r = res ? String(res).trim().toLowerCase() : '';
+  const r = resolveImageBillingResolution(nodeData);
   /** Z-image：OTS 主键为 z-image-720p / z-image-1080p，勿仅用裸 z-image */
   let keys;
   if (m === 'z-image-720p' || m === 'z-image-1080p') {
@@ -778,6 +816,12 @@ function tryNxModelConfigImage(mNorm, nodeData, map) {
     keys = r
       ? [`flux2-klein-${r}`, 'flux2-klein-1080p', 'flux2-klein-720p', m]
       : ['flux2-klein-1080p', 'flux2-klein-720p', m];
+  } else if (isImageResolutionRequiredModel(m)) {
+    // 禁止缺档；高档禁止回落裸 id（防欠费）；默认档允许裸行（OTS 常只有 banana-2.0 / youchuan-…）
+    if (!r) return null;
+    const isPremiumTier =
+      r === '2k' || r === '3k' || r === '4k' || r === 'hd' || r === '1080p';
+    keys = isPremiumTier ? [`${m}-${r}`] : [`${m}-${r}`, m];
   } else {
     keys = r ? [`${m}-${r}`, m] : [m];
   }
@@ -797,7 +841,8 @@ function tryNxModelConfigImage(mNorm, nodeData, map) {
 function tryNxModelConfigVideo(mNorm, nodeData, nxMap) {
   if (!nxMap || typeof nxMap !== 'object') return null;
   const nd = nodeData && typeof nodeData === 'object' ? nodeData : {};
-  const baseModel = typeof nd.model === 'string' && String(nd.model).trim() !== '' ? String(nd.model).trim() : '';
+  const baseModel =
+    typeof nd.model === 'string' && String(nd.model).trim() !== '' ? String(nd.model).trim() : '';
   const billingPayload = String(mNorm || '').trim();
 
   let uiSeconds;
@@ -811,8 +856,28 @@ function tryNxModelConfigVideo(mNorm, nodeData, nxMap) {
       keysOrdered.unshift(billingPayload);
     }
   } else {
-    uiSeconds = inferUiSecondsFromBillingSkuOnly(billingPayload);
+    // SKU-only：按秒模型必须仍从 nodeData 读时长，禁止 infer → 1
+    const perSecBase =
+      perSecondBaseModelFromSku(billingPayload) ||
+      (isPerSecondDurationRequiredModel(billingPayload)
+        ? String(billingPayload).trim().toLowerCase()
+        : '');
+    if (perSecBase) {
+      uiSeconds = getVideoBillingQuantity(perSecBase, { ...nd, model: perSecBase });
+    } else {
+      uiSeconds = inferUiSecondsFromBillingSkuOnly(billingPayload);
+    }
     keysOrdered = billingPayload ? [billingPayload] : [];
+  }
+
+  // 按秒模型缺时长：uiSeconds=null → 拒价
+  if (
+    uiSeconds == null &&
+    (isPerSecondDurationRequiredModel(baseModel) ||
+      isPerSecondDurationRequiredModel(billingPayload) ||
+      Boolean(perSecondBaseModelFromSku(billingPayload)))
+  ) {
+    return null;
   }
 
   const seen = new Set();
@@ -820,6 +885,12 @@ function tryNxModelConfigVideo(mNorm, nodeData, nxMap) {
     if (!k || seen.has(k)) continue;
     seen.add(k);
     const q = getVideoQuantityForCloudKey(k, uiSeconds);
+    if (q == null) {
+      if (isPerSecondDurationRequiredModel(k) || isPerSecondDurationRequiredModel(baseModel)) {
+        return null;
+      }
+      continue;
+    }
     const y = tryNxModelConfigById(nxMap, k, q);
     if (y != null) return y;
   }
@@ -828,6 +899,7 @@ function tryNxModelConfigVideo(mNorm, nodeData, nxMap) {
   const eff = parsed ? normalizeVideoBillingModelId(parsed.baseModel) : '';
   if (eff && !seen.has(eff)) {
     const q = getVideoQuantityForCloudKey(eff, uiSeconds);
+    if (q == null) return null;
     const y = tryNxModelConfigById(nxMap, eff, q);
     if (y != null) return y;
   }
@@ -857,7 +929,8 @@ export function getFinalPrice(modelId, ctx) {
   }
 
   if (taskType === 'llm') {
-    const mid = String(modelId || '').trim() || 'gpt-3.5-turbo';
+    const mid = String(modelId || '').trim();
+    if (!mid) throw new ModelNotPricedError('', 'llm', 'empty modelId');
     const fromNx = tryNxModelConfigById(nxMap, mid, 1);
     if (fromNx != null) return fromNx;
     throw new ModelNotPricedError(mid, 'llm', 'ots_row_missing');
@@ -869,6 +942,9 @@ export function getFinalPrice(modelId, ctx) {
   }
 
   if (taskType === 'image') {
+    if (isImageResolutionRequiredModel(mNorm) && !resolveImageBillingResolution(nodeData)) {
+      throw new ModelNotPricedError(mNorm, 'image', 'image_resolution_required');
+    }
     const fromNx = tryNxModelConfigImage(mNorm, nodeData, nxMap);
     if (fromNx != null) return fromNx;
     throw new ModelNotPricedError(mNorm, 'image', 'ots_row_missing');
@@ -877,6 +953,15 @@ export function getFinalPrice(modelId, ctx) {
   if (taskType === 'video') {
     const fromNx = tryNxModelConfigVideo(mNorm, nodeData, nxMap);
     if (fromNx != null) return fromNx;
+    const baseHint =
+      String(nodeData.model || '').trim() || perSecondBaseModelFromSku(mNorm) || mNorm;
+    if (isPerSecondDurationRequiredModel(baseHint) || isPerSecondDurationRequiredModel(mNorm)) {
+      const qtyBase = perSecondBaseModelFromSku(baseHint) || baseHint;
+      const qty = getVideoBillingQuantity(qtyBase, { ...nodeData, model: qtyBase });
+      if (qty == null) {
+        throw new ModelNotPricedError(mNorm, 'video', 'media_duration_required');
+      }
+    }
     throw new ModelNotPricedError(mNorm, 'video', 'ots_row_missing');
   }
 

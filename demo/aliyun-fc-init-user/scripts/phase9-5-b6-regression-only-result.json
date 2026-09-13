@@ -1,0 +1,85 @@
+{
+  "started_at": "2026-09-06T07:44:21.824Z",
+  "results": {
+    "invalid_forward": "PASS",
+    "ltx_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096504896569241602",
+      "region": "ai",
+      "task_id": "02de23e0-1f65-46ee-a0eb-6c4547cbbd8f"
+    },
+    "ltx_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096505975631728642",
+      "region": "cn",
+      "task_id": "f0e0e295-83c1-42f4-adb4-50a5118a6830"
+    },
+    "h3_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096506987943780354",
+      "region": "cn",
+      "task_id": "6c2dd085-429a-46ea-b01d-d31d33bc5675"
+    },
+    "h3_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096508627899863042",
+      "region": "cn",
+      "task_id": "83253774-b293-455d-8266-07ad2f4b18cd"
+    },
+    "ltx_start_end": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096510235945697282",
+      "region": "cn",
+      "task_id": "f4877af0-07f6-4247-bcc1-b8bcfead4305"
+    },
+    "rhart_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096511086670491649",
+      "region": "ai",
+      "task_id": "f22169c4-44ce-4d55-86c8-007798cd0eec"
+    },
+    "rhart_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096511883361759233",
+      "region": "ai",
+      "task_id": "e419fda7-b78e-4cb3-aa63-d4dbe95c9d1f"
+    },
+    "rhart_v31_pro_se": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096512461674278914",
+      "region": "ai",
+      "task_id": "1a180879-413f-49be-8e56-bf747fd564cf"
+    },
+    "ltx_lipsync": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096513248118665218",
+      "region": "cn",
+      "task_id": "063b829b-14a2-4569-8ca9-ff5bad795810"
+    },
+    "seedance_fast": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096514060148695042",
+      "region": "cn",
+      "task_id": "d7ad3de1-7b48-4583-9e6d-125ce49cde82"
+    },
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS"
+  },
+  "from_live": {
+    "conclusion": "PASS",
+    "live_fail_refund": true
+  },
+  "finished_at": "2026-09-06T08:25:16.085Z",
+  "conclusion": "PASS"
+}

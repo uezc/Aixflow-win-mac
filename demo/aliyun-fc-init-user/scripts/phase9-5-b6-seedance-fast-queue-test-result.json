@@ -1,0 +1,160 @@
+{
+  "passed": true,
+  "conclusion": "PASS",
+  "tests": [
+    {
+      "name": "t2v_720p_5s_shape",
+      "ok": true,
+      "detail": {
+        "sku": "seedance-2-0-fast-720p-5s",
+        "pick": "cn"
+      }
+    },
+    {
+      "name": "t2v_1080p_10s_sku",
+      "ok": true,
+      "detail": {
+        "sku": "seedance-2-0-fast-1080p-10s"
+      }
+    },
+    {
+      "name": "i2v_1_image",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "multi_2_images_order",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "multi_9_images",
+      "ok": true,
+      "detail": {
+        "n": 9
+      }
+    },
+    {
+      "name": "invalid_10_images",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "video_input_rejected",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "audio_input_rejected",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "image_preprocess_https_required",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "create_forward_persisted",
+      "ok": true,
+      "detail": {
+        "status": "queued"
+      }
+    },
+    {
+      "name": "claim",
+      "ok": true,
+      "detail": {
+        "status": "claimed"
+      }
+    },
+    {
+      "name": "charge",
+      "ok": true,
+      "detail": {
+        "delta": 60
+      }
+    },
+    {
+      "name": "dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 1
+      }
+    },
+    {
+      "name": "success_release",
+      "ok": true,
+      "detail": {
+        "status": "success"
+      }
+    },
+    {
+      "name": "duplicate_dispatch",
+      "ok": true,
+      "detail": {
+        "submits": 0
+      }
+    },
+    {
+      "name": "duplicate_charge",
+      "ok": true,
+      "detail": {
+        "delta": 60
+      }
+    },
+    {
+      "name": "duplicate_refund",
+      "ok": true,
+      "detail": {
+        "bal0": 500,
+        "bal2": 500,
+        "bal3": 500
+      }
+    },
+    {
+      "name": "submit_fail_refund_release",
+      "ok": true,
+      "detail": {
+        "status": "failed",
+        "bal0": 500,
+        "bal1": 500
+      }
+    },
+    {
+      "name": "gate_on_t2v",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "gate_off_direct",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "fast_to_mini_auto_switch_preserved",
+      "ok": true,
+      "detail": {
+        "autoMini": true
+      }
+    },
+    {
+      "name": "gate_fast_only_not_mini",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "name": "queue_before_direct",
+      "ok": true,
+      "detail": {
+        "queueBeforeDirect": true
+      }
+    },
+    {
+      "name": "invalid_forward",
+      "ok": true,
+      "detail": {}
+    }
+  ],
+  "rh_submit_calls": 1
+}

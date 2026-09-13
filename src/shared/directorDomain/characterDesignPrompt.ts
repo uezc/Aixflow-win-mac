@@ -3,6 +3,11 @@
  */
 
 import type { DramaCharacter, DramaCharacterVisualLock, DramaVoice } from './types.js';
+import {
+  inferDramaSceneSettingPeriod,
+  isDramaSceneEraCompatible,
+  isDramaSceneStoryContextCompatible,
+} from './sceneSettingPeriod.js';
 
 const GENDER_ZH: Record<string, string> = {
   male: '男',
@@ -26,6 +31,9 @@ export const DRAMA_CHARACTER_PROMPT_REQUIRED_HINTS = [
   '发型',
   '发色',
   '服饰',
+  '配饰',
+  '颜色',
+  '年代',
   '表情',
   '材质',
 ] as const;
@@ -43,6 +51,7 @@ export function composeDramaCharacterDesignPrompt(input: {
   expression?: string;
   materials?: string;
   storyContext?: string;
+  eraStyle?: string;
 }): string {
   const existing = String(input.prompt || '').trim();
   const age = String(input.age || '').trim();
@@ -58,14 +67,17 @@ export function composeDramaCharacterDesignPrompt(input: {
   const expression = String(input.expression || '').trim();
   const materials = String(input.materials || '').trim();
   const story = String(input.storyContext || '').trim();
+  const era = String(input.eraStyle || '').trim();
 
   // 已足够详细则保留，仅在缺关键维度时追加
   const richEnough =
-    existing.length >= 120 &&
+    existing.length >= 140 &&
     /岁|年龄/.test(existing) &&
     /(男|女|性别)/.test(existing) &&
     /(发型|发色|头发)/.test(existing) &&
-    /(衣|裙|袍|装|服|穿)/.test(existing);
+    /(衣|裙|袍|装|服|穿)/.test(existing) &&
+    /(配饰|首饰|耳环|项链|手表|背包|眼镜|戒指|发饰)/.test(existing) &&
+    /(色|颜色|黑|白|灰|蓝|红|绿|棕|米|金|银)/.test(existing);
 
   if (richEnough && !clothing && !hair && !body) {
     return existing;
@@ -75,46 +87,62 @@ export function composeDramaCharacterDesignPrompt(input: {
   const name = String(input.name || '').trim();
   if (name) parts.push(name);
   if (age || genderZh !== '未注明') {
-    parts.push(`${genderZh}${age ? `，${age}岁` : ''}`);
+    parts.push(`年龄外形必须符合小说设定：${genderZh}${age ? `，约${age}岁` : ''}，禁止擅自改龄`);
+  }
+  if (era || story) {
+    parts.push(
+      `年代与题材风格：${[era, story.slice(0, 80)].filter(Boolean).join('；') || '严格按小说时代与世界观'}，服饰发型不得穿越`,
+    );
   }
   if (role) parts.push(`身份：${role}`);
   if (personality) parts.push(`气质性格：${personality}`);
   if (body) parts.push(`体型身材：${body}`);
   else if (!/(高矮|胖瘦|身材|体型)/.test(existing)) {
-    parts.push('体型身材：按角色身份写清高矮胖瘦与肩宽比例');
+    parts.push('体型身材：按角色年龄与身份写清高矮胖瘦、肩宽与体态');
   }
   if (face) parts.push(`面容五官：${face}`);
   if (hair) parts.push(`发型发色：${hair}`);
   else if (!/(发型|发色|头发)/.test(existing)) {
-    parts.push('发型发色：写清长短、分缝、发质与颜色');
+    parts.push('发型发色：写清长短、分缝、卷直、发质与具体发色（如自然黑/深棕/染灰等）');
   }
   if (clothing) parts.push(`服饰穿搭：${clothing}`);
   else if (!/(衣|裙|袍|装|服|穿)/.test(existing)) {
-    parts.push('服饰穿搭：写清款式、层次、配饰与时代/题材锁');
+    parts.push('服饰穿搭：写清款式、层次、面料与主色，必须符合小说年代与人物身份');
+  }
+  if (special) parts.push(`配饰细节与颜色：${special}`);
+  else if (!/(配饰|首饰|耳环|项链|手表|背包|眼镜|戒指|发饰)/.test(existing)) {
+    parts.push('配饰细节与颜色：写清眼镜/首饰/包袋/鞋履等可见配饰及各自颜色，无配饰则明确「无额外配饰」');
   }
   if (expression) parts.push(`常驻表情：${expression}`);
   else if (!/(表情|神情|眉眼)/.test(existing)) {
     parts.push('常驻表情：写清眉眼口角与默认神情');
   }
-  if (materials || special) {
-    parts.push(`材质与细节：${[materials, special].filter(Boolean).join('；')}`);
+  if (materials) {
+    parts.push(`材质与细节：${materials}`);
   } else if (!/(材质|面料|皮质|金属|布料|光泽)/.test(existing)) {
     parts.push('材质细节：写清面料/皮革/金属等可见材质与质感');
   }
   if (backstory) parts.push(`背景故事锚点：${backstory.slice(0, 120)}`);
-  if (story) parts.push(`须符合本剧世界观：${story.slice(0, 100)}`);
-  parts.push('全身或半身人设图，白底或简洁棚拍，面部清晰，服饰完整可见，禁止文字水印');
+  parts.push(
+    '全身或半身人设图，白底或简洁棚拍，面部清晰，服饰与配饰完整可见，颜色准确，禁止文字水印，禁止擅自年轻化或古装/现代错配',
+  );
 
   const composed = parts.filter(Boolean).join('，');
   if (!existing) return composed;
   if (richEnough) {
     // 补缺维度
     const extras: string[] = [];
+    if (age && !/岁|年龄/.test(existing)) extras.push(`年龄：${age}`);
+    if (era && !existing.includes(era.slice(0, 6))) extras.push(`年代：${era}`);
     if (body && !existing.includes(body)) extras.push(`体型：${body}`);
     if (hair && !existing.includes(hair.slice(0, 8))) extras.push(`发型发色：${hair}`);
     if (clothing && !existing.includes(clothing.slice(0, 8))) extras.push(`服饰：${clothing}`);
+    if (special && !existing.includes(special.slice(0, 8))) extras.push(`配饰：${special}`);
     if (expression && !/(表情|神情)/.test(existing)) extras.push(`表情：${expression}`);
     if (materials && !/(材质|面料)/.test(existing)) extras.push(`材质：${materials}`);
+    if (!/(配饰|首饰|耳环|项链|手表|背包|眼镜|戒指|发饰|无额外配饰)/.test(existing)) {
+      extras.push('配饰细节与颜色需写清');
+    }
     return extras.length ? `${existing}。${extras.join('，')}` : existing;
   }
   // 短稿：结构化稿优先，再拼原文尾巴
@@ -132,28 +160,105 @@ export function composeDramaSceneDesignPrompt(input: {
   lighting?: string;
   storyContext?: string;
   eraStyle?: string;
+  /** 室内 / 室外 / INT / EXT */
+  kind?: string;
+  architecture?: string;
+  materials?: string;
+  /** 剧本可核验的陈设硬事实 */
+  fixed_elements?: string[];
+  /** 为 true 时即使已有 prompt 也强制重拼（用于原文回填后刷新空壳） */
+  forceRebuild?: boolean;
 }): string {
   const existing = String(input.prompt || '').trim();
+  const fixed = (Array.isArray(input.fixed_elements) ? input.fixed_elements : [])
+    .map((x) => String(x || '').trim())
+    .filter(Boolean);
+  const fixedLine = fixed.length ? `陈设硬事实：${fixed.slice(0, 10).join('、')}` : '';
+  const kindRaw = String(input.kind || '').trim();
+  const kindZh = /ext|外/i.test(kindRaw)
+    ? '室外'
+    : /int|内/i.test(kindRaw)
+      ? '室内'
+      : kindRaw;
+
   const parts: string[] = [];
   const loc = String(input.location || input.name || '').trim();
   if (loc) parts.push(`空场景：${loc}`);
-  if (input.eraStyle) parts.push(`时代/题材：${input.eraStyle}`);
-  if (input.storyContext) parts.push(`符合背景故事：${String(input.storyContext).slice(0, 120)}`);
+  if (kindZh) parts.push(kindZh);
+
+  const period = inferDramaSceneSettingPeriod(
+    loc,
+    kindZh,
+    fixed.join('、'),
+    existing,
+    input.spatial_structure,
+  );
+  const era = String(input.eraStyle || '').trim();
+  if (era && isDramaSceneEraCompatible(period, era)) {
+    parts.push(`时代/题材：${era}`);
+  } else if (period === 'modern') {
+    parts.push('时代/题材：当代现代都市室内外（禁止古装仙侠山水地貌渗入）');
+  } else if (period === 'ancient') {
+    parts.push('时代/题材：古代/传统建筑语境（禁止现代电竞霓虹设备渗入）');
+  }
+
+  const story = String(input.storyContext || '').trim();
+  if (story && isDramaSceneStoryContextCompatible(period, story)) {
+    parts.push(`符合背景故事：${story.slice(0, 120)}`);
+  }
   if (input.spatial_structure) parts.push(`空间结构：${input.spatial_structure}`);
+  if (input.architecture) parts.push(`建筑：${input.architecture}`);
+  if (input.materials) parts.push(`材质：${input.materials}`);
+  if (fixedLine) parts.push(fixedLine);
   if (input.time_default) parts.push(`时段：${input.time_default}`);
   if (input.weather_default) parts.push(`天气：${input.weather_default}`);
   if (input.lighting) parts.push(`光影：${input.lighting}`);
   if (input.mood) parts.push(`氛围：${input.mood}`);
-  parts.push('无人物，写清建筑/家具材质与陈设细节，电影感静帧');
+  parts.push(
+    fixed.length
+      ? '无人物，严格按上述陈设还原，写实空场景静帧，禁止空旷棚拍或与地点无关的通用电影感布景'
+      : '无人物，写清建筑/家具材质与陈设细节，写实空场景静帧，禁止空旷棚拍感',
+  );
   const composed = parts.filter(Boolean).join('，');
-  if (!existing) return composed;
-  if (existing.length >= 80 && /无人物|空场景/.test(existing)) {
-    if (input.storyContext && !existing.includes(String(input.storyContext).slice(0, 20))) {
-      return `${existing}。须符合本剧背景：${String(input.storyContext).slice(0, 80)}`;
+
+  const existingHasProps =
+    fixed.some((f) => existing.includes(f.slice(0, Math.min(6, f.length)))) ||
+    /陈设硬事实|电竞|显示器|键盘|货架|收银台|香炉|蒲团|霓虹|招牌|茶几|红木|青石|栏杆|床铺|衣柜/.test(
+      existing,
+    );
+  const richEnough =
+    !input.forceRebuild &&
+    existing.length >= 100 &&
+    /无人物|空场景/.test(existing) &&
+    existingHasProps;
+
+  if (richEnough) {
+    // 已有厚稿：若被全片古风污染且本场是现代，强制重拼
+    if (
+      period === 'modern' &&
+      /(时代\/题材：[^，,]*?(古装|仙侠|玄幻|武侠|汉服|国风|水墨)|符合背景故事：[^。]*?(古装|仙侠|玄幻|武侠))/.test(
+        existing,
+      )
+    ) {
+      return composed;
+    }
+    if (story && isDramaSceneStoryContextCompatible(period, story) && !existing.includes(story.slice(0, 20))) {
+      return `${existing}。须符合本剧背景：${story.slice(0, 80)}`;
+    }
+    if (fixedLine && !/陈设硬事实/.test(existing)) {
+      return `${existing}。${fixedLine}`;
     }
     return existing;
   }
-  return existing.length < 40 ? composed : `${composed}。${existing}`;
+
+  if (!existing || input.forceRebuild) return composed;
+  // 旧空壳（地点名+电影感）用新拼装覆盖，仅把旧稿里多出来的具体句尾缀保留
+  if (/电影感静帧/.test(existing) && !existingHasProps) return composed;
+  if (period === 'modern' && /时代\/题材：[^，,]*?(古装|仙侠|玄幻)/.test(existing)) {
+    return composed;
+  }
+  if (existing.length < 40) return composed;
+  return `${composed}。${existing}`;
 }
 
 export function composeDramaVoiceDesign(input: {
@@ -287,15 +392,16 @@ export function extractDramaVoiceSpokenText(prompt: string): string {
 }
 
 /**
- * 造样/试听台词：优先剧本对白 2～3 句；不足再按身份补全。
+ * 造样/试听台词：只允许剧本/小说原文；禁止按身份乱编。
  */
 export function countDramaVoiceSampleSentences(text: string): number {
   const t = extractDramaVoiceSpokenText(text) || String(text || '').trim();
   if (!t) return 0;
+  if (/剧本中暂无该角色对白|请从小说中选取/.test(t)) return 0;
   const parts = t
     .split(/(?<=[。！？!?…])\s*|\n+/)
     .map((x) => x.trim())
-    .filter((x) => x.length >= 2);
+    .filter((x) => x.length >= 2 && !/剧本中暂无该角色对白|请从小说中选取/.test(x));
   return parts.length || (t.length >= 4 ? 1 : 0);
 }
 
@@ -309,7 +415,8 @@ export function isDramaVoiceSampleTextRichEnough(text: string): boolean {
   const hasAgeGender = /年龄\s*[：:]/.test(t) && /性别\s*[：:]/.test(t);
   if (!(hasTimbre || hasAgeGender) || !hasLines) return false;
   const spoken = extractDramaVoiceSpokenText(t);
-  return spoken.length >= 8;
+  if (/剧本中暂无该角色对白|请从小说中选取/.test(spoken)) return false;
+  return spoken.length >= 4;
 }
 
 function joinSampleSentences(lines: string[], max = 3): string {
@@ -319,6 +426,7 @@ function joinSampleSentences(lines: string[], max = 3): string {
       .replace(/\s+/g, ' ')
       .trim();
     if (!s) continue;
+    if (/剧本中暂无该角色对白|请从小说中选取/.test(s)) continue;
     // 一行里若已有多句，拆开再收
     const bits = s
       .split(/(?<=[。！？!?…])\s*/)
@@ -333,7 +441,111 @@ function joinSampleSentences(lines: string[], max = 3): string {
   return out.join('\n');
 }
 
-function composeDramaVoiceSpokenLines(input: {
+const ABSTRACT_PAREN_BODY_RE =
+  /^(?:紧张|压抑|愤怒|悲伤|恐惧|疑惑|冷漠|震惊|释然|克制|沉默|开心|兴奋|绝望|孤独|疲惫|困倦|轻松|慵懒|机械|懵逼|无奈|困惑|迷茫|失落|决心|怀疑|专注|确认|平静|低声)(?:[、，,].*)?$/;
+
+function isParenStageDirectionLine(line: string): boolean {
+  const m = String(line || '')
+    .trim()
+    .match(/^[（(]([^）)]{0,40})[）)]$/u);
+  if (!m) return false;
+  const body = String(m[1] || '')
+    .replace(/[。．.!！?？]+$/g, '')
+    .trim();
+  if (!body) return true;
+  if (ABSTRACT_PAREN_BODY_RE.test(body)) return true;
+  // 任意独占括注行（舞台说明）都不进 <d>
+  return true;
+}
+
+function isBareSpeakerNameLine(line: string, knownNames: Set<string>): boolean {
+  const bare = String(line || '')
+    .replace(/[。．.\s：:]+$/g, '')
+    .trim();
+  if (!bare || bare.length > 16) return false;
+  if (knownNames.has(bare)) return true;
+  if (knownNames.size) return false;
+  // 无名单时：短中文独占行，且后文仍有内容时视为说话人标签
+  return /^[\u4e00-\u9fffA-Za-z·•]{1,12}$/u.test(bare);
+}
+
+/**
+ * 剥离说话人标注 / 括注舞台说明，只留可念正文。
+ * 用于试听句、TE.dialogue、以及进入 <d> 前的最终清洗。
+ * knownNames：本镜角色名；有则更稳地剥「名独占行」。
+ */
+export function stripDramaSpokenLineBody(raw: string, knownNames?: string[]): string {
+  let t = String(raw || '').trim();
+  if (!t) return '';
+  const nameSet = new Set(
+    (knownNames || []).map((n) => String(n || '').trim()).filter(Boolean),
+  );
+  const lines = t
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^【[^】]*】\s*$/u.test(line)) {
+      i += 1;
+      continue;
+    }
+    if (
+      /^(?:系统提示音|系统声音|系统提示|系统播报|系统音|系统|旁白|画外音|SYSTEM)\s*(?:[（(][^)）]*[)）])?\s*[:：.。]?\s*$/iu.test(
+        line,
+      )
+    ) {
+      i += 1;
+      continue;
+    }
+    const colon = line.match(
+      /^([\u4e00-\u9fffA-Za-z·•]{1,16})\s*(?:[（(][^)）]*[)）])?\s*[:：]\s*(.*)$/u,
+    );
+    if (colon) {
+      const name = colon[1];
+      const body = String(colon[2] || '').trim();
+      if (!nameSet.size || nameSet.has(name)) {
+        if (body) {
+          lines[i] = body;
+          break;
+        }
+        i += 1;
+        continue;
+      }
+    }
+    if (i < lines.length - 1 && isBareSpeakerNameLine(line, nameSet)) {
+      i += 1;
+      continue;
+    }
+    if (i < lines.length - 1 && isParenStageDirectionLine(line)) {
+      i += 1;
+      continue;
+    }
+    if (i === lines.length - 1 && isParenStageDirectionLine(line)) {
+      // 仅剩括注 → 无可念正文
+      return '';
+    }
+    break;
+  }
+  t = lines.slice(i).join('\n').trim();
+  t = t.replace(/^【[^】]*】\s*/u, '');
+  t = t.replace(
+    /^(?:系统提示音|系统声音|系统提示|系统播报|系统音|系统|旁白|画外音|SYSTEM)\s*(?:[（(][^)）]*[)）])?\s*[:：.。]\s*/iu,
+    '',
+  );
+  t = t.replace(/^[\u4e00-\u9fffA-Za-z·•]{1,16}\s*(?:[（(][^)）]*[)）])?\s*[:：]\s*/u, '');
+  // 行首抽象括注（同一行：「（慵懒）家人们」）
+  t = t.replace(/^[（(][^）)]{0,24}[）)]\s*/u, '');
+  t = t.replace(/^[「『“"']+|[」』”"']+$/g, '').trim();
+  return t.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 试听台词：只取 dialogueHint 中的剧本原文；没有则返回空。
+ * 禁止按身份/性格模板乱编句子。
+ */
+export function composeDramaVoiceSpokenLines(input: {
   name?: string;
   role?: string;
   identity?: string;
@@ -341,123 +553,18 @@ function composeDramaVoiceSpokenLines(input: {
   gender?: string;
   dialogueHint?: string;
 }): string {
-  const hint = extractDramaVoiceSpokenText(String(input.dialogueHint || ''))
-    .replace(/\s+/g, ' ')
-    .trim();
-  const fromHint = hint ? joinSampleSentences([hint], 3) : '';
-
-  const name = String(input.name || '').trim() || '此人';
-  const role = String(input.role || '').trim();
-  const identity = String(input.identity || '').trim();
-  const personality = String(input.personality || '').trim();
-  const bag = `${name}${role}${identity}${personality}`;
-  const genderZh = dramaGenderLabel(String(input.gender || ''));
-
-  let template: string[] = [];
-
-  if (/说书|说书人|旁白叙述/.test(bag)) {
-    template = [
-      '且听我细细道来。',
-      '这一回，却有一段不为人知的往事。',
-      '矿灯摇曳，人心也跟着摇曳。',
-      '诸位且看：祸事，是怎么一步步逼近的。',
-    ];
-  } else if (/读书人|读书人VO|神秘|VO|画外|旁白/.test(bag)) {
-    template = [
-      '夜色压在矿道口，风像刀子。',
-      '有人还在赌命，有人已经开始算计。',
-      '名字不重要，重要的是——谁先松口。',
-      '听好了：接下来的每一句，都可能改写结局。',
-    ];
-  } else if (/响应控制众|控制众|众甲|众乙|群众|起哄/.test(bag)) {
-    template = [
-      '听见没有？都给我听清楚！',
-      '谁敢乱动，别怪咱们不客气。',
-      '把路让开！别挡事！',
-      '走！跟上！别掉队！',
-    ];
-  } else if (/看门|门卫|门房/.test(bag)) {
-    template = [
-      '站住！什么人？',
-      '此乃重地，闲人免进！',
-      '把证件拿出来，别磨蹭。',
-      '再不老实，就别怪我不客气。',
-    ];
-  } else if (/护卫|侍卫|卫兵|矿护/.test(bag)) {
-    template = [
-      '前方戒严，闲杂人等不得靠近！',
-      '把手放看得见的地方。',
-      '再往前一步，后果自负。',
-      '把他们看住，谁也不许乱跑。',
-    ];
-  } else if (/协拍|拍干|工头|管事|矿协/.test(bag)) {
-    template = [
-      '都听好了，今晚的班不能乱。',
-      '矿里的规矩，谁坏谁负责。',
-      '该签字的签字，该闭嘴的闭嘴。',
-      '别跟我扯闲话，赶紧把活干完。',
-    ];
-  } else if (/龙套|甲|乙|路人|仆人|家丁|边缘/.test(bag)) {
-    template = [
-      '是，马上去办！',
-      '主人吩咐的事，不敢有误。',
-      '我什么都没看见，也什么都没听见。',
-      '您慢走，我这就去传话。',
-    ];
-  } else if (
-    /女人|姑娘|小姐/.test(name) ||
-    (/女/.test(genderZh) && /配|龙套|出场/.test(role + identity))
-  ) {
-    template = [
-      '你先别急，听我说完。',
-      '这里不干净，今晚别再往深处走。',
-      '我不是吓你，我是在救你。',
-      '答应我，天亮之前回来。',
-    ];
-  } else if (/巴洛|安妮|汤米|查理|主角|男主|女主/.test(bag) || /男主|女主/.test(role)) {
-    template = [
-      '我不会退缩。该来的，总会来。',
-      '你们要的答案，我心里清楚。',
-      '别再用规矩压我，规矩救不了人。',
-      '跟我走。这一次，必须把话说开。',
-    ];
-  } else if (/书生|文人|夫子|学者|先生|顾炎武/.test(bag)) {
-    template = [
-      '天下兴亡，匹夫有责。',
-      '今日之事，我记下了。',
-      '嘴上的义气不值钱，手上的选择才值钱。',
-      '若你们还讲道理，就听我说完这几句。',
-    ];
-  } else if (/出场人物|出场角色/.test(bag)) {
-    template = [
-      '我来了。有话就说，别绕弯子。',
-      '这地方我熟，别拿我当外人。',
-      '谁先动手，谁就先承担后果。',
-      '走吧。磨叽下去，只会更糟。',
-    ];
-  } else if (personality) {
-    template = [
-      `${name}在此。`,
-      `${personality}也好，这一遭我认了。`,
-      '别再试探我，话我只说一遍。',
-      '该做的事，今晚就做完。',
-    ];
-  } else {
-    template = [
-      `${name}在此。`,
-      '今日之事，我记住了。',
-      '你们想听真话，还是想听好听的？',
-      '跟紧点。耽误不起。',
-    ];
-  }
-
-  if (fromHint && countDramaVoiceSampleSentences(fromHint) >= 2) {
-    return joinSampleSentences([fromHint], 3);
-  }
-  const merged = joinSampleSentences([fromHint, ...template], 3);
-  if (countDramaVoiceSampleSentences(merged) >= 2) return merged;
-  return joinSampleSentences(template, 3);
+  const hintRaw = String(input.dialogueHint || '').trim();
+  if (!hintRaw) return '';
+  const hint = extractDramaVoiceSpokenText(hintRaw) || hintRaw;
+  const lines = hint
+    .split(/\n+/)
+    .map((l) => stripDramaSpokenLineBody(l))
+    .filter((l) => l.length >= 2);
+  return joinSampleSentences(lines.length ? lines : [stripDramaSpokenLineBody(hint)], 3);
 }
+
+export const DRAMA_VOICE_SAMPLE_NO_SCRIPT_LINE =
+  '（剧本中暂无该角色对白，请从小说中选取一句原文填入）';
 
 function looksEmptyTimbre(s: string): boolean {
   const t = String(s || '').trim();
@@ -465,8 +572,8 @@ function looksEmptyTimbre(s: string): boolean {
 }
 
 /**
- * 声音提示词：名字 + 年龄 + 性别 + 口语化音色描述 + 剧本 2～3 句台词。
- * 卡片展示与剧本分析共用；送 TTS 时整段交给豆包（模型自行区分描述与台词）。
+ * 声音提示词：名字 + 年龄 + 性别 + 口语化音色描述 + 剧本原文台词。
+ * 台词必须来自小说/剧本；没有则写占位，禁止乱编。
  */
 export function composeDramaVoiceSampleLine(input: {
   name?: string;
@@ -480,9 +587,11 @@ export function composeDramaVoiceSampleLine(input: {
   language_style?: string;
   emotion_range?: string;
   dialogueHint?: string;
+  /** 为 true 时即使旧稿已「够长」也用 dialogueHint 重写台词段 */
+  forceScriptLines?: boolean;
 }): string {
   const existing = String(input.dialogueHint || '').trim();
-  if (isDramaVoiceSampleTextRichEnough(existing)) {
+  if (!input.forceScriptLines && isDramaVoiceSampleTextRichEnough(existing)) {
     return existing;
   }
 
@@ -506,15 +615,13 @@ export function composeDramaVoiceSampleLine(input: {
     ? composeNaturalTimbreDescription(input)
     : designed.timbre;
 
+  if (input.forceScriptLines && /音色(描述)?\s*[：:]/.test(existing) && /台词\s*[：:]/.test(existing)) {
+    const head = existing.replace(/\n?\s*台词\s*[：:][\s\S]*$/i, '').trim();
+    return `${head}\n台词：\n${spoken || DRAMA_VOICE_SAMPLE_NO_SCRIPT_LINE}`;
+  }
+
   const ageLine = age ? (/\d/.test(age) && !/岁/.test(age) ? `${age}岁` : age) : '未注明';
   const genderLine = genderZh !== '未注明' ? genderZh : '未注明';
-  const spokenBlock = spoken
-    .split(/\n+/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => l.replace(/^[「『“"']+|[」』”"']+$/g, '').trim())
-    .filter(Boolean)
-    .join('\n');
 
   return [
     name,
@@ -522,7 +629,7 @@ export function composeDramaVoiceSampleLine(input: {
     `性别：${genderLine}`,
     `音色描述：${timbre}`,
     '台词：',
-    spokenBlock || `${name}在此。`,
+    spoken || DRAMA_VOICE_SAMPLE_NO_SCRIPT_LINE,
   ].join('\n');
 }
 
@@ -546,6 +653,7 @@ export function enrichDramaCharacterDesignFields(
     visual: character.visual,
     expression: character.states?.normal,
     storyContext: storyBits,
+    eraStyle: opts?.eraStyle,
   });
   return { ...character, prompt };
 }

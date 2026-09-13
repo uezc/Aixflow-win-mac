@@ -11,6 +11,12 @@ import {
 } from '../../utils/connectionRules';
 import { scaleModulePx } from '../../utils/moduleDisplayScale';
 import { nodeStyleDimensions } from '../../utils/nodeSizeFromAspectRatio';
+import {
+  fillCanvasAudioDragTransfer,
+  fillCanvasImageDragTransfer,
+  endCanvasAudioDrag,
+  endCanvasImageDrag,
+} from '../characterListShared';
 
 /** 形象参考四槽位文案（与角色库四视图顺序一致） */
 const VIEW_SLOT_LABELS = ['面部', '正面全身', '侧面全身', '背面全身'] as const;
@@ -454,8 +460,15 @@ const CharacterNodeComponent: React.FC<CharacterNodeProps> = (props) => {
                               fetchPriority="low"
                               src={url}
                               alt={label}
-                              draggable={false}
-                              className="absolute inset-0 h-full w-full object-cover"
+                              draggable
+                              title="拖到短剧人物卡可写入造型"
+                              className="nodrag nopan absolute inset-0 h-full w-full object-cover cursor-grab"
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onDragStart={(e) => {
+                                e.stopPropagation();
+                                fillCanvasImageDragTransfer(e.dataTransfer, url);
+                              }}
+                              onDragEnd={() => endCanvasImageDrag()}
                               onError={(e) => {
                                 (e.target as HTMLImageElement).style.display = 'none';
                               }}
@@ -509,7 +522,21 @@ const CharacterNodeComponent: React.FC<CharacterNodeProps> = (props) => {
                     </button>
                   ) : null}
                   {/* 右侧留白给勾选角标，避免挡住波形主体 */}
-                  <div className="h-full w-full" style={{ paddingRight: referenceAudioSrc ? 16 : 0 }}>
+                  <div
+                    className={`h-full w-full ${referenceAudioSrc ? 'nodrag nopan cursor-grab' : ''}`}
+                    style={{ paddingRight: referenceAudioSrc ? 16 : 0 }}
+                    draggable={!!referenceAudioSrc}
+                    title={referenceAudioSrc ? '拖到短剧人物卡可写入参考音' : undefined}
+                    onPointerDown={(e) => {
+                      if (referenceAudioSrc) e.stopPropagation();
+                    }}
+                    onDragStart={(e) => {
+                      if (!referenceAudioSrc) return;
+                      e.stopPropagation();
+                      fillCanvasAudioDragTransfer(e.dataTransfer, referenceAudioSrc);
+                    }}
+                    onDragEnd={() => endCanvasAudioDrag()}
+                  >
                     <ReferenceAudioWaveStrip
                       src={referenceAudioSrc}
                       isDarkMode={isDarkMode}

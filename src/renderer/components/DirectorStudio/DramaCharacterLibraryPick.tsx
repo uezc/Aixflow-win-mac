@@ -6,6 +6,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import AssetLibLazyThumb from '../AssetLibLazyThumb';
 import {
+  applyDramaSessionVoiceSample,
   characterHasUsableReference,
   composeDramaCharacterDesignPrompt,
   composeDramaVoiceSampleLine,
@@ -16,6 +17,7 @@ import {
   createEmptyDramaVoice,
   namesLikelySameDramaPerson,
   resolveDramaCharacterIdByName,
+  isDramaSystemSpeakerCharacter,
   type DramaDirectorSession,
 } from '../../../shared/directorDomain';
 import {
@@ -325,13 +327,17 @@ export function applyDramaLibraryPickToCharacter(
     next = patchDramaBible(next, { ...next.bible, characters });
   }
   if (voiceUrl) {
+    // 走统一入口 applyDramaSessionVoiceSample：
+    // 1) 更新 voice.sample_url；
+    // 2) 同步失效所有引用该 voice 的已生成镜头配音（清 audio_url / 置 audio_status=pending），
+    //    让分镜角色声音卡立刻显示新声音、生成按钮重新点亮。
     const ensured = ensureCharacterVoice(next, id);
-    const voices = (ensured.session.bible.voices || []).map((v) =>
-      v.voice_id === ensured.voiceId
-        ? { ...v, sample_url: voiceUrl, status: 'ready' as const, error: undefined }
-        : v,
-    );
-    next = patchDramaBible(ensured.session, { ...ensured.session.bible, voices });
+    next =
+      applyDramaSessionVoiceSample(ensured.session, ensured.voiceId, {
+        sampleUrl: voiceUrl,
+        status: 'ready',
+        error: undefined,
+      }) || ensured.session;
   }
   return next;
 }
@@ -541,6 +547,7 @@ export function fillEmptyDramaAssetsFromLibraryPicks(
   let images = 0;
   let voices = 0;
   for (const ch of session.bible.characters || []) {
+    if (isDramaSystemSpeakerCharacter(ch)) continue;
     const pick = findLibraryPickForName(ch.name, byName, picks);
     if (!pick) continue;
     const needImage = !characterHasUsableReference(ch) && pick.imageUrl;

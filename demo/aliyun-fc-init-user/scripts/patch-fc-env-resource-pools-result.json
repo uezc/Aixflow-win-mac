@@ -1,0 +1,55 @@
+{
+  "patch": {
+    "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+    "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+    "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+    "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+    "GLOBAL_AUDIO_CONCURRENCY": "100"
+  },
+  "before": {
+    "cn-hongkong/nexflow-api": {
+      "GLOBAL_CN_VIDEO_CONCURRENCY": null,
+      "GLOBAL_CN_IMAGE_CONCURRENCY": null,
+      "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": null,
+      "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": null,
+      "GLOBAL_AUDIO_CONCURRENCY": null,
+      "GLOBAL_VIDEO_CONCURRENCY": null,
+      "GLOBAL_IMAGE_CONCURRENCY": null
+    },
+    "cn-beijing/aixflow-api": {
+      "GLOBAL_CN_VIDEO_CONCURRENCY": null,
+      "GLOBAL_CN_IMAGE_CONCURRENCY": null,
+      "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": null,
+      "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": null,
+      "GLOBAL_AUDIO_CONCURRENCY": null,
+      "GLOBAL_VIDEO_CONCURRENCY": null,
+      "GLOBAL_IMAGE_CONCURRENCY": null
+    }
+  },
+  "results": [
+    {
+      "region": "cn-hongkong",
+      "functionName": "nexflow-api",
+      "lastModified": "2026-09-09T13:33:29Z",
+      "applied": {
+        "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_AUDIO_CONCURRENCY": "100"
+      }
+    },
+    {
+      "region": "cn-beijing",
+      "functionName": "aixflow-api",
+      "lastModified": "2026-09-09T13:33:29Z",
+      "applied": {
+        "GLOBAL_CN_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_CN_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_VIDEO_CONCURRENCY": "100",
+        "GLOBAL_OVERSEAS_IMAGE_CONCURRENCY": "100",
+        "GLOBAL_AUDIO_CONCURRENCY": "100"
+      }
+    }
+  ]
+}

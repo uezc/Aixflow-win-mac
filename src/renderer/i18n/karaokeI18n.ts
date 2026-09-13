@@ -389,7 +389,7 @@ const zh: KaraokeI18nStrings = {
   asrNeedLogin: '云端转写需要登录，是否前往登录？',
   goLogin: '前往登录',
   asrBalanceInsufficient:
-    '余额不足\n\n您的账户余额不足以完成此次操作，请前往设置页面充值后再试。',
+    '元宝不足，请充值',
   timingProvisionalWarning:
     '⚠ 歌词均分（估算）：从 0 匀速铺开，前奏会提前填字。有音频时请重新生成字级时间轴。',
   globalOffset: '全局偏移（秒）',
@@ -685,7 +685,7 @@ const en: KaraokeI18nStrings = {
   asrNeedLogin: 'Cloud transcription requires sign-in. Go to sign in?',
   goLogin: 'Go to sign in',
   asrBalanceInsufficient:
-    'Insufficient balance\n\nYour account balance is not enough for this action. Please top up in Settings and try again.',
+    'Insufficient credits. Please recharge.',
   timingProvisionalWarning:
     '⚠ Lyrics spread (estimate): fills from 0, including intro. With audio, regenerate word-level timing.',
   globalOffset: 'Global offset (sec)',

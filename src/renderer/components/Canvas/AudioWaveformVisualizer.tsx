@@ -31,8 +31,8 @@ function ensureWaveCss() {
   el.setAttribute('data-nexflow-audio-wave', '1');
   el.textContent = `
     @keyframes nexflow-audio-wave-y {
-      0% { transform: scaleY(0.45); }
-      100% { transform: scaleY(1.08); }
+      0% { transform: scaleY(0.75); }
+      100% { transform: scaleY(1.1); }
     }
     @keyframes nexflow-audio-wave-y-fill {
       0% { transform: scaleY(0.88); }

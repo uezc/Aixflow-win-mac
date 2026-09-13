@@ -1,0 +1,78 @@
+{
+  "started_at": "2026-09-06T06:19:58.630Z",
+  "results": {
+    "invalid_forward": "PASS",
+    "ltx_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096483720455286786",
+      "region": "ai",
+      "task_id": "2a16ed6d-6b9c-443c-8cef-7ea3cff9e90d"
+    },
+    "ltx_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096484712452419585",
+      "region": "cn",
+      "task_id": "8cb0a7ff-4368-4f60-836f-b41b18e7c5dd"
+    },
+    "h3_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096485510024495106",
+      "region": "cn",
+      "task_id": "55b7d44b-dc4b-4ff0-89ee-f70300e5af4f"
+    },
+    "h3_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096487214866460674",
+      "region": "cn",
+      "task_id": "d072029c-b35f-49b9-bf85-be25a796a9b5"
+    },
+    "ltx_start_end": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096488904936091649",
+      "region": "cn",
+      "task_id": "dd9fc5a8-9dbf-4a16-92ea-4600b96efc18"
+    },
+    "rhart_t2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096489907867987970",
+      "region": "ai",
+      "task_id": "fd559dde-3de1-4995-b9b3-14d4e5e94e39"
+    },
+    "rhart_i2v": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096490689124216834",
+      "region": "ai",
+      "task_id": "e5fabfa6-fc7e-4a60-8baa-11544aec7a29"
+    },
+    "rhart_v31_pro_se": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096491217339969537",
+      "region": "ai",
+      "task_id": "1beb6b7c-f879-48c7-8e31-a8c649ce8064"
+    },
+    "ltx_lipsync": {
+      "ok": true,
+      "verdict": "PASS",
+      "pid": "2096492183258615810",
+      "region": "cn",
+      "task_id": "036e4f6a-0e92-4bee-a992-035af0eff2d2"
+    },
+    "duplicate_charge": "PASS",
+    "duplicate_dispatch": "PASS",
+    "duplicate_refund": "PASS"
+  },
+  "from_live": {
+    "conclusion": "PASS",
+    "live_fail_refund": true
+  },
+  "finished_at": "2026-09-06T06:57:24.573Z",
+  "conclusion": "PASS"
+}

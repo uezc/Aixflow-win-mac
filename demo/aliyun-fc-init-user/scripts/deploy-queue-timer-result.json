@@ -1,0 +1,15 @@
+{
+  "triggerName": "nexflow-queue-pipeline",
+  "cron": "@every 5m",
+  "payload_action": "run-queue-pipeline",
+  "results": [
+    {
+      "region": "cn-hongkong",
+      "functionName": "nexflow-api",
+      "action": "updated",
+      "triggerName": "nexflow-queue-pipeline",
+      "lastModifiedTime": "2026-09-09T13:33:30Z",
+      "triggerConfig": "{\"payload\":\"{\\\"action\\\":\\\"run-queue-pipeline\\\",\\\"max_claims\\\":20,\\\"max_charge\\\":40,\\\"max_dispatch\\\":20,\\\"max_poll\\\":40,\\\"reconcile\\\":false}\",\"cronExpression\":\"@every 5m\",\"enable\":true}"
+    }
+  ]
+}
