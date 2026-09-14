@@ -48,6 +48,65 @@ import ImageTo3dNode from './Canvas/ImageTo3dNode';
 import StoryboardScriptNode from './Canvas/StoryboardScriptNode';
 import ScriptNode from './Canvas/ScriptNode';
 import DirectorNode, { DIRECTOR_DEFAULT_H, DIRECTOR_DEFAULT_W } from './Canvas/DirectorNode';
+import DramaFlowNode, {
+  DRAMA_FLOW_DEFAULT_H,
+  DRAMA_FLOW_DEFAULT_W,
+  DRAMA_FLOW_NODE_TYPE,
+} from './Canvas/DramaFlowNode';
+import DramaFlowCharacterNode, {
+  DRAMA_FLOW_CHARACTER_DEFAULT_H,
+  DRAMA_FLOW_CHARACTER_DEFAULT_W,
+  DRAMA_FLOW_CHARACTER_NODE_TYPE,
+} from './Canvas/DramaFlowCharacterNode';
+import DramaFlowSceneNode, {
+  DRAMA_FLOW_SCENE_DEFAULT_H,
+  DRAMA_FLOW_SCENE_DEFAULT_W,
+  DRAMA_FLOW_SCENE_NODE_TYPE,
+} from './Canvas/DramaFlowSceneNode';
+import {
+  DramaFlowCreatureNode,
+  DramaFlowPropNode,
+  DRAMA_FLOW_ASSET_DEFAULT_H,
+  DRAMA_FLOW_ASSET_DEFAULT_W,
+  DRAMA_FLOW_CREATURE_NODE_TYPE,
+  DRAMA_FLOW_PROP_NODE_TYPE,
+} from './Canvas/DramaFlowAssetCardNode';
+import NodeGroupFrame, { NODE_GROUP_TYPE } from './Canvas/NodeGroupFrame';
+import {
+  beginMultiGroupDrag,
+  buildSoftGroupFrame,
+  expandGroupFramePositionChanges,
+  getNodeGroupId,
+  pruneEmptyNodeGroups,
+  repairLegacyParentNodeGroups,
+  sealGroupedChildren,
+  syncGroupFrameBounds,
+  ungroupNodes,
+  type GroupDragSession,
+} from '../utils/nodeGroup';
+import {
+  resolveDramaFlowImageConcurrency,
+  runDramaFlowBatchPool,
+} from '../utils/dramaFlowBatchConcurrency';
+import { analyzeDramaFlowCharacters } from '../utils/dramaFlowAnalyzeCharacters';
+import {
+  invokeDramaFlowCharacterImage,
+  parseDramaFlowCharacterImageNodeId,
+  patchNodesWithDramaFlowCharacterImage,
+} from '../utils/dramaFlowCharacterImageGen';
+import {
+  invokeDramaFlowSceneImage,
+  parseDramaFlowSceneImageNodeId,
+  patchNodesWithDramaFlowSceneImage,
+} from '../utils/dramaFlowSceneImageGen';
+import {
+  invokeDramaFlowCreatureImage,
+  invokeDramaFlowPropImage,
+  parseDramaFlowCreatureImageNodeId,
+  parseDramaFlowPropImageNodeId,
+  patchNodesWithDramaFlowCreatureImage,
+  patchNodesWithDramaFlowPropImage,
+} from '../utils/dramaFlowExtraAssetImageGen';
 import { collageLayerSourceNodeId } from '../utils/collageLayerTransform';
 import {
   buildPhotoCollageLayersFromEdges,
@@ -247,6 +306,8 @@ import {
   formatDramaShotVideoRequestAuditText,
   NEXFLOW_DRAMA_VIDEO_REQUEST_AUDIT_EVENT,
   projectDramaSessionToPipeline,
+  composeDramaVoiceSampleLine,
+  ensureVoiceSampleTexts,
   type DramaDirectorSession,
 } from '../../shared/directorDomain';
 import { importImageTo3dAssetsToCharacters } from '../utils/importImageTo3dAsset';
@@ -1931,6 +1992,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const persistedNodeHashRef = useRef<Map<string, string>>(new Map());
   const isNodeDraggingRef = useRef(false);
   const isGroupDraggingRef = useRef(false);
+  const nodeGroupDragSessionRef = useRef<GroupDragSession | null>(null);
+  const nodeGroupDragSessionsRef = useRef<GroupDragSession[]>([]);
   const dragNodeHashRef = useRef<Map<string, string>>(new Map());
   const isExitingRef = useRef(false);
   /** 当前 projectId 已完成 load-project-data 并应用到 state 后才允许落盘，避免切换工程时错写或空覆盖 */
@@ -2138,6 +2201,19 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   useEffect(() => {
     latestNodesRef.current = nodes as Node[];
   }, [nodes]);
+
+  // 进入画布后一次性锁定已有组内子模块（不可单独框选/拖走）
+  const didSealGroupedChildrenRef = useRef(false);
+  useEffect(() => {
+    didSealGroupedChildrenRef.current = false;
+  }, [projectId]);
+  useEffect(() => {
+    if (didSealGroupedChildrenRef.current) return;
+    if (!(nodes as Node[]).length) return;
+    const sealed = sealGroupedChildren(nodes as Node[]);
+    didSealGroupedChildrenRef.current = true;
+    if (sealed !== nodes) setNodes(sealed);
+  }, [nodes, setNodes]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -2619,16 +2695,39 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     }
 
     const fullscreenVideoSpliceId = getGlobalInteractionSnapshot().videoSpliceFullscreenNodeId;
+    let effectiveChangesForApply = effectiveChanges;
     const removedNodeIds = effectiveChanges
       .filter((c: any) => c.type === 'remove' && c.id && c.id !== fullscreenVideoSpliceId)
-      .map((c: any) => c.id);
+      .map((c: any) => c.id as string);
+
+    // 删除组合框但未删子模块：解组并保留子节点
+    const groupsToUngroupKeepKids = removedNodeIds.filter((id) => {
+      const n = nodeMap.get(id) as any;
+      if (n?.type !== NODE_GROUP_TYPE) return false;
+      const kids = [...nodeMap.values()].filter(
+        (c: any) => String(c?.data?.nodeGroupId || '') === id || String(c?.parentNode || '') === id,
+      );
+      return kids.some((k: any) => !removedNodeIds.includes(k.id));
+    });
+    if (groupsToUngroupKeepKids.length > 0) {
+      setNodes((prev) => {
+        let next = ungroupNodes(prev, groupsToUngroupKeepKids);
+        const otherRemoves = removedNodeIds.filter((id) => !groupsToUngroupKeepKids.includes(id));
+        if (otherRemoves.length) {
+          next = next.filter((n) => !otherRemoves.includes(n.id));
+        }
+        return next;
+      });
+      effectiveChangesForApply = effectiveChanges.filter((c: any) => c.type !== 'remove');
+    }
+
     if (removedNodeIds.length > 0) {
       userExplicitlyShrunkRef.current = true;
     }
     removeTasksForNodeIds(removedNodeIds);
 
-    const positionChanges = effectiveChanges.filter((c: any) => c.type === 'position');
-    const immediateChanges = effectiveChanges
+    const positionChanges = effectiveChangesForApply.filter((c: any) => c.type === 'position');
+    const immediateChanges = effectiveChangesForApply
       .filter((c: any) => c.type !== 'position')
       .filter((c: any) => !(c.type === 'remove' && c.id === fullscreenVideoSpliceId));
     const hasDraggingPositionChange = positionChanges.some((c: any) => c?.dragging === true);
@@ -2687,6 +2786,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       }
 
       // 选中变化走最小化更新，避免 applyNodeChanges 在大画布下引发额外重绘
+      // 组内子模块若被选中：改选组合框，保证打组是整体
       if (selectChanges.length > 0) {
         const selectedById = new Map<string, boolean>();
         for (const change of selectChanges) {
@@ -2696,23 +2796,54 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
         if (selectedById.size > 0) {
           setNodes((prev) => {
-            let changed = false;
-            const next = prev.map((node) => {
+            let sealed = sealGroupedChildren(prev);
+            let changed = sealed !== prev;
+            const next = sealed.map((node) => {
               if (!selectedById.has(node.id)) return node;
-              const nextSelected = !!selectedById.get(node.id);
-              if (!!node.selected === nextSelected) return node;
+              const wantSelected = !!selectedById.get(node.id);
+              const gid =
+                node.type !== NODE_GROUP_TYPE
+                  ? String((node.data as { nodeGroupId?: string } | undefined)?.nodeGroupId || '').trim()
+                  : '';
+              // 禁止组内子模块保持选中：改选其组合框
+              if (wantSelected && gid) {
+                changed = true;
+                return node.selected ? { ...node, selected: false } : node;
+              }
+              if (!!node.selected === wantSelected) return node;
               changed = true;
-              return { ...node, selected: nextSelected };
+              return { ...node, selected: wantSelected };
             });
-            return changed ? next : prev;
+            // 子模块被选中时，补选对应组合框
+            const promoteGroupIds = new Set<string>();
+            for (const [id, want] of selectedById) {
+              if (!want) continue;
+              const n = sealed.find((x) => x.id === id);
+              if (!n || n.type === NODE_GROUP_TYPE) continue;
+              const gid = String((n.data as { nodeGroupId?: string } | undefined)?.nodeGroupId || '').trim();
+              if (gid) promoteGroupIds.add(gid);
+            }
+            if (!promoteGroupIds.size) return changed ? next : prev;
+            const promoted = next.map((node) => {
+              if (!promoteGroupIds.has(node.id)) return node;
+              if (node.selected) return node;
+              changed = true;
+              return { ...node, selected: true };
+            });
+            return changed ? promoted : prev;
           });
         }
       }
     }
 
     // 始终通过 React 更新位置，确保 Canvas 边层能读取到最新节点位置实现连线实时跟随
+    // 软组：组框位移时补齐未随多选一起动的子模块，避免只挪框、卡留原处
     if (positionChanges.length > 0) {
-      onNodesChangeBase(positionChanges);
+      const expanded = expandGroupFramePositionChanges(
+        latestNodesRef.current as Node[],
+        positionChanges,
+      );
+      onNodesChangeBase(expanded);
     }
 
     const hasOnlyPositionChanges = effectiveChanges.length > 0 && effectiveChanges.every((change) => change.type === 'position');
@@ -4792,7 +4923,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
             };
           });
           if (aborted()) return;
-          setNodes(nodesWithSize);
+          setNodes(repairLegacyParentNodeGroups(nodesWithSize));
           // 尺寸迁移后尽快落盘，避免下次加载重复放大
           const shouldPersistScale = projectData.nodes.some((n: Node) =>
             needsModuleSizeScaleUpgrade(n.data as { moduleSizeScaleVersion?: unknown }),
@@ -6285,6 +6416,1609 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
   }, [setNodes]);
 
+  const handleDramaFlowNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) =>
+      nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        const nextData = { ...node.data, ...updates };
+        const w = Number(updates.width ?? nextData.width);
+        const h = Number(updates.height ?? nextData.height);
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+          return {
+            ...node,
+            data: nextData,
+            style: { ...(node.style as object), ...nodeStyleDimensions(w, h) },
+            width: w,
+            height: h,
+          };
+        }
+        return { ...node, data: nextData };
+      }),
+    );
+  }, [setNodes]);
+
+  const handleDramaFlowCharacterNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) => {
+      let groupId = '';
+      const next = nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        groupId = String((node.data as any)?.nodeGroupId || '').trim();
+        const nextData = { ...node.data, ...updates };
+        const w = Number(updates.width);
+        const h = Number(updates.height);
+        if ((Number.isFinite(w) && w > 0) || (Number.isFinite(h) && h > 0)) {
+          const nextW =
+            Number.isFinite(w) && w > 0
+              ? w
+              : Number(node.width) ||
+                Number((node.data as any)?.width) ||
+                DRAMA_FLOW_CHARACTER_DEFAULT_W;
+          const nextH =
+            Number.isFinite(h) && h > 0
+              ? h
+              : Number(node.height) ||
+                Number((node.data as any)?.height) ||
+                DRAMA_FLOW_CHARACTER_DEFAULT_H;
+          return {
+            ...node,
+            width: nextW,
+            height: nextH,
+            style: { ...(node.style as object), ...nodeStyleDimensions(nextW, nextH) },
+            data: nextData,
+          };
+        }
+        return { ...node, data: nextData };
+      });
+      return groupId && (updates.width != null || updates.height != null)
+        ? syncGroupFrameBounds(next, groupId)
+        : next;
+    });
+  }, [setNodes]);
+
+  const spawnDramaFlowCharacters = useCallback(
+    async (parentId: string) => {
+      const parent = latestNodesRef.current.find((n) => n.id === parentId);
+      if (!parent || parent.type !== DRAMA_FLOW_NODE_TYPE) return;
+      const d = (parent.data || {}) as Record<string, unknown>;
+      const scriptText = String(d.scriptText || '').trim();
+      if (!scriptText) {
+        showAlert('请先粘贴剧本');
+        return;
+      }
+
+      handleDramaFlowNodeDataChange(parentId, {
+        analyzing: true,
+        analyzingHint: '正在分析角色与场景…',
+        aspectRatio: d.aspectRatio || '9:16',
+        scriptTitle: String(d.scriptTitle || '').trim() || '我的剧本',
+      });
+
+      try {
+        const result = await analyzeDramaFlowCharacters({
+          scriptText,
+          scriptTitle: String(d.scriptTitle || '').trim() || '我的剧本',
+          stylePresetId: String(d.stylePresetId || '').trim(),
+          visualLookId: String(d.visualLookId || '').trim(),
+          visualGradeId: String(d.visualGradeId || '').trim(),
+          stylePrompt: String(d.stylePrompt || '').trim(),
+          projectId: projectId || undefined,
+          nodeId: parentId,
+          onHint: (hint) => handleDramaFlowNodeDataChange(parentId, { analyzingHint: hint }),
+        });
+
+        const liveParent =
+          latestNodesRef.current.find((n) => n.id === parentId) || parent;
+        const cardW = DRAMA_FLOW_CHARACTER_DEFAULT_W;
+        const cardH = DRAMA_FLOW_CHARACTER_DEFAULT_H;
+        const gapX = 32;
+        /** 行距加大，给黄标角色名留空，避免与上一行/组框顶叠在一起 */
+        const gapY = 52;
+        const cols = 2;
+        const GROUP_FRAME_PAD = 36;
+        /** 剧本右缘到角色设计师组框左缘的净空，避免叠在剧本上 */
+        const CLEARANCE_AFTER_SCRIPT = 120;
+        const parseCssPx = (v: unknown) => {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v;
+          if (typeof v === 'string') {
+            const n = parseFloat(v);
+            if (Number.isFinite(n) && n > 0) return n;
+          }
+          return 0;
+        };
+        const parentW = Math.max(
+          parseCssPx(liveParent.width),
+          parseCssPx((liveParent.data as any)?.width),
+          parseCssPx((liveParent.style as any)?.width),
+          parseCssPx((liveParent.style as any)?.minWidth),
+          DRAMA_FLOW_DEFAULT_W,
+        );
+        const parentH = Math.max(
+          parseCssPx(liveParent.height),
+          parseCssPx((liveParent.data as any)?.height),
+          parseCssPx((liveParent.style as any)?.height),
+          parseCssPx((liveParent.style as any)?.minHeight),
+          DRAMA_FLOW_DEFAULT_H,
+        );
+        const stamp = Date.now();
+        const rows = Math.ceil(result.characters.length / cols) || 1;
+        const gridH = rows * cardH + (rows - 1) * gapY;
+        const groupId = `nodeGroup-charDesigner-${stamp}`;
+        // 角色卡在组内；组框左缘 = 剧本右缘 + 净空，避免压住剧本
+        const parentRight = (Number(liveParent.position?.x) || 0) + parentW;
+        const originX = parentRight + CLEARANCE_AFTER_SCRIPT + GROUP_FRAME_PAD;
+        const originY =
+          (Number(liveParent.position?.y) || 0) + parentH / 2 - gridH / 2;
+
+        const newNodes = result.characters.map((ch, i) => {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          const nodeId = `dramaFlowCharacter-${stamp}-${i}-${ch.characterId}`;
+          return {
+            id: nodeId,
+            type: DRAMA_FLOW_CHARACTER_NODE_TYPE,
+            position: {
+              x: originX + col * (cardW + gapX),
+              y: originY + row * (cardH + gapY),
+            },
+            style: nodeStyleDimensions(cardW, cardH),
+            width: cardW,
+            height: cardH,
+            selectable: false,
+            draggable: false,
+            data: {
+              label: '角色',
+              title: ch.name,
+              parentDramaFlowId: parentId,
+              nodeGroupId: groupId,
+              characterId: ch.characterId,
+              name: ch.name,
+              role: ch.role,
+              identity: ch.identity,
+              personality: ch.personality,
+              intro: [ch.role, ch.identity, ch.personality]
+                .map((s) => String(s || '').trim())
+                .filter(Boolean)
+                .join(' · '),
+              prompt: ch.prompt,
+              imageUrl: ch.imageUrl,
+              status: ch.imageUrl ? 'ready' : 'idle',
+              voiceId: ch.voiceId,
+              voiceSampleUrl: ch.voiceSampleUrl,
+              voiceStatus: ch.voiceSampleUrl ? 'ready' : 'idle',
+              voicePrompt: ch.voicePrompt,
+              stylePresetId: String(d.stylePresetId || ''),
+              width: cardW,
+              height: cardH,
+            },
+          };
+        });
+
+        const designerGroup = buildSoftGroupFrame(newNodes as any, {
+          groupId,
+          label: '角色设计师',
+          arrangeCols: 2,
+          extraData: {
+            kind: 'dramaFlowCharacterDesigner',
+            parentDramaFlowId: parentId,
+          },
+        });
+
+        // 二次校正：若组框仍侵入剧本区域，整组右移
+        const minGroupX = parentRight + CLEARANCE_AFTER_SCRIPT;
+        const shiftX = Math.max(0, minGroupX - (Number(designerGroup.position?.x) || 0));
+        if (shiftX > 0) {
+          designerGroup.position = {
+            x: (Number(designerGroup.position?.x) || 0) + shiftX,
+            y: Number(designerGroup.position?.y) || 0,
+          };
+          for (const n of newNodes) {
+            n.position = {
+              x: (Number(n.position?.x) || 0) + shiftX,
+              y: Number(n.position?.y) || 0,
+            };
+          }
+        }
+        const newEdges: Array<{
+          id: string;
+          source: string;
+          target: string;
+          sourceHandle: string;
+          targetHandle: string;
+          type: string;
+        }> = [
+          {
+            id: `e-${parentId}-${groupId}`,
+            source: parentId,
+            target: groupId,
+            sourceHandle: 'output',
+            targetHandle: 'in',
+            type: 'default',
+          },
+        ];
+        /** 串联：剧本 → 角色设计师 → 场景 → 道具 → 生物 */
+        let chainPrevId = groupId;
+
+        const CLEARANCE_BETWEEN_GROUPS = 100;
+        let nextGroupLeft =
+          (Number(designerGroup.position?.x) || 0) +
+          Math.max(
+            parseCssPx(designerGroup.width),
+            parseCssPx((designerGroup.data as any)?.width),
+            cols * cardW + (cols - 1) * gapX + GROUP_FRAME_PAD * 2,
+          ) +
+          CLEARANCE_BETWEEN_GROUPS;
+
+        const appendAssetGroup = (opts: {
+          items: Array<Record<string, unknown>>;
+          nodeType: string;
+          groupKind: string;
+          groupLabel: string;
+          idPrefix: string;
+          groupIdSuffix: string;
+          mapData: (item: Record<string, unknown>, groupId: string) => Record<string, unknown>;
+        }) => {
+          if (!opts.items.length) return { group: null as any, nodes: [] as any[], groupId: '' };
+          const aW = DRAMA_FLOW_ASSET_DEFAULT_W;
+          const aH = DRAMA_FLOW_ASSET_DEFAULT_H;
+          const aRows = Math.ceil(opts.items.length / cols) || 1;
+          const aGridH = aRows * aH + (aRows - 1) * gapY;
+          const gId = `nodeGroup-${opts.groupIdSuffix}-${stamp}`;
+          const originX = nextGroupLeft + GROUP_FRAME_PAD;
+          const originY = (Number(liveParent.position?.y) || 0) + parentH / 2 - aGridH / 2;
+          const nodes = opts.items.map((item, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const assetKey = String(
+              (item as any).sceneId ||
+                (item as any).propId ||
+                (item as any).creatureId ||
+                i,
+            );
+            return {
+              id: `${opts.idPrefix}-${stamp}-${i}-${assetKey}`,
+              type: opts.nodeType,
+              position: {
+                x: originX + col * (aW + gapX),
+                y: originY + row * (aH + gapY),
+              },
+              style: nodeStyleDimensions(aW, aH),
+              width: aW,
+              height: aH,
+              selectable: false,
+              draggable: false,
+              data: {
+                ...opts.mapData(item, gId),
+                parentDramaFlowId: parentId,
+                nodeGroupId: gId,
+                stylePresetId: String(d.stylePresetId || ''),
+                width: aW,
+                height: aH,
+              },
+            };
+          });
+          const group = buildSoftGroupFrame(nodes as any, {
+            groupId: gId,
+            label: opts.groupLabel,
+            arrangeCols: 2,
+            extraData: {
+              kind: opts.groupKind,
+              parentDramaFlowId: parentId,
+            },
+          });
+          nextGroupLeft =
+            (Number(group.position?.x) || 0) +
+            Math.max(
+              parseCssPx(group.width),
+              parseCssPx((group.data as any)?.width),
+              cols * aW + (cols - 1) * gapX + GROUP_FRAME_PAD * 2,
+            ) +
+            CLEARANCE_BETWEEN_GROUPS;
+          newEdges.push({
+            id: `e-${chainPrevId}-${gId}`,
+            source: chainPrevId,
+            target: gId,
+            sourceHandle: 'output',
+            targetHandle: 'in',
+            type: 'default',
+          });
+          chainPrevId = gId;
+          return { group, nodes, groupId: gId };
+        };
+
+        // 场景 / 道具 / 生物：独立软组，依次排在角色组右侧
+        const scenePack = appendAssetGroup({
+          items: (result.scenes || []) as any,
+          nodeType: DRAMA_FLOW_SCENE_NODE_TYPE,
+          groupKind: 'dramaFlowSceneDesigner',
+          groupLabel: '场景设计师',
+          idPrefix: 'dramaFlowScene',
+          groupIdSuffix: 'sceneDesigner',
+          mapData: (sc, gId) => ({
+            label: '场景',
+            title: sc.name,
+            nodeGroupId: gId,
+            sceneId: sc.sceneId,
+            name: sc.name,
+            location: sc.location,
+            kind: sc.kind,
+            mood: sc.mood,
+            timeDefault: sc.timeDefault,
+            weatherDefault: sc.weatherDefault,
+            intro: sc.intro,
+            prompt: sc.prompt,
+            imageUrl: sc.imageUrl,
+            status: sc.imageUrl ? 'ready' : 'idle',
+          }),
+        });
+        // 场景卡宽高与角色同系，上面用了 ASSET 尺寸；场景专用尺寸校正
+        if (scenePack.nodes.length) {
+          const sw = DRAMA_FLOW_SCENE_DEFAULT_W;
+          const sh = DRAMA_FLOW_SCENE_DEFAULT_H;
+          for (const n of scenePack.nodes) {
+            n.width = sw;
+            n.height = sh;
+            n.style = nodeStyleDimensions(sw, sh);
+            n.data = { ...n.data, width: sw, height: sh };
+          }
+          // 重建组框边界
+          const rebuilt = buildSoftGroupFrame(scenePack.nodes as any, {
+            groupId: scenePack.groupId,
+            label: '场景设计师',
+            arrangeCols: 2,
+            extraData: {
+              kind: 'dramaFlowSceneDesigner',
+              parentDramaFlowId: parentId,
+            },
+          });
+          scenePack.group = rebuilt;
+        }
+
+        const propPack = appendAssetGroup({
+          items: (result.props || []) as any,
+          nodeType: DRAMA_FLOW_PROP_NODE_TYPE,
+          groupKind: 'dramaFlowPropDesigner',
+          groupLabel: '道具设计师',
+          idPrefix: 'dramaFlowProp',
+          groupIdSuffix: 'propDesigner',
+          mapData: (p, gId) => ({
+            label: '道具',
+            title: p.name,
+            nodeGroupId: gId,
+            assetId: p.propId,
+            assetKind: 'prop',
+            name: p.name,
+            intro: p.intro,
+            prompt: p.prompt,
+            imageUrl: p.imageUrl,
+            status: p.imageUrl ? 'ready' : 'idle',
+          }),
+        });
+
+        const creaturePack = appendAssetGroup({
+          items: (result.creatures || []) as any,
+          nodeType: DRAMA_FLOW_CREATURE_NODE_TYPE,
+          groupKind: 'dramaFlowCreatureDesigner',
+          groupLabel: '生物设计师',
+          idPrefix: 'dramaFlowCreature',
+          groupIdSuffix: 'creatureDesigner',
+          mapData: (c, gId) => ({
+            label: '生物',
+            title: c.name,
+            nodeGroupId: gId,
+            assetId: c.creatureId,
+            assetKind: 'creature',
+            name: c.name,
+            category: c.category,
+            intro: c.intro,
+            prompt: c.prompt,
+            imageUrl: c.imageUrl,
+            status: c.imageUrl ? 'ready' : 'idle',
+          }),
+        });
+
+        const extraGroups = [scenePack, propPack, creaturePack]
+          .filter((p) => p.group)
+          .flatMap((p) => [p.group, ...p.nodes]);
+
+        setNodes((nds) => {
+          const kept = nds.filter((n) => {
+            if (
+              (n.type === DRAMA_FLOW_CHARACTER_NODE_TYPE ||
+                n.type === DRAMA_FLOW_SCENE_NODE_TYPE ||
+                n.type === DRAMA_FLOW_PROP_NODE_TYPE ||
+                n.type === DRAMA_FLOW_CREATURE_NODE_TYPE) &&
+              (n.data as any)?.parentDramaFlowId === parentId
+            ) {
+              return false;
+            }
+            if (
+              n.type === NODE_GROUP_TYPE &&
+              (n.data as any)?.parentDramaFlowId === parentId
+            ) {
+              return false;
+            }
+            return true;
+          });
+          return [
+            ...kept.map((n) =>
+              n.id === parentId
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      analyzing: false,
+                      analyzingHint: '',
+                      confirmedAt: Date.now(),
+                      directorDomain: result.session,
+                      characterDesignerGroupId: groupId,
+                      ...(scenePack.groupId ? { sceneDesignerGroupId: scenePack.groupId } : {}),
+                      ...(propPack.groupId ? { propDesignerGroupId: propPack.groupId } : {}),
+                      ...(creaturePack.groupId
+                        ? { creatureDesignerGroupId: creaturePack.groupId }
+                        : {}),
+                    },
+                  }
+                : n,
+            ),
+            designerGroup,
+            ...newNodes,
+            ...extraGroups,
+          ];
+        });
+        setEdges((eds) => {
+          const oldAssetIds = new Set(
+            latestNodesRef.current
+              .filter(
+                (n) =>
+                  (n.type === DRAMA_FLOW_CHARACTER_NODE_TYPE ||
+                    n.type === DRAMA_FLOW_SCENE_NODE_TYPE ||
+                    n.type === DRAMA_FLOW_PROP_NODE_TYPE ||
+                    n.type === DRAMA_FLOW_CREATURE_NODE_TYPE) &&
+                  (n.data as any)?.parentDramaFlowId === parentId,
+              )
+              .map((n) => n.id),
+          );
+          const oldGroupIds = new Set(
+            latestNodesRef.current
+              .filter(
+                (n) =>
+                  n.type === NODE_GROUP_TYPE &&
+                  (n.data as any)?.parentDramaFlowId === parentId,
+              )
+              .map((n) => n.id),
+          );
+          const kept = eds.filter((e) => {
+            // 清掉旧串联边：剧本→组、组→组、以及指向旧资产卡的边
+            if (oldGroupIds.has(e.source) || oldGroupIds.has(e.target)) return false;
+            if (oldAssetIds.has(e.source) || oldAssetIds.has(e.target)) return false;
+            if (
+              e.source === parentId &&
+              (oldAssetIds.has(e.target) ||
+                oldGroupIds.has(e.target) ||
+                e.sourceHandle === 'out-flow')
+            ) {
+              return false;
+            }
+            return true;
+          });
+          return [...kept, ...newEdges];
+        });
+      } catch (e) {
+        handleDramaFlowNodeDataChange(parentId, {
+          analyzing: false,
+          analyzingHint: '',
+        });
+        showAlert(e instanceof Error ? e.message : String(e || '分析失败'));
+      }
+    },
+    [handleDramaFlowNodeDataChange, projectId, setEdges, setNodes, showAlert],
+  );
+
+  /** 2 代角色卡：单张定妆图（四宫格提示词，对齐 1 代） */
+  const generateDramaFlowCharacterImage = useCallback(
+    async (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      if (!parentId || !characterId) {
+        showAlert('角色卡缺少剧本关联，请重新确认并继续');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      if (!parent) {
+        showAlert('找不到关联的剧本节点');
+        return;
+      }
+      const group = latestNodesRef.current.find(
+        (n) =>
+          n.type === NODE_GROUP_TYPE &&
+          ((n.data as any)?.parentDramaFlowId === parentId ||
+            String((charNode.data as any)?.nodeGroupId || '') === n.id),
+      );
+      setNodes((nds) =>
+        patchNodesWithDramaFlowCharacterImage(nds, parentId, characterId, {
+          status: 'generating',
+          error: '',
+        }),
+      );
+      try {
+        await invokeDramaFlowCharacterImage({
+          parentNode: parent,
+          characterId,
+          name: String((charNode.data as any)?.name || ''),
+          prompt: String((charNode.data as any)?.prompt || ''),
+          imageModel: String((group?.data as any)?.imageModel || ''),
+          imageResolution: String((group?.data as any)?.imageResolution || '2K'),
+          projectId: projectId || undefined,
+        });
+      } catch (e) {
+        setNodes((nds) =>
+          patchNodesWithDramaFlowCharacterImage(nds, parentId, characterId, {
+            status: 'error',
+            error: e instanceof Error ? e.message : String(e || '生成失败'),
+          }),
+        );
+        showAlert(e instanceof Error ? e.message : String(e || '生成失败'));
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  /** 角色设计师组：批量一键生成 */
+  const batchGenerateDramaFlowCharacterImages = useCallback(
+    async (groupId: string) => {
+      const group = latestNodesRef.current.find(
+        (n) => n.id === groupId && n.type === NODE_GROUP_TYPE,
+      );
+      if (!group) return;
+      const parentId = String((group.data as any)?.parentDramaFlowId || '').trim();
+      const chars = latestNodesRef.current.filter(
+        (n) =>
+          n.type === DRAMA_FLOW_CHARACTER_NODE_TYPE &&
+          (String((n.data as any)?.nodeGroupId || '') === groupId ||
+            (parentId && String((n.data as any)?.parentDramaFlowId || '') === parentId)),
+      );
+      if (!chars.length) {
+        showAlert('组内没有角色卡');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: true } } : n,
+        ),
+      );
+      try {
+        const limit = await resolveDramaFlowImageConcurrency();
+        await runDramaFlowBatchPool(chars, limit, async (c) => {
+          await generateDramaFlowCharacterImage(c.id);
+        });
+      } finally {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: false } } : n,
+          ),
+        );
+      }
+    },
+    [generateDramaFlowCharacterImage, setNodes, showAlert],
+  );
+
+  /** 2 代角色卡：音色试听生成（对齐 1 代 director-voice） */
+  const generateDramaFlowCharacterVoice = useCallback(
+    async (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      if (!parentId || !characterId) {
+        showAlert('角色卡缺少剧本关联，请重新确认并继续');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      if (!parent) {
+        showAlert('找不到关联的剧本节点');
+        return;
+      }
+      if (!window.electronAPI?.invokeAI) {
+        showAlert('AI 通道不可用');
+        return;
+      }
+
+      let domain =
+        ((parent.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain as
+          | DramaDirectorSession
+          | null) || null;
+      if (!domain?.bible) {
+        showAlert('请先确认并继续分析角色');
+        return;
+      }
+      domain = ensureVoiceSampleTexts(domain);
+      const ch =
+        domain.bible.characters.find((c) => String(c.character_id || '') === characterId) || null;
+      let voiceId = String((charNode.data as any)?.voiceId || ch?.voice_id || '').trim();
+      let voice =
+        domain.bible.voices.find((v) => String(v.voice_id || '') === voiceId) ||
+        domain.bible.voices.find((v) => String(v.character_id || '') === characterId) ||
+        null;
+      if (!voiceId) voiceId = String(voice?.voice_id || '').trim();
+      if (!voiceId || !voice) {
+        showAlert('该角色尚未分配音色，请重新分析后再试');
+        return;
+      }
+
+      let text = String((charNode.data as any)?.voicePrompt || '').trim();
+      if (!text) text = String(voice.sample_text || '').trim();
+      if (!text) {
+        text = composeDramaVoiceSampleLine({
+          name: ch?.name || String((charNode.data as any)?.name || ''),
+          age: ch?.age,
+          role: ch?.role || String((charNode.data as any)?.role || ''),
+          identity: ch?.identity || String((charNode.data as any)?.identity || ''),
+          personality: ch?.personality || String((charNode.data as any)?.personality || ''),
+          gender: ch?.gender,
+          timbre: voice.timbre,
+          voiceStyle: voice.voiceStyle,
+          language_style: voice.language_style,
+          emotion_range: voice.emotion_range,
+        });
+      }
+      if (!text.trim()) {
+        showAlert('请先填写声音提示词（一段可念的短句）');
+        return;
+      }
+
+      // 写回 domain.sample_text，与卡上声音提示词同步
+      domain = createEmptyDramaSession({
+        ...domain,
+        bible: {
+          ...domain.bible,
+          voices: (domain.bible.voices || []).map((v) =>
+            v.voice_id === voiceId ? { ...v, sample_text: text } : v,
+          ),
+        },
+      });
+
+      const domainNext = applyDramaSessionVoiceSample(domain, voiceId, {
+        status: 'generating',
+        error: '',
+        model: DOUBAO_SEED_AUDIO_MODEL_ID,
+      });
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === parentId && domainNext) {
+            return { ...n, data: { ...n.data, directorDomain: domainNext } };
+          }
+          if (n.id === characterNodeId) {
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                voiceId,
+                voicePrompt: text,
+                voiceStatus: 'generating',
+                voiceError: '',
+              },
+            };
+          }
+          return n;
+        }),
+      );
+
+      const refAudio = String(voice.sample_url || voice.identity?.reference_audio || '').trim();
+      const charImageUrl = String(
+        (charNode.data as any)?.imageUrl || ch?.imageUrl || '',
+      ).trim();
+      const hasRefAudio = !!refAudio;
+      const hasImage = !hasRefAudio && !!charImageUrl;
+      const fallbackSpeaker = !hasRefAudio && !hasImage ? 'zh_female_vv_uranus_bigtts' : '';
+
+      try {
+        await window.electronAPI.invokeAI({
+          modelId: 'audio',
+          nodeId: `${parentId}-director-voice-${voiceId}`,
+          input: {
+            model: DOUBAO_SEED_AUDIO_MODEL_ID,
+            text,
+            enable_base64_output: false,
+            english_normalization: false,
+            speechRate: 0,
+            loudnessRate: 0,
+            pitch: 0,
+            doubaoFormat: 'mp3',
+            doubaoSampleRate: '24000',
+            projectId: projectId || undefined,
+            nodeTitle: `角色音色-${String((charNode.data as any)?.name || voiceId)}`,
+            ...(hasRefAudio
+              ? { doubaoAudioUrls: [refAudio], referenceAudioUrl: refAudio }
+              : hasImage
+                ? { doubaoImageUrl: charImageUrl }
+                : { doubaoSpeaker: fallbackSpeaker }),
+          },
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '声音生成失败');
+        setNodes((nds) => {
+          const parentLive = nds.find((n) => n.id === parentId);
+          const domainPrev = (parentLive?.data as { directorDomain?: DramaDirectorSession | null })
+            ?.directorDomain;
+          const domainErr = applyDramaSessionVoiceSample(domainPrev, voiceId, {
+            status: 'error',
+            error: msg,
+          });
+          return nds.map((n) => {
+            if (n.id === parentId && domainErr) {
+              return { ...n, data: { ...n.data, directorDomain: domainErr } };
+            }
+            if (n.id === characterNodeId) {
+              return {
+                ...n,
+                data: { ...n.data, voiceStatus: 'error', voiceError: msg },
+              };
+            }
+            return n;
+          });
+        });
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const uploadDramaFlowCharacterImage = useCallback(
+    async (characterNodeId: string, file: File) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      const pid = String(projectId || '').trim();
+      if (!pid) {
+        showAlert('项目未打开，无法保存图片');
+        return;
+      }
+      if (!window.electronAPI?.directorV2SaveAssetFile) {
+        showAlert('当前环境不支持本地上传');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === characterNodeId
+            ? { ...n, data: { ...n.data, status: 'generating', error: '' } }
+            : n,
+        ),
+      );
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await window.electronAPI.directorV2SaveAssetFile(pid, {
+          kind: 'image',
+          filename: file.name,
+          mime: file.type,
+          data: buf,
+        });
+        if (!res?.ok || !res.url) throw new Error(res?.error || '保存图片失败');
+        setNodes((nds) => {
+          let next = patchNodesWithDramaFlowCharacterImage(nds, parentId, characterId, {
+            imageUrl: res.url,
+            status: 'ready',
+            error: '',
+          });
+          const parent = next.find((n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE);
+          const domainPrev = (parent?.data as { directorDomain?: DramaDirectorSession | null })
+            ?.directorDomain;
+          const domainNext =
+            domainPrev && characterId
+              ? applyDramaSessionAssetImage(domainPrev, characterId, {
+                  imageUrl: res.url,
+                  status: 'ready',
+                })
+              : null;
+          if (domainNext) {
+            next = next.map((n) =>
+              n.id === parentId ? { ...n, data: { ...n.data, directorDomain: domainNext } } : n,
+            );
+          }
+          return next;
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '上传失败');
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === characterNodeId
+              ? { ...n, data: { ...n.data, status: 'error', error: msg } }
+              : n,
+          ),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const uploadDramaFlowCharacterVoice = useCallback(
+    async (characterNodeId: string, file: File) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      let voiceId = String((charNode.data as any)?.voiceId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      const pid = String(projectId || '').trim();
+      if (!pid) {
+        showAlert('项目未打开，无法保存音频');
+        return;
+      }
+      if (!window.electronAPI?.directorV2SaveAssetFile) {
+        showAlert('当前环境不支持本地上传');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      const domainPrev = (parent?.data as { directorDomain?: DramaDirectorSession | null })
+        ?.directorDomain;
+      if (!voiceId && domainPrev?.bible) {
+        const hit =
+          domainPrev.bible.voices.find((v) => String(v.character_id || '') === characterId) || null;
+        voiceId = String(hit?.voice_id || '').trim();
+      }
+      if (!voiceId) {
+        showAlert('该角色尚未分配音色，请重新分析后再试');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === characterNodeId
+            ? { ...n, data: { ...n.data, voiceId, voiceStatus: 'generating', voiceError: '' } }
+            : n,
+        ),
+      );
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await window.electronAPI.directorV2SaveAssetFile(pid, {
+          kind: 'audio',
+          filename: file.name,
+          mime: file.type,
+          data: buf,
+        });
+        if (!res?.ok || !res.url) throw new Error(res?.error || '保存声音失败');
+        setNodes((nds) => {
+          const parentLive = nds.find((n) => n.id === parentId);
+          const dPrev = (parentLive?.data as { directorDomain?: DramaDirectorSession | null })
+            ?.directorDomain;
+          const domainNext = applyDramaSessionVoiceSample(dPrev, voiceId, {
+            sampleUrl: res.url,
+            status: 'ready',
+          });
+          return nds.map((n) => {
+            if (n.id === parentId && domainNext) {
+              return { ...n, data: { ...n.data, directorDomain: domainNext } };
+            }
+            if (n.id === characterNodeId) {
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  voiceId,
+                  voiceSampleUrl: res.url,
+                  voiceStatus: 'ready',
+                  voiceError: '',
+                },
+              };
+            }
+            return n;
+          });
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '上传失败');
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === characterNodeId
+              ? { ...n, data: { ...n.data, voiceStatus: 'error', voiceError: msg } }
+              : n,
+          ),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const clearDramaFlowCharacterVoice = useCallback(
+    (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const voiceId = String((charNode.data as any)?.voiceId || '').trim();
+      setNodes((nds) => {
+        const parentLive = nds.find((n) => n.id === parentId);
+        const dPrev = (parentLive?.data as { directorDomain?: DramaDirectorSession | null })
+          ?.directorDomain;
+        const domainNext = voiceId
+          ? applyDramaSessionVoiceSample(dPrev, voiceId, {
+              sampleUrl: '',
+              status: 'pending',
+            })
+          : null;
+        return nds.map((n) => {
+          if (n.id === parentId && domainNext) {
+            return { ...n, data: { ...n.data, directorDomain: domainNext } };
+          }
+          if (n.id === characterNodeId) {
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                voiceSampleUrl: '',
+                voiceStatus: 'idle',
+                voiceError: '',
+              },
+            };
+          }
+          return n;
+        });
+      });
+    },
+    [setNodes],
+  );
+
+  /** 删除单张角色卡，并同步组框 / 边 */
+  const deleteDramaFlowCharacter = useCallback(
+    (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const groupId = String((charNode.data as any)?.nodeGroupId || '').trim();
+      setNodes((nds) => {
+        let next = nds.filter((n) => n.id !== characterNodeId);
+        if (groupId) {
+          next = syncGroupFrameBounds(next, groupId);
+          next = pruneEmptyNodeGroups(next);
+        }
+        return next;
+      });
+      setEdges((eds) =>
+        eds.filter((e) => e.source !== characterNodeId && e.target !== characterNodeId),
+      );
+      removeTasksForNodeIds([characterNodeId]);
+    },
+    [removeTasksForNodeIds, setEdges, setNodes],
+  );
+
+  const handleDramaFlowSceneNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    setNodes((nds) => {
+      let groupId = '';
+      const next = nds.map((node) => {
+        if (node.id !== nodeId) return node;
+        groupId = String((node.data as any)?.nodeGroupId || '').trim();
+        const nextData = { ...node.data, ...updates };
+        const w = Number(updates.width);
+        const h = Number(updates.height);
+        if ((Number.isFinite(w) && w > 0) || (Number.isFinite(h) && h > 0)) {
+          const nextW =
+            Number.isFinite(w) && w > 0
+              ? w
+              : Number(node.width) ||
+                Number((node.data as any)?.width) ||
+                DRAMA_FLOW_SCENE_DEFAULT_W;
+          const nextH =
+            Number.isFinite(h) && h > 0
+              ? h
+              : Number(node.height) ||
+                Number((node.data as any)?.height) ||
+                DRAMA_FLOW_SCENE_DEFAULT_H;
+          return {
+            ...node,
+            width: nextW,
+            height: nextH,
+            style: { ...(node.style as object), ...nodeStyleDimensions(nextW, nextH) },
+            data: { ...nextData, width: nextW, height: nextH },
+          };
+        }
+        return { ...node, data: nextData };
+      });
+      return groupId ? syncGroupFrameBounds(next, groupId) : next;
+    });
+  }, [setNodes]);
+
+  const generateDramaFlowSceneImage = useCallback(
+    async (sceneNodeId: string) => {
+      const sceneNode = latestNodesRef.current.find((n) => n.id === sceneNodeId);
+      if (!sceneNode || sceneNode.type !== DRAMA_FLOW_SCENE_NODE_TYPE) return;
+      const parentId = String((sceneNode.data as any)?.parentDramaFlowId || '').trim();
+      const sceneId = String((sceneNode.data as any)?.sceneId || '').trim();
+      if (!parentId || !sceneId) {
+        showAlert('场景卡缺少剧本关联，请重新确认并继续');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      if (!parent) {
+        showAlert('找不到关联的剧本节点');
+        return;
+      }
+      const group = latestNodesRef.current.find(
+        (n) =>
+          n.type === NODE_GROUP_TYPE &&
+          String((n.data as any)?.kind || '') === 'dramaFlowSceneDesigner' &&
+          (n.id === String((sceneNode.data as any)?.nodeGroupId || '') ||
+            String((n.data as any)?.parentDramaFlowId || '') === parentId),
+      );
+      const domain =
+        ((parent.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain as
+          | DramaDirectorSession
+          | null) || null;
+      const sceneAsset =
+        domain?.bible?.scenes?.find((s) => String(s.scene_id || '') === sceneId) || null;
+      setNodes((nds) =>
+        patchNodesWithDramaFlowSceneImage(nds, parentId, sceneId, {
+          status: 'generating',
+          error: '',
+        }),
+      );
+      try {
+        await invokeDramaFlowSceneImage({
+          parentNode: parent,
+          sceneId,
+          name: String((sceneNode.data as any)?.name || sceneAsset?.name || ''),
+          prompt: String((sceneNode.data as any)?.prompt || sceneAsset?.prompt || ''),
+          imageModel: String((group?.data as any)?.imageModel || ''),
+          imageResolution: String((group?.data as any)?.imageResolution || '2K'),
+          projectId: projectId || undefined,
+          location: String((sceneNode.data as any)?.location || sceneAsset?.location || ''),
+          kind: String((sceneNode.data as any)?.kind || sceneAsset?.kind || ''),
+          spatial_structure: String(sceneAsset?.spatial_structure || ''),
+          architecture: String(sceneAsset?.architecture || ''),
+          materials: String(sceneAsset?.materials || ''),
+          lighting: String(sceneAsset?.lighting || ''),
+          time_default: String(
+            (sceneNode.data as any)?.timeDefault || sceneAsset?.time_default || '',
+          ),
+          fixed_elements: Array.isArray(sceneAsset?.fixed_elements)
+            ? sceneAsset!.fixed_elements.map((x) => String(x || '').trim()).filter(Boolean)
+            : [],
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '生成失败');
+        setNodes((nds) =>
+          patchNodesWithDramaFlowSceneImage(nds, parentId, sceneId, {
+            status: 'error',
+            error: msg,
+          }),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const batchGenerateDramaFlowSceneImages = useCallback(
+    async (groupId: string) => {
+      const group = latestNodesRef.current.find(
+        (n) => n.id === groupId && n.type === NODE_GROUP_TYPE,
+      );
+      if (!group) return;
+      const parentId = String((group.data as any)?.parentDramaFlowId || '').trim();
+      const scenes = latestNodesRef.current.filter(
+        (n) =>
+          n.type === DRAMA_FLOW_SCENE_NODE_TYPE &&
+          (String((n.data as any)?.nodeGroupId || '') === groupId ||
+            (parentId && String((n.data as any)?.parentDramaFlowId || '') === parentId)),
+      );
+      if (!scenes.length) {
+        showAlert('组内没有场景卡');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: true } } : n,
+        ),
+      );
+      try {
+        const limit = await resolveDramaFlowImageConcurrency();
+        await runDramaFlowBatchPool(scenes, limit, async (s) => {
+          await generateDramaFlowSceneImage(s.id);
+        });
+      } finally {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: false } } : n,
+          ),
+        );
+      }
+    },
+    [generateDramaFlowSceneImage, setNodes, showAlert],
+  );
+
+  const uploadDramaFlowSceneImage = useCallback(
+    async (sceneNodeId: string, file: File) => {
+      const sceneNode = latestNodesRef.current.find((n) => n.id === sceneNodeId);
+      if (!sceneNode || sceneNode.type !== DRAMA_FLOW_SCENE_NODE_TYPE) return;
+      const parentId = String((sceneNode.data as any)?.parentDramaFlowId || '').trim();
+      const sceneId = String((sceneNode.data as any)?.sceneId || '').trim();
+      const pid = String(projectId || '').trim();
+      if (!pid) {
+        showAlert('项目未打开，无法保存图片');
+        return;
+      }
+      if (!window.electronAPI?.directorV2SaveAssetFile) {
+        showAlert('当前环境不支持本地上传');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === sceneNodeId
+            ? { ...n, data: { ...n.data, status: 'generating', error: '' } }
+            : n,
+        ),
+      );
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await window.electronAPI.directorV2SaveAssetFile(pid, {
+          kind: 'image',
+          filename: file.name,
+          mime: file.type,
+          data: buf,
+        });
+        if (!res?.ok || !res.url) throw new Error(res?.error || '保存图片失败');
+        setNodes((nds) =>
+          patchNodesWithDramaFlowSceneImage(nds, parentId, sceneId, {
+            imageUrl: res.url,
+            status: 'ready',
+            error: '',
+          }),
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '上传失败');
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === sceneNodeId
+              ? { ...n, data: { ...n.data, status: 'error', error: msg } }
+              : n,
+          ),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const deleteDramaFlowScene = useCallback(
+    (sceneNodeId: string) => {
+      const sceneNode = latestNodesRef.current.find((n) => n.id === sceneNodeId);
+      if (!sceneNode || sceneNode.type !== DRAMA_FLOW_SCENE_NODE_TYPE) return;
+      const groupId = String((sceneNode.data as any)?.nodeGroupId || '').trim();
+      setNodes((nds) => {
+        let next = nds.filter((n) => n.id !== sceneNodeId);
+        if (groupId) {
+          next = syncGroupFrameBounds(next, groupId);
+          next = pruneEmptyNodeGroups(next);
+        }
+        return next;
+      });
+      setEdges((eds) =>
+        eds.filter((e) => e.source !== sceneNodeId && e.target !== sceneNodeId),
+      );
+      removeTasksForNodeIds([sceneNodeId]);
+    },
+    [removeTasksForNodeIds, setEdges, setNodes],
+  );
+
+  const handleDramaFlowAssetCardNodeDataChange = useCallback(
+    (nodeId: string, updates: Record<string, unknown>) => {
+      setNodes((nds) => {
+        let groupId = '';
+        const next = nds.map((node) => {
+          if (node.id !== nodeId) return node;
+          groupId = String((node.data as any)?.nodeGroupId || '').trim();
+          const nextData = { ...node.data, ...updates };
+          const w = Number(updates.width);
+          const h = Number(updates.height);
+          if ((Number.isFinite(w) && w > 0) || (Number.isFinite(h) && h > 0)) {
+            const nextW =
+              Number.isFinite(w) && w > 0
+                ? w
+                : Number(node.width) ||
+                  Number((node.data as any)?.width) ||
+                  DRAMA_FLOW_ASSET_DEFAULT_W;
+            const nextH =
+              Number.isFinite(h) && h > 0
+                ? h
+                : Number(node.height) ||
+                  Number((node.data as any)?.height) ||
+                  DRAMA_FLOW_ASSET_DEFAULT_H;
+            return {
+              ...node,
+              width: nextW,
+              height: nextH,
+              style: { ...(node.style as object), ...nodeStyleDimensions(nextW, nextH) },
+              data: { ...nextData, width: nextW, height: nextH },
+            };
+          }
+          return { ...node, data: nextData };
+        });
+        return groupId ? syncGroupFrameBounds(next, groupId) : next;
+      });
+    },
+    [setNodes],
+  );
+
+  const generateDramaFlowPropImage = useCallback(
+    async (nodeId: string) => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.type !== DRAMA_FLOW_PROP_NODE_TYPE) return;
+      const parentId = String((node.data as any)?.parentDramaFlowId || '').trim();
+      const propId = String((node.data as any)?.assetId || '').trim();
+      if (!parentId || !propId) {
+        showAlert('道具卡缺少剧本关联，请重新确认并继续');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      if (!parent) {
+        showAlert('找不到关联的剧本节点');
+        return;
+      }
+      const group = latestNodesRef.current.find(
+        (n) => n.id === String((node.data as any)?.nodeGroupId || ''),
+      );
+      setNodes((nds) =>
+        patchNodesWithDramaFlowPropImage(nds, parentId, propId, { status: 'generating', error: '' }),
+      );
+      try {
+        await invokeDramaFlowPropImage({
+          parentNode: parent,
+          propId,
+          name: String((node.data as any)?.name || ''),
+          prompt: String((node.data as any)?.prompt || ''),
+          imageModel: String((group?.data as any)?.imageModel || ''),
+          imageResolution: String((group?.data as any)?.imageResolution || '2K'),
+          projectId: projectId || undefined,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '生成失败');
+        setNodes((nds) =>
+          patchNodesWithDramaFlowPropImage(nds, parentId, propId, { status: 'error', error: msg }),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const generateDramaFlowCreatureImage = useCallback(
+    async (nodeId: string) => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.type !== DRAMA_FLOW_CREATURE_NODE_TYPE) return;
+      const parentId = String((node.data as any)?.parentDramaFlowId || '').trim();
+      const creatureId = String((node.data as any)?.assetId || '').trim();
+      if (!parentId || !creatureId) {
+        showAlert('生物卡缺少剧本关联，请重新确认并继续');
+        return;
+      }
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      if (!parent) {
+        showAlert('找不到关联的剧本节点');
+        return;
+      }
+      const group = latestNodesRef.current.find(
+        (n) => n.id === String((node.data as any)?.nodeGroupId || ''),
+      );
+      setNodes((nds) =>
+        patchNodesWithDramaFlowCreatureImage(nds, parentId, creatureId, {
+          status: 'generating',
+          error: '',
+        }),
+      );
+      try {
+        await invokeDramaFlowCreatureImage({
+          parentNode: parent,
+          creatureId,
+          name: String((node.data as any)?.name || ''),
+          prompt: String((node.data as any)?.prompt || ''),
+          imageModel: String((group?.data as any)?.imageModel || ''),
+          imageResolution: String((group?.data as any)?.imageResolution || '2K'),
+          projectId: projectId || undefined,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '生成失败');
+        setNodes((nds) =>
+          patchNodesWithDramaFlowCreatureImage(nds, parentId, creatureId, {
+            status: 'error',
+            error: msg,
+          }),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const batchGenerateDramaFlowPropImages = useCallback(
+    async (groupId: string) => {
+      const nodes = latestNodesRef.current.filter(
+        (n) =>
+          n.type === DRAMA_FLOW_PROP_NODE_TYPE &&
+          String((n.data as any)?.nodeGroupId || '') === groupId,
+      );
+      if (!nodes.length) {
+        showAlert('组内没有道具卡');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: true } } : n,
+        ),
+      );
+      try {
+        const limit = await resolveDramaFlowImageConcurrency();
+        await runDramaFlowBatchPool(nodes, limit, async (n) => {
+          await generateDramaFlowPropImage(n.id);
+        });
+      } finally {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: false } } : n,
+          ),
+        );
+      }
+    },
+    [generateDramaFlowPropImage, setNodes, showAlert],
+  );
+
+  const batchGenerateDramaFlowCreatureImages = useCallback(
+    async (groupId: string) => {
+      const nodes = latestNodesRef.current.filter(
+        (n) =>
+          n.type === DRAMA_FLOW_CREATURE_NODE_TYPE &&
+          String((n.data as any)?.nodeGroupId || '') === groupId,
+      );
+      if (!nodes.length) {
+        showAlert('组内没有生物卡');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: true } } : n,
+        ),
+      );
+      try {
+        const limit = await resolveDramaFlowImageConcurrency();
+        await runDramaFlowBatchPool(nodes, limit, async (n) => {
+          await generateDramaFlowCreatureImage(n.id);
+        });
+      } finally {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === groupId ? { ...n, data: { ...n.data, batchGenerating: false } } : n,
+          ),
+        );
+      }
+    },
+    [generateDramaFlowCreatureImage, setNodes, showAlert],
+  );
+
+  const uploadDramaFlowAssetCardImage = useCallback(
+    async (nodeId: string, file: File, kind: 'prop' | 'creature') => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      const expectType =
+        kind === 'prop' ? DRAMA_FLOW_PROP_NODE_TYPE : DRAMA_FLOW_CREATURE_NODE_TYPE;
+      if (!node || node.type !== expectType) return;
+      const parentId = String((node.data as any)?.parentDramaFlowId || '').trim();
+      const assetId = String((node.data as any)?.assetId || '').trim();
+      const pid = String(projectId || '').trim();
+      if (!pid) {
+        showAlert('项目未打开，无法保存图片');
+        return;
+      }
+      if (!window.electronAPI?.directorV2SaveAssetFile) {
+        showAlert('当前环境不支持本地上传');
+        return;
+      }
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, status: 'generating', error: '' } } : n,
+        ),
+      );
+      try {
+        const buf = await file.arrayBuffer();
+        const res = await window.electronAPI.directorV2SaveAssetFile(pid, {
+          kind: 'image',
+          filename: file.name,
+          mime: file.type,
+          data: buf,
+        });
+        if (!res?.ok || !res.url) throw new Error(res?.error || '保存图片失败');
+        setNodes((nds) =>
+          kind === 'prop'
+            ? patchNodesWithDramaFlowPropImage(nds, parentId, assetId, {
+                imageUrl: res.url,
+                status: 'ready',
+                error: '',
+              })
+            : patchNodesWithDramaFlowCreatureImage(nds, parentId, assetId, {
+                imageUrl: res.url,
+                status: 'ready',
+                error: '',
+              }),
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e || '上传失败');
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId ? { ...n, data: { ...n.data, status: 'error', error: msg } } : n,
+          ),
+        );
+        showAlert(msg);
+      }
+    },
+    [projectId, setNodes, showAlert],
+  );
+
+  const deleteDramaFlowAssetCard = useCallback(
+    (nodeId: string) => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (
+        !node ||
+        (node.type !== DRAMA_FLOW_PROP_NODE_TYPE && node.type !== DRAMA_FLOW_CREATURE_NODE_TYPE)
+      ) {
+        return;
+      }
+      const groupId = String((node.data as any)?.nodeGroupId || '').trim();
+      setNodes((nds) => {
+        let next = nds.filter((n) => n.id !== nodeId);
+        if (groupId) {
+          next = syncGroupFrameBounds(next, groupId);
+          next = pruneEmptyNodeGroups(next);
+        }
+        return next;
+      });
+      setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+      removeTasksForNodeIds([nodeId]);
+    },
+    [removeTasksForNodeIds, setEdges, setNodes],
+  );
+
+  const getDramaFlowDirectorDomain = useCallback((parentDramaFlowId: string) => {
+    const parent = latestNodesRef.current.find(
+      (n) => n.id === parentDramaFlowId && n.type === DRAMA_FLOW_NODE_TYPE,
+    );
+    return (
+      ((parent?.data as { directorDomain?: DramaDirectorSession | null })?.directorDomain as
+        | DramaDirectorSession
+        | null) || null
+    );
+  }, []);
+
+  /** 角色仓库勾选写入：更新剧本 domain，并回填本卡形象/声音 */
+  const applyDramaFlowLibrarySession = useCallback(
+    (characterNodeId: string, nextSession: DramaDirectorSession, _summary: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      const ch =
+        nextSession.bible?.characters?.find((c) => String(c.character_id || '') === characterId) ||
+        null;
+      const voiceId = String(ch?.voice_id || (charNode.data as any)?.voiceId || '').trim();
+      const voice =
+        nextSession.bible?.voices?.find((v) => String(v.voice_id || '') === voiceId) ||
+        nextSession.bible?.voices?.find((v) => String(v.character_id || '') === characterId) ||
+        null;
+      const imageUrl = String(ch?.imageUrl || '').trim();
+      const voiceSampleUrl = String(voice?.sample_url || '').trim();
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === parentId) {
+            return { ...n, data: { ...n.data, directorDomain: nextSession } };
+          }
+          if (n.id === characterNodeId) {
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                ...(imageUrl
+                  ? { imageUrl, status: 'ready', error: '' }
+                  : {}),
+                ...(voiceId ? { voiceId } : {}),
+                ...(voiceSampleUrl
+                  ? { voiceSampleUrl, voiceStatus: 'ready', voiceError: '' }
+                  : {}),
+                ...(voice?.sample_text
+                  ? { voicePrompt: String(voice.sample_text || '') }
+                  : {}),
+                ...(ch?.prompt ? { prompt: String(ch.prompt || '') } : {}),
+              },
+            };
+          }
+          return n;
+        }),
+      );
+    },
+    [setNodes],
+  );
+
+  const generateDramaFlowCharacterImageRef = useRef(generateDramaFlowCharacterImage);
+  const batchGenerateDramaFlowCharacterImagesRef = useRef(batchGenerateDramaFlowCharacterImages);
+  const generateDramaFlowCharacterVoiceRef = useRef(generateDramaFlowCharacterVoice);
+  const uploadDramaFlowCharacterImageRef = useRef(uploadDramaFlowCharacterImage);
+  const pickDramaFlowCharacterImageFromCanvasRef = useRef<
+    ((characterNodeId: string) => Promise<void>) | null
+  >(null);
+  const uploadDramaFlowCharacterVoiceRef = useRef(uploadDramaFlowCharacterVoice);
+  const pickDramaFlowCharacterVoiceFromCanvasRef = useRef<
+    ((characterNodeId: string) => Promise<void>) | null
+  >(null);
+  const clearDramaFlowCharacterVoiceRef = useRef(clearDramaFlowCharacterVoice);
+  const deleteDramaFlowCharacterRef = useRef(deleteDramaFlowCharacter);
+  const generateDramaFlowSceneImageRef = useRef(generateDramaFlowSceneImage);
+  const batchGenerateDramaFlowSceneImagesRef = useRef(batchGenerateDramaFlowSceneImages);
+  const uploadDramaFlowSceneImageRef = useRef(uploadDramaFlowSceneImage);
+  const pickDramaFlowSceneImageFromCanvasRef = useRef<
+    ((sceneNodeId: string) => Promise<void>) | null
+  >(null);
+  const deleteDramaFlowSceneRef = useRef(deleteDramaFlowScene);
+  const generateDramaFlowPropImageRef = useRef(generateDramaFlowPropImage);
+  const generateDramaFlowCreatureImageRef = useRef(generateDramaFlowCreatureImage);
+  const batchGenerateDramaFlowPropImagesRef = useRef(batchGenerateDramaFlowPropImages);
+  const batchGenerateDramaFlowCreatureImagesRef = useRef(batchGenerateDramaFlowCreatureImages);
+  const uploadDramaFlowAssetCardImageRef = useRef(uploadDramaFlowAssetCardImage);
+  const deleteDramaFlowAssetCardRef = useRef(deleteDramaFlowAssetCard);
+  const pickDramaFlowPropImageFromCanvasRef = useRef<((nodeId: string) => Promise<void>) | null>(
+    null,
+  );
+  const pickDramaFlowCreatureImageFromCanvasRef = useRef<
+    ((nodeId: string) => Promise<void>) | null
+  >(null);
+  const getDramaFlowDirectorDomainRef = useRef(getDramaFlowDirectorDomain);
+  const applyDramaFlowLibrarySessionRef = useRef(applyDramaFlowLibrarySession);
+  useEffect(() => {
+    generateDramaFlowCharacterImageRef.current = generateDramaFlowCharacterImage;
+    batchGenerateDramaFlowCharacterImagesRef.current = batchGenerateDramaFlowCharacterImages;
+    generateDramaFlowCharacterVoiceRef.current = generateDramaFlowCharacterVoice;
+    uploadDramaFlowCharacterImageRef.current = uploadDramaFlowCharacterImage;
+    uploadDramaFlowCharacterVoiceRef.current = uploadDramaFlowCharacterVoice;
+    clearDramaFlowCharacterVoiceRef.current = clearDramaFlowCharacterVoice;
+    deleteDramaFlowCharacterRef.current = deleteDramaFlowCharacter;
+    generateDramaFlowSceneImageRef.current = generateDramaFlowSceneImage;
+    batchGenerateDramaFlowSceneImagesRef.current = batchGenerateDramaFlowSceneImages;
+    uploadDramaFlowSceneImageRef.current = uploadDramaFlowSceneImage;
+    deleteDramaFlowSceneRef.current = deleteDramaFlowScene;
+    generateDramaFlowPropImageRef.current = generateDramaFlowPropImage;
+    generateDramaFlowCreatureImageRef.current = generateDramaFlowCreatureImage;
+    batchGenerateDramaFlowPropImagesRef.current = batchGenerateDramaFlowPropImages;
+    batchGenerateDramaFlowCreatureImagesRef.current = batchGenerateDramaFlowCreatureImages;
+    uploadDramaFlowAssetCardImageRef.current = uploadDramaFlowAssetCardImage;
+    deleteDramaFlowAssetCardRef.current = deleteDramaFlowAssetCard;
+    getDramaFlowDirectorDomainRef.current = getDramaFlowDirectorDomain;
+    applyDramaFlowLibrarySessionRef.current = applyDramaFlowLibrarySession;
+  }, [
+    generateDramaFlowCharacterImage,
+    batchGenerateDramaFlowCharacterImages,
+    generateDramaFlowCharacterVoice,
+    uploadDramaFlowCharacterImage,
+    uploadDramaFlowCharacterVoice,
+    clearDramaFlowCharacterVoice,
+    deleteDramaFlowCharacter,
+    generateDramaFlowSceneImage,
+    batchGenerateDramaFlowSceneImages,
+    uploadDramaFlowSceneImage,
+    deleteDramaFlowScene,
+    generateDramaFlowPropImage,
+    generateDramaFlowCreatureImage,
+    batchGenerateDramaFlowPropImages,
+    batchGenerateDramaFlowCreatureImages,
+    uploadDramaFlowAssetCardImage,
+    deleteDramaFlowAssetCard,
+    getDramaFlowDirectorDomain,
+    applyDramaFlowLibrarySession,
+  ]);
+
   /** 拆帧 / 一键拆分等：将图片节点写入 Workspace 画布状态 */
   const handleAddCanvasImageNodes = useCallback(
     (newNodes: Node[]) => {
@@ -7102,6 +8836,14 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const handlePhotoCollageNodeDataChangeRef = useRef<typeof handlePhotoCollageNodeDataChange | null>(null);
   const handleGridMapNodeDataChangeRef = useRef<typeof handleGridMapNodeDataChange | null>(null);
   const handleImageComparerNodeDataChangeRef = useRef<typeof handleImageComparerNodeDataChange | null>(null);
+  const handleDramaFlowNodeDataChangeRef = useRef<typeof handleDramaFlowNodeDataChange | null>(null);
+  const handleDramaFlowCharacterNodeDataChangeRef = useRef<
+    typeof handleDramaFlowCharacterNodeDataChange | null
+  >(null);
+  const handleDramaFlowSceneNodeDataChangeRef = useRef<
+    typeof handleDramaFlowSceneNodeDataChange | null
+  >(null);
+  const spawnDramaFlowCharactersRef = useRef<typeof spawnDramaFlowCharacters | null>(null);
   const handleAddTaskRef = useRef<typeof handleAddTask | null>(null);
   const handleAddTextTaskRef = useRef<((nodeId: string, outputText: string, inputPrompt?: string) => void) | null>(null);
   const handleCleanupSplitEdgesRef = useRef<((nodeId: string, keepSourceHandles: string[]) => void) | null>(null);
@@ -10493,6 +12235,33 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   const invokeImageComparerNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
     handleImageComparerNodeDataChangeRef.current?.(nodeId, updates);
   }, []);
+  const invokeDramaFlowNodeDataChange = useCallback((nodeId: string, updates: Record<string, unknown>) => {
+    handleDramaFlowNodeDataChangeRef.current?.(nodeId, updates);
+  }, []);
+  const invokeDramaFlowCharacterNodeDataChange = useCallback(
+    (nodeId: string, updates: Record<string, unknown>) => {
+      handleDramaFlowCharacterNodeDataChangeRef.current?.(nodeId, updates);
+    },
+    [],
+  );
+  const invokeDramaFlowSceneNodeDataChange = useCallback(
+    (nodeId: string, updates: Record<string, unknown>) => {
+      handleDramaFlowSceneNodeDataChangeRef.current?.(nodeId, updates);
+    },
+    [],
+  );
+  const handleDramaFlowAssetCardNodeDataChangeRef = useRef<
+    typeof handleDramaFlowAssetCardNodeDataChange | null
+  >(null);
+  const invokeDramaFlowAssetCardNodeDataChange = useCallback(
+    (nodeId: string, updates: Record<string, unknown>) => {
+      handleDramaFlowAssetCardNodeDataChangeRef.current?.(nodeId, updates);
+    },
+    [],
+  );
+  const invokeSpawnDramaFlowCharacters = useCallback((nodeId: string) => {
+    return spawnDramaFlowCharactersRef.current?.(nodeId);
+  }, []);
   const pickImageFromCanvasForGridMapRef = useRef<(() => Promise<string | null>) | null>(null);
   const invokePickImageFromCanvasForGridMap = useCallback(() => {
     return pickImageFromCanvasForGridMapRef.current?.() ?? Promise.resolve(null);
@@ -11277,6 +13046,204 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
     (ImageComparerNodeWrapper as any).displayName = 'ImageComparerNodeWrapper';
 
+    const dramaFlowAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.scriptText !== na.scriptText) return false;
+      if (pa.scriptTitle !== na.scriptTitle || pa.title !== na.title) return false;
+      if (pa.aspectRatio !== na.aspectRatio) return false;
+      if (pa.stylePresetId !== na.stylePresetId) return false;
+      if (pa.visualLookId !== na.visualLookId || pa.visualGradeId !== na.visualGradeId) return false;
+      if (pa.styleLabel !== na.styleLabel) return false;
+      if (pa.confirmedAt !== na.confirmedAt) return false;
+      if (pa.analyzing !== na.analyzing || pa.analyzingHint !== na.analyzingHint) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const DramaFlowNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DramaFlowNode
+            {...props}
+            onDataChange={invokeDramaFlowNodeDataChange}
+            onConfirmContinue={(nodeId) => void invokeSpawnDramaFlowCharacters(nodeId)}
+          />
+        ),
+        dramaFlowAreEqual,
+      ),
+      dramaFlowAreEqual,
+      true,
+    );
+    (DramaFlowNodeWrapper as any).displayName = 'DramaFlowNodeWrapper';
+
+    const dramaFlowCharacterAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.name !== na.name || pa.prompt !== na.prompt || pa.intro !== na.intro) return false;
+      if (pa.imageUrl !== na.imageUrl || pa.status !== na.status) return false;
+      if (pa.error !== na.error) return false;
+      if (pa.role !== na.role || pa.identity !== na.identity) return false;
+      if (pa.voiceId !== na.voiceId || pa.voiceSampleUrl !== na.voiceSampleUrl) return false;
+      if (pa.voiceStatus !== na.voiceStatus || pa.voiceError !== na.voiceError) return false;
+      if (pa.voicePrompt !== na.voicePrompt) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const DramaFlowCharacterNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DramaFlowCharacterNode
+            {...props}
+            projectId={projectId || undefined}
+            onDataChange={invokeDramaFlowCharacterNodeDataChange}
+            onGenerateImage={(nodeId) => {
+              void generateDramaFlowCharacterImageRef.current?.(nodeId);
+            }}
+            onGenerateVoice={(nodeId) => {
+              void generateDramaFlowCharacterVoiceRef.current?.(nodeId);
+            }}
+            onUploadImage={(nodeId, file) => {
+              void uploadDramaFlowCharacterImageRef.current?.(nodeId, file);
+            }}
+            onPickImageFromCanvas={(nodeId) => {
+              void pickDramaFlowCharacterImageFromCanvasRef.current?.(nodeId);
+            }}
+            onUploadVoice={(nodeId, file) => {
+              void uploadDramaFlowCharacterVoiceRef.current?.(nodeId, file);
+            }}
+            onPickVoiceFromCanvas={(nodeId) => {
+              void pickDramaFlowCharacterVoiceFromCanvasRef.current?.(nodeId);
+            }}
+            onClearVoice={(nodeId) => {
+              clearDramaFlowCharacterVoiceRef.current?.(nodeId);
+            }}
+            onDelete={(nodeId) => {
+              deleteDramaFlowCharacterRef.current?.(nodeId);
+            }}
+            getDirectorDomain={(parentId) =>
+              getDramaFlowDirectorDomainRef.current?.(parentId) || null
+            }
+            onApplyLibrarySession={(nodeId, next, summary) => {
+              applyDramaFlowLibrarySessionRef.current?.(nodeId, next, summary);
+            }}
+          />
+        ),
+        dramaFlowCharacterAreEqual,
+      ),
+      dramaFlowCharacterAreEqual,
+      true,
+    );
+    (DramaFlowCharacterNodeWrapper as any).displayName = 'DramaFlowCharacterNodeWrapper';
+
+    const dramaFlowSceneAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.name !== na.name || pa.prompt !== na.prompt || pa.intro !== na.intro) return false;
+      if (pa.imageUrl !== na.imageUrl || pa.status !== na.status) return false;
+      if (pa.error !== na.error) return false;
+      if (pa.location !== na.location || pa.kind !== na.kind || pa.mood !== na.mood) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const DramaFlowSceneNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DramaFlowSceneNode
+            {...props}
+            projectId={projectId || undefined}
+            onDataChange={invokeDramaFlowSceneNodeDataChange}
+            onGenerateImage={(nodeId) => {
+              void generateDramaFlowSceneImageRef.current?.(nodeId);
+            }}
+            onUploadImage={(nodeId, file) => {
+              void uploadDramaFlowSceneImageRef.current?.(nodeId, file);
+            }}
+            onPickImageFromCanvas={(nodeId) => {
+              void pickDramaFlowSceneImageFromCanvasRef.current?.(nodeId);
+            }}
+            onDelete={(nodeId) => {
+              deleteDramaFlowSceneRef.current?.(nodeId);
+            }}
+          />
+        ),
+        dramaFlowSceneAreEqual,
+      ),
+      dramaFlowSceneAreEqual,
+      true,
+    );
+    (DramaFlowSceneNodeWrapper as any).displayName = 'DramaFlowSceneNodeWrapper';
+
+    const dramaFlowAssetCardAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.name !== na.name || pa.prompt !== na.prompt || pa.intro !== na.intro) return false;
+      if (pa.imageUrl !== na.imageUrl || pa.status !== na.status || pa.error !== na.error) {
+        return false;
+      }
+      if (pa.category !== na.category || pa.assetId !== na.assetId) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      return true;
+    };
+    const DramaFlowPropNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DramaFlowPropNode
+            {...props}
+            projectId={projectId || undefined}
+            onDataChange={invokeDramaFlowAssetCardNodeDataChange}
+            onGenerateImage={(nodeId) => {
+              void generateDramaFlowPropImageRef.current?.(nodeId);
+            }}
+            onUploadImage={(nodeId, file) => {
+              void uploadDramaFlowAssetCardImageRef.current?.(nodeId, file, 'prop');
+            }}
+            onPickImageFromCanvas={(nodeId) => {
+              void pickDramaFlowPropImageFromCanvasRef.current?.(nodeId);
+            }}
+            onDelete={(nodeId) => {
+              deleteDramaFlowAssetCardRef.current?.(nodeId);
+            }}
+          />
+        ),
+        dramaFlowAssetCardAreEqual,
+      ),
+      dramaFlowAssetCardAreEqual,
+      true,
+    );
+    (DramaFlowPropNodeWrapper as any).displayName = 'DramaFlowPropNodeWrapper';
+
+    const DramaFlowCreatureNodeWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <DramaFlowCreatureNode
+            {...props}
+            projectId={projectId || undefined}
+            onDataChange={invokeDramaFlowAssetCardNodeDataChange}
+            onGenerateImage={(nodeId) => {
+              void generateDramaFlowCreatureImageRef.current?.(nodeId);
+            }}
+            onUploadImage={(nodeId, file) => {
+              void uploadDramaFlowAssetCardImageRef.current?.(nodeId, file, 'creature');
+            }}
+            onPickImageFromCanvas={(nodeId) => {
+              void pickDramaFlowCreatureImageFromCanvasRef.current?.(nodeId);
+            }}
+            onDelete={(nodeId) => {
+              deleteDramaFlowAssetCardRef.current?.(nodeId);
+            }}
+          />
+        ),
+        dramaFlowAssetCardAreEqual,
+      ),
+      dramaFlowAssetCardAreEqual,
+      true,
+    );
+    (DramaFlowCreatureNodeWrapper as any).displayName = 'DramaFlowCreatureNodeWrapper';
+
     const imageTo3dAreEqual = (prev: any, next: any) => {
       if (prev.id !== next.id || prev.selected !== next.selected || prev.className !== next.className) return false;
       const pa = prev.data || {};
@@ -11454,6 +13421,59 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     );
     (RvcTrainNodeWrapper as any).displayName = 'RvcTrainNodeWrapper';
 
+    const nodeGroupAreEqual = (prev: any, next: any) => {
+      if (prev.id !== next.id || prev.selected !== next.selected) return false;
+      const pa = prev.data || {};
+      const na = next.data || {};
+      if (pa.label !== na.label || pa.kind !== na.kind) return false;
+      if (pa.width !== na.width || pa.height !== na.height) return false;
+      if (pa.imageModel !== na.imageModel || pa.imageResolution !== na.imageResolution) return false;
+      if (pa.batchGenerating !== na.batchGenerating) return false;
+      return true;
+    };
+    const NodeGroupFrameWrapper = withTinyZoomStatic(
+      React.memo(
+        (props: any) => (
+          <NodeGroupFrame
+            {...props}
+            onDataChange={(nodeId, updates) => {
+              setNodes((nds) =>
+                nds.map((n) => {
+                  if (n.id !== nodeId) return n;
+                  const width = updates.width ?? Number(n.data?.width) ?? n.width;
+                  const height = updates.height ?? Number(n.data?.height) ?? n.height;
+                  return {
+                    ...n,
+                    width,
+                    height,
+                    style: { ...(n.style || {}), width, height },
+                    data: { ...n.data, ...updates, width, height },
+                  };
+                }),
+              );
+            }}
+            onBatchGenerate={(groupId) => {
+              const g = latestNodesRef.current.find((n) => n.id === groupId);
+              const kind = String((g?.data as any)?.kind || '');
+              if (kind === 'dramaFlowSceneDesigner') {
+                void batchGenerateDramaFlowSceneImagesRef.current?.(groupId);
+              } else if (kind === 'dramaFlowPropDesigner') {
+                void batchGenerateDramaFlowPropImagesRef.current?.(groupId);
+              } else if (kind === 'dramaFlowCreatureDesigner') {
+                void batchGenerateDramaFlowCreatureImagesRef.current?.(groupId);
+              } else {
+                void batchGenerateDramaFlowCharacterImagesRef.current?.(groupId);
+              }
+            }}
+          />
+        ),
+        nodeGroupAreEqual,
+      ),
+      nodeGroupAreEqual,
+      true,
+    );
+    (NodeGroupFrameWrapper as any).displayName = 'NodeGroupFrameWrapper';
+
     return {
       custom: CustomNodeWithTinyZoom,
       textNode: TextNodeWithTinyZoom,
@@ -11472,6 +13492,12 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       script: ScriptNodeWrapper,
       director: DirectorNodeWrapper,
       directorDrama: DirectorNodeWrapper,
+      directorDramaV2: DramaFlowNodeWrapper,
+      dramaFlowCharacter: DramaFlowCharacterNodeWrapper,
+      dramaFlowScene: DramaFlowSceneNodeWrapper,
+      dramaFlowProp: DramaFlowPropNodeWrapper,
+      dramaFlowCreature: DramaFlowCreatureNodeWrapper,
+      [NODE_GROUP_TYPE]: NodeGroupFrameWrapper,
       rvcTrain: RvcTrainNodeWrapper,
       character: CharacterNodeWrapper,
       digitalHuman: DigitalHumanNodeWrapper,
@@ -11480,7 +13506,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       textSplit: TextSplitNodeWrapper,
       cameraControl: CameraControlNodeWrapper,
     };
-  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeTextSplitNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeSeparateAllAudios, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeGridMapNodeDataChange, invokeImageComparerNodeDataChange, invokePickImageFromCanvasForGridMap, invokePickVideoFromCanvas, invokePickAudioFromCanvas, invokeImageTo3dNodeDataChange, invokeStoryboardScriptNodeDataChange, invokeSpawnStoryboardSelectedImages, invokeScriptNodeDataChange, invokeDirectorNodeDataChange, invokeSpawnDirectorVideos, invokeDirectorPreviewToSplice, invokeDirectorVideosToSplice, invokeDirectorConfirmGenVideos, invokeDirectorExportMv, invokeDirectorResolveKaraokeMvVideo, invokeRvcTrainNodeDataChange, handlePhotoCollageExportToCanvas, handleGridMapExportToCanvas, handleAddCanvasImageNodes, handleAddVideoClipNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual, GRID_MAP_HMR_REV]);
+  }, [projectId, invokeTextNodeDataChange, invokeLlmNodeDataChange, invokeTextSplitNodeDataChange, invokeImageNodeDataChange, invokeVideoNodeDataChange, invokeAudioNodeDataChange, invokeSeparateAllAudios, invokeCharacterNodeDataChange, invokeVideoSpliceNodeDataChange, invokeVideoSpliceExportToCanvas, invokePhotoCollageNodeDataChange, invokeGridMapNodeDataChange, invokeImageComparerNodeDataChange, invokeDramaFlowNodeDataChange, invokeDramaFlowCharacterNodeDataChange, invokeDramaFlowSceneNodeDataChange, invokeDramaFlowAssetCardNodeDataChange, invokeSpawnDramaFlowCharacters, invokePickImageFromCanvasForGridMap, invokePickVideoFromCanvas, invokePickAudioFromCanvas, invokeImageTo3dNodeDataChange, invokeStoryboardScriptNodeDataChange, invokeSpawnStoryboardSelectedImages, invokeScriptNodeDataChange, invokeDirectorNodeDataChange, invokeSpawnDirectorVideos, invokeDirectorPreviewToSplice, invokeDirectorVideosToSplice, invokeDirectorConfirmGenVideos, invokeDirectorExportMv, invokeDirectorResolveKaraokeMvVideo, invokeRvcTrainNodeDataChange, handlePhotoCollageExportToCanvas, handleGridMapExportToCanvas, handleAddCanvasImageNodes, handleAddVideoClipNodes, handleImageTo3dLibrarySaved, invokeCleanupSplitEdges, invokeAuxImageTaskComplete, handlePreviewImageFromNode, handleOpenDrawingBoard, videoInteractionSettings, withTinyZoomStatic, TextNodeWrapper, nodeArePropsEqual, GRID_MAP_HMR_REV, setNodes, setEdges]);
 
   // 连接节点（拖拽中的临时线为虚线，连接完成后的线为实线）
   const onConnect = useCallback(
@@ -13735,6 +15761,31 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         return;
       }
 
+      // 点击组内模块 → 选中整组（组内不可单独框选/拖走）
+      {
+        const gid = getNodeGroupId(node);
+        if (gid && node.type !== NODE_GROUP_TYPE) {
+          setNodes((nds) =>
+            sealGroupedChildren(nds).map((n) => ({
+              ...n,
+              selected: n.id === gid,
+            })),
+          );
+          setSelectedEdge(null);
+          setEdgeDeleteModeId(null);
+          setSelectedNode(null);
+          setLlmInputPanelData(null);
+          setImageInputPanelData(null);
+          setImageTo3dInputPanelData(null);
+          setVideoInputPanelData(null);
+          setCharacterInputPanelData(null);
+          setAudioInputPanelData(null);
+          setStoryboardScriptInputPanelData(null);
+          setDirectorInputPanelData(null);
+          return;
+        }
+      }
+
       setSelectedEdge(null);
       setEdgeDeleteModeId(null);
       setSelectedNode((prev) => {
@@ -14835,6 +16886,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       positionChangeRafRef.current = null;
     }
     dragNodeHashRef.current.set(node.id, buildNodePersistHash(node));
+
+    // 记录软组拖拽会话（跟移在 onNodesChange → expandGroupFramePositionChanges；此处不改选中，避免与 RF 多选拖打架）
+    nodeGroupDragSessionRef.current = null;
+    nodeGroupDragSessionsRef.current = [];
+    if (node.type === NODE_GROUP_TYPE) {
+      const multi = beginMultiGroupDrag(latestNodesRef.current as Node[], node);
+      if (multi) {
+        nodeGroupDragSessionRef.current = multi.primary;
+        nodeGroupDragSessionsRef.current = multi.sessions;
+      }
+    }
   }, [buildNodePersistHash]);
 
   const onNodeDrag = useCallback((_event: React.MouseEvent, node: Node) => {
@@ -14848,6 +16910,25 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     isNodeDraggingRef.current = false;
     const wasGroupDragging = isGroupDraggingRef.current;
     isGroupDraggingRef.current = false;
+    const groupSession = nodeGroupDragSessionRef.current;
+    const groupSessions = nodeGroupDragSessionsRef.current.slice();
+    nodeGroupDragSessionRef.current = null;
+    nodeGroupDragSessionsRef.current = [];
+    // 拖组合框或拖组内任一模块结束后，按子节点包围盒收紧组合框（不改子相对排布）
+    const gids = new Set<string>();
+    for (const s of groupSessions) gids.add(s.groupId);
+    if (groupSession?.groupId) gids.add(groupSession.groupId);
+    const oneGid =
+      groupSession?.groupId ||
+      (node.type === NODE_GROUP_TYPE ? node.id : getNodeGroupId(node));
+    if (oneGid) gids.add(oneGid);
+    if (gids.size) {
+      setNodes((nds) => {
+        let next = nds;
+        for (const gid of gids) next = syncGroupFrameBounds(next, gid);
+        return next;
+      });
+    }
     pendingPositionChangesRef.current = [];
     if (positionChangeRafRef.current !== null) {
       cancelAnimationFrame(positionChangeRafRef.current);
@@ -14904,7 +16985,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     } catch (error) {
       console.error('保存节点位置失败:', error);
     }
-  }, [projectId, buildNodePersistHash, saveProjectNow]);
+  }, [projectId, buildNodePersistHash, saveProjectNow, setNodes]);
 
 
   // 点击连接线：选中并高亮绿；再次点击连接线（任意位置）显示剪刀，点击剪刀删除
@@ -15227,6 +17308,158 @@ const Workspace: React.FC<WorkspaceProps> = () => {
   pickImageFromCanvasForGridMapRef.current = () => requestViewSlotPickFromCanvas(0);
   pickVideoFromCanvasRef.current = () => requestDigitalHumanVideoPickFromCanvas();
   pickAudioFromCanvasRef.current = () => requestVoicePickFromCanvas();
+
+  const pickDramaFlowCharacterImageFromCanvas = useCallback(
+    async (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      const url = await requestViewSlotPickFromCanvas(0);
+      if (!url) return;
+      setNodes((nds) => {
+        let next = patchNodesWithDramaFlowCharacterImage(nds, parentId, characterId, {
+          imageUrl: url,
+          status: 'ready',
+          error: '',
+        });
+        const parent = next.find((n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE);
+        const domainPrev = (parent?.data as { directorDomain?: DramaDirectorSession | null })
+          ?.directorDomain;
+        const domainNext =
+          domainPrev && characterId
+            ? applyDramaSessionAssetImage(domainPrev, characterId, {
+                imageUrl: url,
+                status: 'ready',
+              })
+            : null;
+        if (domainNext) {
+          next = next.map((n) =>
+            n.id === parentId ? { ...n, data: { ...n.data, directorDomain: domainNext } } : n,
+          );
+        }
+        return next;
+      });
+    },
+    [requestViewSlotPickFromCanvas, setNodes],
+  );
+
+  const pickDramaFlowSceneImageFromCanvas = useCallback(
+    async (sceneNodeId: string) => {
+      const sceneNode = latestNodesRef.current.find((n) => n.id === sceneNodeId);
+      if (!sceneNode || sceneNode.type !== DRAMA_FLOW_SCENE_NODE_TYPE) return;
+      const parentId = String((sceneNode.data as any)?.parentDramaFlowId || '').trim();
+      const sceneId = String((sceneNode.data as any)?.sceneId || '').trim();
+      const url = await requestViewSlotPickFromCanvas(0);
+      if (!url) return;
+      setNodes((nds) =>
+        patchNodesWithDramaFlowSceneImage(nds, parentId, sceneId, {
+          imageUrl: url,
+          status: 'ready',
+          error: '',
+        }),
+      );
+    },
+    [requestViewSlotPickFromCanvas, setNodes],
+  );
+
+  const pickDramaFlowCharacterVoiceFromCanvas = useCallback(
+    async (characterNodeId: string) => {
+      const charNode = latestNodesRef.current.find((n) => n.id === characterNodeId);
+      if (!charNode || charNode.type !== DRAMA_FLOW_CHARACTER_NODE_TYPE) return;
+      const parentId = String((charNode.data as any)?.parentDramaFlowId || '').trim();
+      let voiceId = String((charNode.data as any)?.voiceId || '').trim();
+      const characterId = String((charNode.data as any)?.characterId || '').trim();
+      const parent = latestNodesRef.current.find(
+        (n) => n.id === parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+      );
+      const domainPrev = (parent?.data as { directorDomain?: DramaDirectorSession | null })
+        ?.directorDomain;
+      if (!voiceId && domainPrev?.bible) {
+        const hit =
+          domainPrev.bible.voices.find((v) => String(v.character_id || '') === characterId) || null;
+        voiceId = String(hit?.voice_id || '').trim();
+      }
+      if (!voiceId) {
+        showAlert('该角色尚未分配音色，请重新分析后再试');
+        return;
+      }
+      const payload = await requestVoicePickFromCanvas();
+      if (!payload?.url) return;
+      const url = String(payload.url).trim();
+      setNodes((nds) => {
+        const parentLive = nds.find((n) => n.id === parentId);
+        const dPrev = (parentLive?.data as { directorDomain?: DramaDirectorSession | null })
+          ?.directorDomain;
+        const domainNext = applyDramaSessionVoiceSample(dPrev, voiceId, {
+          sampleUrl: url,
+          status: 'ready',
+        });
+        return nds.map((n) => {
+          if (n.id === parentId && domainNext) {
+            return { ...n, data: { ...n.data, directorDomain: domainNext } };
+          }
+          if (n.id === characterNodeId) {
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                voiceId,
+                voiceSampleUrl: url,
+                voiceStatus: 'ready',
+                voiceError: '',
+              },
+            };
+          }
+          return n;
+        });
+      });
+    },
+    [requestVoicePickFromCanvas, setNodes, showAlert],
+  );
+
+  pickDramaFlowCharacterImageFromCanvasRef.current = pickDramaFlowCharacterImageFromCanvas;
+  pickDramaFlowCharacterVoiceFromCanvasRef.current = pickDramaFlowCharacterVoiceFromCanvas;
+  pickDramaFlowSceneImageFromCanvasRef.current = pickDramaFlowSceneImageFromCanvas;
+
+  const pickDramaFlowPropImageFromCanvas = useCallback(
+    async (nodeId: string) => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.type !== DRAMA_FLOW_PROP_NODE_TYPE) return;
+      const parentId = String((node.data as any)?.parentDramaFlowId || '').trim();
+      const propId = String((node.data as any)?.assetId || '').trim();
+      const url = await requestViewSlotPickFromCanvas(0);
+      if (!url) return;
+      setNodes((nds) =>
+        patchNodesWithDramaFlowPropImage(nds, parentId, propId, {
+          imageUrl: url,
+          status: 'ready',
+          error: '',
+        }),
+      );
+    },
+    [requestViewSlotPickFromCanvas, setNodes],
+  );
+  const pickDramaFlowCreatureImageFromCanvas = useCallback(
+    async (nodeId: string) => {
+      const node = latestNodesRef.current.find((n) => n.id === nodeId);
+      if (!node || node.type !== DRAMA_FLOW_CREATURE_NODE_TYPE) return;
+      const parentId = String((node.data as any)?.parentDramaFlowId || '').trim();
+      const creatureId = String((node.data as any)?.assetId || '').trim();
+      const url = await requestViewSlotPickFromCanvas(0);
+      if (!url) return;
+      setNodes((nds) =>
+        patchNodesWithDramaFlowCreatureImage(nds, parentId, creatureId, {
+          imageUrl: url,
+          status: 'ready',
+          error: '',
+        }),
+      );
+    },
+    [requestViewSlotPickFromCanvas, setNodes],
+  );
+  pickDramaFlowPropImageFromCanvasRef.current = pickDramaFlowPropImageFromCanvas;
+  pickDramaFlowCreatureImageFromCanvasRef.current = pickDramaFlowCreatureImageFromCanvas;
 
   const requestSceneImagePickFromCanvas = useCallback(
     (role: 'normal' | 'display3d') => {
@@ -17329,7 +19562,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
       setContextMenu(null);
       return;
     }
-    if (HIDE_DIRECTOR_STAGE_UI && (type === 'director' || type === 'directorDrama')) {
+    if (HIDE_DIRECTOR_STAGE_UI && (type === 'director' || type === 'directorDrama' || type === 'directorDramaV2')) {
       setContextMenu(null);
       return;
     }
@@ -17361,6 +19594,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     const isStoryboardScriptType = type === 'storyboardScript';
     const isScriptType = type === 'script';
     const isDirectorDramaType = type === 'directorDrama';
+    const isDirectorDramaV2Type = type === 'directorDramaV2' || type === DRAMA_FLOW_NODE_TYPE;
     const isDirectorType = type === 'director' || isDirectorDramaType;
     const isImageTo3dType = type === 'imageTo3d';
     const isRvcTrainType = type === 'rvcTrain';
@@ -17396,6 +19630,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ? scaleModulePx(1024)
                         : isScriptType
                           ? scaleModulePx(360)
+                        : isDirectorDramaV2Type
+                          ? DRAMA_FLOW_DEFAULT_W
                         : isDirectorType
                           ? DIRECTOR_DEFAULT_W
                         : isImageTo3dType
@@ -17432,6 +19668,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                           ? scaleModulePx(576)
                         : isScriptType
                           ? scaleModulePx(320)
+                        : isDirectorDramaV2Type
+                          ? DRAMA_FLOW_DEFAULT_H
                         : isDirectorType
                           ? DIRECTOR_DEFAULT_H
                         : isImageTo3dType
@@ -17467,7 +19705,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     });
 
     const newNode: Node = {
-      id: `${isDirectorDramaType ? 'directorDrama' : isDirectorType ? 'director' : type}-${Date.now()}`,
+      id: `${isDirectorDramaV2Type ? 'directorDramaV2' : isDirectorDramaType ? 'directorDrama' : isDirectorType ? 'director' : type}-${Date.now()}`,
       type:
         type === 'text'
           ? 'minimalistText'
@@ -17499,6 +19737,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                               ? 'storyboardScript'
                             : isScriptType
                               ? 'script'
+                            : isDirectorDramaV2Type
+                              ? DRAMA_FLOW_NODE_TYPE
                             : isDirectorDramaType
                               ? DIRECTOR_DRAMA_NODE_TYPE
                             : isDirectorType
@@ -17509,7 +19749,7 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                                 ? 'rvcTrain'
                               : 'custom',
       position: adjustedPosition,
-      ...(isGridMapType || isStoryboardScriptType || isDirectorType || isImageComparerType || type === 'character'
+      ...(isGridMapType || isStoryboardScriptType || isDirectorType || isDirectorDramaV2Type || isImageComparerType || type === 'character'
         ? {
             style: nodeStyleDimensions(defaultWidth, defaultHeight),
             width: defaultWidth,
@@ -17548,6 +19788,8 @@ const Workspace: React.FC<WorkspaceProps> = () => {
                                 ? '分镜脚本'
                               : isScriptType
                                 ? '剧本'
+                              : isDirectorDramaV2Type
+                                ? 'AI短剧2代'
                               : isDirectorDramaType
                                 ? 'AI短剧'
                               : isDirectorType
@@ -17599,6 +19841,17 @@ const Workspace: React.FC<WorkspaceProps> = () => {
               title: isDirectorDramaType ? 'AI短剧导演' : 'MV导演',
               width: DIRECTOR_DEFAULT_W,
               height: DIRECTOR_DEFAULT_H,
+              isUserResized: true,
+            }
+          : {}),
+        ...(isDirectorDramaV2Type
+          ? {
+              scriptTitle: '我的剧本',
+              scriptText: '',
+              aspectRatio: '9:16',
+              title: 'AI短剧2代',
+              width: DRAMA_FLOW_DEFAULT_W,
+              height: DRAMA_FLOW_DEFAULT_H,
               isUserResized: true,
             }
           : {}),
@@ -19901,6 +22154,108 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         promptNxSaasLoginIfNeeded(packet.payload?.error, true);
       }
 
+      // AI 短剧 2 代角色定妆图 / 场景定妆图 / 音色失败回写
+      if (packet.status === 'ERROR') {
+        const v2Img = parseDramaFlowCharacterImageNodeId(packet.nodeId);
+        if (v2Img) {
+          const parent = latestNodesRef.current.find(
+            (n) => n.id === v2Img.parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (parent) {
+            const errMsg = String(packet.payload?.error || '生成失败');
+            setNodes((nds) =>
+              patchNodesWithDramaFlowCharacterImage(nds, v2Img.parentId, v2Img.characterId, {
+                status: 'error',
+                error: errMsg,
+              }),
+            );
+          }
+        }
+        const v2SceneImg = parseDramaFlowSceneImageNodeId(packet.nodeId);
+        if (v2SceneImg) {
+          const parent = latestNodesRef.current.find(
+            (n) => n.id === v2SceneImg.parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (parent) {
+            const errMsg = String(packet.payload?.error || '生成失败');
+            setNodes((nds) =>
+              patchNodesWithDramaFlowSceneImage(nds, v2SceneImg.parentId, v2SceneImg.sceneId, {
+                status: 'error',
+                error: errMsg,
+              }),
+            );
+          }
+        }
+        const v2PropImg = parseDramaFlowPropImageNodeId(packet.nodeId);
+        if (v2PropImg) {
+          const parent = latestNodesRef.current.find(
+            (n) => n.id === v2PropImg.parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (parent) {
+            const errMsg = String(packet.payload?.error || '生成失败');
+            setNodes((nds) =>
+              patchNodesWithDramaFlowPropImage(nds, v2PropImg.parentId, v2PropImg.propId, {
+                status: 'error',
+                error: errMsg,
+              }),
+            );
+          }
+        }
+        const v2CreatureImg = parseDramaFlowCreatureImageNodeId(packet.nodeId);
+        if (v2CreatureImg) {
+          const parent = latestNodesRef.current.find(
+            (n) => n.id === v2CreatureImg.parentId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (parent) {
+            const errMsg = String(packet.payload?.error || '生成失败');
+            setNodes((nds) =>
+              patchNodesWithDramaFlowCreatureImage(
+                nds,
+                v2CreatureImg.parentId,
+                v2CreatureImg.creatureId,
+                { status: 'error', error: errMsg },
+              ),
+            );
+          }
+        }
+        const directorVoiceErrMatch = String(packet.nodeId || '').match(/^(.+)-director-voice-(.+)$/);
+        if (directorVoiceErrMatch) {
+          const directorNodeId = directorVoiceErrMatch[1];
+          const voiceId = directorVoiceErrMatch[2];
+          const errMsg = String(packet.payload?.error || '声音生成失败');
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            setNodes((nds) => {
+              const parentLive = nds.find((n) => n.id === directorNodeId);
+              const domainPrev = (parentLive?.data as { directorDomain?: DramaDirectorSession | null })
+                ?.directorDomain;
+              const domainNext = applyDramaSessionVoiceSample(domainPrev, voiceId, {
+                status: 'error',
+                error: errMsg,
+              });
+              return nds.map((n) => {
+                if (n.id === directorNodeId && domainNext) {
+                  return { ...n, data: { ...n.data, directorDomain: domainNext } };
+                }
+                if (
+                  n.type === DRAMA_FLOW_CHARACTER_NODE_TYPE &&
+                  String((n.data as any)?.parentDramaFlowId || '') === directorNodeId &&
+                  String((n.data as any)?.voiceId || '') === voiceId
+                ) {
+                  return {
+                    ...n,
+                    data: { ...n.data, voiceStatus: 'error', voiceError: errMsg },
+                  };
+                }
+                return n;
+              });
+            });
+          }
+        }
+      }
+
       // 当 AI 调用开始时（START 状态），触发余额查询
       // 注意：实际的余额刷新在主进程的 AICore 中完成，这里只是作为备用
       if (packet.status === 'START') {
@@ -20614,24 +22969,124 @@ const Workspace: React.FC<WorkspaceProps> = () => {
 
         // 导演资产图：nodeId = `{directorId}-director-img-{assetId}`，任务列表有图但画布无 image 节点
         const directorImgMatch = String(nodeId || '').match(/^(.+)-director-img-(.+)$/);
+        // AI 短剧 2 代场景图：`{parentId}-director-scene-img-{sceneId}`
+        const v2SceneImgMatch = parseDramaFlowSceneImageNodeId(String(nodeId || ''));
+        const v2PropImgMatch = parseDramaFlowPropImageNodeId(String(nodeId || ''));
+        const v2CreatureImgMatch = parseDramaFlowCreatureImageNodeId(String(nodeId || ''));
+        const formatV2AssetUrl = () => {
+          let formattedImageUrl = imageUrl;
+          if (localPath) {
+            formattedImageUrl = formatImagePathSync(localPath);
+          } else if (
+            !formattedImageUrl.startsWith('http://') &&
+            !formattedImageUrl.startsWith('https://') &&
+            !formattedImageUrl.startsWith('data:') &&
+            !formattedImageUrl.startsWith('local-resource://')
+          ) {
+            formattedImageUrl = formatImagePathSync(formattedImageUrl);
+          }
+          return formattedImageUrl;
+        };
+        if (v2SceneImgMatch) {
+          const directorNodeId = v2SceneImgMatch.parentId;
+          const assetId = v2SceneImgMatch.sceneId;
+          const formattedImageUrl = formatV2AssetUrl();
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            setNodes((nds) =>
+              patchNodesWithDramaFlowSceneImage(nds, directorNodeId, assetId, {
+                imageUrl: formattedImageUrl,
+                status: 'ready',
+                error: '',
+              }),
+            );
+            void saveProjectNow(undefined, { force: true }).catch((e) =>
+              console.warn('[Workspace] drama v2 scene image save failed', e),
+            );
+            return;
+          }
+        }
+        if (v2PropImgMatch) {
+          const directorNodeId = v2PropImgMatch.parentId;
+          const assetId = v2PropImgMatch.propId;
+          const formattedImageUrl = formatV2AssetUrl();
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            setNodes((nds) =>
+              patchNodesWithDramaFlowPropImage(nds, directorNodeId, assetId, {
+                imageUrl: formattedImageUrl,
+                status: 'ready',
+                error: '',
+              }),
+            );
+            void saveProjectNow(undefined, { force: true }).catch((e) =>
+              console.warn('[Workspace] drama v2 prop image save failed', e),
+            );
+            return;
+          }
+        }
+        if (v2CreatureImgMatch) {
+          const directorNodeId = v2CreatureImgMatch.parentId;
+          const assetId = v2CreatureImgMatch.creatureId;
+          const formattedImageUrl = formatV2AssetUrl();
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            setNodes((nds) =>
+              patchNodesWithDramaFlowCreatureImage(nds, directorNodeId, assetId, {
+                imageUrl: formattedImageUrl,
+                status: 'ready',
+                error: '',
+              }),
+            );
+            void saveProjectNow(undefined, { force: true }).catch((e) =>
+              console.warn('[Workspace] drama v2 creature image save failed', e),
+            );
+            return;
+          }
+        }
         if (directorImgMatch) {
           const directorNodeId = directorImgMatch[1];
           const assetId = directorImgMatch[2];
+          let formattedImageUrl = imageUrl;
+          if (localPath) {
+            formattedImageUrl = formatImagePathSync(localPath);
+          } else if (
+            !formattedImageUrl.startsWith('http://') &&
+            !formattedImageUrl.startsWith('https://') &&
+            !formattedImageUrl.startsWith('data:') &&
+            !formattedImageUrl.startsWith('local-resource://')
+          ) {
+            formattedImageUrl = formatImagePathSync(formattedImageUrl);
+          }
+
+          // AI 短剧 2 代：剧本节点 + 角色卡
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            setNodes((nds) =>
+              patchNodesWithDramaFlowCharacterImage(nds, directorNodeId, assetId, {
+                imageUrl: formattedImageUrl,
+                status: 'ready',
+                error: '',
+              }),
+            );
+            void saveProjectNow(undefined, { force: true }).catch((e) =>
+              console.warn('[Workspace] drama v2 character image save failed', e),
+            );
+            return;
+          }
+
           const directorNode = latestNodesRef.current.find(
             (n) => n.id === directorNodeId && isDirectorNodeType(n.type),
           );
           if (directorNode) {
-            let formattedImageUrl = imageUrl;
-            if (localPath) {
-              formattedImageUrl = formatImagePathSync(localPath);
-            } else if (
-              !formattedImageUrl.startsWith('http://') &&
-              !formattedImageUrl.startsWith('https://') &&
-              !formattedImageUrl.startsWith('data:') &&
-              !formattedImageUrl.startsWith('local-resource://')
-            ) {
-              formattedImageUrl = formatImagePathSync(formattedImageUrl);
-            }
             const prev = createDefaultDirectorPipelineState(
               (directorNode.data as { director?: DirectorPipelineState })?.director || {},
             );
@@ -20990,21 +23445,63 @@ const Workspace: React.FC<WorkspaceProps> = () => {
         if (directorVoiceMatch) {
           const directorNodeId = directorVoiceMatch[1];
           const voiceId = directorVoiceMatch[2];
+          let formatted = String(audioUrl || '').trim();
+          if (localPath) {
+            formatted = formatAudioUrlForNode(String(audioUrl || ''), String(localPath));
+          } else if (formatted) {
+            formatted = formatAudioUrlForNode(formatted);
+          }
+
+          // AI 短剧 2 代：剧本节点 + 角色卡
+          const v2Parent = latestNodesRef.current.find(
+            (n) => n.id === directorNodeId && n.type === DRAMA_FLOW_NODE_TYPE,
+          );
+          if (v2Parent) {
+            const domainPrev = (v2Parent.data as { directorDomain?: DramaDirectorSession | null })
+              ?.directorDomain;
+            const domainNext = applyDramaSessionVoiceSample(domainPrev, voiceId, {
+              sampleUrl: formatted,
+              model: DOUBAO_SEED_AUDIO_MODEL_ID,
+              status: 'ready',
+            });
+            setNodes((nds) =>
+              nds.map((n) => {
+                if (n.id === directorNodeId && domainNext) {
+                  return { ...n, data: { ...n.data, directorDomain: domainNext } };
+                }
+                if (
+                  n.type === DRAMA_FLOW_CHARACTER_NODE_TYPE &&
+                  String((n.data as any)?.parentDramaFlowId || '') === directorNodeId &&
+                  String((n.data as any)?.voiceId || '') === voiceId
+                ) {
+                  return {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      voiceSampleUrl: formatted,
+                      voiceStatus: 'ready',
+                      voiceError: '',
+                    },
+                  };
+                }
+                return n;
+              }),
+            );
+            void saveProjectNow(undefined, { force: true }).catch((e) =>
+              console.warn('[Workspace] drama v2 voice sample save failed', e),
+            );
+            return;
+          }
+
           const directorNode = latestNodesRef.current.find(
             (n) => n.id === directorNodeId && isDirectorNodeType(n.type),
           );
           if (directorNode && isDirectorDramaNodeType(directorNode.type)) {
-            let formatted = String(audioUrl || '').trim();
-            if (localPath) {
-              formatted = formatAudioUrlForNode(String(audioUrl || ''), String(localPath));
-            } else if (formatted) {
-              formatted = formatAudioUrlForNode(formatted);
-            }
             const domainPrev = (directorNode.data as { directorDomain?: DramaDirectorSession | null })
               ?.directorDomain;
             const domainNext = applyDramaSessionVoiceSample(domainPrev, voiceId, {
               sampleUrl: formatted,
-              model: 'doubao-seed-audio-1.0',
+              model: DOUBAO_SEED_AUDIO_MODEL_ID,
               status: 'ready',
             });
             if (domainNext) {
@@ -21177,10 +23674,15 @@ const Workspace: React.FC<WorkspaceProps> = () => {
     handlePhotoCollageNodeDataChangeRef.current = handlePhotoCollageNodeDataChange;
     handleGridMapNodeDataChangeRef.current = handleGridMapNodeDataChange;
     handleImageComparerNodeDataChangeRef.current = handleImageComparerNodeDataChange;
+    handleDramaFlowNodeDataChangeRef.current = handleDramaFlowNodeDataChange;
+    handleDramaFlowCharacterNodeDataChangeRef.current = handleDramaFlowCharacterNodeDataChange;
+    handleDramaFlowSceneNodeDataChangeRef.current = handleDramaFlowSceneNodeDataChange;
+    handleDramaFlowAssetCardNodeDataChangeRef.current = handleDramaFlowAssetCardNodeDataChange;
+    spawnDramaFlowCharactersRef.current = spawnDramaFlowCharacters;
     handleAddTaskRef.current = handleAddTask;
     handleCleanupSplitEdgesRef.current = handleCleanupSplitEdges;
     handleAuxImageTaskCompleteRef.current = handleAuxImageTaskComplete;
-  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, persistRvcVoiceToLibrary, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleGridMapNodeDataChange, handleImageComparerNodeDataChange, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
+  }, [handleImageNodeDataChange, handleVideoNodeDataChange, handleAudioNodeDataChange, persistRvcVoiceToLibrary, handleVideoSpliceNodeDataChange, handleVideoSpliceExportToCanvas, handlePhotoCollageNodeDataChange, handleGridMapNodeDataChange, handleImageComparerNodeDataChange, handleDramaFlowNodeDataChange, handleDramaFlowCharacterNodeDataChange, handleDramaFlowSceneNodeDataChange, handleDramaFlowAssetCardNodeDataChange, spawnDramaFlowCharacters, handleAddTask, handleCleanupSplitEdges, handleAuxImageTaskComplete]);
 
   // 采集当前画布缩略图（仅负责生成，不负责落盘）
   const captureProjectCardThumbnail = useCallback(async (opts?: { ignoreBusy?: boolean }) => {

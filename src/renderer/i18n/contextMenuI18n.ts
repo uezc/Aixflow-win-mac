@@ -17,6 +17,7 @@ export type ContextMenuStrings = {
   script: string;
   director: string;
   directorDrama: string;
+  directorDramaV2: string;
   imageTo3d: string;
   character: string;
   audio: string;
@@ -48,6 +49,7 @@ const zh: ContextMenuStrings = {
   script: '剧本',
   director: 'MV导演',
   directorDrama: 'AI短剧',
+  directorDramaV2: 'AI短剧2代',
   imageTo3d: '图片转 3D',
   character: '角色',
   audio: '声音',
@@ -79,6 +81,7 @@ const en: ContextMenuStrings = {
   script: 'Script',
   director: 'MV Director',
   directorDrama: 'AI Drama',
+  directorDramaV2: 'AI Drama v2',
   imageTo3d: 'Image to 3D',
   character: 'Character',
   audio: 'Audio',
@@ -116,6 +119,7 @@ export function contextMenuLabelForType(locale: AppLocale, type: string): string
     script: 'script',
     director: 'director',
     directorDrama: 'directorDrama',
+    directorDramaV2: 'directorDramaV2',
     imageTo3d: 'imageTo3d',
     character: 'character',
     audio: 'audio',

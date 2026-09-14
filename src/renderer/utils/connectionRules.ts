@@ -28,6 +28,11 @@ export const MENU_TYPE_TO_NODE_TYPE: Record<string, string> = {
   script: 'script',
   director: 'director',
   directorDrama: 'directorDrama',
+  directorDramaV2: 'directorDramaV2',
+  dramaFlowCharacter: 'dramaFlowCharacter',
+  dramaFlowScene: 'dramaFlowScene',
+  dramaFlowProp: 'dramaFlowProp',
+  dramaFlowCreature: 'dramaFlowCreature',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -51,6 +56,11 @@ export const NODE_TYPE_TO_MENU_TYPE: Record<string, string> = {
   script: 'script',
   director: 'director',
   directorDrama: 'directorDrama',
+  directorDramaV2: 'directorDramaV2',
+  dramaFlowCharacter: 'dramaFlowCharacter',
+  dramaFlowScene: 'dramaFlowScene',
+  dramaFlowProp: 'dramaFlowProp',
+  dramaFlowCreature: 'dramaFlowCreature',
   imageTo3d: 'imageTo3d',
   character: 'character',
   digitalHuman: 'digitalHuman',
@@ -89,7 +99,98 @@ const FORBIDDEN_TARGET_MENU_TYPES_BY_SOURCE: Record<string, string[]> = {
   // 剧本：主要连到导演 / 文本 / LLM
   script: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'videoSplice', 'image', 'video', 'wanAnimate', 'storyboardScript'],
   // 导演：可连到图片、视频、剪辑、文本、LLM
-  director: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director', 'directorDrama'],
+  director: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director', 'directorDrama', 'directorDramaV2'],
+  directorDrama: ['character', 'audio', 'heyGem', 'rvcTrain', 'photoCollage', 'gridMap', 'imageComparer', 'canvas-tool', 'imageTo3d', 'storyboardScript', 'script', 'director', 'directorDrama', 'directorDramaV2'],
+  // 2 代短剧：先允许接文本/LLM，下游节点后续再扩
+  directorDramaV2: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'canvas-tool',
+    'imageTo3d',
+    'videoSplice',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
+    'dramaFlowCharacter',
+    'dramaFlowScene',
+    'dramaFlowProp',
+    'dramaFlowCreature',
+  ],
+  dramaFlowCharacter: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'canvas-tool',
+    'imageTo3d',
+    'videoSplice',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
+  ],
+  dramaFlowScene: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'canvas-tool',
+    'imageTo3d',
+    'videoSplice',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
+  ],
+  dramaFlowProp: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'canvas-tool',
+    'imageTo3d',
+    'videoSplice',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
+  ],
+  dramaFlowCreature: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'canvas-tool',
+    'imageTo3d',
+    'videoSplice',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
+  ],
 };
 
 /** 从源节点类型看：不能连到的目标节点 type（用于 isValidConnection） */
@@ -204,6 +305,7 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'script',
     'director',
     'directorDrama',
+    'directorDramaV2',
   ],
   directorDrama: [
     'character',
@@ -220,11 +322,30 @@ const FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE: Record<string, string[]> = {
     'script',
     'director',
     'directorDrama',
+    'directorDramaV2',
+  ],
+  directorDramaV2: [
+    'character',
+    'audio',
+    'heyGem',
+    'rvcTrain',
+    'photoCollage',
+    'gridMap',
+    'imageComparer',
+    'imageTo3d',
+    'videoSplice',
+    'audioTranscribe',
+    'cameraControl',
+    'storyboardScript',
+    'script',
+    'director',
+    'directorDrama',
+    'directorDramaV2',
   ],
   cameraControl: ['minimalistText', 'text', 'llm', 'textSplit', 'video', 'character', 'audio', 'cameraControl'], // 旧项目兼容：3D 只能连到 image
 };
 
-const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'director', 'directorDrama', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
+const ALL_MENU_TYPES = ['text', 'llm', 'textSplit', 'image', 'canvas-tool', 'video', 'wanAnimate', 'heyGem', 'videoSplice', 'photoCollage', 'gridMap', 'imageComparer', 'director', 'directorDrama', 'directorDramaV2', 'imageTo3d', 'character', 'audio', 'rvcTrain'];
 
 /** 四视图勾选：显式 boolean[4]；缺省视为旧数据「未存勾选」 */
 export function parseReferenceTransmitSlots(raw: unknown): boolean[] | null {
@@ -389,7 +510,7 @@ export function getAllowedMenuTypes(
         types = types.filter((t) => t !== 'character');
       }
       if (HIDE_DIRECTOR_STAGE_UI) {
-        types = types.filter((t) => t !== 'director' && t !== 'directorDrama');
+        types = types.filter((t) => t !== 'director' && t !== 'directorDrama' && t !== 'directorDramaV2');
       } else if (HIDE_DIRECTOR_DRAMA_UI) {
         types = types.filter((t) => t !== 'directorDrama');
       }
@@ -440,7 +561,7 @@ export function getAllowedMenuTypes(
     types = types.filter((t) => t !== 'character');
   }
   if (HIDE_DIRECTOR_STAGE_UI) {
-    types = types.filter((t) => t !== 'director' && t !== 'directorDrama');
+    types = types.filter((t) => t !== 'director' && t !== 'directorDrama' && t !== 'directorDramaV2');
   } else if (HIDE_DIRECTOR_DRAMA_UI) {
     types = types.filter((t) => t !== 'directorDrama');
   }
@@ -526,6 +647,7 @@ export function isConnectionAllowed(
     return (
       tgt === 'director' ||
       tgt === 'directorDrama' ||
+      tgt === 'directorDramaV2' ||
       tgt === 'llm' ||
       tgt === 'minimalistText' ||
       tgt === 'text' ||
@@ -533,7 +655,7 @@ export function isConnectionAllowed(
       tgt === 'storyboardScript'
     );
   }
-  if (src === 'director' || src === 'directorDrama') {
+  if (src === 'director' || src === 'directorDrama' || src === 'directorDramaV2') {
     return (
       tgt === 'image' ||
       tgt === 'video' ||
@@ -542,6 +664,30 @@ export function isConnectionAllowed(
       tgt === 'minimalistText' ||
       tgt === 'text' ||
       tgt === 'textSplit' ||
+      tgt === 'videoSplice' ||
+      tgt === 'dramaFlowCharacter' ||
+      tgt === 'dramaFlowScene' ||
+      tgt === 'dramaFlowProp' ||
+      tgt === 'dramaFlowCreature' ||
+      tgt === 'nodeGroup'
+    );
+  }
+  if (
+    src === 'dramaFlowCharacter' ||
+    src === 'dramaFlowScene' ||
+    src === 'dramaFlowProp' ||
+    src === 'dramaFlowCreature'
+  ) {
+    return tgt === 'image' || tgt === 'llm' || tgt === 'minimalistText' || tgt === 'text';
+  }
+  if (src === 'nodeGroup') {
+    return (
+      tgt === 'nodeGroup' ||
+      tgt === 'image' ||
+      tgt === 'video' ||
+      tgt === 'llm' ||
+      tgt === 'minimalistText' ||
+      tgt === 'text' ||
       tgt === 'videoSplice'
     );
   }
@@ -558,13 +704,29 @@ export function isConnectionAllowed(
       src === 'audio'
     );
   }
-  if (tgt === 'directorDrama') {
+  if (tgt === 'directorDrama' || tgt === 'directorDramaV2') {
     return (
       src === 'script' ||
       src === 'minimalistText' ||
       src === 'text' ||
       src === 'llm' ||
       src === 'textSplit'
+    );
+  }
+  if (
+    tgt === 'dramaFlowCharacter' ||
+    tgt === 'dramaFlowScene' ||
+    tgt === 'dramaFlowProp' ||
+    tgt === 'dramaFlowCreature'
+  ) {
+    return src === 'directorDramaV2';
+  }
+  if (tgt === 'nodeGroup') {
+    return (
+      src === 'directorDramaV2' ||
+      src === 'directorDrama' ||
+      src === 'director' ||
+      src === 'nodeGroup'
     );
   }
   const forbidden = FORBIDDEN_TARGET_NODE_TYPES_BY_SOURCE[src];

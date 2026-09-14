@@ -34,6 +34,17 @@ import SuperConnectButton from './SuperConnectButton';
 import VideoJoinButton from './VideoJoinButton';
 import GridMapFromSelectionButton from './GridMapFromSelectionButton';
 import type { CreateGridMapFromSelectionOpts } from './GridMapFromSelectionButton';
+import NodeGroupToolbarButton from './NodeGroupToolbarButton';
+import { NODE_GROUP_TYPE } from './NodeGroupFrame';
+import {
+  arrangeGroupNodes,
+  canGroupNodes,
+  collapseEdgesIntoGroup,
+  findUngroupTargetIds,
+  groupSelectedNodes,
+  repairLegacyParentNodeGroups,
+  ungroupNodes,
+} from '../../utils/nodeGroup';
 import CanvasHardwareAccelToggle from './CanvasHardwareAccelToggle';
 
 const noopReverseSuperConnect = (_sourceNodeId: string, _targetNodeIds: string[]) => {};
@@ -1116,6 +1127,137 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
       return null;
     }
   }, [selectedNodes, reactFlowWrapper, transform, canvasDotGap]);
+
+  const canShowGroup = useMemo(() => canGroupNodes(selectedNodes), [selectedNodes]);
+  const ungroupTargetIds = useMemo(
+    () => findUngroupTargetIds(selectedNodes, nodes),
+    [selectedNodes, nodes],
+  );
+  const canShowUngroup = ungroupTargetIds.length > 0;
+  const [groupArrangeCols, setGroupArrangeCols] = useState(2);
+
+  // 选中已有组合时，同步高亮其 arrangeCols
+  useEffect(() => {
+    if (!ungroupTargetIds.length) return;
+    const g = nodes.find((n) => n.id === ungroupTargetIds[0] && n.type === NODE_GROUP_TYPE);
+    const cols = Number((g?.data as { arrangeCols?: number } | undefined)?.arrangeCols);
+    if (Number.isFinite(cols) && cols >= 1 && cols <= 4) {
+      setGroupArrangeCols(Math.floor(cols));
+    }
+  }, [ungroupTargetIds.join(','), nodes]);
+
+  /** 组合/解组按钮：选区上方居中；有组合框时锚到组框顶（贴红框位置），间距 10px */
+  const nodeGroupToolbarPosition = useMemo(() => {
+    if ((!canShowGroup && !canShowUngroup) || selectedNodes.length < 1) return null;
+    try {
+      if (!reactFlowInstanceRef.current || !reactFlowWrapper.current) return null;
+      const groupNode =
+        ungroupTargetIds.length > 0
+          ? nodes.find((n) => n.id === ungroupTargetIds[0] && n.type === NODE_GROUP_TYPE)
+          : null;
+      const anchorNodes = groupNode ? [groupNode] : selectedNodes;
+      const bounds = getNodesBounds(anchorNodes as any);
+      if (!bounds) return null;
+      const viewport = reactFlowInstanceRef.current.getViewport();
+      const wrapperBounds = reactFlowWrapper.current.getBoundingClientRect();
+      const z = Math.max(0.1, viewport.zoom);
+      const screenX = bounds.x * z + viewport.x;
+      const screenY = bounds.y * z + viewport.y;
+      const screenWidth = bounds.width * z;
+      return {
+        x: screenX + screenWidth / 2 - wrapperBounds.left,
+        y: screenY - 10 - wrapperBounds.top,
+      };
+    } catch {
+      return null;
+    }
+  }, [
+    canShowGroup,
+    canShowUngroup,
+    selectedNodes,
+    ungroupTargetIds,
+    nodes,
+    reactFlowWrapper,
+    transform,
+  ]);
+
+  const handleGroupSelected = useCallback(() => {
+    if (!setNodes || !canShowGroup) return;
+    const ids = selectedNodes.filter((n) => n.type !== NODE_GROUP_TYPE).map((n) => n.id);
+    const cols = Math.min(4, Math.max(1, groupArrangeCols || 2));
+    const groupId = `nodeGroup-${Date.now()}`;
+    setNodes((nds) =>
+      groupSelectedNodes(repairLegacyParentNodeGroups(nds), ids, {
+        arrangeCols: cols,
+        groupId,
+      }),
+    );
+    if (setEdges) {
+      setEdges((eds) => collapseEdgesIntoGroup(eds as any, ids, groupId) as typeof eds);
+    }
+  }, [setNodes, setEdges, canShowGroup, selectedNodes, groupArrangeCols]);
+
+  const handleUngroupSelected = useCallback(() => {
+    if (!setNodes || !ungroupTargetIds.length) return;
+    const removeIds = new Set(ungroupTargetIds);
+    setNodes((nds) => ungroupNodes(repairLegacyParentNodeGroups(nds), ungroupTargetIds));
+    if (setEdges) {
+      setEdges((eds) =>
+        eds.filter((e) => !removeIds.has(e.source) && !removeIds.has(e.target)),
+      );
+    }
+  }, [setNodes, setEdges, ungroupTargetIds]);
+
+  const handleArrangeGroup = useCallback(
+    (forceCols?: number) => {
+      if (!setNodes || !ungroupTargetIds.length) return;
+      const cols = Math.min(
+        4,
+        Math.max(1, Number.isFinite(Number(forceCols)) ? Number(forceCols) : groupArrangeCols || 2),
+      );
+      setGroupArrangeCols(cols);
+      setNodes((nds) => {
+        let next = repairLegacyParentNodeGroups(nds);
+        for (const gid of ungroupTargetIds) {
+          next = arrangeGroupNodes(next, gid, cols);
+        }
+        return next;
+      });
+    },
+    [setNodes, ungroupTargetIds, groupArrangeCols],
+  );
+
+  const handleGroupColsChange = useCallback(
+    (n: number) => {
+      const cols = Math.min(4, Math.max(1, n));
+      setGroupArrangeCols(cols);
+      // 已在组内时：点 1/2/3/4 立即按列数整理生效
+      if (canShowUngroup && ungroupTargetIds.length) {
+        handleArrangeGroup(cols);
+      }
+    },
+    [canShowUngroup, ungroupTargetIds.length, handleArrangeGroup],
+  );
+
+  // Ctrl+G 组合 / Ctrl+Shift+G 解除
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      if (event.key.toLowerCase() !== 'g') return;
+      const tag = (event.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (event.target as HTMLElement)?.isContentEditable) {
+        return;
+      }
+      event.preventDefault();
+      if (event.shiftKey) {
+        handleUngroupSelected();
+      } else {
+        handleGroupSelected();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleGroupSelected, handleUngroupSelected]);
 
   // 计算批量运行按钮位置（选区右上角外侧约 20px）
   // 只依赖节点 ID 字符串，避免循环更新
@@ -3362,11 +3504,32 @@ const FlowContent: React.FC<FlowContentProps> = (props) => {
             selectedJoinableImages.length >= 2 &&
             gridMapFromSelectionButtonPosition &&
             onCreateGridMapFromSelection;
+          const showNodeGroup =
+            canShowGroup && !!nodeGroupToolbarPosition && !!setNodes;
+          const showNodeUngroup =
+            canShowUngroup && !!nodeGroupToolbarPosition && !!setNodes && !showNodeGroup;
           const shouldShow =
-            showBatchRun || showSuperForward || showSuperReverse || showVideoJoin || showGridMapFromSelection;
+            showBatchRun ||
+            showSuperForward ||
+            showSuperReverse ||
+            showVideoJoin ||
+            showGridMapFromSelection ||
+            showNodeGroup ||
+            showNodeUngroup;
           if (!shouldShow) return null;
           return (
             <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 50 }}>
+              {(showNodeGroup || showNodeUngroup) && nodeGroupToolbarPosition && (
+                <NodeGroupToolbarButton
+                  mode={showNodeGroup ? 'group' : 'ungroup'}
+                  position={nodeGroupToolbarPosition}
+                  isDarkMode={isDarkMode}
+                  cols={groupArrangeCols}
+                  onColsChange={handleGroupColsChange}
+                  onClick={showNodeGroup ? handleGroupSelected : handleUngroupSelected}
+                  onArrange={showNodeUngroup ? () => handleArrangeGroup() : undefined}
+                />
+              )}
               {showGridMapFromSelection && gridMapFromSelectionButtonPosition && (
                 <GridMapFromSelectionButton
                   selectedNodes={selectedJoinableImages}

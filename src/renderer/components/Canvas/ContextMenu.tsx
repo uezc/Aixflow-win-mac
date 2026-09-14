@@ -28,6 +28,7 @@ const baseMenuItems = [
   { type: 'imageComparer', icon: SplitSquareHorizontal },
   { type: 'director', icon: Sparkles },
   { type: 'directorDrama', icon: Clapperboard },
+  { type: 'directorDramaV2', icon: Clapperboard },
   { type: 'imageTo3d', icon: Box },
   { type: 'character', icon: User },
   { type: 'audio', icon: Volume2 },
@@ -35,7 +36,7 @@ const baseMenuItems = [
 
 const visibleBaseMenuItems = baseMenuItems.filter((item) => {
   if (HIDE_SORA2_AND_SORA_CHARACTER_UI && item.type === 'character') return false;
-  if (HIDE_DIRECTOR_STAGE_UI && (item.type === 'director' || item.type === 'directorDrama')) return false;
+  if (HIDE_DIRECTOR_STAGE_UI && (item.type === 'director' || item.type === 'directorDrama' || item.type === 'directorDramaV2')) return false;
   if (HIDE_DIRECTOR_DRAMA_UI && item.type === 'directorDrama') return false;
   return true;
 });

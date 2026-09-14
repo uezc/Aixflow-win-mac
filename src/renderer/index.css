@@ -1595,6 +1595,21 @@ body.nexflow-canvas-dragging .react-flow__node * {
   overflow: visible !important;
   contain: style !important;
 }
+/* AI短剧2代：粉/黄标题与组底栏在模块外缘，拖动/平移时勿裁切 */
+.react-flow__node.react-flow__node-dramaFlowCharacter,
+.react-flow__node.react-flow__node-dramaFlowCharacter > div,
+.react-flow__node.react-flow__node-directorDramaV2,
+.react-flow__node.react-flow__node-directorDramaV2 > div,
+.react-flow__node.react-flow__node-nodeGroup,
+.react-flow__node.react-flow__node-nodeGroup > div {
+  overflow: visible !important;
+  contain: style !important;
+}
+.react-flow__node.react-flow__node-dramaFlowCharacter .custom-node-container,
+.react-flow__node.react-flow__node-directorDramaV2 .custom-node-container {
+  overflow: visible !important;
+  contain: style !important;
+}
 /* 图片对比：接通后磁吸「+」保持默认灰，不变绿 */
 .react-flow__node-imageComparer .nexflow-plus-handle.plus-connected {
   --plus-p: 0;
@@ -2069,16 +2084,17 @@ body.nexflow-canvas-dragging .react-flow__node * {
   pointer-events: auto !important;
 }
 /* 导演台（MV/短剧）内大量 button（分集卡、步骤条等）：平移时必须保持可见，勿套用极简隐藏 */
-.custom-node-container.is-dragging:not(.nexflow-director-node) .title-area,
-.custom-node-container.is-dragging:not(.nexflow-director-node) button:not(.nexflow-plus-handle),
-.is-dragging .custom-node-container:not(.nexflow-director-node) .title-area,
-.is-dragging .custom-node-container:not(.nexflow-director-node) button:not(.nexflow-plus-handle) {
+/* AI短剧2代：剧本 / 角色卡 / 组合框拖动与平移时同样保持标题与按钮可见 */
+.custom-node-container.is-dragging:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) .title-area,
+.custom-node-container.is-dragging:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) button:not(.nexflow-plus-handle),
+.is-dragging .custom-node-container:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) .title-area,
+.is-dragging .custom-node-container:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) button:not(.nexflow-plus-handle) {
   visibility: hidden !important;
   pointer-events: none !important;
 }
-/* 画布缩放/平移时隐藏普通节点按钮；导演台内容保持完整 */
-.react-flow-wrapper--interacting .custom-node-container:not(.nexflow-director-node) .title-area,
-.react-flow-wrapper--interacting .custom-node-container:not(.nexflow-director-node) button:not(.nexflow-plus-handle) {
+/* 画布缩放/平移时隐藏普通节点按钮；导演台与短剧2代内容保持完整 */
+.react-flow-wrapper--interacting .custom-node-container:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) .title-area,
+.react-flow-wrapper--interacting .custom-node-container:not(.nexflow-director-node):not(.nexflow-drama-flow-keep-chrome) button:not(.nexflow-plus-handle) {
   visibility: hidden !important;
   pointer-events: none !important;
 }
@@ -2793,6 +2809,24 @@ audio:not(.audio-dark)::-webkit-media-controls-timeline {
 @keyframes nexflow-audio-wave-y-fill {
   0% { transform: scaleY(0.88); }
   100% { transform: scaleY(1.08); }
+}
+
+/* 角色卡音色柱：细柱 + 连续循环（避免 alternate 顿挫 + React 重绘打断） */
+@keyframes drama-flow-voice-eq {
+  0% { transform: scaleY(0.42); }
+  35% { transform: scaleY(1); }
+  65% { transform: scaleY(0.58); }
+  100% { transform: scaleY(0.42); }
+}
+.drama-flow-voice-eq-bar {
+  transform-origin: bottom center;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+.drama-flow-voice-eq.is-playing .drama-flow-voice-eq-bar {
+  animation-name: drama-flow-voice-eq;
+  animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+  animation-iteration-count: infinite;
 }
 
 .light-mode .react-flow__node-audio .custom-node-container.apple-panel-light,
